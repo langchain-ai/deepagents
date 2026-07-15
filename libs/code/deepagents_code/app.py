@@ -2220,6 +2220,13 @@ class _MainScreen(Screen[None]):
     """
 
 
+# A forced goal/rubric sync follows a server criteria turn whose freshly
+# generated proposal lives only in the checkpoint, so a single transient read
+# failure would otherwise strand it. Retry the read a few times before giving up.
+_GOAL_SYNC_READ_ATTEMPTS = 3
+_GOAL_SYNC_READ_RETRY_SECONDS = 0.4
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -9437,16 +9444,29 @@ class DeepAgentsApp(App):
             or self._last_consumed_next_previous_rubric is not None
         ):
             return
-        try:
-            state_values = await self._get_thread_state_values(self._lc_thread_id)
-        except Exception:
+        # A forced sync follows a criteria turn whose proposal lives only in the
+        # checkpoint, so retry a transient read failure before giving up rather
+        # than stranding a freshly generated proposal. Normal (unforced) syncs
+        # read once; the next turn retries on their behalf.
+        state_values: dict[str, Any] | None = None
+        read_error: BaseException | None = None
+        attempts = _GOAL_SYNC_READ_ATTEMPTS if force else 1
+        for attempt in range(attempts):
+            try:
+                state_values = await self._get_thread_state_values(self._lc_thread_id)
+                break
+            except Exception as exc:  # noqa: BLE001  # retried/surfaced below
+                read_error = exc
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(_GOAL_SYNC_READ_RETRY_SECONDS)
+        if state_values is None:
             # This refresh is the only path that reflects the agent's
             # `update_goal` completion/block into the transcript and status bar,
             # so a swallowed failure would silently lose that signal. Surface it
             # (once) rather than dropping to DEBUG. Leave the consumed one-shot
             # rubric bookkeeping intact so a later successful sync can still
             # reconcile it.
-            logger.warning("Failed to refresh goal/rubric state", exc_info=True)
+            logger.warning("Failed to refresh goal/rubric state", exc_info=read_error)
             if not self._goal_rubric_sync_warned:
                 self._goal_rubric_sync_warned = True
                 self.notify(
@@ -9454,12 +9474,21 @@ class DeepAgentsApp(App):
                     "displayed goal state may be stale.",
                     severity="warning",
                 )
-            # A forced sync follows a criteria turn, whose proposal is surfaced
-            # only by remounting the review. If the checkpoint read also fails,
-            # restore the review from local pending state (idempotent) so a
-            # double fault does not leave the user with no actionable widget.
             if force:
-                await self._remount_pending_goal_rubric_review()
+                # On an amend/regeneration the prior proposal is still in local
+                # pending state, so remounting the review restores an actionable
+                # widget. On a first create there is no local pending state, so a
+                # remount is a no-op — tell the user the proposal was generated
+                # but could not be loaded, and how to recover.
+                if self._pending_goal_objective and self._pending_goal_rubric:
+                    await self._remount_pending_goal_rubric_review()
+                else:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Acceptance criteria were generated but could not be "
+                            "loaded from the thread. Run `/goal` again to retry."
+                        )
+                    )
             return
         self._goal_rubric_sync_warned = False
         if _warn_discarded_goal_channels(state_values):
@@ -12588,6 +12617,14 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.exception("Failed to enrich agent error body")
                 body = error_text
+            # Criteria generation runs server-side; a remote deployment redacts
+            # the raw exception text to a generic message, so surface a
+            # self-contained, actionable message here rather than relying on it.
+            if graph_input is not None and graph_input.get("goal_criteria_request"):
+                body = (
+                    "Could not generate acceptance criteria for this goal. "
+                    "Run `/goal` again to retry."
+                )
             try:
                 await self._mount_message(ErrorMessage(body))
             except Exception:

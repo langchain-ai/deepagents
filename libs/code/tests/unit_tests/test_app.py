@@ -6618,23 +6618,11 @@ class TestGoalCommand:
                 "max-iterations for the parser", "- tests pass"
             )
 
-    def test_goal_client_never_constructs_or_invokes_a_model(self) -> None:
-        """The TUI goal path should only drive the remote streaming protocol."""
-        import inspect
-
-        source = "\n".join(
-            (
-                inspect.getsource(DeepAgentsApp._run_goal_criteria_request),
-                inspect.getsource(DeepAgentsApp._propose_goal_rubric),
-                inspect.getsource(DeepAgentsApp._propose_goal_amendment),
-            )
-        )
-
-        assert "create_model" not in source
-        assert "model.invoke" not in source
-        assert "create_agent" not in source
-        assert "for_graph" not in source
-        assert "astream" not in source
+    # The client-side "never constructs a model" invariant is covered
+    # behaviorally in test_goal_criteria_client.py
+    # (test_goal_submission_never_constructs_a_model_client_side), which drives
+    # the real submission path and asserts `create_model` is never called —
+    # rather than string-scanning method source, which broke on refactors.
 
     def test_rubric_detail_expansion_syncs_to_message_store(self) -> None:
         """Expanded grader details should survive transcript virtualization."""
@@ -7634,6 +7622,93 @@ class TestGoalCommand:
             assert len(notifications) == 1
             assert app._goal_rubric_sync_warned is True
             assert app._last_consumed_next_rubric == "- one shot"
+
+    async def test_forced_sync_retries_transient_read_failure(self) -> None:
+        """A forced sync retries a flaky checkpoint read before giving up."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            fetch = AsyncMock(
+                side_effect=[
+                    RuntimeError("blip"),
+                    RuntimeError("blip"),
+                    {
+                        "_goal_objective": "add refresh tokens",
+                        "_goal_status": "active",
+                        "_goal_rubric": "- tests pass",
+                    },
+                ]
+            )
+            notifications: list[str] = []
+            with (
+                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "notify",
+                    lambda message, *a, **k: notifications.append(message),  # noqa: ARG005
+                ),
+            ):
+                await app._sync_goal_rubric_state_from_thread(force=True)
+
+            # The transient failures were retried, so the proposal was not lost
+            # and no stale-state warning was surfaced.
+            assert fetch.await_count == 3
+            assert not any("Could not refresh" in message for message in notifications)
+
+    async def test_forced_sync_create_double_fault_prompts_retry(self) -> None:
+        """A create with no local pending state prompts the user to retry."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = None
+            app._pending_goal_rubric = None
+            mount = AsyncMock()
+            with (
+                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=RuntimeError("down")),
+                ),
+                patch.object(app, "_mount_message", mount),
+                patch.object(app, "notify"),
+            ):
+                await app._sync_goal_rubric_state_from_thread(force=True)
+
+            mount.assert_awaited_once()
+            await_args = mount.await_args
+            assert await_args is not None
+            body = str(await_args.args[0]._content)
+            assert "could not be loaded" in body
+
+    async def test_forced_sync_amend_double_fault_remounts_review(self) -> None:
+        """An amend keeps its local pending proposal, so the review remounts."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "ship login"
+            app._pending_goal_rubric = "- passkeys work"
+            remount = AsyncMock()
+            mount = AsyncMock()
+            with (
+                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=RuntimeError("down")),
+                ),
+                patch.object(app, "_remount_pending_goal_rubric_review", remount),
+                patch.object(app, "_mount_message", mount),
+                patch.object(app, "notify"),
+            ):
+                await app._sync_goal_rubric_state_from_thread(force=True)
+
+            remount.assert_awaited_once()
+            mount.assert_not_awaited()
 
     async def test_fetch_thread_history_coerces_unknown_goal_status(self) -> None:
         """Loading a thread with an unknown status drops it to None."""

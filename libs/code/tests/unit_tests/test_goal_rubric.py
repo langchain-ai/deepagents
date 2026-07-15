@@ -12,7 +12,10 @@ import pytest
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import FileInfo, LsResult
 from langchain.agents import create_agent
-from langchain.agents.middleware.human_in_the_loop import ApproveDecision
+from langchain.agents.middleware.human_in_the_loop import (
+    ApproveDecision,
+    RejectDecision,
+)
 from langchain_core.messages import (
     AIMessage,
     FunctionMessage,
@@ -22,6 +25,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
@@ -35,6 +39,7 @@ from deepagents_code.goal_rubric import (
     _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
     _REPOSITORY_GLOB_MATCH_LIMIT,
     _REPOSITORY_GREP_MATCH_LIMIT,
+    _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT,
     _REPOSITORY_READ_BYTE_LIMIT,
     _REPOSITORY_READ_LINE_LIMIT,
     _REPOSITORY_TOOL_CALL_LIMIT,
@@ -60,6 +65,7 @@ from deepagents_code.goal_rubric import (
     _summarize_criteria_result,
     _WebSearchBudgetMiddleware,
     create_goal_criteria_agent,
+    create_goal_criteria_fallback_agent,
 )
 
 if TYPE_CHECKING:
@@ -851,6 +857,59 @@ class TestGoalCriteriaMiddleware:
         assert state.values["_pending_goal_rubric"] == (
             "- server repository context is available"
         )
+
+    async def test_nested_hitl_reject_still_finishes_with_a_proposal(self) -> None:
+        """Rejecting a context tool skips it; the nested agent still proposes."""
+
+        def read_file(file_path: str, limit: int = 20) -> str:
+            return f"{file_path}:{limit}"
+
+        context_tool = StructuredTool.from_function(
+            func=read_file,
+            name="read_file",
+            description="Read server context.",
+        )
+        model = GoalCriteriaIntegrationChatModel()
+        criteria = create_goal_criteria_agent(
+            model=model,
+            repository_backend=None,
+            context_tools=[context_tool],
+        )
+        parent = create_agent(
+            model=model,
+            tools=[],
+            middleware=[GoalCriteriaMiddleware(criteria)],
+            checkpointer=InMemorySaver(),
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": "criteria-reject"}}
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-reject",
+                "kind": "create",
+                "objective": "verify server-side criteria generation",
+                "feedback": "DCA_TEST_GOAL_CRITERIA=/context.txt",
+            },
+        }
+
+        first = await parent.ainvoke(request, config=config, context={})
+        interrupt = first["__interrupt__"][0]
+
+        resumed = await parent.ainvoke(
+            Command(
+                resume={interrupt.id: {"decisions": [RejectDecision(type="reject")]}}
+            ),
+            config=config,
+            context={},
+        )
+
+        # A bare reject skips the tool rather than aborting, so the nested agent
+        # completes and the parent still persists a proposal.
+        assert resumed["messages"] == []
+        state = await parent.aget_state(config)
+        assert state.values["_pending_goal_rubric"] == (
+            "- server repository context is available"
+        )
         assert state.values["goal_criteria_request"] is None
 
 
@@ -1489,3 +1548,219 @@ class TestGoalContextFallbackDoubleFailure:
 
         with pytest.raises(RuntimeError, match="invalid api key"):
             await middleware.awrap_model_call(request, handler)
+
+
+class TestGoalCriteriaFallback:
+    """Graph-level context-agent failures degrade to goal-only generation."""
+
+    @staticmethod
+    def _state() -> GoalCriteriaState:
+        return cast(
+            "GoalCriteriaState",
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "fallback-op",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+    @staticmethod
+    def _fallback(criteria: str = "- goal-only criteria") -> MagicMock:
+        agent = MagicMock()
+        agent.invoke.return_value = {
+            "structured_response": {"objective": "ship it", "criteria": criteria}
+        }
+        agent.ainvoke = AsyncMock(
+            return_value={
+                "structured_response": {"objective": "ship it", "criteria": criteria}
+            }
+        )
+        return agent
+
+    def test_recursion_failure_falls_back_to_goal_only(self) -> None:
+        criteria = MagicMock()
+        criteria.invoke.side_effect = GraphRecursionError("Recursion limit reached")
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        update = middleware.before_agent(
+            self._state(), TestGoalCriteriaMiddleware._runtime()
+        )
+
+        assert update is not None
+        assert update["_pending_goal_rubric"] == "- goal-only criteria"
+        fallback.invoke.assert_called_once()
+
+    def test_empty_proposal_falls_back_to_goal_only(self) -> None:
+        criteria = MagicMock()
+        criteria.invoke.return_value = {"messages": []}
+        fallback = self._fallback("- salvaged criteria")
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        update = middleware.before_agent(
+            self._state(), TestGoalCriteriaMiddleware._runtime()
+        )
+
+        assert update is not None
+        assert update["_pending_goal_rubric"] == "- salvaged criteria"
+        fallback.invoke.assert_called_once()
+
+    def test_hitl_interrupt_is_never_swallowed_by_the_fallback(self) -> None:
+        criteria = MagicMock()
+        criteria.invoke.side_effect = GraphInterrupt(())
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GraphInterrupt):
+            middleware.before_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.invoke.assert_not_called()
+
+    def test_failure_without_fallback_agent_surfaces(self) -> None:
+        criteria = MagicMock()
+        criteria.invoke.side_effect = GraphRecursionError("Recursion limit reached")
+        middleware = GoalCriteriaMiddleware(criteria)
+
+        with pytest.raises(GraphRecursionError):
+            middleware.before_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+
+    async def test_async_recursion_failure_falls_back_to_goal_only(self) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(
+            side_effect=GraphRecursionError("Recursion limit reached")
+        )
+        fallback = self._fallback("- async goal-only")
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        update = await middleware.abefore_agent(
+            self._state(), TestGoalCriteriaMiddleware._runtime()
+        )
+
+        assert update is not None
+        assert update["_pending_goal_rubric"] == "- async goal-only"
+        fallback.ainvoke.assert_awaited_once()
+
+    async def test_async_hitl_interrupt_is_never_swallowed(self) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(side_effect=GraphInterrupt(()))
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GraphInterrupt):
+            await middleware.abefore_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.ainvoke.assert_not_awaited()
+
+    def test_fallback_agent_can_be_created(self) -> None:
+        agent = create_goal_criteria_fallback_agent(model="openai:gpt-5.5")
+
+        assert agent is not None
+
+
+class TestPreflightBackendErrors:
+    """Backend faults during preflight degrade to a bounded, logged error."""
+
+    def test_sync_backend_error_is_treated_as_unavailable(self) -> None:
+        backend = MagicMock()
+        backend.ls.side_effect = RuntimeError("backend outage")
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+        handler = MagicMock()
+
+        result = middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(call_id="err"),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_called()
+
+    async def test_async_backend_error_is_treated_as_unavailable(self) -> None:
+        backend = MagicMock()
+        backend.als = AsyncMock(side_effect=OSError("backend outage"))
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(call_id="err"),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_awaited()
+
+    def test_malformed_entry_missing_path_does_not_crash(self) -> None:
+        backend = MagicMock()
+        # This intentionally violates FileInfo to exercise defensive parsing.
+        malformed_entry = cast("FileInfo", {"is_dir": False, "size": 5})
+        backend.ls.return_value = LsResult(entries=[malformed_entry])
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+        handler = MagicMock(return_value=ToolMessage(content="ok", tool_call_id="read"))
+
+        result = middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(call_id="read"),
+            handler,
+        )
+
+        # No size known for the target => read proceeds to the handler.
+        handler.assert_called_once()
+        assert isinstance(result, ToolMessage)
+        assert result.status != "error"
+
+
+class TestRepositoryBudgetEdgeCases:
+    """Read/grep argument clamps and the per-operation budget cache are bounded."""
+
+    @pytest.mark.parametrize(
+        ("limit", "expected"),
+        [(True, _REPOSITORY_READ_LINE_LIMIT), (-5, 1), (0, 1)],
+    )
+    def test_read_limit_is_clamped(self, limit: object, expected: int) -> None:
+        backend = TestRepositoryToolBudgetMiddleware._backend()
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+        handler = MagicMock(return_value=ToolMessage(content="ok", tool_call_id="r"))
+
+        middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(call_id="r", limit=limit),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["limit"] == expected
+
+    @pytest.mark.parametrize("count", [True, -5, 0, "x"])
+    def test_grep_max_count_resets_to_default(self, count: object) -> None:
+        backend = TestRepositoryToolBudgetMiddleware._backend()
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+        handler = MagicMock(return_value=ToolMessage(content="ok", tool_call_id="g"))
+
+        middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="g", name="grep", max_count=count
+            ),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["max_count"] == _REPOSITORY_GREP_MATCH_LIMIT
+
+    def test_operation_budget_cache_is_bounded(self) -> None:
+        backend = TestRepositoryToolBudgetMiddleware._backend()
+        middleware = _RepositoryToolBudgetMiddleware(backend)
+
+        for index in range(_REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT + 50):
+            middleware._reserve_call(
+                TestRepositoryToolBudgetMiddleware._request(
+                    call_id=f"c{index}", operation_id=f"op-{index}"
+                )
+            )
+
+        assert len(middleware._calls) <= _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT

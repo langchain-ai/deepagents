@@ -163,3 +163,92 @@ async def test_amendment_request_contains_current_state_and_feedback() -> None:
             "feedback": "add passkeys",
         }
     )
+
+
+async def test_criteria_request_requires_a_running_server() -> None:
+    app = _app()
+    app._session_state = None  # server prerequisites unmet
+    mount = AsyncMock()
+    run = AsyncMock()
+    request: GoalCriteriaRequest = {
+        "request_id": "request-no-server",
+        "kind": "create",
+        "objective": "ship it",
+    }
+
+    with (
+        patch.object(app, "_mount_message", mount),
+        patch.object(app, "_run_agent_task", run),
+    ):
+        await app._run_goal_criteria_request(request)
+
+    run.assert_not_awaited()
+    mount.assert_awaited_once()
+    await_args = mount.await_args
+    assert await_args is not None
+    message = await_args.args[0]
+    assert isinstance(message, ErrorMessage)
+    assert "requires the Deep Agents Code server" in str(message._content)
+
+
+async def test_failed_criteria_turn_shows_actionable_message() -> None:
+    app = _app()
+    mount = AsyncMock()
+    execute = AsyncMock(side_effect=RuntimeError("An internal error occurred"))
+
+    with (
+        patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            execute,
+        ),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+        patch.object(app, "_mount_message", mount),
+        patch(
+            "deepagents_code.app._langsmith_gateway_key_mismatch",
+            return_value=None,
+        ),
+    ):
+        await app._run_agent_task(
+            "",
+            graph_input={
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-fail",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+    # The redactable server exception text is replaced by a self-contained,
+    # actionable message so remote deployments still guide the user.
+    assert mount.await_args is not None
+    body = str(mount.await_args.args[0]._content)
+    assert "Could not generate acceptance criteria" in body
+    assert "internal error occurred" not in body
+
+
+async def test_goal_submission_never_constructs_a_model_client_side() -> None:
+    app = _app()
+    execute = AsyncMock()
+
+    with (
+        patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            execute,
+        ),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+        patch("deepagents_code.config.create_model") as create_model,
+        patch("deepagents_code.goal_rubric.create_goal_criteria_agent") as make_agent,
+        patch("deepagents_code.app.uuid.uuid4") as uuid4,
+    ):
+        uuid4.return_value.hex = "request-behavioral"
+        await app._propose_goal_rubric("add refresh tokens")
+
+    # The client submits a typed request through the normal graph stream...
+    assert execute.await_args is not None
+    graph_input = execute.await_args.kwargs["graph_input"]
+    assert graph_input["goal_criteria_request"]["objective"] == "add refresh tokens"
+    # ...and never constructs or wires a model client-side.
+    create_model.assert_not_called()
+    make_agent.assert_not_called()

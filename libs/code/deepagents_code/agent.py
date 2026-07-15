@@ -1942,6 +1942,7 @@ def create_cli_agent(
         from deepagents_code.goal_rubric import (
             GoalCriteriaMiddleware,
             create_goal_criteria_agent,
+            create_goal_criteria_fallback_agent,
         )
 
         if sandbox is not None:
@@ -1966,7 +1967,10 @@ def create_cli_agent(
             repository_root=criteria_root,
             context_tools=goal_criteria_tools,
         )
-        agent_middleware.append(GoalCriteriaMiddleware(criteria_agent))
+        criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
+        agent_middleware.append(
+            GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
+        )
 
     agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
 

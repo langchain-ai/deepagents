@@ -32,6 +32,7 @@ from langchain_core.messages import (
     ToolMessage,
     get_buffer_string,
 )
+from langgraph.errors import GraphRecursionError
 from typing_extensions import TypedDict, override
 
 from deepagents_code.resume_state import ResumeState
@@ -39,6 +40,7 @@ from deepagents_code.resume_state import ResumeState
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents.backends.protocol import FileInfo
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.language_models import BaseChatModel
@@ -70,6 +72,20 @@ _CRITERIA_OBJECTIVE_DISPLAY_LIMIT = 160
 _CRITERIA_RESULT_LOG_LIMIT = 500
 _REPOSITORY_PATH_RESULT_PREFIX = "__DEEPAGENTS_REPOSITORY_PATH__"
 _REPOSITORY_PATH_ERROR = "Repository path is unavailable."
+# Goal-only fallback recursion budget: the fallback agent has no context tools,
+# so it needs only a model step and the forced structured-output tool call.
+_FALLBACK_RECURSION_LIMIT = 8
+# Failures from the context-enabled criteria agent that should degrade to
+# goal-only generation rather than surface as a hard error. `GraphInterrupt`
+# (HITL) is deliberately excluded so tool-approval pauses still propagate.
+_CRITERIA_FALLBACK_ERRORS: tuple[type[BaseException], ...] = (
+    GraphRecursionError,
+    NotImplementedError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 GOAL_RUBRIC_SYSTEM_PROMPT = f"""You draft minimal acceptance criteria for a
 coding agent goal.
@@ -148,8 +164,10 @@ class GoalAmendRequest(_GoalCriteriaRequestBase):
 
 
 # A tagged union on `kind`: amendments structurally require `criteria` and
-# `feedback`, so `_goal_criteria_prompt`/`_input`/`_update` can index those
-# fields on the amend branch without a runtime presence check.
+# `feedback`, so `_goal_criteria_prompt` can index those fields on the amend
+# branch without a runtime presence check. The `kind` discriminators above are
+# kept in sync with `resume_state.GoalProposalKind` by hand (a tagged-union
+# discriminator must be spelled inline per member).
 GoalCriteriaRequest = GoalCreateRequest | GoalAmendRequest
 
 
@@ -175,7 +193,13 @@ class GoalCriteriaAgentState(AgentState):
 
 
 class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
-    """Retry a failed context-enabled model call without context tools."""
+    """Retry a failed context-enabled model call without context tools.
+
+    The retry passes `tools=[]`, which drops only the context tools: the
+    structured-output (`GoalProposal`) tool is bound from `response_format`, not
+    from `request.tools`, so it survives the retry and is still forced. Do not
+    "fix" the retry by re-adding tools.
+    """
 
     @override
     def wrap_model_call(
@@ -487,6 +511,29 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             return self._error(request, "Repository path is unavailable.")
         return None
 
+    @staticmethod
+    def _entry_size(
+        entries: Sequence[FileInfo] | None,
+        normalized_path: str,
+    ) -> int | None:
+        """Return the reported byte size of a backend entry, if present.
+
+        Malformed entries (not a mapping, or missing/non-string `path`) are
+        skipped rather than raising, so a single bad entry cannot fail an
+        otherwise valid preflight.
+
+        Returns:
+            The entry's integer size, or `None` when unknown.
+        """
+        for item in entries or []:
+            raw = item.get("path") if isinstance(item, dict) else None
+            if not isinstance(raw, str):
+                continue
+            if str(PurePosixPath(raw)) == normalized_path:
+                size = item.get("size")
+                return size if isinstance(size, int) else None
+        return None
+
     def _preflight(self, request: ToolCallRequest) -> ToolMessage | None:
         """Reject malformed paths and backend entries that exceed hard limits.
 
@@ -515,41 +562,14 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         if not self._sandbox_contains(raw_path):
             return self._error(request, _REPOSITORY_PATH_ERROR)
 
+        # Scope the guard to the backend call itself: a backend that raises
+        # (outage, serialization fault) is otherwise indistinguishable from a
+        # genuinely absent path. The size/entry bookkeeping below is deliberately
+        # left outside the guard so a defect there surfaces as a real crash
+        # rather than silently degrading every run.
         try:
-            if name == "ls":
-                result = self._backend.ls(raw_path)
-                if result.error is not None:
-                    return self._error(request, "Repository path is unavailable.")
-                if len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT:
-                    return self._error(
-                        request,
-                        "Repository directory exceeds the listing limit.",
-                    )
-            elif name == "read_file":
-                parent = str(path.parent)
-                result = self._backend.ls(parent)
-                if result.error is not None:
-                    return self._error(request, "Repository path is unavailable.")
-                normalized = str(path)
-                entry = next(
-                    (
-                        item
-                        for item in (result.entries or [])
-                        if str(PurePosixPath(item["path"])) == normalized
-                    ),
-                    None,
-                )
-                size = entry.get("size") if entry is not None else None
-                if isinstance(size, int) and size > _REPOSITORY_READ_BYTE_LIMIT:
-                    return self._error(
-                        request,
-                        "Repository file exceeds the criteria context size limit.",
-                    )
+            result = self._backend.ls(raw_path if name == "ls" else str(path.parent))
         except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            # A backend that raises (outage, serialization fault, or a bug in this
-            # preflight) is otherwise indistinguishable from a genuinely absent
-            # path. Log it so a systematically broken backend during criteria
-            # drafting is discoverable rather than silently degrading every run.
             logger.warning(
                 "Repository preflight failed for criteria tool %r; treating the "
                 "path as unavailable",
@@ -557,6 +577,21 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
                 exc_info=True,
             )
             return self._error(request, "Repository path is unavailable.")
+        if result.error is not None:
+            return self._error(request, "Repository path is unavailable.")
+        if name == "ls":
+            if len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT:
+                return self._error(
+                    request,
+                    "Repository directory exceeds the listing limit.",
+                )
+        else:  # read_file
+            size = self._entry_size(result.entries, str(path))
+            if size is not None and size > _REPOSITORY_READ_BYTE_LIMIT:
+                return self._error(
+                    request,
+                    "Repository file exceeds the criteria context size limit.",
+                )
         return None
 
     async def _apreflight(self, request: ToolCallRequest) -> ToolMessage | None:
@@ -589,40 +624,15 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         if not await self._asandbox_contains(raw_path):
             return self._error(request, _REPOSITORY_PATH_ERROR)
 
+        # Scope the guard to the backend call itself (see `_preflight`): a
+        # backend that raises is indistinguishable from an absent path, while the
+        # size/entry bookkeeping stays outside the guard so a defect there
+        # surfaces rather than silently degrading every run.
         try:
             result = await self._backend.als(
                 raw_path if name == "ls" else str(path.parent)
             )
-            if result.error is not None:
-                return self._error(request, "Repository path is unavailable.")
-            if name == "ls" and (
-                len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT
-            ):
-                return self._error(
-                    request,
-                    "Repository directory exceeds the listing limit.",
-                )
-            if name == "read_file":
-                normalized = str(path)
-                entry = next(
-                    (
-                        item
-                        for item in (result.entries or [])
-                        if str(PurePosixPath(item["path"])) == normalized
-                    ),
-                    None,
-                )
-                size = entry.get("size") if entry is not None else None
-                if isinstance(size, int) and size > _REPOSITORY_READ_BYTE_LIMIT:
-                    return self._error(
-                        request,
-                        "Repository file exceeds the criteria context size limit.",
-                    )
         except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            # A backend that raises (outage, serialization fault, or a bug in this
-            # preflight) is otherwise indistinguishable from a genuinely absent
-            # path. Log it so a systematically broken backend during criteria
-            # drafting is discoverable rather than silently degrading every run.
             logger.warning(
                 "Repository preflight failed for criteria tool %r; treating the "
                 "path as unavailable",
@@ -630,6 +640,21 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
                 exc_info=True,
             )
             return self._error(request, "Repository path is unavailable.")
+        if result.error is not None:
+            return self._error(request, "Repository path is unavailable.")
+        if name == "ls":
+            if len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT:
+                return self._error(
+                    request,
+                    "Repository directory exceeds the listing limit.",
+                )
+        elif name == "read_file":
+            size = self._entry_size(result.entries, str(path))
+            if size is not None and size > _REPOSITORY_READ_BYTE_LIMIT:
+                return self._error(
+                    request,
+                    "Repository file exceeds the criteria context size limit.",
+                )
         return None
 
     @staticmethod
@@ -1096,6 +1121,9 @@ def _goal_criteria_request(value: object) -> GoalCriteriaRequest:
         msg = "Goal criteria request requires an objective."
         raise ValueError(msg)
 
+    # Values are validated for non-blankness but stored verbatim (not stripped):
+    # this feature deliberately preserves the user's exact goal/criteria wording,
+    # and the prompt builders wrap each value in explicit XML boundaries.
     optional: dict[str, str] = {}
     for key in ("criteria", "feedback", "previous_criteria"):
         item = value.get(key)
@@ -1235,10 +1263,23 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
 
     state_schema = GoalCriteriaState
 
-    def __init__(self, criteria_agent: Any) -> None:  # noqa: ANN401
-        """Initialize the middleware with its private nested criteria agent."""
+    def __init__(
+        self,
+        criteria_agent: Any,  # noqa: ANN401
+        fallback_agent: Any = None,  # noqa: ANN401
+    ) -> None:
+        """Initialize the middleware with its private nested criteria agents.
+
+        Args:
+            criteria_agent: Context-enabled nested agent (repository/web/MCP).
+            fallback_agent: Optional goal-only agent used when the context-enabled
+                agent fails at the graph level (e.g. exhausts its recursion
+                budget) or returns no usable proposal. `None` disables the
+                fallback, so such failures surface as an error.
+        """
         super().__init__()
         self._criteria_agent = criteria_agent
+        self._fallback_agent = fallback_agent
 
     @staticmethod
     def _input(
@@ -1312,10 +1353,29 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         if value is None:
             return None
         request = _goal_criteria_request(value)
-        result = self._criteria_agent.invoke(
-            self._input(request, state.get("messages", [])),
-            context=runtime.context,
-        )
+        child_input = self._input(request, state.get("messages", []))
+        try:
+            result = self._criteria_agent.invoke(child_input, context=runtime.context)
+        except _CRITERIA_FALLBACK_ERRORS:
+            if self._fallback_agent is None:
+                raise
+            logger.warning(
+                "Criteria context agent failed; drafting from the goal alone",
+                exc_info=True,
+            )
+            result = self._fallback_agent.invoke(child_input, context=runtime.context)
+        else:
+            if (
+                self._fallback_agent is not None
+                and _proposal_from_result(result) is None
+            ):
+                logger.warning(
+                    "Criteria context agent returned no proposal; drafting from "
+                    "the goal alone",
+                )
+                result = self._fallback_agent.invoke(
+                    child_input, context=runtime.context
+                )
         return self._update(request, result)
 
     @hook_config(can_jump_to=["end"])
@@ -1333,10 +1393,33 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         if value is None:
             return None
         request = _goal_criteria_request(value)
-        result = await self._criteria_agent.ainvoke(
-            self._input(request, state.get("messages", [])),
-            context=runtime.context,
-        )
+        child_input = self._input(request, state.get("messages", []))
+        try:
+            result = await self._criteria_agent.ainvoke(
+                child_input, context=runtime.context
+            )
+        except _CRITERIA_FALLBACK_ERRORS:
+            if self._fallback_agent is None:
+                raise
+            logger.warning(
+                "Criteria context agent failed; drafting from the goal alone",
+                exc_info=True,
+            )
+            result = await self._fallback_agent.ainvoke(
+                child_input, context=runtime.context
+            )
+        else:
+            if (
+                self._fallback_agent is not None
+                and _proposal_from_result(result) is None
+            ):
+                logger.warning(
+                    "Criteria context agent returned no proposal; drafting from "
+                    "the goal alone",
+                )
+                result = await self._fallback_agent.ainvoke(
+                    child_input, context=runtime.context
+                )
         return self._update(request, result)
 
 
@@ -1438,5 +1521,50 @@ def create_goal_criteria_agent(
         {
             "recursion_limit": _REPOSITORY_RECURSION_LIMIT,
             "run_name": "Deep Agents Code goal criteria generation",
+        }
+    )
+
+
+def create_goal_criteria_fallback_agent(
+    *,
+    model: str | BaseChatModel,
+) -> Any:  # noqa: ANN401
+    """Create the goal-only fallback agent for criteria generation.
+
+    This agent has no context tools, repository access, or HITL: it drafts
+    acceptance criteria from the goal message alone. `GoalCriteriaMiddleware`
+    invokes it when the context-enabled agent fails at the graph level (e.g.
+    exhausts its recursion budget) or returns no usable proposal, restoring the
+    guarantee that `/goal` always yields criteria unless the model itself is
+    unavailable.
+
+    Args:
+        model: Chat model or model identifier used by the server graph.
+
+    Returns:
+        Compiled goal-only criteria agent graph.
+    """
+    from langchain.agents import create_agent
+    from langchain.agents.structured_output import ToolStrategy
+
+    from deepagents_code._cli_context import CLIContextSchema
+    from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+    middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(persist_model_state=False)
+    ]
+    return create_agent(
+        model=model,
+        tools=[],
+        middleware=middleware,
+        system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT,
+        response_format=ToolStrategy(schema=GoalProposal),
+        state_schema=GoalCriteriaAgentState,
+        context_schema=CLIContextSchema,
+        name="goal_criteria_fallback_agent",
+    ).with_config(
+        {
+            "recursion_limit": _FALLBACK_RECURSION_LIMIT,
+            "run_name": "Deep Agents Code goal criteria fallback",
         }
     )

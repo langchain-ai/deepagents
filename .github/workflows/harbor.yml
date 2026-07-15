@@ -45,7 +45,7 @@ on:
         default: ""
         type: string
       dataset_path:
-        description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
+        description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals or datasets/oolong-synth). Takes priority over registry inputs."
         required: false
         default: ""
         type: string
@@ -133,6 +133,7 @@ on:
           - dcode
           - bare
           - tau3
+          - bare-code-interpreter
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true

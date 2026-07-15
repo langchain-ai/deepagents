@@ -197,6 +197,43 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
+def make_bare_code_interpreter_graph(config: dict[str, object] | None = None) -> object:
+    """``make_bare_graph`` with the code interpreter (``eval``) tool enabled.
+
+    Identical to the bare graph — same generic system prompt and local shell
+    backend — but with ``CodeInterpreterMiddleware`` attached, so the only
+    difference from ``bare_deepagent`` is the code interpreter. Nothing about the
+    prompt or tools is tailored to any dataset. ``langchain_quickjs`` is imported
+    lazily so loading this module never requires QuickJS.
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the selected model in
+            `configurable.model` and optional provider kwargs in
+            `configurable.model_kwargs`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no model name is provided.
+    """
+    from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
+
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # Bound the interpreter's resource use (per-eval timeout + a ceiling on eval
+    # calls) so a retry-spiral can't run away.
+    middleware: list[Any] = [CodeInterpreterMiddleware(timeout=300.0, max_ptc_calls=12)]
+    return create_deep_agent(
+        model=model,
+        backend=backend,
+        system_prompt=_SYSTEM_PROMPT,
+        middleware=middleware,
+    )
+
+
 _TAU3_SYSTEM_PROMPT = """You are a customer-service agent in a Harbor benchmark, \
 talking with a simulated user through the `tau3-runtime` MCP tools. Follow the \
 task's policy exactly.

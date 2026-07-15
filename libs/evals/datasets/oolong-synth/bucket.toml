@@ -1,0 +1,16 @@
+# The OOLONG-synth bucket this dataset directory represents. `python -m
+# harbor_adapters.oolong.main --populate <this dir>` reads it to fetch the
+# matching rows from the HuggingFace datasets-server and write the task dirs.
+# The bucket is recorded here (not a runtime default) so the directory always
+# reproduces the same dataset. To evaluate another bucket, add a new dataset
+# directory with its own bucket.toml.
+
+# OOLONG subset (the `dataset` column). trec_coarse is 6-way
+# question-classification aggregation (validation split).
+subset = "trec_coarse"
+
+# Token-length context bucket.
+context_len = 65536
+
+# Examples to emit; 0 means the full bucket (~50 examples).
+n_examples = 0

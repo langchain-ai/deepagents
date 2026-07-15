@@ -66,6 +66,7 @@ import hashlib
 import inspect
 import logging
 import mimetypes
+import os
 import urllib.parse
 import uuid
 import warnings
@@ -86,6 +87,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.config import get_config
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -256,6 +258,36 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
         ):
             return True
     return False
+
+
+def _cached_openai_tool_schema(tool: BaseTool) -> dict[str, Any]:
+    """Return the OpenAI-format dict for `tool`, memoized on its schema class.
+
+    `convert_to_openai_tool` rebuilds the dict (schema deref + envelope) on every
+    call, which dominates per-call token counting for tool-heavy agents. The tool
+    already memoizes its `tool_call_schema` class and patches that class's
+    `model_json_schema` to cache the raw schema (`_patch_json_schema_cache`); this
+    caches the *converted* dict one layer up, in the same way — as an attribute on
+    that same class. The key benefits:
+
+    - Lifecycle/invalidation are inherited: `tool_call_schema` returns a new class
+        object whenever `name`/`description`/`args_schema` change, so a stale dict
+        is never returned; the old class (and its cache) is GC'd with it.
+    - It is shared across every consumer of the tool (e.g. leader and subagents),
+        not scoped to one middleware instance.
+
+    Tools whose `tool_call_schema` is a dict (no stable class to attach to) are
+    converted directly without caching — that path is cheaper and rare here.
+    """
+    schema = tool.tool_call_schema
+    if not isinstance(schema, type):
+        return convert_to_openai_tool(tool)
+    cached = schema.__dict__.get("_openai_tool_schema_cache")
+    if cached is not None:
+        return cached
+    result = convert_to_openai_tool(tool)
+    schema._openai_tool_schema_cache = result  # type: ignore[attr-defined]
+    return result
 
 
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
@@ -604,6 +636,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         # token count never pays signature-introspection cost. `None` means the
         # signature could not be introspected, so `_count_tokens` probes instead.
         self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
+
+        # Reuse the converted OpenAI tool dict across model calls instead of
+        # rebuilding it every time in `count_tokens_approximately`. The dict is
+        # memoized on the tool's own `tool_call_schema` class (see
+        # `_cached_openai_tool_schema`). Disable with
+        # DEEPAGENTS_NO_TOOL_SCHEMA_CACHE=1 (benchmarking only).
+        self._tool_schema_cache_enabled = os.environ.get("DEEPAGENTS_NO_TOOL_SCHEMA_CACHE") != "1"
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -1014,10 +1053,14 @@ A condensed summary follows:
                 without `tools`.
         """
         counted_messages = [system_message, *messages] if system_message is not None else messages
+        # Pre-convert BaseTool schemas to dicts (memoized). `count_tokens_approximately`
+        # skips its per-call `convert_to_openai_tool` when a tool is already a dict, so
+        # this moves the schema deref/rebuild off the hot path onto a one-time cache.
+        counted_tools = self._cached_tool_dicts(tools)
         if self._counter_accepts_tools is True:
             # `tools=` is absent from the `TokenCounter` protocol but accepted
             # here: the signature check above confirmed the counter takes it.
-            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+            return self.token_counter(counted_messages, tools=counted_tools)  # ty: ignore[unknown-argument]
         if self._counter_accepts_tools is False:
             return self.token_counter(counted_messages)
         # Signature could not be introspected; probe defensively. This is the
@@ -1026,9 +1069,22 @@ A condensed summary follows:
         try:
             # `tools=` is outside the `TokenCounter` protocol; the probe verifies
             # acceptance at runtime, falling back below if it is rejected.
-            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+            return self.token_counter(counted_messages, tools=counted_tools)  # ty: ignore[unknown-argument]
         except TypeError:
             return self.token_counter(counted_messages)
+
+    def _cached_tool_dicts(
+        self,
+        tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """Convert tools to OpenAI-format dicts once, memoized on `id(tool)`.
+
+        Returns the input unchanged when caching is disabled, so behavior is
+        identical to passing raw tools straight through to the counter.
+        """
+        if tools is None or not self._tool_schema_cache_enabled:
+            return tools  # type: ignore[return-value]
+        return [tool if isinstance(tool, dict) else _cached_openai_tool_schema(tool) for tool in tools]
 
     def _truncate_args(
         self,

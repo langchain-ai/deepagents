@@ -10,23 +10,18 @@ of all shard artifacts), groups trials by task, and computes:
             push a task above 1) over the EXPECTED trial count (tasks * rollouts),
             so missing rollouts of a present task count as failures.
 
-The summary is flagged ``incomplete`` only when data is genuinely missing or
-untrustworthy: fewer shards completed than expected (when ``--expected-shards``
-is given); a ``result.json`` could not be read; or a reward was present but
-non-numeric. A trial that RAN but produced no usable verifier reward (a timeout,
-OOM, or exception) is a scored failure, not missing data -- it is counted as a
-non-pass and does NOT, by itself, flag the run incomplete. ``--harbor-result``
-reflects the whole harbor matrix (every category in the flat pool), so one
-errored shard would otherwise void unrelated, fully-complete categories; it and
-off-K per-task rollout counts are recorded for diagnostics but no longer mark a
-run incomplete. Legitimately-empty shards upload ``empty-shard-*`` markers and
-count as completed rather than missing.
+The summary is flagged ``incomplete`` when a full run cannot be vouched for:
+the matrix job did not fully succeed (``--harbor-result`` != "success"); a
+present task ran a number of trials other than K (missing OR duplicated
+rollouts); a ``result.json`` could not be read; a reward was present but
+non-numeric; or (when ``--expected-shards`` is given) fewer shards completed than
+expected. Legitimately-empty shards upload ``empty-shard-*`` markers and count as
+completed rather than missing.
 
 A trial is a pass when its verifier reward is >= PASS_THRESHOLD. ``errored`` is
 an independent diagnostic tally: a Harbor result that records ``exception_info``
 and a verifier-passing reward counts as both passed and errored. Missing or
-non-numeric verifier rewards are not passes and are counted as errored (and
-scored as failures).
+non-numeric verifier rewards are not passes and are counted as errored.
 
 Aggregation is single-model on purpose: a run is one model's evaluation of one
 dataset (a "category" in the wider harness). If results from more than one model
@@ -378,22 +373,26 @@ def write_outputs(summary: dict, per_task: list[dict], out_dir: Path) -> None:
 
 def _incomplete_reason(
     *,
+    shard_failure: bool,
     shard_shortfall: bool,
+    count_mismatch: bool,
     skipped_files: int,
     malformed_rewards: int,
+    totals: dict[str, int],
     shards_found: int,
     expected_shards: int | None,
 ) -> str:
-    """Human-readable summary of why a run was flagged incomplete (for the annotation).
-
-    Only genuine missing/corrupt-data signals flag incomplete: a shard shortfall
-    (fewer shards than expected), unreadable result files, or non-numeric rewards.
-    A shard job reporting failure or off-K rollout counts is diagnostic only (see
-    module docstring) and is reported separately, not here.
-    """
+    """Human-readable summary of why a run was flagged incomplete (for the annotation)."""
     reasons = []
+    if shard_failure:
+        reasons.append("a shard job did not succeed")
     if shard_shortfall:
         reasons.append(f"only {shards_found}/{expected_shards} shards reported")
+    if count_mismatch:
+        reasons.append(
+            "per-task rollout counts differ from K "
+            f"(trials {totals['trials']}/{totals['expected_trials']})"
+        )
     if skipped_files:
         reasons.append(f"{skipped_files} unreadable result file(s)")
     if malformed_rewards:
@@ -472,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     data_loss = agg.skipped_files > 0 or agg.malformed_rewards > 0
 
     if not agg.by_task:
-        incomplete = shard_shortfall or data_loss
+        incomplete = shard_failure or shard_shortfall or data_loss
         summary = make_summary(
             dataset=args.dataset,
             model=args.model,
@@ -500,9 +499,12 @@ def main(argv: list[str] | None = None) -> int:
             emit_annotation(
                 "::warning::No trial results found for a run expected to produce them ("
                 + _incomplete_reason(
+                    shard_failure=shard_failure,
                     shard_shortfall=shard_shortfall,
+                    count_mismatch=False,
                     skipped_files=agg.skipped_files,
                     malformed_rewards=agg.malformed_rewards,
+                    totals=summary["totals"],
                     shards_found=shards_found,
                     expected_shards=args.expected_shards,
                 )
@@ -519,16 +521,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     parts = build_summary(agg.by_task, args.rollouts)
-    # Incomplete only when coverage is genuinely missing (fewer shards than
-    # expected) or a result was unreadable / had a non-numeric reward. A shard
-    # job reporting failure -- harbor_result spans every category in the flat
-    # pool, so one errored shard would otherwise void unrelated categories -- and
-    # off-K per-task rollout counts are diagnostics only: errored and missing
-    # trials are already scored as failures by build_summary.
+    # Incomplete if a shard job failed, a shard is missing, a present task ran a
+    # number of trials other than K (missing OR duplicated rollouts), or a result
+    # was unreadable / had a non-numeric reward.
     count_mismatch = any(
         stats["trials"] != args.rollouts for stats in agg.by_task.values()
     )
-    incomplete = shard_shortfall or data_loss
+    incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
     summary = make_summary(
         dataset=args.dataset,
         model=args.model or (next(iter(agg.models)) if agg.models else None),
@@ -547,21 +546,16 @@ def main(argv: list[str] | None = None) -> int:
         emit_annotation(
             "::warning::Aggregated an incomplete run ("
             + _incomplete_reason(
+                shard_failure=shard_failure,
                 shard_shortfall=shard_shortfall,
+                count_mismatch=count_mismatch,
                 skipped_files=agg.skipped_files,
                 malformed_rewards=agg.malformed_rewards,
+                totals=parts.totals,
                 shards_found=shards_found,
                 expected_shards=args.expected_shards,
             )
             + "); missing rollouts counted as failures."
-        )
-    elif shard_failure or count_mismatch:
-        # Coverage is complete for this category; note the diagnostic without
-        # voiding the run (errored/missing trials are scored as failures).
-        emit_annotation(
-            "::warning::A shard job reported failure or off-K rollout counts, but "
-            "this category's coverage is complete; errored/missing trials are "
-            "scored as failures rather than marked incomplete."
         )
     write_outputs(summary, parts.per_task, out_dir)
     return 0

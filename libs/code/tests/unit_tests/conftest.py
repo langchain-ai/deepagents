@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
     from pathlib import Path
 
 
@@ -22,7 +22,7 @@ def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _warm_model_caches() -> None:
+def _warm_model_caches() -> Generator[None, None, None]:
     """Pre-populate model-config caches once per xdist worker.
 
     Tests like the model-selector UI tests call `get_available_models()` and
@@ -31,17 +31,30 @@ def _warm_model_caches() -> None:
     provider profiles via `importlib.util`.  Paying that cost once per session
     instead of once per test shaves significant time off the overall run.
 
+    Keep Ollama discovery disabled so ordinary UI tests do not probe a local
+    daemon. Tests that cover discovery delete the override before calling it.
+
     Tests that explicitly need a clean cache (e.g. `test_model_config.py`) use
     their own function-scoped `clear_caches()` fixture which overrides this.
     """
-    with contextlib.suppress(Exception):
-        from deepagents_code.model_config import (
-            get_available_models,
-            get_model_profiles,
-        )
+    discovery_var = "DEEPAGENTS_CODE_OLLAMA_DISCOVERY"
+    original = os.environ.get(discovery_var)
+    os.environ[discovery_var] = "0"
+    try:
+        with contextlib.suppress(Exception):
+            from deepagents_code.model_config import (
+                get_available_models,
+                get_model_profiles,
+            )
 
-        get_available_models()
-        get_model_profiles()
+            get_available_models()
+            get_model_profiles()
+        yield
+    finally:
+        if original is None:
+            os.environ.pop(discovery_var, None)
+        else:
+            os.environ[discovery_var] = original
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +113,20 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_langsmith_batching(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent test-created LangSmith clients from starting ingestion threads."""
+    from langsmith import Client
+
+    original_init = cast("Callable[..., None]", Client.__init__)
+
+    def _init(self: Client, *args: object, **kwargs: object) -> None:
+        kwargs["auto_batch_tracing"] = False
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "__init__", _init)
 
 
 @pytest.fixture(autouse=True)

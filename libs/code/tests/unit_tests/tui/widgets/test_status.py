@@ -206,8 +206,17 @@ class TestBranchDisplay:
             assert visible.rstrip().endswith("\u2026")
             assert "feature/" in visible
 
-    async def test_short_branch_name_not_truncated(self) -> None:
-        """A branch that fits should render in full with no ellipsis."""
+    async def test_short_branch_name_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A branch that fits should render in full with no ellipsis.
+
+        `HIDE_CWD` removes the cwd from the layout (as in
+        `test_branch_display_shows_branch_name`) so a deep real checkout path
+        cannot starve the branch region to zero width -- otherwise this flakes
+        on the run directory's length rather than any real behavior.
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"

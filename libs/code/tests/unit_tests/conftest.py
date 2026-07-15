@@ -149,13 +149,37 @@ def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent developer MCP trust decisions from changing unit-test behavior."""
+    """Prevent developer MCP trust decisions from changing unit-test behavior.
+
+    These may already be present in `os.environ` before any fixture runs:
+    `dotenv.load_dotenv()` at `deepagents_code.config` import time injects them
+    from the developer's global `~/.deepagents/.env`. The dangerous allowlist
+    intentionally replaces the scoped TOML approvals used by trust-list and
+    selective-project-trust tests, so leaving it set breaks those assertions.
+    Removing them here (rather than relying on each test) keeps the MCP,
+    model-config, and main suites hermetic. `_isolate_global_dotenv` below
+    prevents a later dotenv reread (e.g. via `/reload`) from restoring them.
+    """
     for key in (
         "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS",
         "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
         "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_debug_notifications_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent the debug-notifications override from changing suppression tests.
+
+    `DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS` may be loaded from the developer's
+    global `~/.deepagents/.env` at `deepagents_code.config` import time, before
+    fixtures run. When set, the notification suppression path skips persistence
+    and drops the entry instead of keeping the row, which breaks the
+    notification-center integration tests. Tests that exercise the debug path
+    set it explicitly.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -338,6 +362,25 @@ def _provide_app_context() -> Generator[None]:
         yield
     finally:
         active_app.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the global dotenv path at a nonexistent temp file.
+
+    `deepagents_code.config._GLOBAL_DOTENV_PATH` defaults to the developer's
+    real `~/.deepagents/.env`. Code paths like `/reload` call
+    `_load_dotenv(refresh_loaded=True)`, which rereads that file and can restore
+    ambient variables the isolation fixtures cleared (e.g.
+    `DEEPAGENTS_CODE_EXPERIMENTAL` or the MCP trust vars). Redirecting it to a
+    guaranteed-absent path under `tmp_path` makes dotenv rereads inert without
+    touching production behavior. Tests that exercise global dotenv loading set
+    this attribute explicitly after this fixture runs.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.config._GLOBAL_DOTENV_PATH",
+        tmp_path / "nonexistent-global.env",
+    )
 
 
 @pytest.fixture(autouse=True)

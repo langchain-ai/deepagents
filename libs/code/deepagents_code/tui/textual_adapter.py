@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
     from pathlib import Path
     from typing import Protocol
 
@@ -497,6 +497,51 @@ def _build_interrupted_ai_message(
         content=accumulated_text,
         tool_calls=tool_calls or [],
     )
+
+
+def _interrupt_owned_tool_rows(
+    action_requests: Iterable[Mapping[str, Any]],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallMessage]:
+    """Return the tracked tool rows a HITL interrupt's action requests own.
+
+    An interrupt concerns only the specific tool calls it carries, so the
+    pause/resume bracketing a HITL checkpoint must touch only those rows.
+    Because a `HITLRequest`'s `ActionRequest` has no tool-call id, ownership is
+    matched by tool name plus arguments — the human-in-the-loop middleware
+    copies the tool call's ``args`` verbatim into the action request — and each
+    candidate row is claimed at most once so two identical calls map to two
+    distinct rows.
+
+    Rows that no action request owns are left untouched. Only the main agent's
+    tool rows are tracked in ``current_tool_messages``; a nested subagent's
+    child tool call is never tracked here, so its interrupt matches nothing and
+    the still-running outer ``task`` rows — including a sibling subagent's
+    ``task`` row whose own child did not interrupt — keep their elapsed timers
+    monotonic instead of being reset by an unrelated approval.
+
+    Args:
+        action_requests: The interrupt's action requests (``name`` + ``args``).
+        current_tool_messages: Live map of tool-call id to tracked tool row.
+
+    Returns:
+        The subset of tracked rows owned by these action requests, in request
+        order.
+    """
+    candidates = list(current_tool_messages.values())
+    claimed_ids: set[int] = set()
+    owned: list[ToolCallMessage] = []
+    for request in action_requests:
+        name = request.get("name")
+        args = request.get("args", {})
+        for tool_msg in candidates:
+            if id(tool_msg) in claimed_ids:
+                continue
+            if tool_msg.tool_name == name and tool_msg.args == args:
+                owned.append(tool_msg)
+                claimed_ids.add(id(tool_msg))
+                break
+    return owned
 
 
 def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
@@ -1455,13 +1500,37 @@ async def execute_task_textual(
                 resume_payload: dict[str, Any] = {}
 
                 # Tools mounted above start their spinner immediately, but a
-                # tool blocked on HITL approval or `ask_user` input is not
-                # actually running. Pause every in-flight row so none shows a
-                # misleading "Running..."; the approve branches below call
-                # `set_running` again to resume those that proceed. Guard each
-                # row individually so a single bad widget can't abort the whole
-                # interrupt handler (mirrors `clear_awaiting_approval` below).
-                for tool_msg in adapter._current_tool_messages.values():
+                # tool blocked on its own HITL approval or `ask_user` input is
+                # not actually running. Pause only the rows this interrupt owns
+                # so none shows a misleading "Running..."; the approve branches
+                # below call `set_running` on the same owned rows to resume them.
+                # Crucially, an unrelated in-flight row — a still-running outer
+                # `task`, or a sibling subagent's `task` whose child did not
+                # interrupt — is left running so its elapsed timer stays
+                # monotonic across the nested checkpoint. Ownership comes from
+                # the interrupts' action requests (HITL) and tool-call ids
+                # (ask_user); a nested subagent child tool is never tracked here,
+                # so its interrupt owns no row. Guard each row individually so a
+                # single bad widget can't abort the whole interrupt handler
+                # (mirrors `clear_awaiting_approval` below).
+                paused_tool_msgs: list[ToolCallMessage] = []
+                paused_ids: set[int] = set()
+                for hitl_request in pending_interrupts.values():
+                    for tool_msg in _interrupt_owned_tool_rows(
+                        hitl_request["action_requests"],
+                        adapter._current_tool_messages,
+                    ):
+                        if id(tool_msg) not in paused_ids:
+                            paused_ids.add(id(tool_msg))
+                            paused_tool_msgs.append(tool_msg)
+                for ask_req in pending_ask_user.values():
+                    ask_tool_msg = adapter._current_tool_messages.get(
+                        ask_req["tool_call_id"]
+                    )
+                    if ask_tool_msg is not None and id(ask_tool_msg) not in paused_ids:
+                        paused_ids.add(id(ask_tool_msg))
+                        paused_tool_msgs.append(ask_tool_msg)
+                for tool_msg in paused_tool_msgs:
                     try:
                         tool_msg.pause_running()
                         adapter._sync_tool_widget(tool_msg)
@@ -1674,7 +1743,9 @@ async def execute_task_textual(
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
                         resume_payload[interrupt_id] = {"decisions": decisions}
-                        for tool_msg in list(adapter._current_tool_messages.values()):
+                        for tool_msg in _interrupt_owned_tool_rows(
+                            action_requests, adapter._current_tool_messages
+                        ):
                             tool_msg.set_running()
                             adapter._sync_tool_widget(tool_msg)
                     else:
@@ -1697,7 +1768,9 @@ async def execute_task_textual(
                         suppressed_tool_msgs = (
                             [
                                 tool_msg
-                                for tool_msg in adapter._current_tool_messages.values()
+                                for tool_msg in _interrupt_owned_tool_rows(
+                                    action_requests, adapter._current_tool_messages
+                                )
                                 if tool_msg.tool_name == "execute"
                             ]
                             if len(action_requests) == 1
@@ -1740,8 +1813,9 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                tool_msgs = list(
-                                    adapter._current_tool_messages.values()
+                                tool_msgs = _interrupt_owned_tool_rows(
+                                    action_requests,
+                                    adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
@@ -1764,8 +1838,9 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                tool_msgs = list(
-                                    adapter._current_tool_messages.values()
+                                tool_msgs = _interrupt_owned_tool_rows(
+                                    action_requests,
+                                    adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()

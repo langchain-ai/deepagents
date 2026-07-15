@@ -176,6 +176,7 @@ jobs:
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
           SINGLE_CATEGORY: ${{ inputs.category }}
           SINGLE_DATASET: ${{ inputs.dataset }}
+          SINGLE_AGENT_IMPL: ${{ inputs.agent_impl }}
           SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
         run: |
           python - <<'PY'
@@ -192,32 +193,38 @@ jobs:
                   data = json.loads(flat_matrix)
               except json.JSONDecodeError as exc:
                   sys.exit(f"::error::Invalid flat_matrix JSON: {exc}")
-              by_category: dict[str, dict] = {}
+              by_key: dict[tuple[str, str], dict] = {}
               for entry in data.get("include", []):
                   category = entry.get("category")
+                  agent_impl = entry.get("agent_impl") or ""
                   if not category or not category_re.match(str(category)):
                       sys.exit(
                           f"::error::Invalid or missing category in flat_matrix entry: {category!r}"
                       )
-                  info = by_category.setdefault(category, {"count": 0, "dataset": None})
+                  key = (category, agent_impl)
+                  info = by_key.setdefault(
+                      key, {"count": 0, "dataset": None, "agent_impl": agent_impl}
+                  )
                   info["count"] += 1
                   if info["dataset"] is None:
                       info["dataset"] = entry.get("dataset") or entry.get("dataset_path") or ""
-              if not by_category:
+              if not by_key:
                   sys.exit("::error::flat_matrix produced no categories to aggregate")
               include = [
                   {
                       "category": category,
+                      "agent_impl": info["agent_impl"],
                       "dataset": info["dataset"] or "",
                       "expected_shards": info["count"],
                   }
-                  for category, info in sorted(by_category.items())
+                  for (category, _impl), info in sorted(by_key.items())
               ]
           else:
               raw_expected = os.environ.get("SINGLE_EXPECTED_SHARDS", "").strip()
               include = [
                   {
                       "category": os.environ.get("SINGLE_CATEGORY", ""),
+                      "agent_impl": os.environ.get("SINGLE_AGENT_IMPL", ""),
                       "dataset": os.environ.get("SINGLE_DATASET", ""),
                       "expected_shards": int(raw_expected) if raw_expected.isdigit() else "",
                   }
@@ -886,13 +893,24 @@ jobs:
           category_safe="${category_safe}-$(printf '%s' "$HARBOR_CATEGORY" | sha256sum | cut -c1-8)"
           echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
 
+          # Agent-config-safe slug, computed exactly like HARBOR_CATEGORY_SAFE so
+          # the aggregate job's agent-slug step reproduces it byte-for-byte. It
+          # additionally scopes the artifact name by agent config, so two configs
+          # of the same model+category don't collide on one artifact name.
+          agent_safe=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$HARBOR_AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "HARBOR_AGENT_SAFE=$agent_safe" >> "$GITHUB_ENV"
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # Category- and slug-scoped so the aggregate job globs only this run's
-          # own shards, grouped per category.
-          name: shard-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          # Agent-, category- and slug-scoped so the aggregate job globs only
+          # this run's own shards, grouped per (agent config, category).
+          name: shard-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
@@ -962,13 +980,28 @@ jobs:
           category_safe="${category_safe}-$(printf '%s' "$CATEGORY" | sha256sum | cut -c1-8)"
           echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
 
+      - name: "🔖 Compute agent slug"
+        id: agent-slug
+        # Sanitized aggregate_matrix agent_impl. Must match the harbor job's
+        # HARBOR_AGENT_SAFE byte-for-byte so the download/delete globs below hit
+        # exactly this agent config's shard artifacts.
+        env:
+          AGENT_IMPL: ${{ matrix.agent_impl }}
+        run: |
+          agent_safe=$(printf '%s' "$AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "slug=$agent_safe" >> "$GITHUB_OUTPUT"
+
       - name: "⬇️ Download shard results"
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: shard-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -1005,6 +1038,7 @@ jobs:
           ROLLOUTS: ${{ inputs.rollouts }}
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ matrix.category }}
+          AGENT_IMPL: ${{ matrix.agent_impl }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
@@ -1023,6 +1057,7 @@ jobs:
             --dataset "$DATASET" \
             --model "$MODEL" \
             --category "$CATEGORY" \
+            --config "$AGENT_IMPL" \
             --harbor-result "$HARBOR_RESULT" \
             --out-dir _shards
 
@@ -1035,7 +1070,7 @@ jobs:
         # ran earlier in this job; don't reorder past it.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug) }}
+          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}
           path: _shards
           if-no-files-found: warn
 
@@ -1048,7 +1083,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: shard-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")

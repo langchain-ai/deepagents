@@ -431,9 +431,27 @@ def test_aggregate_runs_per_category() -> None:
     upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
     assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
     assert (
-        "format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug)"
-        in upload
+        "format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, "
+        "steps.slug.outputs.slug)" in upload
     )
+
+
+def test_shard_artifact_name_includes_agent() -> None:
+    harbor = HARBOR_WORKFLOW.read_text()
+    # The agent-safe slug is computed and folded into the shard artifact name so
+    # two configs of the same model+category do not collide.
+    assert "HARBOR_AGENT_SAFE=" in harbor
+    assert (
+        "shard-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-"
+        "${{ env.LEAF_SLUG }}-${{ strategy.job-index }}" in harbor
+    )
+
+
+def test_aggregate_passes_config() -> None:
+    harbor = HARBOR_WORKFLOW.read_text()
+    assert "--config" in harbor
+    # agg-matrix groups by (category, agent_impl).
+    assert 'entry.get("agent_impl")' in harbor
 
 
 def test_chart_publishers_are_serialized_and_replace_rerun_assets() -> None:

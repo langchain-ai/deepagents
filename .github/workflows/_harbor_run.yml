@@ -164,6 +164,7 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
@@ -326,6 +327,7 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
@@ -551,6 +553,18 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
+          # Give the LangSmith sandbox a dedicated credential, isolated from the
+          # LANGSMITH_API_KEY used for tracing/datasets/results. Passed as a ${VAR}
+          # template (single-quoted so bash keeps the literal); harbor resolves it
+          # from the host env at construction, so the value stays off argv and out
+          # of the serialized job/trial config. Requires a harbor build with
+          # --environment-kwarg ${VAR} support (harbor#2344); the pinned harbor
+          # passes the literal template through and the sandbox fails auth, so a
+          # langsmith-sandbox run must set harbor_package_override until #2344 ships.
+          env_kwarg_args=()
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_kwarg_args+=(--environment-kwarg 'langsmith_api_key=${LANGSMITH_SANDBOX_API_KEY}')
+          fi
           case "$HARBOR_AGENT_IMPL" in
             dcode)
               HARBOR_AGENT_GRAPH=deepagent
@@ -657,6 +671,7 @@ jobs:
             "${verifier_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
+            "${env_kwarg_args[@]}" \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \

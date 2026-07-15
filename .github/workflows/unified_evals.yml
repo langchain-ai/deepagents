@@ -51,7 +51,7 @@ on:
         type: boolean
         default: false
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor. NOTE: langsmith-sandbox runs currently REQUIRE an override to a harbor build with harbor#2344 (`--environment-kwarg` `${VAR}` support); with the pinned harbor the sandbox-key template is passed literally and sandbox auth fails."
         type: string
         default: ""
 

@@ -125,13 +125,39 @@ def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
 
 
 def test_total_job_guard_allows_within_budget():
-    up.total_job_guard(n_models=2, est_tasks_per_model=142)  # 284 <= 400, no raise
+    up.total_job_guard(n_models=2, shards_per_model=142)  # 284 <= 400, no raise
 
 
 def test_total_job_guard_rejects_over_budget():
     import pytest
     with pytest.raises(SystemExit, match=r"worker pool"):
-        up.total_job_guard(n_models=3, est_tasks_per_model=142)  # 426 > 400
+        up.total_job_guard(n_models=3, shards_per_model=142)  # 426 > 400
+
+
+def test_main_full_multi_model_guard_counts_packed_shards(tmp_path, monkeypatch):
+    # A full run whose raw task count exceeds MAX_SHARDS packs down to at most
+    # MAX_SHARDS jobs per model. The guard must count those packed shards, not
+    # the raw tasks: 2 models x 280 tasks -> 2 x 200 = 400 jobs (within the
+    # 400 budget). Guarding on the raw 2 x 280 = 560 would wrongly reject it.
+    import json as _j
+
+    n_tasks = up.shard_matrix.MAX_SHARDS + 80  # 280, > MAX_SHARDS (200)
+    tasks_json = tmp_path / "tasks.json"
+    tasks_json.write_text(
+        _j.dumps({"autonomous": [f"harbor-index/t-{i}" for i in range(n_tasks)]})
+    )
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus,openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    assert up.main([]) == 0  # would SystemExit if the guard counted raw tasks
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    for model in ("anthropic:opus", "openai:gpt"):
+        entry = next(e for e in _j.loads(lines["eval_matrix"])["include"] if e["model"] == model)
+        n_entries = len(_j.loads(entry["flat_matrix"])["include"])
+        assert n_entries <= up.shard_matrix.MAX_SHARDS
 
 
 def test_build_flat_matrix_one_entry_per_task_across_categories():

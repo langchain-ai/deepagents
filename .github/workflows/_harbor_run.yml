@@ -1006,6 +1006,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ matrix.category }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
@@ -1015,6 +1016,18 @@ jobs:
           if [ -n "$EXPECTED_SHARDS" ]; then
             expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
           fi
+          # needs.harbor.result is the single result of the whole harbor matrix.
+          # On a flat multi-category run that matrix spans every category, so one
+          # failed shard would mark *every* category's summary incomplete. There
+          # the per-category --expected-shards count is the category-local
+          # completeness authority (a category whose shards all uploaded is
+          # complete regardless of a sibling category's failure), so the global
+          # result is not passed. The single-dataset path (one category leg)
+          # keeps it: that result maps to its lone category.
+          harbor_result_args=()
+          if [ -z "$FLAT_MATRIX" ]; then
+            harbor_result_args=(--harbor-result "$HARBOR_RESULT")
+          fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
           python3 .github/scripts/aggregate_shards.py _shards \
@@ -1023,7 +1036,7 @@ jobs:
             --dataset "$DATASET" \
             --model "$MODEL" \
             --category "$CATEGORY" \
-            --harbor-result "$HARBOR_RESULT" \
+            "${harbor_result_args[@]}" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"

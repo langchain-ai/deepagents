@@ -13,9 +13,9 @@ MAX_RUNNERS // max_parallel` bounds how many models run at once so total
 runners stay within MAX_RUNNERS. Both invariants hold by construction:
   per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
   global:     model_parallel * max_parallel <= MAX_RUNNERS (80)
-`total_job_guard` separately caps the total job count (n_models * est_tasks)
-against a fixed budget so an oversized selection fails fast instead of
-launching a firehose.
+`total_job_guard` separately caps the total job count (n_models * shards
+per model, post-pack) against a fixed budget so an oversized selection fails
+fast instead of launching a firehose.
 """
 
 from __future__ import annotations
@@ -90,19 +90,20 @@ PROFILES = {"full", "lite"}
 TOTAL_JOB_BUDGET = 400
 
 
-def total_job_guard(n_models: int, est_tasks_per_model: int) -> None:
+def total_job_guard(n_models: int, shards_per_model: int) -> None:
     """Fail when the flat matrix would generate too many total jobs.
 
-    At 1-task/shard the run generates n_models * est_tasks jobs. GitHub-hosted
-    Actions become unreliable well before that count needs to be large, so cap
-    it and point at the worker-pool escalation instead of silently launching a
-    firehose.
+    Each model emits `shards_per_model` shard jobs (already packed to at most
+    `shard_matrix.MAX_SHARDS`), so the run launches n_models * shards_per_model
+    jobs. GitHub-hosted Actions become unreliable well before that count needs
+    to be large, so cap it and point at the worker-pool escalation instead of
+    silently launching a firehose.
     """
-    total = n_models * est_tasks_per_model
+    total = n_models * shards_per_model
     if total > TOTAL_JOB_BUDGET:
         raise SystemExit(
             f"Flat matrix would generate ~{total} jobs "
-            f"({n_models} models x ~{est_tasks_per_model} tasks), over "
+            f"({n_models} models x ~{shards_per_model} shards), over "
             f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set or task "
             "count, or move to a worker pool orchestrator (see the flat-pool spec)."
         )
@@ -316,7 +317,13 @@ def main(argv: list[str] | None = None) -> int:
 
     n_models = len(model_specs)
     est_tasks = max(sum(len(tasks_by_cat.get(c, [])) for c in categories), 1)
-    total_job_guard(n_models, est_tasks)
+    # Jobs launched per model = flat-matrix entries, which build_flat_matrix
+    # packs down to at most shard_matrix.MAX_SHARDS -- not the raw task count.
+    # Guard on the packed count so a valid multi-model full run is not rejected
+    # on a miscount: e.g. 2 models x 280 tasks packs to 2 x 200 = 400 jobs
+    # (within budget), while the raw 2 x 280 = 560 would trip the guard.
+    packed_per_model = min(est_tasks, shard_matrix.MAX_SHARDS)
+    total_job_guard(n_models, packed_per_model)
 
     # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
     n_shards = est_tasks

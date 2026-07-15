@@ -22,7 +22,7 @@ from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_code import theme
-from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -129,6 +129,14 @@ if TYPE_CHECKING:
 def _should_collapse_chat_paste(text: str) -> bool:
     """Return whether pasted chat text should be collapsed."""
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
+
+
+_PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand it inline."
+"""Toast shown when a paste collapses into a `[Pasted text #N]` placeholder.
+
+Emitted only for a new collapse, not when a repeat paste expands an existing
+placeholder back to full text.
+"""
 
 
 class CompletionOption(Static):
@@ -1647,7 +1655,7 @@ class ChatInput(Vertical):
             self._completion_view, cwd=self._cwd
         )
         self._slash_controller = SlashCommandController(
-            SLASH_COMMANDS, self._completion_view
+            get_slash_commands(), self._completion_view
         )
         self._completion_manager = MultiCompletionManager(
             [
@@ -1656,7 +1664,7 @@ class ChatInput(Vertical):
             ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
 
-        self._rebuild_argument_hints(SLASH_COMMANDS)
+        self._rebuild_argument_hints(get_slash_commands())
 
         self._warm_file_cache()
         self.set_interval(
@@ -2374,6 +2382,7 @@ class ChatInput(Vertical):
         self._pasted_contents[paste_id] = PastedContent(content=text)
         placeholder = format_paste_ref(paste_id, count_lines(text))
         self._text_area.insert(placeholder)
+        self.app.notify(_PASTE_COLLAPSED_TOAST, timeout=5, markup=False)
 
     def _apply_inline_dropped_path_replacement(self, text: str) -> bool:
         """Replace full dropped-path payload text with image placeholders.

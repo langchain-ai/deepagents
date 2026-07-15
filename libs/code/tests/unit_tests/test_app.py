@@ -5327,16 +5327,18 @@ class TestClearCommand:
 
             app_msgs = list(app.query(AppMessage))
             assert any(
-                str(widget._content) == "Previous thread: old-thread"
+                str(widget._content)
+                == "Previous thread: old-thread (Resume with /threads -r)"
                 for widget in app_msgs
             )
-            assert any(
+            assert not any(
                 str(widget._content) == "Resume it with /threads -r"
                 for widget in app_msgs
             )
             assert schedule.call_args_list[1].kwargs == {
                 "prefix": "Previous thread",
                 "thread_id": "old-thread",
+                "suffix": " (Resume with /threads -r)",
             }
 
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
@@ -12239,11 +12241,15 @@ class TestRequestApprovalBranching:
         ]
         future = asyncio.get_running_loop().create_future()
 
-        with patch.object(asyncio, "get_running_loop") as mock_loop:
+        with (
+            patch.object(asyncio, "get_running_loop") as mock_loop,
+            patch.object(app, "_reveal_pending_tool_calls") as reveal_pending,
+        ):
             mock_loop.return_value.create_future.return_value = future
             returned = await app._request_approval(action_requests, None)
 
         assert returned is future
+        reveal_pending.assert_called_once_with()
         assert ApprovalMenu in mounted_types, (
             f"Expected ApprovalMenu to be mounted, got {mounted_types}"
         )
@@ -19138,6 +19144,26 @@ class TestNotificationCenterIntegration:
             assert screen._selected_index == 2
             assert app._auto_approve is False
 
+    async def test_plugin_manager_shift_tab_moves_to_previous_tab(self) -> None:
+        """App-level shift+tab routes to PluginManagerScreen.previous_tab."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = PluginManagerScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._tab == "discover"
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._tab == "errors"
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._tab == "discover"
+            assert app._auto_approve is False
+
     async def test_toast_identity_warn_once_semantics(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -21492,7 +21518,7 @@ class TestMCPLoginCommand:
             app._mcp_preload_kwargs = {
                 "mcp_config_path": None,
                 "no_mcp": False,
-                "trust_project_mcp": None,
+                "trust_project_mcp": True,
             }
             with patch(
                 "deepagents_code.mcp_login_service.resolve_mcp_config",
@@ -21500,9 +21526,10 @@ class TestMCPLoginCommand:
                     kind=ConfigErrorKind.NO_CONFIG_FOUND,
                     message="No MCP config file found",
                 ),
-            ):
+            ) as resolve:
                 await app._run_mcp_login_worker("notion")
                 await pilot.pause()
+            resolve.assert_called_once_with(None, trust_project_mcp=True)
             assert any(
                 "No MCP config file found" in str(w._content)
                 for w in app.query(ErrorMessage)
@@ -22238,6 +22265,48 @@ class TestMCPLoginCommand:
                 await pilot.press("ctrl+r")
                 await pilot.pause()
             restart.assert_awaited_once_with("pending login")
+
+    @pytest.mark.timeout(15)
+    async def test_viewer_ctrl_r_keeps_chat_input_responsive(self) -> None:
+        """Ctrl+R reconnect must not freeze the chat input.
+
+        Regression guard: the reconnect was scheduled with `call_later`, which
+        awaits the coroutine inside the app message pump. While
+        `_reconnect_from_viewer_safe` (i.e. the multi-second server restart) ran,
+        the pump could not forward key events and the chat input was blocked
+        until reconnection completed. Running the reconnect as a detached task
+        keeps the pump free, so typing lands even while the reconnect is
+        in-flight. Without the fix this test times out (pump stalled on the
+        gated coroutine).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+
+            gate = asyncio.Event()
+
+            async def _blocked_reconnect() -> None:
+                await gate.wait()
+
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_reconnect_from_viewer_safe", new=_blocked_reconnect
+            ):
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                # The reconnect is now in-flight and gated open; the pump must
+                # still deliver keystrokes to the chat input.
+                await pilot.press("h", "i")
+                await pilot.pause()
+                typed = app._chat_input.value
+                gate.set()
+                await pilot.pause()
+            assert typed == "hi"
 
     async def test_prompt_mcp_reconnect_pilot_driven_happy_path(self) -> None:
         """End-to-end: real modal mounts, `enter` keypress, restart fires.
@@ -25613,6 +25682,45 @@ class TestToolGroupCollapse:
                 tool.set_error("boom")
         await pilot.pause()
         return tools
+
+    async def test_approval_reveals_pending_calls_and_closes_live_group(self) -> None:
+        """Approval surfaces unfinished rows without reusing the pre-approval group."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-group")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            stale = ToolCallMessage("grep", {"pattern": "old"})
+            await messages.mount(stale)
+            stale_group = ToolGroupSummary(tools=[stale], collapsible=[stale])
+            stale.add_class("-grouped")
+            await messages.mount(stale_group, before=stale)
+
+            completed = ToolCallMessage("read_file", {"file_path": "a.py"})
+            pending = ToolCallMessage("execute", {"command": "rm scratch.txt"})
+            await app._mount_message(completed)
+            completed.set_success("done")
+            await app._mount_message(pending)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            assert stale.display is False
+            assert completed.display is False
+            assert pending.display is False
+
+            app._reveal_pending_tool_calls()
+            await pilot.pause()
+
+            assert app._active_tool_group is None
+            assert stale.display is False
+            assert stale_group.is_attached
+            assert completed.display is False
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._finalized is True
+            assert summary._tools == [completed]
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""

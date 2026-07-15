@@ -235,8 +235,11 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             cutoff = _event_field(summarization_event, "cutoff_index")
             assert isinstance(cutoff, int)
             assert cutoff > 0
-            archive_path = f"/conversation_history/{thread_id}.md"
-            assert _event_field(summarization_event, "file_path") == archive_path
+            # In local mode the history prefix lives under a per-session
+            # `artifacts_root`, so assert the suffix rather than a fixed prefix.
+            archive_path = _event_field(summarization_event, "file_path")
+            assert isinstance(archive_path, str)
+            assert archive_path.endswith(f"/conversation_history/{thread_id}.md")
 
             # CRUCIAL: the archive must be readable THROUGH THE AGENT, proving
             # the bytes exist in the agent's own backend server-side.

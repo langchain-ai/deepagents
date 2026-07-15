@@ -3095,6 +3095,32 @@ class ToolGroupSummary(Static):
             # Every tool failed and was ejected — nothing left to summarize.
             self.remove()
 
+    def reveal_pending(self) -> None:
+        """Remove unfinished tool calls from the collapsed group."""
+        pending = [tool for tool in self._tools if tool.is_pending]
+        if not pending:
+            return
+        for tool in pending:
+            self._tools.remove(tool)
+            if tool in self._collapsible:
+                self._collapsible.remove(tool)
+            tool.remove_class("-grouped")
+            if tool.is_attached and not tool._awaiting_approval:
+                tool.display = True
+        self._present_text = self._past_text = None
+        if self._tools:
+            self._render_line()
+            self._sync_timer()
+            return
+        self._stop_timer()
+        for widget in self._collapsible:
+            widget.remove_class("-grouped")
+            if widget.is_attached:
+                widget.display = True
+        self._collapsible.clear()
+        if self.is_attached:
+            self.remove()
+
     @property
     def has_attached_members(self) -> bool:
         """Whether any collapsed widget is still attached to the DOM."""

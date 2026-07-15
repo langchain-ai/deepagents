@@ -21,8 +21,8 @@ from urllib.parse import unquote, urlparse
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
+    DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
-    ENABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     is_env_truthy,
 )
@@ -163,7 +163,7 @@ that some consumer reads case-insensitively would need a different check.
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
-        ENABLED_PROJECT_MCP_SERVERS,
+        DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
     }
 )

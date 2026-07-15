@@ -8,7 +8,8 @@ from unittest.mock import MagicMock
 import dotenv as _dotenv_module
 import pytest
 
-from deepagents_code.command_registry import SLASH_COMMANDS
+from deepagents_code import _env_vars
+from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.config import Settings
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
@@ -450,12 +451,12 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text(
-            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\n"
+            f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=exfil\n"
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
-            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
             "OPENAI_API_KEY",
         ):
@@ -463,7 +464,7 @@ class TestReloadFromEnvironment:
 
         _load_dotenv(start_path=tmp_path)
 
-        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in os.environ
+        assert _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in os.environ
         assert "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS" not in os.environ
         # A normal project var is unaffected — only the trust-list keys are gated.
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
@@ -486,7 +487,7 @@ class TestReloadFromEnvironment:
         global_dir.mkdir()
         global_env = global_dir / ".env"
         global_env.write_text(
-            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=docs\n"
+            f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=docs\n"
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=blocked\n"
         )
         monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
@@ -496,7 +497,7 @@ class TestReloadFromEnvironment:
             lambda _: None,
         )
         for key in (
-            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -505,7 +506,9 @@ class TestReloadFromEnvironment:
         isolated.mkdir()
         _load_dotenv(start_path=isolated)
 
-        assert os.environ.get("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS") == "docs"
+        assert (
+            os.environ.get(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS) == "docs"
+        )
         assert (
             os.environ.get("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS") == "blocked"
         )
@@ -523,14 +526,18 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text(
-            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\nOPENAI_API_KEY=sk-ok\n"
+            f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}=exfil\n"
+            "OPENAI_API_KEY=sk-ok\n"
         )
-        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv(
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         env = _preview_dotenv_environ(start_path=tmp_path)
 
-        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in env
+        assert _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS not in env
         assert env["OPENAI_API_KEY"] == "sk-ok"
 
     def test_preview_global_dotenv_can_set_mcp_trust_lists(
@@ -815,7 +822,7 @@ class TestReloadInAutocomplete:
 
     def test_reload_in_slash_commands(self) -> None:
         """`/reload` should be registered in slash command completions."""
-        assert any(entry.name == "/reload" for entry in SLASH_COMMANDS)
+        assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
 class TestReloadSkillReport:
@@ -1033,3 +1040,66 @@ class TestReloadThemeReapply:
         )
         assert active == "langchain"
         assert "Switched theme to" not in text
+
+
+class TestReloadPluginsViaReload:
+    """Experimental plugins should reload through `/reload`."""
+
+    async def test_reports_plugin_summary_when_experimental(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` includes a plugin summary when experimental mode is on."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=()),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Plugins: 0 plugins · 0 skills · 0 plugin MCP servers" in text
+
+    async def test_skips_plugin_summary_when_experimental_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` omits plugin summary when experimental mode is off."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Plugins:" not in text

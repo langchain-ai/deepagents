@@ -2,6 +2,22 @@
 
 GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k = fraction of tasks solved in ≥1 of k rollouts; avg@k = mean reward across rollouts; rewards are binary (0/1).
 
+## openai:gpt-5.6-terra
+
+### Full (default)
+
+| Category | pass@k | avg@k | tasks |
+| --- | --- | --- | --- |
+| autonomous (harbor-index) | 0.268 | 0.183 | 82 |
+| conversation (tau3-subset) | 0.467 | 0.389 | 30 |
+| context (context-retrieval) | 0.667 | 0.567 | 30 |
+| **macro** | **0.467** | **0.379** |  |
+| **micro** | **0.394** | **0.308** |  |
+
+Run [29430259116](https://github.com/langchain-ai/deepagents/actions/runs/29430259116) · 2026-07-15 · `agent_impl=bare` · `profile=full` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`
+
+autonomous includes 14 of 246 trials that errored (agent/verifier timeouts and one OOM) and are scored as failures. Aggregated from the run's artifacts (one shard recovered from the retry attempt); no tasks were re-run.
+
 ## openai:gpt-5.6-luna
 
 ### Full (default)

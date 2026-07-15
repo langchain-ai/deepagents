@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         WriteResult,
     )
     from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -313,12 +314,16 @@ class _ArchiveReadGuard:
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
-    """Add explicit forced compaction and runtime model selection for dcode.
+    """Add auto-compaction, forced compaction, and runtime model selection.
 
-    The SDK tool's normal, model-initiated behavior remains unchanged. The
-    private `force` input is used only by the user-initiated `/offload` path,
-    which must compact whenever messages exceed the retention window even when
-    the conversation has not reached the SDK's proactive eligibility gate.
+    The SDK tool middleware only nudges the model to call `compact_conversation`
+    and never compacts automatically, so on resume the conversation can grow
+    unbounded. This subclass delegates its `wrap_model_call` to the shared
+    summarization engine, which compacts automatically once accumulated tokens
+    cross the configured trigger. The private `force` input remains used only by
+    the user-initiated `/offload` path, which must compact whenever messages
+    exceed the retention window even when the conversation has not reached the
+    SDK's proactive eligibility gate.
     """
 
     @staticmethod
@@ -363,6 +368,58 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             name=tool_call.get("name"),
             tool_call_id=tool_call["id"],
             status="error",
+        )
+
+    def _request_with_nudge(self, request: ModelRequest) -> ModelRequest:
+        """Return the request with the compact-tool system-prompt nudge applied."""
+        if self.system_prompt is None:
+            return request
+        from deepagents.middleware.summarization import append_to_system_message
+
+        return request.override(
+            system_message=append_to_system_message(
+                request.system_message, self.system_prompt
+            )
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Auto-compact before the model call once thresholds are crossed.
+
+        The SDK tool middleware only appends a nudge and waits for the model or
+        `/offload` to invoke the tool. dcode instead delegates to the shared
+        summarization engine's `wrap_model_call`, which compacts automatically
+        when accumulated tokens cross the configured trigger, so resumed
+        sessions don't grow context unbounded.
+
+        Returns:
+            The model response, after any automatic compaction.
+        """
+        return cast(
+            "ModelResponse",
+            self._summarization.wrap_model_call(
+                self._request_with_nudge(request), handler
+            ),
+        )
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Async variant of `wrap_model_call`.
+
+        Returns:
+            The model response, after any automatic compaction.
+        """
+        return cast(
+            "ModelResponse",
+            await self._summarization.awrap_model_call(
+                self._request_with_nudge(request), handler
+            ),
         )
 
     def wrap_tool_call(

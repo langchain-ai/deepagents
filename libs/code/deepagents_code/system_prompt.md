@@ -122,6 +122,8 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - Small files (<500 lines)
 - Files you need to edit immediately after reading
 
+**Do not re-read files you have already read this session.** Reuse the content you were already shown unless the file has changed (e.g. after your own edit). Re-reading unchanged files wastes context; a re-read of an unchanged file will return an "unchanged since it was read earlier" marker instead of the full body.
+
 ## Git Safety Protocol
 
 - NEVER update the git config

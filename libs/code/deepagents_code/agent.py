@@ -84,6 +84,7 @@ from deepagents_code.offload import (
 from deepagents_code.offload_middleware import _create_cli_compaction_middleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.read_cache_middleware import ReadFileCacheMiddleware
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
@@ -1993,7 +1994,14 @@ def create_cli_agent(
             routes={},
         )
 
-    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
+    # Deduplicate repeated read_file reads of unchanged files so replayed
+    # trajectories on resume don't re-emit full file bodies into context.
+    agent_middleware.extend(
+        [
+            ReadFileCacheMiddleware(),
+            _create_cli_compaction_middleware(model, composite_backend),
+        ]
+    )
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

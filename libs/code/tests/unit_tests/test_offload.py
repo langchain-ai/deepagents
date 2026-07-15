@@ -20,6 +20,7 @@ from deepagents_code.offload import (
     _artifacts_root,
     _filesystem_tool_path,
     _offload_fallback_root,
+    delete_offloaded_history,
 )
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
@@ -1187,6 +1188,55 @@ class TestOffloadFallbackRoot:
         from deepagents_code.offload import offload_storage_is_ephemeral
 
         assert offload_storage_is_ephemeral() is False
+
+
+class TestDeleteOffloadedHistory:
+    """Cover cleanup of a thread's offloaded conversation-history archive."""
+
+    def test_removes_persistent_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-thread archive under `~/.deepagents` is removed."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "thread-1.md"
+        archive.write_text("history")
+        keep = archive_dir / "thread-2.md"
+        keep.write_text("other")
+
+        assert delete_offloaded_history("thread-1") is True
+        assert not archive.exists()
+        # Unrelated threads' archives are left untouched.
+        assert keep.exists()
+
+    def test_missing_archive_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting a thread with no archive reports nothing removed."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert delete_offloaded_history("thread-1") is False
+
+    def test_empty_thread_id_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty thread id never touches the filesystem."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert delete_offloaded_history("") is False
+
+    def test_rejects_thread_id_path_traversal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crafted thread id cannot escape the archive directory."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".deepagents" / "conversation_history").mkdir(parents=True)
+        secret = tmp_path / ".deepagents" / "config.toml"
+        secret.write_text("secret")
+
+        assert delete_offloaded_history("../config") is False
+        assert secret.exists()
 
 
 class TestArtifactsRoot:

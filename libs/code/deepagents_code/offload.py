@@ -223,3 +223,53 @@ def _offload_fallback_root() -> Path:
         )
         unique = Path(tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root))
         return _prepare_temp_dir(unique)
+
+
+def delete_offloaded_history(thread_id: str) -> bool:
+    """Remove a thread's offloaded conversation-history archive.
+
+    Deletes the per-thread markdown file written by the local-mode
+    `conversation_history` backend (`{root}/conversation_history/{thread_id}.md`),
+    resolving `root` with `_offload_fallback_root` so the persistent
+    `~/.deepagents` location and any temporary fallback are both covered. This
+    is a no-op when the thread has no archive.
+
+    In server/sandbox mode the archive lives on the sandbox backend rather than
+    the local `~/.deepagents` directory, so there is nothing local to remove and
+    this simply finds no file.
+
+    Args:
+        thread_id: Thread whose offloaded history should be removed.
+
+    Returns:
+        `True` if an archive file was removed, `False` when none existed or the
+        offload root could not be resolved.
+    """
+    if not thread_id:
+        return False
+    try:
+        archive_dir = _offload_fallback_root() / "conversation_history"
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not resolve offload root to clean history for thread %s",
+            thread_id,
+            exc_info=True,
+        )
+        return False
+    archive_path = archive_dir / f"{thread_id}.md"
+    # Guard against a crafted thread id escaping the archive directory.
+    if archive_path.parent != archive_dir:
+        return False
+    try:
+        archive_path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning(
+            "Failed to delete offloaded conversation history for thread %s",
+            thread_id,
+            exc_info=True,
+        )
+        return False
+    logger.debug("Deleted offloaded conversation history for thread %s", thread_id)
+    return True

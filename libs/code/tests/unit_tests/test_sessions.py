@@ -351,18 +351,34 @@ class TestThreadFunctions:
             cwd = asyncio.run(sessions.get_thread_cwd("thread-empty"))
             assert cwd is None
 
-    def test_delete_thread(self, temp_db):
+    def test_delete_thread(self, temp_db, monkeypatch, tmp_path):
         """Delete thread removes thread."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("thread1"))
             assert result is True
             assert asyncio.run(sessions.thread_exists("thread1")) is False
 
-    def test_delete_thread_not_found(self, temp_db):
+    def test_delete_thread_not_found(self, temp_db, monkeypatch, tmp_path):
         """Delete thread returns False for non-existing thread."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("nonexistent"))
             assert result is False
+
+    def test_delete_thread_cleans_offloaded_history(
+        self, temp_db, monkeypatch, tmp_path
+    ):
+        """Deleting a thread removes its offloaded conversation history."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "thread1.md"
+        archive.write_text("history")
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            result = asyncio.run(sessions.delete_thread("thread1"))
+            assert result is True
+        assert not archive.exists()
 
 
 class TestGetCheckpointer:

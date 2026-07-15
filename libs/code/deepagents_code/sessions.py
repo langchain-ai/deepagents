@@ -1406,28 +1406,37 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints.
+    """Delete thread checkpoints and any offloaded conversation history.
+
+    Removes the thread's checkpoint/write rows and cleans up the per-thread
+    offloaded conversation-history archive under `~/.deepagents` (local mode),
+    so deleting a thread does not leave orphaned history behind.
 
     Returns:
         True if thread was deleted, False if not found.
     """
+    deleted = False
     async with _connect() as conn:
-        if not await _table_exists(conn, "checkpoints"):
-            return False
+        if await _table_exists(conn, "checkpoints"):
+            cursor = await conn.execute(
+                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+            )
+            deleted = cursor.rowcount > 0
+            if await _table_exists(conn, "writes"):
+                await conn.execute(
+                    "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
+                )
+            await conn.commit()
+            if deleted:
+                _message_count_cache.pop(thread_id, None)
+                for key, rows in list(_recent_threads_cache.items()):
+                    filtered = [row for row in rows if row["thread_id"] != thread_id]
+                    _recent_threads_cache[key] = filtered
 
-        cursor = await conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-        )
-        deleted = cursor.rowcount > 0
-        if await _table_exists(conn, "writes"):
-            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
-        await conn.commit()
-        if deleted:
-            _message_count_cache.pop(thread_id, None)
-            for key, rows in list(_recent_threads_cache.items()):
-                filtered = [row for row in rows if row["thread_id"] != thread_id]
-                _recent_threads_cache[key] = filtered
-        return deleted
+    from deepagents_code.offload import delete_offloaded_history
+
+    delete_offloaded_history(thread_id)
+    return deleted
 
 
 @asynccontextmanager

@@ -2784,8 +2784,8 @@ class TestCtrlCCopySelection:
             exit_mock.assert_not_called()
             assert app._quit_pending is False
 
-    async def test_ctrl_c_interrupt_marks_active_user_message_cancelled(self) -> None:
-        """Ctrl+C dims the prompt but, unlike Esc, does not restore it."""
+    async def test_ctrl_c_interrupt_does_not_restore_prompt(self) -> None:
+        """Ctrl+C interrupts but, unlike Esc, does not restore the prompt."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2807,7 +2807,6 @@ class TestCtrlCCopySelection:
                 app.action_quit_or_interrupt()
             await pilot.pause()
 
-            assert user_message.has_class("-cancelled")
             mock_worker.cancel.assert_called_once()
             assert app._quit_pending is False
             # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
@@ -3966,7 +3965,6 @@ class TestMessageQueue:
 
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
-            assert active.has_class("-cancelled")
             mock_notify.assert_called_once_with("Message restored to input", timeout=2)
 
     async def test_escape_restores_interrupted_message_media(self) -> None:
@@ -4006,7 +4004,6 @@ class TestMessageQueue:
             assert images[0].base64_data == "abc123"
             assert images[0].placeholder == "[image 1]"
             worker.cancel.assert_called_once()
-            assert active.has_class("-cancelled")
             mock_notify.assert_called_once_with("Message restored to input", timeout=2)
 
     async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
@@ -4092,7 +4089,6 @@ class TestMessageQueue:
 
             assert chat.value == ""
             worker.cancel.assert_called_once()
-            assert active.has_class("-cancelled")
             mock_notify.assert_not_called()
 
     async def test_ui_adapter_wires_visible_output_started_callback(self) -> None:
@@ -4215,7 +4211,6 @@ class TestMessageQueue:
             assert chat.value == "queued"
             assert len(app._pending_messages) == 0
             worker.cancel.assert_not_called()
-            assert not active.has_class("-cancelled")
 
             # Second ESC: queue drained and the input now holds the queued
             # text, so the agent is interrupted but the active prompt is NOT
@@ -4223,7 +4218,6 @@ class TestMessageQueue:
             app.action_interrupt()
             assert chat.value == "queued"
             worker.cancel.assert_called_once()
-            assert active.has_class("-cancelled")
 
     async def test_escape_pop_single_then_interrupt(self) -> None:
         """Single queued message is popped, then next ESC interrupts agent."""

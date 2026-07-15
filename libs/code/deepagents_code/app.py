@@ -14102,8 +14102,8 @@ class DeepAgentsApp(App):
         submission) only when the input holds no draft, so typed text is never
         clobbered. Unlike the queued-message pop, this path does not consume
         the message — the interrupted `UserMessage` stays visible in the
-        transcript, dimmed via `set_cancelled()` — so when it does not restore
-        it stays silent rather than reporting a "discarded" outcome.
+        transcript — so when it does not restore it stays silent rather than
+        reporting a "discarded" outcome.
 
         Restore is also skipped once model text or a tool call is visible for
         the turn (`_active_turn_visible_output_started`). Returning the prompt
@@ -14370,8 +14370,6 @@ class DeepAgentsApp(App):
         # whereas prompt-restore belongs to Esc's edit/retract flow. Do not
         # add a restore call here without reconciling both interrupt paths.
         if self._agent_running and self._agent_worker:
-            if self._active_user_message is not None:
-                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
@@ -14560,7 +14558,6 @@ class DeepAgentsApp(App):
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             if self._active_user_message is not None:
-                self._active_user_message.set_cancelled()
                 self._restore_interrupted_message_to_input(self._active_user_message)
             self._cancel_worker(self._agent_worker)
             return

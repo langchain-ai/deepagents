@@ -3895,25 +3895,6 @@ class TestStripSuccessExitLine:
         assert msg._output == "hi"
 
 
-class TestUserMessageCancelled:
-    """`set_cancelled` dims a prompt whose turn was interrupted."""
-
-    async def test_set_cancelled_adds_dim_class(self) -> None:
-        """`set_cancelled` adds the `-cancelled` class that dims the prompt."""
-
-        class _Harness(App[None]):
-            def compose(self) -> ComposeResult:
-                yield UserMessage("hello")
-
-        app = _Harness()
-        async with app.run_test() as pilot:
-            msg = app.query_one(UserMessage)
-            assert not msg.has_class("-cancelled")
-            msg.set_cancelled()
-            await pilot.pause()
-            assert msg.has_class("-cancelled")
-
-
 class TestSummarizeToolGroup:
     """Tests for the tool-group summary phrasing."""
 

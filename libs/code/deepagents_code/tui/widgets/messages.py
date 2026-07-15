@@ -276,12 +276,7 @@ class UserMessage(Static):
         border-left: wide $primary;
         pointer: text;
     }
-
-    UserMessage.-cancelled {
-        opacity: 0.6;
-    }
     """
-    """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
     def __init__(
         self,
@@ -315,10 +310,6 @@ class UserMessage(Static):
     def media_snapshot(self) -> MediaTracker | None:
         """Media tracker state captured when the message was submitted."""
         return self._media_snapshot
-
-    def set_cancelled(self) -> None:
-        """Dim the message to mark its turn as interrupted by the user."""
-        self.add_class("-cancelled")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text, preferring the full content over the render.

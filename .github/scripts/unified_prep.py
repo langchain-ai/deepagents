@@ -317,12 +317,18 @@ def main(argv: list[str] | None = None) -> int:
 
     n_models = len(model_specs)
     est_tasks = max(sum(len(tasks_by_cat.get(c, [])) for c in categories), 1)
-    # Jobs launched per model = flat-matrix entries, which build_flat_matrix
-    # packs down to at most shard_matrix.MAX_SHARDS -- not the raw task count.
-    # Guard on the packed count so a valid multi-model full run is not rejected
-    # on a miscount: e.g. 2 models x 280 tasks packs to 2 x 200 = 400 jobs
-    # (within budget), while the raw 2 x 280 = 560 would trip the guard.
-    packed_per_model = min(est_tasks, shard_matrix.MAX_SHARDS)
+    # Jobs launched per model = the packed flat-matrix entry count, not the raw
+    # task count: build_flat_matrix groups tasks into at most MAX_SHARDS shards,
+    # and ceil-division packing usually yields fewer (e.g. 120+120+40 tasks pack
+    # to 140 entries, not 200). The count is model-independent, so measure it
+    # once on the first model and guard on the real emitted job total. Guarding
+    # on the raw task count would reject valid multi-model full runs whose packed
+    # total is within budget (e.g. 3 models x 260 tasks -> 3 x 130 = 390 <= 400).
+    packed_per_model = (
+        len(build_flat_matrix(model_specs[0], categories, tasks_by_cat, code_impl))
+        if model_specs
+        else 0
+    )
     total_job_guard(n_models, packed_per_model)
 
     # n_shards for the pool = number of single-task shards (pre-pack); derive pool.

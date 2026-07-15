@@ -135,29 +135,36 @@ def test_total_job_guard_rejects_over_budget():
 
 
 def test_main_full_multi_model_guard_counts_packed_shards(tmp_path, monkeypatch):
-    # A full run whose raw task count exceeds MAX_SHARDS packs down to at most
-    # MAX_SHARDS jobs per model. The guard must count those packed shards, not
-    # the raw tasks: 2 models x 280 tasks -> 2 x 200 = 400 jobs (within the
-    # 400 budget). Guarding on the raw 2 x 280 = 560 would wrongly reject it.
+    # The guard must count the packed flat-matrix entries, not the raw task
+    # count. 260 tasks pack (via ceil division) to 130 shards/model, so 3 models
+    # emit 3 x 130 = 390 jobs, within the 400 budget. Guarding on the raw count
+    # (3 x 260 = 780) -- or on the loose min(tasks, MAX_SHARDS)=200 bound
+    # (3 x 200 = 600) -- would wrongly reject this valid run.
     import json as _j
 
-    n_tasks = up.shard_matrix.MAX_SHARDS + 80  # 280, > MAX_SHARDS (200)
+    n_tasks = 260
+    packed = len(
+        up.build_flat_matrix("x:y", ["autonomous"], {"autonomous": ["t"] * n_tasks})
+    )
+    assert packed == 130  # pins the packing so the budget arithmetic below is real
+    assert 3 * packed <= up.TOTAL_JOB_BUDGET < 3 * min(n_tasks, up.shard_matrix.MAX_SHARDS)
+
     tasks_json = tmp_path / "tasks.json"
     tasks_json.write_text(
         _j.dumps({"autonomous": [f"harbor-index/t-{i}" for i in range(n_tasks)]})
     )
-    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus,openai:gpt")
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:a,anthropic:b,anthropic:c")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "full")
     monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
 
-    assert up.main([]) == 0  # would SystemExit if the guard counted raw tasks
+    assert up.main([]) == 0  # SystemExit if the guard over-counts (raw or loose bound)
     lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
-    for model in ("anthropic:opus", "openai:gpt"):
-        entry = next(e for e in _j.loads(lines["eval_matrix"])["include"] if e["model"] == model)
-        n_entries = len(_j.loads(entry["flat_matrix"])["include"])
-        assert n_entries <= up.shard_matrix.MAX_SHARDS
+    entries = _j.loads(lines["eval_matrix"])["include"]
+    assert len(entries) == 3
+    for entry in entries:
+        assert len(_j.loads(entry["flat_matrix"])["include"]) == packed
 
 
 def test_build_flat_matrix_one_entry_per_task_across_categories():

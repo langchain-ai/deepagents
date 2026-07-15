@@ -1224,10 +1224,15 @@ class ChatTextArea(PasteBurstTextArea):
                         return start, end
                     if cursor_offset > 0:
                         previous_index = cursor_offset - 1
+                        # Only a literal space (the separator auto-inserted with
+                        # media placeholders) is swallowed with the token. A
+                        # newline must not be — otherwise backspacing the line
+                        # break after a placeholder deletes the placeholder
+                        # itself instead of just rejoining the lines.
                         if (
                             previous_index < len(text)
                             and previous_index == end
-                            and text[previous_index].isspace()
+                            and text[previous_index] == " "
                         ):
                             return start, cursor_offset
                 elif start <= cursor_offset < end:

@@ -230,6 +230,39 @@ class TestInlinePromptPaste:
 
             assert ta.text == ""
 
+    async def test_backspace_from_line_below_placeholder_keeps_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backspace on the line below a placeholder rejoins lines, keeps token.
+
+        Regression: a newline right after a `[Pasted text #N]` placeholder was
+        treated as an auto-inserted trailing separator, so backspacing from the
+        start of the next line deleted the whole placeholder instead of only the
+        line break.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._on_paste(Paste("a\nb\nc\nd"))
+            await pilot.pause()
+            assert ta.text == "[Pasted text #1 +3 lines]"
+
+            ta.insert("\n")
+            await pilot.pause()
+            assert ta.cursor_location == (1, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1 +3 lines]"
+            assert ta.cursor_location == (0, len("[Pasted text #1 +3 lines]"))
+
     async def test_typed_placeholder_shape_is_not_atomic(self) -> None:
         """Hand-typed placeholder-shaped text deletes one char, not the token."""
         app = _PromptApp()

@@ -2815,6 +2815,37 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_image_id == 1
 
+    async def test_backspace_from_line_below_image_keeps_placeholder(
+        self, tmp_path
+    ) -> None:
+        """Backspace on the line below `[image N]` rejoins lines, keeps token."""
+        img_path = tmp_path / "newline.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="cyan")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            chat._text_area.insert("\n")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (1, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # The line break is removed and the placeholder (with its trailing
+            # space) is preserved rather than being deleted atomically.
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
         img_path = tmp_path / "readd.png"
@@ -5197,6 +5228,36 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
 
             assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    async def test_backspace_from_line_below_placeholder_keeps_it(self) -> None:
+        """Backspace on a line below a placeholder rejoins lines, keeps token.
+
+        Regression: a newline immediately after a `[Pasted text #N]` placeholder
+        was treated as an auto-inserted trailing separator, so backspacing from
+        the start of the next line deleted the whole placeholder instead of just
+        removing the line break. The cursor should land at the end of the
+        placeholder line with the placeholder intact.
+        """
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            chat._text_area.insert("\n")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (1, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[Pasted text #1]"
+            assert chat._text_area.cursor_location == (0, len("[Pasted text #1]"))
             assert 1 in chat._pasted_contents
 
     async def test_identical_multiline_repaste_expands_placeholder(self) -> None:

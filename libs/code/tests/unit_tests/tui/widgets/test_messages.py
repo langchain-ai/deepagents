@@ -1022,12 +1022,36 @@ class TestToolCallMessageTodos:
         )
         plain = result.content.plain
 
+        # Continuation lines hang-indent to the width of the status label, which
+        # now starts flush at the gutter (no leading pad).
+        from deepagents_code.config import get_glyphs
+
+        indent = "\n" + " " * len(f"{get_glyphs().circle_filled} active ")
         assert "..." not in plain
         assert long.replace(" ", "") == plain.split("active ", 1)[1].replace(
-            "\n             ",
+            indent,
             "",
         ).replace(" ", "")
-        assert "\n             " in plain
+        assert indent in plain
+
+    def test_todo_rows_start_flush_at_gutter(self) -> None:
+        """Todo rows begin with the status glyph, not a hardcoded leading pad."""
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr(
+                [
+                    {"content": "a", "status": "completed"},
+                    {"content": "b", "status": "in_progress"},
+                    {"content": "c", "status": "pending"},
+                ]
+            ),
+            is_preview=False,
+        )
+        lines = result.content.plain.split("\n")
+
+        assert lines
+        assert all(not line.startswith(" ") for line in lines)
 
     def test_todo_expanded_continuation_aligns_content_column(self) -> None:
         """Wrapped continuation lines should align under the todo text."""
@@ -1043,8 +1067,12 @@ class TestToolCallMessageTodos:
             index for index, line in enumerate(lines) if "todo   " in line
         )
 
+        # Continuation aligns under the todo text, i.e. the status-label width.
+        from deepagents_code.config import get_glyphs
+
+        indent = " " * len(f"{get_glyphs().circle_empty} todo   ")
         assert len(lines) > todo_start + 1
-        assert lines[todo_start + 1].startswith("             ")
+        assert lines[todo_start + 1].startswith(indent)
 
 
 class _ToolMsgApp(App[None]):
@@ -1258,6 +1286,25 @@ class TestToolCallMessageSearchOutput:
 
         assert result.truncation is None
         assert result.content.plain.split("\n") == lines
+
+
+class TestToolCallMessageLsOutput:
+    """Tests for `ls` directory-listing formatting in `_format_ls_output`."""
+
+    def test_ls_output_has_no_hardcoded_indent(self) -> None:
+        """Ls entries sit flush under the output gutter, like grep/glob.
+
+        Alignment is owned by the output gutter layout; the formatter emits
+        bare names so results aren't double-indented under the output marker.
+        Directories keep their trailing slash.
+        """
+        msg = ToolCallMessage("ls", {"path": "/tmp"})
+        result = msg._format_ls_output(
+            "['/tmp/SKILL.md', '/tmp/scripts', '/tmp/init.py']", is_preview=False
+        )
+        lines = result.content.plain.split("\n")
+        assert lines == ["SKILL.md", "scripts/", "init.py"]
+        assert all(not line.startswith(" ") for line in lines)
 
 
 class TestToolCallMessageEditFileOutput:

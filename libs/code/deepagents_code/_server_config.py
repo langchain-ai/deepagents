@@ -243,6 +243,13 @@ class ServerConfig:
     this flag is `True`.
     """
 
+    enable_browser: bool = False
+    """Make optional browser tools available for per-thread activation.
+
+    This is a capability flag only. Browser activation is persisted separately
+    in each thread's checkpoint state by the `/browser` command.
+    """
+
     interpreter_ptc: str | list[str] | None = None
     """Override for `settings.interpreter_ptc`.
 
@@ -304,11 +311,21 @@ class ServerConfig:
 
         Raises:
             TypeError: If `rubric_max_iterations` is a boolean.
-            ValueError: If `shell_allow_list` is an empty list or
-                `rubric_max_iterations` is non-positive.
+            ValueError: If `shell_allow_list` is empty,
+                `rubric_max_iterations` is non-positive, or browser support is
+                requested outside a local interactive session.
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
+        if self.enable_browser and not self.interactive:
+            msg = "Browser support requires an interactive session"
+            raise ValueError(msg)
+        if self.enable_browser and self.sandbox_type is not None:
+            msg = (
+                "Browser support is not available with remote execution sandbox "
+                f"'{self.sandbox_type}'"
+            )
+            raise ValueError(msg)
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
             raise ValueError(msg)
@@ -354,6 +371,7 @@ class ServerConfig:
             "ENABLE_MEMORY": str(self.enable_memory).lower(),
             "ENABLE_SKILLS": str(self.enable_skills).lower(),
             "ENABLE_INTERPRETER": str(self.enable_interpreter).lower(),
+            "ENABLE_BROWSER": str(self.enable_browser).lower(),
             "INTERPRETER_PTC": (
                 json.dumps(self.interpreter_ptc)
                 if self.interpreter_ptc is not None
@@ -412,6 +430,7 @@ class ServerConfig:
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
             enable_interpreter=_read_env_bool("ENABLE_INTERPRETER"),
+            enable_browser=_read_env_bool("ENABLE_BROWSER"),
             interpreter_ptc=_read_env_json("INTERPRETER_PTC"),
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
@@ -451,6 +470,7 @@ class ServerConfig:
         enable_shell: bool,
         enable_ask_user: bool,
         enable_interpreter: bool | None = None,
+        enable_browser: bool = False,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
         rubric_model: str | None = None,
@@ -485,6 +505,7 @@ class ServerConfig:
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
                 agent. `None` uses the sandbox-aware default.
+            enable_browser: Make browser tools available for per-thread activation.
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
@@ -516,6 +537,7 @@ class ServerConfig:
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
             enable_interpreter=resolved_enable_interpreter,
+            enable_browser=enable_browser,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             rubric_model=rubric_model,

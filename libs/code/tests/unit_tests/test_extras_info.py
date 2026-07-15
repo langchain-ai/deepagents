@@ -259,6 +259,12 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     )
 
 
+def test_browser_is_a_known_standalone_extra() -> None:
+    """Both CLI and slash install flows must recognize browser provisioning."""
+    assert "browser" in STANDALONE_EXTRAS
+    assert "browser" in KNOWN_EXTRAS
+
+
 def test_known_extras_is_union_of_categories() -> None:
     """`KNOWN_EXTRAS` must be the union of the three category frozensets.
 

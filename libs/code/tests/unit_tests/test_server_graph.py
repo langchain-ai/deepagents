@@ -13,6 +13,7 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code._server_lifecycle import register_browser_cleanup
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -196,12 +197,14 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            enable_browser=False,
             rubric_model=None,
             rubric_max_iterations=None,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
             async_subagents=None,
+            _register_browser_cleanup=register_browser_cleanup,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
@@ -248,12 +251,13 @@ class TestServerGraph:
         model_obj = object()
         observed: dict[str, object] = {}
 
-        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
+        def create_cli_agent_side_effect(**kwargs: object) -> tuple[object, object]:
             from deepagents_code.config import settings
 
             observed["interpreter_ptc"] = settings.interpreter_ptc
             observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
             observed["enable_interpreter"] = settings.enable_interpreter
+            observed["enable_browser"] = kwargs["enable_browser"]
             return graph_obj, object()
 
         settings_obj = SimpleNamespace(
@@ -288,6 +292,7 @@ class TestServerGraph:
         config = ServerConfig(
             no_mcp=True,
             enable_interpreter=True,
+            enable_browser=True,
             interpreter_ptc=["js_eval"],
             interpreter_ptc_acknowledge_unsafe=True,
         )
@@ -319,6 +324,7 @@ class TestServerGraph:
             "interpreter_ptc": ["js_eval"],
             "acknowledge": True,
             "enable_interpreter": True,
+            "enable_browser": True,
         }
 
     async def test_build_tools_delegates_mcp_loading_to_resolver(self) -> None:

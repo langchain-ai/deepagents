@@ -20,6 +20,7 @@ updates:
     directories:
       - "/libs/deepagents"
       - "/libs/cli"
+      - "/libs/browser"
       - "/libs/code"
       - "/libs/evals"
       - "/libs/acp"

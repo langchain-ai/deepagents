@@ -128,6 +128,7 @@ jobs:
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
+      browser-release: ${{ steps.check-releases.outputs.browser-release }}
       talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
@@ -210,6 +211,13 @@ jobs:
             echo "Deep Agents Code release detected: $COMMIT_MSG"
           else
             echo "code-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/browser/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-browser\):"; then
+            echo "browser-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Browser release detected: $COMMIT_MSG"
+          else
+            echo "browser-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
@@ -792,6 +800,7 @@ jobs:
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
+      needs.detect-release-commit.outputs.browser-release == 'true' ||
       needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
@@ -814,6 +823,7 @@ jobs:
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
+      BROWSER_RELEASE: ${{ needs.detect-release-commit.outputs.browser-release }}
       TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
@@ -983,6 +993,7 @@ jobs:
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
+          BROWSER_RELEASE="${BROWSER_RELEASE:-false}"; assert_bool BROWSER_RELEASE "$BROWSER_RELEASE"
           TALON_RELEASE="${TALON_RELEASE:-false}";     assert_bool TALON_RELEASE   "$TALON_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
@@ -1028,6 +1039,7 @@ jobs:
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
+          if [ "$BROWSER_RELEASE" = "true" ]; then dispatch deepagents-browser;  fi
           if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi

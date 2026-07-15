@@ -59,6 +59,12 @@ repos:
         entry: make -C libs/cli format lint
         files: ^libs/cli/
         pass_filenames: false
+      - id: deepagents-browser
+        name: format and lint deepagents-browser
+        language: system
+        entry: make -C libs/browser format lint
+        files: ^libs/browser/
+        pass_filenames: false
       - id: deepagents-code
         name: format and lint deepagents-code
         language: system
@@ -97,5 +103,5 @@ repos:
         name: check pyproject.toml and _version.py match
         language: system
         entry: python3 .github/scripts/check_version_equality.py
-        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
+        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py|^libs/browser/pyproject\.toml|^libs/browser/deepagents_browser/_version\.py|^libs/code/pyproject\.toml|^libs/code/deepagents_code/_version\.py)$
         pass_filenames: false

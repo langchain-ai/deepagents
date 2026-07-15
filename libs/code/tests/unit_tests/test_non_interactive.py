@@ -317,6 +317,7 @@ class TestSandboxTypeForwarding:
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
         assert kwargs["enable_interpreter"] is None
+        assert kwargs["enable_browser"] is False
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""

@@ -47,6 +47,7 @@
   },
   "scopeToLabel": {
     "acp": "acp",
+    "browser": "browser",
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
@@ -54,6 +55,7 @@
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
+    "deepagents-browser": "browser",
     "deepagents-cli": "cli",
     "deepagents-code": "dcode",
     "deepagents-talon": "talon",
@@ -96,6 +98,11 @@
     {
       "label": "acp",
       "prefix": "libs/acp/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "browser",
+      "prefix": "libs/browser/",
       "skipExcludedFiles": true
     },
     {

@@ -5270,6 +5270,145 @@ class TestTraceCommand:
             assert isinstance(app.screen, AuthManagerScreen)
 
 
+class TestBrowserCommand:
+    """Tests for per-thread browser capability activation."""
+
+    @staticmethod
+    def _message_texts(mount: AsyncMock) -> list[str]:
+        return [str(item.args[0]._content) for item in mount.await_args_list]
+
+    async def test_unavailable_guides_restart_without_state_access(self) -> None:
+        app = DeepAgentsApp(browser_capability_enabled=False)
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch.object(
+                app, "_get_thread_state_values", new_callable=AsyncMock
+            ) as get_state,
+        ):
+            await app._handle_command("/browser")
+
+        get_state.assert_not_awaited()
+        assert any("--browser" in text for text in self._message_texts(mount))
+
+    async def test_requires_active_thread_without_state_write(self) -> None:
+        agent = cast("Any", SimpleNamespace(aupdate_state=AsyncMock()))
+        app = DeepAgentsApp(
+            agent=agent,
+            browser_capability_enabled=True,
+            thread_id=None,
+        )
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/browser")
+
+        agent.aupdate_state.assert_not_awaited()
+        assert any("active thread" in text for text in self._message_texts(mount))
+
+    async def test_exact_true_is_idempotent(self) -> None:
+        agent = cast("Any", SimpleNamespace(aupdate_state=AsyncMock()))
+        app = DeepAgentsApp(
+            agent=agent,
+            browser_capability_enabled=True,
+            thread_id="thread-1",
+        )
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                new=AsyncMock(return_value={"_browser_enabled": True}),
+            ),
+        ):
+            await app._handle_command("/browser")
+
+        agent.aupdate_state.assert_not_awaited()
+        assert any("already enabled" in text for text in self._message_texts(mount))
+
+    @pytest.mark.parametrize("truthy_value", ["true", 1])
+    async def test_non_boolean_truthy_value_is_not_treated_as_enabled(
+        self, truthy_value: object
+    ) -> None:
+        agent = cast("Any", SimpleNamespace(aupdate_state=AsyncMock()))
+        app = DeepAgentsApp(
+            agent=agent,
+            browser_capability_enabled=True,
+            thread_id="thread-1",
+        )
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                new=AsyncMock(return_value={"_browser_enabled": truthy_value}),
+            ),
+            patch.object(app, "_remote_agent", return_value=None),
+        ):
+            await app._handle_command("/browser")
+
+        agent.aupdate_state.assert_awaited_once_with(
+            {"configurable": {"thread_id": "thread-1"}},
+            {"_browser_enabled": True},
+        )
+
+    async def test_remote_update_uses_model_node(self) -> None:
+        agent = cast("Any", SimpleNamespace(aupdate_state=AsyncMock()))
+        remote = SimpleNamespace(aupdate_state=AsyncMock())
+        app = DeepAgentsApp(
+            agent=agent,
+            browser_capability_enabled=True,
+            thread_id="thread-1",
+        )
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(app, "_remote_agent", return_value=remote),
+        ):
+            await app._handle_command("/browser")
+
+        config = {"configurable": {"thread_id": "thread-1"}}
+        remote.aupdate_state.assert_awaited_once_with(
+            config,
+            {"_browser_enabled": True},
+            as_node="model",
+        )
+        agent.aupdate_state.assert_not_awaited()
+        assert any(
+            "enabled for this thread" in text for text in self._message_texts(mount)
+        )
+
+    async def test_failed_update_does_not_report_success(self) -> None:
+        agent = cast(
+            "Any",
+            SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("write failed"))
+            ),
+        )
+        app = DeepAgentsApp(
+            agent=agent,
+            browser_capability_enabled=True,
+            thread_id="thread-1",
+        )
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(app, "_remote_agent", return_value=None),
+        ):
+            await app._handle_command("/browser")
+
+        texts = self._message_texts(mount)
+        assert any("No change was saved" in text for text in texts)
+        assert not any(
+            text == "Browser tools enabled for this thread." for text in texts
+        )
+
+
 class TestClearCommand:
     """Test /clear slash command."""
 

@@ -27,7 +27,7 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, code, daytona, dcode-gha, deepagents, deepagents-acp, deepagents-cli,
+#   acp, browser, ci, cli, code, daytona, dcode-gha, deepagents, deepagents-acp, deepagents-browser, deepagents-cli,
 #   deepagents-code, deepagents-talon, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
 #   langchain-quickjs, langchain-runloop, langchain-vercel-sandbox, langsmith-sandbox, modal,
 #   quickjs, repo, runloop, sdk, talon, vercel
@@ -108,6 +108,7 @@ jobs:
             hotfix
           scopes: |
             acp
+            browser
             ci
             cli
             code

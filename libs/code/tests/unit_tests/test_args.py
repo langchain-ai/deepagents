@@ -12,6 +12,22 @@ from deepagents_code.main import parse_args
 from deepagents_code.ui import show_help, show_threads_list_help
 
 
+class TestBrowserArg:
+    """Tests for the optional browser capability flag."""
+
+    def test_defaults_false(self) -> None:
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+
+        assert args.browser is False
+
+    def test_flag_enables_browser_capability(self) -> None:
+        with patch.object(sys, "argv", ["deepagents", "--browser"]):
+            args = parse_args()
+
+        assert args.browser is True
+
+
 class TestInitialPromptArg:
     """Tests for -m/--message initial prompt argument."""
 

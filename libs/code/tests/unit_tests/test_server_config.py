@@ -217,7 +217,12 @@ class TestServerConfigInterpreterDefault:
         assert config.enable_interpreter is False
 
     @staticmethod
-    def _build(*, sandbox_type: str, enable_interpreter: bool | None) -> ServerConfig:
+    def _build(
+        *,
+        sandbox_type: str,
+        enable_interpreter: bool | None,
+        enable_browser: bool = False,
+    ) -> ServerConfig:
         """Build a `ServerConfig` exercising only the interpreter resolution."""
         return ServerConfig.from_cli_args(
             project_context=None,
@@ -232,11 +237,21 @@ class TestServerConfigInterpreterDefault:
             enable_shell=True,
             enable_ask_user=False,
             enable_interpreter=enable_interpreter,
+            enable_browser=enable_browser,
             mcp_config_path=None,
             no_mcp=False,
             trust_project_mcp=None,
             interactive=True,
         )
+
+    def test_browser_capability_forwarded_from_cli_args(self) -> None:
+        config = self._build(
+            sandbox_type="none",
+            enable_interpreter=False,
+            enable_browser=True,
+        )
+
+        assert config.enable_browser is True
 
     def test_local_none_false_uses_settings_default(self) -> None:
         with patch.object(settings, "enable_interpreter", False):
@@ -362,6 +377,30 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.enable_interpreter is True
+
+    def test_browser_requires_interactive_session(self) -> None:
+        with pytest.raises(ValueError, match="requires an interactive session"):
+            ServerConfig(enable_browser=True, interactive=False)
+
+    def test_browser_rejects_remote_sandbox(self) -> None:
+        with pytest.raises(ValueError, match="remote execution sandbox 'modal'"):
+            ServerConfig(enable_browser=True, sandbox_type="modal")
+
+    def test_browser_allows_normalized_none_sandbox(self) -> None:
+        config = ServerConfig(enable_browser=True, sandbox_type="none")
+        assert config.sandbox_type is None
+
+    def test_enable_browser_true_round_trips(self) -> None:
+        """Browser capability must survive the subprocess environment boundary."""
+        original = ServerConfig(enable_browser=True)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.enable_browser is True
 
     def test_enable_interpreter_false_round_trips(self) -> None:
         """A resolved-`False` interpreter must survive (not flip to the default)."""

@@ -88,6 +88,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=("/connect",),
     ),
     SlashCommand(
+        name="/browser",
+        description="Enable browser tools for this thread",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="web browse navigation",
+    ),
+    SlashCommand(
         name="/clear",
         description="Clear the chat and start a new thread",
         bypass_tier=BypassTier.QUEUED,

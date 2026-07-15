@@ -38,6 +38,7 @@ libs/
 ├── cli/            # Deployment CLI (init / dev / deploy)
 ├── evals/          # Evaluation suite and Harbor integration
 ├── code/           # Prebuilt coding agent for interactive and headless use
+├── browser/        # Optional local browser automation middleware
 ├── talon/          # Local runtime host for long-running agents
 └── partners/       # Provider/sandbox integrations
     ├── daytona/

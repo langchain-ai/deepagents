@@ -37,6 +37,7 @@ async def test_install_slash_usage_when_no_extra() -> None:
         # The no-arg path must list valid extras so they're discoverable.
         assert "Available extras:" in rendered
         assert "quickjs" in rendered
+        assert "browser" in rendered
         assert "daytona" in rendered
         assert "openai" in rendered
 
@@ -57,6 +58,55 @@ async def test_install_slash_known_extra_runs() -> None:
             await app._handle_command("/install quickjs")
             await pilot.pause()
         perform_mock.assert_awaited_once()
+
+
+async def test_install_slash_browser_success_recommends_browser_mode() -> None:
+    """Browser install confirms Chromium and gives the relaunch command."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+        ):
+            await app._handle_command("/install browser")
+            await pilot.pause()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        contents = " ".join(str(m._content) for m in app_msgs)
+        assert "Installed browser support and Chromium" in contents
+        assert "dcode --browser" in contents
+
+
+async def test_install_slash_browser_runtime_failure_is_phase_specific() -> None:
+    """A Chromium failure acknowledges that the browser extra was installed."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(
+                    False,
+                    (
+                        "The browser extra was installed, but Chromium provisioning "
+                        "failed: deps"
+                    ),
+                ),
+            ),
+        ):
+            await app._handle_command("/install browser")
+            await pilot.pause()
+        errors = list(app.query(ErrorMessage))
+        contents = " ".join(str(m._content) for m in errors)
+        assert "Browser provisioning failed" in contents
+        assert "browser extra was installed" in contents
+        assert "Install failed" not in contents
 
 
 async def test_install_slash_provider_extra_no_owned_server_recommends_relaunch() -> (

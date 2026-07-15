@@ -110,6 +110,7 @@ def _scaffold_workspace(work_dir: Path) -> None:
         work_dir,
         graph_ref="deepagents_code.server_graph:make_graph",
         checkpointer_path="./checkpointer.py:create_checkpointer",
+        http_app="deepagents_code._server_lifecycle:app",
     )
 
 
@@ -302,6 +303,7 @@ async def start_server_and_get_agent(
     enable_shell: bool = True,
     enable_ask_user: bool = False,
     enable_interpreter: bool | None = None,
+    enable_browser: bool = False,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     rubric_model: str | None = None,
@@ -330,6 +332,7 @@ async def start_server_and_get_agent(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
+        enable_browser: Make browser tools available for per-thread activation.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -380,6 +383,7 @@ async def start_server_and_get_agent(
         enable_shell=enable_shell,
         enable_ask_user=enable_ask_user,
         enable_interpreter=enable_interpreter,
+        enable_browser=enable_browser,
         interpreter_ptc=interpreter_ptc,
         interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
         rubric_model=rubric_model,
@@ -452,6 +456,7 @@ async def server_session(
     enable_shell: bool = True,
     enable_ask_user: bool = False,
     enable_interpreter: bool | None = None,
+    enable_browser: bool = False,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     rubric_model: str | None = None,
@@ -483,6 +488,7 @@ async def server_session(
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
             the main agent. `None` uses the sandbox-aware default.
+        enable_browser: Make browser tools available for per-thread activation.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -518,6 +524,7 @@ async def server_session(
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
             enable_interpreter=enable_interpreter,
+            enable_browser=enable_browser,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             rubric_model=rubric_model,

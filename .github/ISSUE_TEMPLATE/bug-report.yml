@@ -47,6 +47,7 @@ body:
       options:
         - label: deepagents (SDK)
         - label: dcode
+        - label: browser
         - label: talon
         - label: acp
         - label: evals

@@ -13,6 +13,7 @@ from pathlib import Path
 PACKAGES = [
     ("libs/deepagents/pyproject.toml", "libs/deepagents/deepagents/_version.py"),
     ("libs/cli/pyproject.toml", "libs/cli/deepagents_cli/_version.py"),
+    ("libs/browser/pyproject.toml", "libs/browser/deepagents_browser/_version.py"),
     ("libs/code/pyproject.toml", "libs/code/deepagents_code/_version.py"),
 ]
 

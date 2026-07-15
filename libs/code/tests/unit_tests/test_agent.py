@@ -1,12 +1,13 @@
 """Unit tests for agent formatting functions."""
 
+import sys
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from types import ModuleType, SimpleNamespace
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -3915,6 +3916,197 @@ class TestCreateCliAgentInterpreterWiring:
         # `glob` is absent from `tools` but is a runtime built-in, so the safe
         # preset resolves to all three members rather than dropping it.
         assert sorted(middlewares[0]._ptc) == ["glob", "grep", "read_file"]
+
+
+class TestCreateCliAgentBrowserWiring:
+    """Tests for lazy, state-gated browser middleware wiring."""
+
+    @staticmethod
+    def _browser_module() -> tuple[ModuleType, Any]:
+        module = ModuleType("deepagents_browser")
+
+        class FakeBrowserMiddleware:
+            init_calls: ClassVar[list[tuple[tuple[Any, ...], dict[str, Any]]]] = []
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.init_calls.append((args, kwargs))
+                self.tools = [
+                    SimpleNamespace(name="browser_navigate"),
+                    SimpleNamespace(name="browser_snapshot"),
+                    SimpleNamespace(name="browser_act"),
+                ]
+                self.consequential_tool_names = {
+                    "browser_navigate",
+                    "browser_act",
+                }
+
+            async def aclose(self) -> None:
+                pass
+
+        module.BrowserMiddleware = FakeBrowserMiddleware  # ty: ignore[unresolved-attribute]
+        return module, FakeBrowserMiddleware
+
+    @staticmethod
+    def _settings(tmp_path: Path) -> Mock:
+        return TestCreateCliAgentInterpreterWiring._build_mock_settings(tmp_path)
+
+    def test_disabled_does_not_construct_optional_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        module, browser_type = self._browser_module()
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
+            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_browser=False,
+            )
+
+        assert browser_type.init_calls == []
+
+    def test_appends_browser_last_without_launch_and_merges_hitl(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        module, browser_type = self._browser_module()
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_browser=True,
+            )
+
+        assert browser_type.init_calls == [((), {})]
+        kwargs = mock_create.call_args.kwargs
+        middleware = kwargs["middleware"]
+        assert isinstance(middleware[-1], browser_type)
+        assert any(isinstance(item, RubricMiddleware) for item in middleware[:-1])
+        for name in ("browser_navigate", "browser_act"):
+            config = kwargs["interrupt_on"][name]
+            assert config["allowed_decisions"] == ["approve", "reject"]
+            assert config["when"] is _should_interrupt_tool_call
+
+    def test_registers_browser_cleanup_callback(self, tmp_path: Path) -> None:
+        module, browser_type = self._browser_module()
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        registrar = Mock()
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
+            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_browser=True,
+                _register_browser_cleanup=registrar,
+            )
+
+        registered = registrar.call_args.args[0]
+        assert registered.__self__.__class__ is browser_type
+        assert registered.__name__ == "aclose"
+
+    def test_auto_approve_preserves_empty_interrupt_map(self, tmp_path: Path) -> None:
+        module, _ = self._browser_module()
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                auto_approve=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_browser=True,
+            )
+
+        assert mock_create.call_args.kwargs["interrupt_on"] == {}
+
+    def test_non_interactive_browser_rejected_before_construction(self) -> None:
+        module, browser_type = self._browser_module()
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            pytest.raises(ValueError, match="requires an interactive session"),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interactive=False,
+                enable_browser=True,
+            )
+        assert browser_type.init_calls == []
+
+    def test_remote_sandbox_rejected_before_browser_construction(
+        self, tmp_path: Path
+    ) -> None:
+        module, browser_type = self._browser_module()
+        with (
+            patch.dict(sys.modules, {"deepagents_browser": module}),
+            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+            pytest.raises(ValueError, match="remote execution sandbox"),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                sandbox=Mock(),
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_browser=True,
+            )
+
+        assert browser_type.init_calls == []
 
 
 class TestResolvePtcOption:

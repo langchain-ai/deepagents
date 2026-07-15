@@ -34,6 +34,7 @@ dependencies = [
     "langgraph-sdk>=0.4.2,<1.0.0",
     "langgraph-cli[inmem]>=0.4.30,<1.0.0",
     "langgraph-runtime-inmem>=0.31.0,<1.0.0",
+    "starlette>=1.0.1,<2.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
@@ -127,7 +128,8 @@ all-sandboxes = [
 
 # Standalone integrations
 media = ["av>=17.0.0,<18.0.0", "pillow>=12.2.0,<13.0.0"]
-# (quickjs kept for backwards-compatible install commands)
+browser = ["deepagents-browser>=0.0.1,<1.0.0"]
+# Kept for backwards-compatible install commands.
 quickjs = []
 
 
@@ -185,6 +187,7 @@ include = [
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+deepagents-browser = { path = "../browser", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }

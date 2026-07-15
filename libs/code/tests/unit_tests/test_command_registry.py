@@ -181,6 +181,16 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestBrowserCommand:
+    """Validate the per-thread browser activation command."""
+
+    def test_browser_registered_and_queued(self) -> None:
+        names = {entry.name for entry in SLASH_COMMANDS}
+
+        assert "/browser" in names
+        assert "/browser" in QUEUE_BOUND
+
+
 class TestMCPCommand:
     """Validate the `/mcp` entry specifically.
 

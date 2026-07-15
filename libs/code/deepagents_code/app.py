@@ -2362,6 +2362,7 @@ class DeepAgentsApp(App):
         model_kwargs: dict[str, Any] | None = None,
         model_explicitly_set: bool = False,
         interpreter_arg: bool | None = None,
+        browser_capability_enabled: bool = False,
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
@@ -2427,6 +2428,8 @@ class DeepAgentsApp(App):
                 opt-out from a sandbox-suppressed default when surfacing the
                 disabled-by-sandbox advisory; the resolved value travels in
                 `server_kwargs`.
+            browser_capability_enabled: Whether this process was started with
+                browser middleware available for per-thread activation.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
@@ -2508,6 +2511,9 @@ class DeepAgentsApp(App):
         Ctrl+T / Shift+Tab or the approval menu's 'Auto' option; kept in
         sync with `_session_state.auto_approve`.
         """
+
+        self._browser_capability_enabled = browser_capability_enabled
+        """Whether browser middleware is available for thread activation."""
 
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         """Session cwd.
@@ -5659,9 +5665,14 @@ class DeepAgentsApp(App):
                     "/install recovery command failed (install reported failure)",
                     exc_info=True,
                 )
+            failure_label = (
+                "Browser provisioning failed"
+                if extra == "browser" and "browser extra was installed" in output
+                else "Install failed"
+            )
             await self._mount_message(
                 ErrorMessage(
-                    f"Install failed{detail}\n"
+                    f"{failure_label}{detail}\n"
                     f"Log: {log_path}\n"
                     f"Run manually: {manual_cmd}",
                 ),
@@ -5703,10 +5714,17 @@ class DeepAgentsApp(App):
             return False
 
         if not restart_capable:
-            next_step = "Exit and relaunch dcode to use the new dependencies."
-            await self._mount_message(
-                AppMessage(f"Installed extra '{extra}'. {next_step}"),
-            )
+            if extra == "browser":
+                message = (
+                    "Installed browser support and Chromium. Exit and relaunch with "
+                    "`dcode --browser`."
+                )
+            else:
+                message = (
+                    f"Installed extra '{extra}'. Exit and relaunch dcode to use the "
+                    "new dependencies."
+                )
+            await self._mount_message(AppMessage(message))
             return True
 
         # Restart-capable extra: announce success, then offer a one-keypress
@@ -10787,6 +10805,52 @@ class DeepAgentsApp(App):
                 AppMessage("Rubric grader model cleared; using current chat model."),
             )
 
+    async def _handle_browser_command(self, command: str) -> None:
+        """Enable browser tools in the active thread checkpoint."""
+        await self._mount_message(UserMessage(command))
+        if not self._browser_capability_enabled:
+            await self._mount_message(
+                AppMessage(
+                    "Browser tools are unavailable. Restart with `dcode --browser`, "
+                    "then run `/browser` in the thread where you need them."
+                )
+            )
+            return
+        if not self._agent or not self._lc_thread_id:
+            await self._mount_message(
+                AppMessage(
+                    "Browser tools require an active thread. Try again after startup."
+                )
+            )
+            return
+
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            if state_values.get("_browser_enabled") is True:
+                await self._mount_message(
+                    AppMessage("Browser tools are already enabled for this thread.")
+                )
+                return
+
+            if remote := self._remote_agent():
+                await remote.aupdate_state(
+                    config, {"_browser_enabled": True}, as_node="model"
+                )
+            else:
+                await self._agent.aupdate_state(config, {"_browser_enabled": True})
+        except Exception:
+            logger.warning("Failed to enable browser tools for thread", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not enable browser tools for this thread. "
+                    "No change was saved."
+                )
+            )
+            return
+
+        await self._mount_message(AppMessage("Browser tools enabled for this thread."))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -10802,7 +10866,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
+                "Commands: /quit, /agents, /auth, /browser, /clear, /force-clear, "
                 "/copy, /goal, /offload, /editor, /effort, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, "
@@ -10831,6 +10895,8 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(help_text))
 
+        elif cmd == "/browser":
+            await self._handle_browser_command(command)
         elif cmd in {"/changelog", "/docs", "/feedback"}:
             await self._open_url_command(command, cmd)
         elif cmd in {"/version", "/about"}:
@@ -19663,6 +19729,7 @@ async def run_textual_app(
     model_kwargs: dict[str, Any] | None = None,
     model_explicitly_set: bool = False,
     interpreter_arg: bool | None = None,
+    browser_capability_enabled: bool = False,
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
@@ -19719,6 +19786,8 @@ async def run_textual_app(
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
             forwarded to the app so the disabled-by-sandbox advisory can tell an
             explicit opt-out from a sandbox-suppressed default.
+        browser_capability_enabled: Whether browser middleware is available for
+            per-thread activation.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
@@ -19752,6 +19821,7 @@ async def run_textual_app(
         model_kwargs=model_kwargs,
         model_explicitly_set=model_explicitly_set,
         interpreter_arg=interpreter_arg,
+        browser_capability_enabled=browser_capability_enabled,
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,

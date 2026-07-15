@@ -332,6 +332,20 @@ class TestSandboxArgument:
             parsed = parse_args()
             assert parsed.sandbox == "daytona"
 
+    def test_browser_rejects_remote_sandbox(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            mock_argv("--browser", "--sandbox", "daytona"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--browser is not supported" in err
+        assert "daytona" in err
+        assert "without `--sandbox`" in err
+
     def test_default_when_omitted_is_none_string(self, mock_argv: MockArgvType) -> None:
         with mock_argv("-n", "task"):
             parsed = parse_args()
@@ -2166,6 +2180,32 @@ class TestInstallExtraSubcommand:
         assert "Installed extra 'quickjs'" in text
         assert "tail -f /tmp/deepagents-install.log" in text
 
+    def test_browser_success_recommends_browser_mode(self) -> None:
+        """Browser install confirms Chromium and gives the activation command."""
+        code, _perform, console_mock = self._run_install_capture("browser")
+        assert code == 0
+        text = self._printed_text(console_mock)
+        assert "Installed browser support and Chromium" in text
+        assert "dcode --browser" in text
+
+    def test_browser_runtime_failure_preserves_installed_extra_message(self) -> None:
+        """A phase-two failure does not report the Python extra as rolled back."""
+        code, _perform, console_mock = self._run_install_capture(
+            "browser",
+            perform_return=(
+                False,
+                (
+                    "The browser extra was installed, but Chromium provisioning "
+                    "failed: deps"
+                ),
+            ),
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "Browser provisioning failed" in text
+        assert "browser extra was installed" in text
+        assert "Install failed" not in text
+
     def test_failure_renders_log_path_and_manual_command(self) -> None:
         """A failed install surfaces both the log path and manual script command."""
         code, _perform, console_mock = self._run_install_capture(
@@ -2682,6 +2722,48 @@ class TestWarnInterpreterToolsWithoutInterpreter:
             "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )
+
+
+class TestBrowserModeValidation:
+    """Browser capability is restricted to local interactive sessions."""
+
+    def test_non_interactive_browser_rejected_before_runner(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        run_mock = AsyncMock(return_value=0)
+        with (
+            patch.object(sys, "argv", ["deepagents", "--browser", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive", run_mock
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--browser is only supported in interactive mode" in err
+        assert "/browser" in err
+        run_mock.assert_not_awaited()
+
+    def test_acp_browser_rejected_before_acp_import(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "--acp", "--browser"]),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+        assert "cannot be used with --acp" in capsys.readouterr().err
 
 
 class TestWarnInterpreterDisabledBySandbox:

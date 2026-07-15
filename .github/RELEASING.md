@@ -9,6 +9,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [`deepagents`](https://pypi.org/project/deepagents/) |
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
+| `deepagents-browser` | `libs/browser` | `deepagents-browser` | [`deepagents-browser`](https://pypi.org/project/deepagents-browser/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
 | `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |

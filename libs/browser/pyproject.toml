@@ -1,0 +1,93 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-browser"
+version = "0.0.1"
+description = "Secure browser middleware for Deep Agents (experimental)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["agents", "browser", "deepagents", "langchain", "playwright"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "langchain>=1.3.11,<2.0.0",
+    "langchain-core>=1.4.8,<2.0.0",
+    "langgraph>=1.2.6,<2.0.0",
+    "playwright>=1.49.0,<2.0.0",
+]
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/browser/CHANGELOG.md"
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-socket>=0.8.0",
+    "pytest-timeout>=2.4.0,<3.0.0",
+    "pytest-watcher>=0.6.3,<1.0.0",
+    "ruff>=0.15.20,<0.16.0",
+    "ty>=0.0.54,<1.0.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_browser"]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.rules]
+division-by-zero = "error"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "ISC001"]
+extend-safe-fixes = ["PLR6201"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["deepagents_browser"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = [
+    "ANN001", "ANN201", "ANN202", "ANN003", "ARG001", "ARG002", "A002",
+    "D", "PLR2004", "S101", "SLF001",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

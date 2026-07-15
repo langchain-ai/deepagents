@@ -187,6 +187,7 @@ class TestStartServerAndGetAgent:
         kwargs = mock_generate_langgraph_json.call_args.kwargs
         assert kwargs["graph_ref"] == "deepagents_code.server_graph:make_graph"
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
+        assert kwargs["http_app"] == "deepagents_code._server_lifecycle:app"
 
         # The graph is imported as a package module, so the scaffold must not
         # copy server_graph.py into the runtime workdir (a relic of the old
@@ -397,10 +398,12 @@ class TestStartServerAndGetAgent:
             tmp_path,
             graph_ref="./server_graph.py:make_graph",
             checkpointer_path="./checkpointer.py:create_checkpointer",
+            http_app="deepagents_code._server_lifecycle:app",
         )
         config = json.loads((tmp_path / "langgraph.json").read_text())
         assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
+        assert config["http"]["app"] == "deepagents_code._server_lifecycle:app"
 
 
 class TestWritePyproject:
@@ -516,6 +519,20 @@ class TestServerSession:
             async with server_session(assistant_id="agent") as (agent, server):
                 assert agent is mock_agent
                 assert server is mock_server
+
+    async def test_forwards_browser_capability(self) -> None:
+        mock_server = MagicMock()
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, None),
+        ) as start:
+            async with server_session(assistant_id="agent", enable_browser=True):
+                pass
+
+        start.assert_awaited_once()
+        assert start.await_args is not None
+        assert start.await_args.kwargs["enable_browser"] is True
 
     async def test_stops_server_on_normal_exit(self) -> None:
         """Server is stopped when the context manager exits normally."""

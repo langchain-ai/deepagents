@@ -137,6 +137,7 @@ since that one-liner is the path we promote.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
+_BROWSER_RUNTIME_INSTALL_TIMEOUT = 600  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
 _TERMINATE_WAIT_TIMEOUT = 5  # seconds
@@ -640,7 +641,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
+    value = file_entry.get("upload_time_iso_8601")
     return value if isinstance(value, str) else None
 
 
@@ -1786,6 +1787,98 @@ async def _run_install_subprocess(
     return False, output
 
 
+async def _install_browser_runtime(
+    *,
+    progress: UpgradeProgressCallback | None,
+    log_path: Path | None,
+) -> tuple[bool, str]:
+    """Provision Playwright Chromium in the current dcode tool environment.
+
+    Uses an argv subprocess rather than a shell because every argument is fixed.
+    The browser download is a distinct, bounded phase after the Python extra has
+    been installed. Output is appended to the extra-install log.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path shared with the extra-install phase.
+
+    Returns:
+        `(success, output)` where success is true only for exit code zero.
+    """
+    args = (sys.executable, "-m", "playwright", "install", "chromium")
+    display_cmd = shlex.join(args)
+    if log_path is None:
+        log_path = create_update_log_path()
+
+    output_lines: list[str] = []
+    proc: asyncio.subprocess.Process | None = None
+    log_file: TextIO | None = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("a", encoding="utf-8")
+        log_file.write(f"\n$ {display_cmd}\n")
+        log_file.flush()
+    except OSError:
+        logger.warning(
+            "Could not append browser provisioning output to %s",
+            log_path,
+            exc_info=True,
+        )
+        log_file = None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _read_stream(
+                    proc.stdout,  # ty: ignore[invalid-argument-type]
+                    lines=output_lines,
+                    log_file=log_file,
+                    progress=progress,
+                ),
+                _read_stream(
+                    proc.stderr,  # ty: ignore[invalid-argument-type]
+                    lines=output_lines,
+                    log_file=log_file,
+                    progress=progress,
+                ),
+                proc.wait(),
+            ),
+            timeout=_BROWSER_RUNTIME_INSTALL_TIMEOUT,
+        )
+    except TimeoutError:
+        if proc is not None:
+            proc.kill()
+            await proc.wait()
+        msg = (
+            f"Chromium provisioning timed out after {_BROWSER_RUNTIME_INSTALL_TIMEOUT}s"
+        )
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.write(f"{msg}\n")
+        await _emit_progress(progress, msg)
+        logger.warning(msg)
+        return False, msg
+    except OSError as exc:
+        logger.warning("Failed to provision Chromium", exc_info=True)
+        return False, f"Chromium provisioning failed: {type(exc).__name__}: {exc}"
+    finally:
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.close()
+
+    output = "\n".join(output_lines).strip()
+    if proc.returncode == 0:
+        return True, output
+    logger.warning("Chromium provisioning exited with code %d", proc.returncode)
+    return False, output
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
@@ -2730,7 +2823,9 @@ async def perform_install_extra(
     """Add `extra` to the installed dcode tool environment.
 
     Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
-    --prerelease allow`, preserving any extras that are already installed.
+    --prerelease allow`, preserving any extras that are already installed. For
+    the `browser` extra, a successful package install is followed by bounded
+    Playwright Chromium provisioning in the same tool environment.
     Editable installs are refused — the caller should rerun their
     `uv tool install --editable` command with `--with 'deepagents-code[<extra>]'`
     added so the extra is resolved against the editable source.
@@ -2789,7 +2884,25 @@ async def perform_install_extra(
         ValueError,
     ) as exc:
         return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+    success, output = await _run_install_subprocess(
+        cmd, progress=progress, log_path=log_path
+    )
+    if not success or extra != "browser":
+        return success, output
+
+    await _emit_progress(progress, "Provisioning Chromium for browser support...")
+    runtime_success, runtime_output = await _install_browser_runtime(
+        progress=progress,
+        log_path=log_path,
+    )
+    combined = "\n".join(part for part in (output, runtime_output) if part)
+    if not runtime_success:
+        detail = runtime_output or "Playwright exited without diagnostic output"
+        return False, (
+            "The browser extra was installed, but Chromium provisioning failed: "
+            f"{detail}"
+        )
+    return True, combined
 
 
 async def perform_install_package(

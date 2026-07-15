@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import importlib
 import logging
 import os
 import re
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+    from deepagents_browser import BrowserMiddleware
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
@@ -1427,6 +1429,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    enable_browser: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
@@ -1434,6 +1437,8 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    _register_browser_cleanup: Callable[[Callable[[], Awaitable[None]]], None]
+    | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1525,6 +1530,9 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
+        enable_browser: Make the optional browser middleware available for
+            per-thread activation via `/browser`. The middleware is constructed
+            without launching a browser and is unsupported with remote sandboxes.
         rubric_model: Grader model for `RubricMiddleware`.
 
             A `'provider:model'` string or `BaseChatModel`.
@@ -1544,6 +1552,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        _register_browser_cleanup: Private server lifecycle integration used to
+            register the browser middleware's async cleanup callback.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1553,11 +1563,22 @@ def create_cli_agent(
             - `composite_backend`: `CompositeBackend` for file operations
 
     Raises:
-        ValueError: When `enable_interpreter=True` is paired with a
-            non-`None` `sandbox`, when `settings.interpreter_ptc` contains
-            unknown tool names, or when `interpreter_ptc="all"` is used
-            without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
+        ValueError: When `enable_interpreter=True` or `enable_browser=True` is
+            paired with a non-`None` `sandbox`, browser support is requested for
+            a non-interactive session, or when `interpreter_ptc="all"`
+            is used without `auto_approve` or
+            `interpreter_ptc_acknowledge_unsafe`.
     """
+    if enable_browser and not interactive:
+        msg = "enable_browser=True requires an interactive session"
+        raise ValueError(msg)
+    if enable_browser and sandbox is not None:
+        msg = (
+            "enable_browser=True is not supported with a remote execution sandbox. "
+            "Disable the sandbox or unset enable_browser."
+        )
+        raise ValueError(msg)
+
     tools = tools or []
     effective_cwd = (
         Path(cwd)
@@ -1833,6 +1854,19 @@ def create_cli_agent(
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 
+    browser_middleware: BrowserMiddleware[Any, Any] | None = None
+    browser_consequential_tool_names: set[str] = set()
+    if enable_browser:
+        # Lazy import preserves the argument-parsing startup fast path and keeps
+        # the optional dependency unnecessary unless browser capability is asked for.
+        browser_module = importlib.import_module("deepagents_browser")
+        browser_middleware = browser_module.BrowserMiddleware()
+        if _register_browser_cleanup is not None:
+            _register_browser_cleanup(browser_middleware.aclose)
+        browser_consequential_tool_names = set(
+            browser_middleware.consequential_tool_names
+        )
+
     if enable_interpreter:
         if sandbox is not None:
             msg = (
@@ -1963,6 +1997,22 @@ def create_cli_agent(
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
         agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
+
+    if browser_middleware is not None:
+        # Keep browser last so its state-gated tool surface is applied after the
+        # summarization and rubric middleware. Construction does not launch a
+        # browser; `/browser` activates it in checkpoint state.
+        agent_middleware.append(cast("AgentMiddleware", browser_middleware))
+        if not auto_approve:
+            if interrupt_on is None:
+                interrupt_on = {}
+            browser_interrupt_config: InterruptOnConfig = {
+                "allowed_decisions": ["approve", "reject"],
+                "description": "Perform a consequential browser action.",
+                "when": _should_interrupt_tool_call,
+            }
+            for tool_name in browser_consequential_tool_names:
+                interrupt_on[tool_name] = browser_interrupt_config
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

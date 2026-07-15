@@ -28,6 +28,7 @@ from deepagents_code.update_check import (
     ShadowedDcode,
     ToolRequirementIntrospectionError,
     _extract_release_times,
+    _install_browser_runtime,
     _install_extra_uv_tool_command,
     _latest_from_releases,
     _note_install_baseline,
@@ -3463,6 +3464,107 @@ class TestInstallPackageCommand:
             install_package_command("langchain-custom; touch /tmp/pwned")
 
 
+class TestInstallBrowserRuntime:
+    """Playwright Chromium provisioning uses a fixed, shell-free command."""
+
+    async def test_uses_current_interpreter_and_fixed_playwright_argv(
+        self, tmp_path
+    ) -> None:
+        process = MagicMock()
+        process.stdout.readline = AsyncMock(return_value=b"")
+        process.stderr.readline = AsyncMock(return_value=b"")
+        process.wait = AsyncMock(return_value=0)
+        process.returncode = 0
+        log_path = tmp_path / "install.log"
+        log_path.write_text("extra phase\n", encoding="utf-8")
+
+        with patch(
+            "deepagents_code.update_check.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ) as create_process:
+            success, output = await _install_browser_runtime(
+                progress=None, log_path=log_path
+            )
+
+        assert success is True
+        assert output == ""
+        create_process.assert_awaited_once_with(
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "chromium",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        assert log_path.read_text(encoding="utf-8").startswith("extra phase\n")
+
+    async def test_nonzero_exit_returns_playwright_diagnostics(self, tmp_path) -> None:
+        process = MagicMock()
+        process.stdout.readline = AsyncMock(side_effect=[b"download failed\n", b""])
+        process.stderr.readline = AsyncMock(return_value=b"")
+        process.wait = AsyncMock(return_value=1)
+        process.returncode = 1
+        with patch(
+            "deepagents_code.update_check.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ):
+            success, output = await _install_browser_runtime(
+                progress=None, log_path=tmp_path / "install.log"
+            )
+        assert success is False
+        assert output == "download failed"
+
+    async def test_timeout_kills_provisioning_process(self, tmp_path) -> None:
+        wait_calls = 0
+
+        async def wait() -> int:
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                await asyncio.Event().wait()
+            return 0
+
+        process = MagicMock()
+        process.stdout.readline = AsyncMock(return_value=b"")
+        process.stderr.readline = AsyncMock(return_value=b"")
+        process.wait = wait
+        with (
+            patch(
+                "deepagents_code.update_check.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.update_check._BROWSER_RUNTIME_INSTALL_TIMEOUT",
+                0.001,
+            ),
+        ):
+            success, output = await _install_browser_runtime(
+                progress=None, log_path=tmp_path / "install.log"
+            )
+        assert success is False
+        assert "timed out after 0.001s" in output
+        process.kill.assert_called_once_with()
+        assert wait_calls == 2
+
+    async def test_os_execution_failure_is_distinct(self, tmp_path) -> None:
+        with patch(
+            "deepagents_code.update_check.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            side_effect=OSError("cannot execute interpreter"),
+        ):
+            success, output = await _install_browser_runtime(
+                progress=None, log_path=tmp_path / "install.log"
+            )
+        assert success is False
+        assert output.startswith("Chromium provisioning failed: OSError:")
+        assert "cannot execute interpreter" in output
+
+
 class TestPerformInstallExtra:
     """`perform_install_extra` execution paths."""
 
@@ -3565,6 +3667,99 @@ class TestPerformInstallExtra:
             success, output = await perform_install_extra("quickjs", log_path=log_path)
         assert success is True
         assert output == "ok"
+
+    async def test_browser_provisions_chromium_after_extra_install(self) -> None:
+        """Browser success requires package installation followed by provisioning."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                return_value="uv install browser",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, "extra installed"),
+            ),
+            patch(
+                "deepagents_code.update_check._install_browser_runtime",
+                new_callable=AsyncMock,
+                return_value=(True, "chromium installed"),
+            ) as provision,
+        ):
+            success, output = await perform_install_extra("browser")
+        assert success is True
+        assert output == "extra installed\nchromium installed"
+        provision.assert_awaited_once()
+
+    async def test_browser_does_not_provision_when_extra_install_fails(self) -> None:
+        """A failed Python package phase must not start Playwright provisioning."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                return_value="uv install browser",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(False, "extra failed"),
+            ),
+            patch(
+                "deepagents_code.update_check._install_browser_runtime",
+                new_callable=AsyncMock,
+            ) as provision,
+        ):
+            success, output = await perform_install_extra("browser")
+        assert success is False
+        assert output == "extra failed"
+        provision.assert_not_awaited()
+
+    async def test_browser_provisioning_failure_preserves_phase_boundary(self) -> None:
+        """Report that the extra remains installed when Chromium setup fails."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                return_value="uv install browser",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, "extra installed"),
+            ),
+            patch(
+                "deepagents_code.update_check._install_browser_runtime",
+                new_callable=AsyncMock,
+                return_value=(False, "missing Linux dependencies"),
+            ),
+        ):
+            success, output = await perform_install_extra("browser")
+        assert success is False
+        assert "browser extra was installed" in output
+        assert "Chromium provisioning failed" in output
+        assert "missing Linux dependencies" in output
 
     async def test_uv_receipt_failure_is_reported(self, tmp_path, monkeypatch) -> None:
         """A malformed uv receipt is reported instead of dropping install context."""

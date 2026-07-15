@@ -30,6 +30,7 @@ on:
           - deepagents
           - deepagents-cli
           - deepagents-acp
+          - deepagents-browser
           - deepagents-code
           - deepagents-talon
           - deepagents-evals
@@ -119,6 +120,9 @@ jobs:
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
               ;;
+            deepagents-browser)
+              echo "working-dir=libs/browser" >> $GITHUB_OUTPUT
+              ;;
             deepagents-code)
               echo "working-dir=libs/code" >> $GITHUB_OUTPUT
               ;;
@@ -145,7 +149,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-browser, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac

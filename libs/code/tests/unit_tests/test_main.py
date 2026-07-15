@@ -1496,6 +1496,7 @@ class TestRunTextualCliAsyncMcp:
                 thread_id="thread-123",
                 model_name="openai:gpt-5.5",
                 initial_goal="add refresh tokens",
+                enable_browser=True,
             )
 
         assert result == app_result
@@ -1504,6 +1505,8 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["server_kwargs"] is not None
         assert captured_kwargs["server_kwargs"]["assistant_id"] == "agent"
         assert captured_kwargs["server_kwargs"]["interactive"] is True
+        assert captured_kwargs["server_kwargs"]["enable_browser"] is True
+        assert captured_kwargs["browser_capability_enabled"] is True
         # auto_approve must NOT be in server_kwargs — the interactive server
         # must always compile with full HITL interrupts so Shift+Tab works.
         assert "auto_approve" not in captured_kwargs["server_kwargs"]

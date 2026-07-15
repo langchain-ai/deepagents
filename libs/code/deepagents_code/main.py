@@ -1788,6 +1788,11 @@ def parse_args() -> argparse.Namespace:
         "(skip interactive approval prompt)",
     )
     parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Make browser tools available for per-thread activation with /browser.",
+    )
+    parser.add_argument(
         "--interpreter",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1950,6 +1955,12 @@ def _resolve_and_validate_sandbox(
         and not metadata.supports_sandbox_id
     ):
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
+    if getattr(args, "browser", False):
+        parser.error(
+            f"--browser is not supported with remote sandbox provider "
+            f"'{args.sandbox}'. Use `dcode --browser` without `--sandbox`, or "
+            "remove `--browser` to keep remote sandbox execution."
+        )
 
 
 async def run_textual_cli_async(
@@ -1973,6 +1984,7 @@ async def run_textual_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     enable_interpreter: bool | None = None,
+    enable_browser: bool = False,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
@@ -2026,6 +2038,7 @@ async def run_textual_cli_async(
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
+        enable_browser: Make browser tools available for per-thread activation.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
             forwarded so the app can tell an explicit opt-out from a
             sandbox-suppressed default when surfacing the disabled-by-sandbox
@@ -2106,6 +2119,7 @@ async def run_textual_cli_async(
         "sandbox_setup": sandbox_setup,
         "enable_ask_user": True,
         "enable_interpreter": enable_interpreter,
+        "enable_browser": enable_browser,
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "mcp_config_path": mcp_config_path,
@@ -2140,6 +2154,7 @@ async def run_textual_cli_async(
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
             model_explicitly_set=model_name is not None,
+            browser_capability_enabled=enable_browser,
             interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
         )
@@ -2835,6 +2850,14 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            if getattr(args, "browser", False):
+                sys.stderr.write(
+                    "Error: --browser is only supported in interactive mode and "
+                    "cannot be used with --acp. Launch `dcode --browser` without "
+                    "--acp, or remove --browser.\n"
+                )
+                sys.stderr.flush()
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -2895,6 +2918,17 @@ def cli_main() -> None:
                 "[bold red]Error:[/bold red] --auto-approve is only supported in "
                 "interactive mode. Headless mode already approves non-shell tools; "
                 "use --shell-allow-list to control shell access."
+            )
+            sys.exit(2)
+
+        if getattr(args, "browser", False) and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --browser is only supported in "
+                "interactive mode because browser tools are activated with "
+                "`/browser`. Launch `dcode --browser` and run `/browser` in the "
+                "desired thread, or remove `--browser` when using -n or piped stdin."
             )
             sys.exit(2)
 
@@ -3372,7 +3406,13 @@ def cli_main() -> None:
                     perform_install_extra(extra, log_path=log_path)
                 )
                 if success:
-                    console.print(f"[green]Installed extra '{extra}'.[/green]")
+                    if extra == "browser":
+                        console.print(
+                            "[green]Installed browser support and Chromium.[/green] "
+                            "Relaunch with [cyan]dcode --browser[/cyan]."
+                        )
+                    else:
+                        console.print(f"[green]Installed extra '{extra}'.[/green]")
                     sys.exit(0)
                 # Tail the last 200 chars — uv resolver prints the resolved
                 # error at the end, not the beginning.
@@ -3391,8 +3431,13 @@ def cli_main() -> None:
                     # Keep the install-script command bound above; fall back to a
                     # bare extras command only if that was never set.
                     manual_cmd = manual_cmd or install_extras_command((extra,))
+                failure_label = (
+                    "Browser provisioning failed"
+                    if extra == "browser" and "browser extra was installed" in output
+                    else "Install failed"
+                )
                 console.print(
-                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
+                    f"[bold red]{failure_label}[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
                     f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
                     markup=True,
@@ -3835,6 +3880,7 @@ def cli_main() -> None:
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
                         enable_interpreter=enable_interpreter,
+                        enable_browser=getattr(args, "browser", False),
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                     )

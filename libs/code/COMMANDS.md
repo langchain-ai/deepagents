@@ -8,13 +8,14 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (33)
+## Public (34)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
 | `/auth` | `/connect` | Connect and manage provider and service credentials |
 | `/auto-update` |  | Turn automatic updates on or off |
+| `/browser` |  | Enable browser tools for this thread |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |
 | `/copy` |  | Copy the latest assistant message to clipboard |

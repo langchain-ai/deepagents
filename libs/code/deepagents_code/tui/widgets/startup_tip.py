@@ -20,6 +20,7 @@ _TIPS: dict[str, int] = {
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
+    "Start with --browser, then use /browser to enable browser tools for a thread": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,

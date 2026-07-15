@@ -52,6 +52,17 @@ on:
       agent_timeout_multiplier:
         type: string
         default: "1.0"
+      env_build_timeout_multiplier:
+        # Scales each task's environment.build_timeout_sec (harbor's client-side
+        # wait). Note: it does NOT extend the LangSmith build service's own limit.
+        type: string
+        default: "1.0"
+      override_storage_mb:
+        # Raises the sandbox snapshot filesystem above harbor's 32 GiB floor.
+        # Heavy harbor-index images (big base + layer copies) exhaust 32 GiB and
+        # fail the LangSmith snapshot build; e.g. 65536 = 64 GiB. 0 = don't override.
+        type: string
+        default: "0"
       disable_verification:
         type: boolean
         default: false
@@ -61,6 +72,12 @@ on:
       harbor_package_override:
         type: string
         default: ""
+      judge_models:
+        # Grader model(s) for LLM-judge verifiers (e.g. harbor-index), passed as
+        # JUDGE_MODELS with JUDGE_PROVIDER=openai. Prefer an independent grader,
+        # not the model under test, to avoid self-grading bias.
+        type: string
+        default: "gpt-5.6-luna"
 
 permissions:
   contents: read
@@ -121,6 +138,8 @@ jobs:
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
+      HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
@@ -131,6 +150,7 @@ jobs:
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
+      HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -147,7 +167,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -161,6 +181,9 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
+              # The sandbox authenticates with its own dedicated key (passed via
+              # --environment-kwarg below); tracing/datasets/results use
+              # LANGSMITH_API_KEY (required above).
               [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
               ;;
             *)
@@ -218,7 +241,16 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
+        run: |
+          # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
+          # so newline is the only safe delimiter. Collect into an array and pass
+          # as separate args — never re-split or eval'd, preserving injection
+          # safety — so a single install covers e.g. harbor + harbor-langsmith.
+          specs=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -235,26 +267,34 @@ jobs:
         # dedicated "tau3-subset" LangSmith dataset name.
         if: env.HARBOR_DATASET == 'tau3-subset'
         run: |
-          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
-          # Fail loudly if the filter resolved to the wrong size. An import error
-          # already aborts via `set -e` (a bare assignment propagates the command
-          # substitution's exit code — do not switch to `local`/`export`, which
-          # swallow it), but a successful-but-empty/partial result would be
-          # written verbatim and silently run a different set than the promised
-          # "30-task subset" — an empty value means NO filter, i.e. the FULL
-          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
-          # invariant the unit tests pin; change both together.
-          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
-          if [ "$task_count" -ne 30 ]; then
-            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
-            exit 1
+          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+            # A caller-provided filter (e.g. profile=lite) wins: keep it, skip the
+            # full tau3_subset expansion and its 30-task invariant. Still rewrite
+            # the dataset ref + LangSmith name below.
+            include_tasks="$HARBOR_INCLUDE_TASKS"
+            echo "tau3-subset: using caller include_tasks ($(printf '%s' "$include_tasks" | wc -w | tr -d ' ') tasks)"
+          else
+            include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+            # Fail loudly if the filter resolved to the wrong size. An import error
+            # already aborts via `set -e` (a bare assignment propagates the command
+            # substitution's exit code — do not switch to `local`/`export`, which
+            # swallow it), but a successful-but-empty/partial result would be
+            # written verbatim and silently run a different set than the promised
+            # "30-task subset" — an empty value means NO filter, i.e. the FULL
+            # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
+            # invariant the unit tests pin; change both together.
+            task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
+            if [ "$task_count" -ne 30 ]; then
+              echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
+              exit 1
+            fi
+            echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
           fi
           {
             echo "HARBOR_DATASET=sierra-research/tau3-bench"
             echo "HARBOR_INCLUDE_TASKS=$include_tasks"
             echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
           } >> "$GITHUB_ENV"
-          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
 
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports
@@ -294,7 +334,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -345,6 +385,19 @@ jobs:
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
             exit 1
+          fi
+          if ! [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
+            echo "::error::Invalid env_build_timeout_multiplier (must be a positive decimal): $HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER"
+            exit 1
+          fi
+          # Non-negative integer; 0 means "don't override" (use the task's default).
+          if ! [[ "$HARBOR_OVERRIDE_STORAGE_MB" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid override_storage_mb (must be a non-negative integer): $HARBOR_OVERRIDE_STORAGE_MB"
+            exit 1
+          fi
+          storage_flag=()
+          if [ "$HARBOR_OVERRIDE_STORAGE_MB" != "0" ]; then
+            storage_flag=(--override-storage-mb "$HARBOR_OVERRIDE_STORAGE_MB")
           fi
           # Allowlist the boolean; only literal true/false accepted.
           verification_flag=()
@@ -504,6 +557,18 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
+          # Give the LangSmith sandbox a dedicated credential, isolated from the
+          # LANGSMITH_API_KEY used for tracing/datasets/results. Passed as a ${VAR}
+          # template (single-quoted so bash keeps the literal); harbor resolves it
+          # from the host env at construction, so the value stays off argv and out
+          # of the serialized job/trial config. Requires a harbor build with
+          # --environment-kwarg ${VAR} support (harbor#2344); the pinned harbor
+          # passes the literal template through and the sandbox fails auth, so a
+          # langsmith-sandbox run must set harbor_package_override until #2344 ships.
+          env_kwarg_args=()
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_kwarg_args+=(--environment-kwarg 'langsmith_api_key=${LANGSMITH_SANDBOX_API_KEY}')
+          fi
           case "$HARBOR_AGENT_IMPL" in
             dcode)
               HARBOR_AGENT_GRAPH=deepagent
@@ -553,6 +618,18 @@ jobs:
           )
           verifier_env_args=(
             --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
+            # harbor-index (and other) verifiers are OpenAI LLM judges: they need
+            # the key, not just the base URL, or they exit without writing a
+            # reward file. Mirrors the always-on base URL above; forwards empty
+            # when the job wasn't granted a key (harmless for non-judge verifiers).
+            --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}'
+            # native_judge config the harbor-index verifiers require ("set by the
+            # job yaml"); without these the judge raises JudgeConfigurationError
+            # and writes no reward. Non-judge verifiers ignore the unused vars.
+            --verifier-env 'JUDGE_PROVIDER=openai'
+            --verifier-env "JUDGE_MODELS=$HARBOR_JUDGE_MODELS"
+            --verifier-env 'JUDGE_REPEATS=1'
+            --verifier-env 'JUDGE_CONCURRENCY=1'
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -588,14 +665,17 @@ jobs:
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
+            --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             "${force_build_flag[@]}" \
+            "${storage_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
             "${verifier_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
+            "${env_kwarg_args[@]}" \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \

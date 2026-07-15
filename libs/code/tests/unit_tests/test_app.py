@@ -22325,6 +22325,48 @@ class TestMCPLoginCommand:
                 await pilot.pause()
             restart.assert_awaited_once_with("pending login")
 
+    @pytest.mark.timeout(15)
+    async def test_viewer_ctrl_r_keeps_chat_input_responsive(self) -> None:
+        """Ctrl+R reconnect must not freeze the chat input.
+
+        Regression guard: the reconnect was scheduled with `call_later`, which
+        awaits the coroutine inside the app message pump. While
+        `_reconnect_from_viewer_safe` (i.e. the multi-second server restart) ran,
+        the pump could not forward key events and the chat input was blocked
+        until reconnection completed. Running the reconnect as a detached task
+        keeps the pump free, so typing lands even while the reconnect is
+        in-flight. Without the fix this test times out (pump stalled on the
+        gated coroutine).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+
+            gate = asyncio.Event()
+
+            async def _blocked_reconnect() -> None:
+                await gate.wait()
+
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_reconnect_from_viewer_safe", new=_blocked_reconnect
+            ):
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                # The reconnect is now in-flight and gated open; the pump must
+                # still deliver keystrokes to the chat input.
+                await pilot.press("h", "i")
+                await pilot.pause()
+                typed = app._chat_input.value
+                gate.set()
+                await pilot.pause()
+            assert typed == "hi"
+
     async def test_prompt_mcp_reconnect_pilot_driven_happy_path(self) -> None:
         """End-to-end: real modal mounts, `enter` keypress, restart fires.
 

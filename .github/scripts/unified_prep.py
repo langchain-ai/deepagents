@@ -12,13 +12,12 @@ Concurrency invariants:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
 import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
 
@@ -43,19 +42,16 @@ CATEGORY_MAP: dict[str, dict] = {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
         "agent_impl": "bare",
-        "ls_dataset": "harbor-index",
     },
     "conversation": {
         "dataset": "tau3-subset",
         "dataset_path": "",
         "agent_impl": "tau3",
-        "ls_dataset": "tau3-subset",
     },
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
         "agent_impl": "bare",
-        "ls_dataset": "context-retrieval-evals",
     },
 }
 
@@ -69,6 +65,10 @@ DEFAULT_AGENT_IMPL = "bare"
 
 KNOWN_AGENT_IMPLS = DEEPAGENT_IMPLS | {"tau3"}
 """Every harness a category may pin (deep-agent harnesses plus `tau3`)."""
+
+# Run profiles: "full" = every task in each category; "lite" = the frozen
+# high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
+PROFILES = {"full", "lite"}
 
 # A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
 # category ineligible for the override *and* run it on a nonexistent harness.
@@ -116,17 +116,6 @@ def parse_int_input(
     return value
 
 
-def slugify(spec: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "-", spec).strip("-").lower()
-
-
-def _short_hash(value: str) -> str:
-    # slugify is lossy (e.g. "foo/bar" and "foo-bar" collapse to the same slug),
-    # so distinct specs can produce identical names. Append a short hash of the
-    # raw value to keep dataset/artifact names unique.
-    return hashlib.sha256(value.encode()).hexdigest()[:8]
-
-
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
@@ -148,6 +137,7 @@ def build_provider_matrices(
     n_shards_by_cat: dict[str, int],
     *,
     agent_impl: str | None = None,
+    profile: str = "full",
 ) -> dict[str, list[dict]]:
     """Cross-product models and categories into per-provider matrix entries.
 
@@ -162,6 +152,9 @@ def build_provider_matrices(
             default only for categories already pinned to a deep-agent harness
             (a category pinned to a non-deep-agent harness such as `tau3` is
             never overridden).
+        profile: `"full"` runs every task in each category; `"lite"` runs the
+            frozen high-signal subset from `lite_tasks.py` (fewer tasks, full
+            rollouts) and shards it one task per shard.
 
     Returns:
         A mapping of provider to its list of matrix entries.
@@ -189,6 +182,19 @@ def build_provider_matrices(
                 if agent_impl and cm["agent_impl"] in DEEPAGENT_IMPLS
                 else cm["agent_impl"]
             )
+            # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks).
+            # One task per shard: `shard_parallel` (the leaf's matrix max-parallel)
+            # is the number of concurrent runner slots, and GitHub pulls the next
+            # single-task shard in the instant one finishes. That gives dynamic
+            # load-balancing across runners -- the long pole is the slowest single
+            # task, not a static bucket -- and scatters each task's image onto its
+            # own runner so heavy images never concentrate and blow the disk.
+            # Bounded by shard_matrix.MAX_SHARDS (and its 256-job matrix guard).
+            include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
+            n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
+            if include:
+                n_tasks = len(include.split())
+                n_shards = min(n_tasks, shard_matrix.MAX_SHARDS)
             entry = {
                 "model": spec,
                 "provider": prov,
@@ -196,10 +202,22 @@ def build_provider_matrices(
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
                 "agent_impl": resolved_impl,
-                # Per-model datasets isolate runs; unified_summary is the
-                # cross-model comparison surface.
-                "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
-                "n_shards": n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat]),
+                "include_tasks": include,
+                # Empty: the leaf derives the canonical shared dataset name per
+                # category (harbor-index/harbor-index-1.0, tau3-subset, local/...)
+                # and a stable per-run experiment name, so a model's shards attach
+                # to the one shared dataset. NOTE: consolidating those shards into a
+                # SINGLE experiment per model needs harbor > 0.1.1. Released
+                # harbor-langsmith==0.1.1 suffixes every shard's experiment with
+                # "-{job.id[:8]}" (one experiment per shard); harbor main honors the
+                # explicit experiment_name _harbor_run.yml sets and reuses the
+                # session across shards. Until a fixed release ships, set the
+                # `harbor_package_override` input to a harbor build with that fix,
+                # e.g. commit af2e8629e95c2e9f487f7a2ba87c1e25b531a55b (see that
+                # input's description for the full pip specs). The GH-aggregated
+                # unified_summary is the cross-model surface regardless.
+                "langsmith_dataset": "",
+                "n_shards": n_shards,
                 "shard_parallel": shard_parallel,
             }
             matrices.setdefault(prov, []).append(entry)
@@ -257,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
         or DEFAULT_AGENT_IMPL
     )
 
+    profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
+    if profile not in PROFILES:
+        raise SystemExit(
+            f"UNIFIED_PROFILE must be one of {sorted(PROFILES)}, got {profile!r}"
+        )
+
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
@@ -296,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         shard_parallel,
         n_shards_by_cat,
         agent_impl=agent_impl,
+        profile=profile,
     )
 
     outputs: dict[str, object] = {

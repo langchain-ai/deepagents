@@ -17227,9 +17227,21 @@ class DeepAgentsApp(App):
         def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
             if result == MCP_VIEWER_RECONNECT_REQUEST:
-                # `action_reconnect` gates dismiss on pending state, so
-                # `force=False` is correct.
-                self.call_later(self._reconnect_from_viewer_safe)
+                # Run the reconnect as a detached task, NOT via `call_later`.
+                # `call_later` awaits the coroutine inside the app's message
+                # pump, so `_respawn_server`'s multi-second `server_proc.restart()`
+                # would stall the pump — key events stop being forwarded and the
+                # chat input is frozen ("blocked") for the whole reconnect.
+                # `asyncio.create_task` keeps the pump free (mirrors the
+                # force-reconnect confirm path), so input stays responsive:
+                # keystrokes stay live, and any message the user submits while
+                # `_connecting` is queued and drained once `ServerReady` fires.
+                # `_reconnect_from_viewer_safe` handles its own errors;
+                # `_log_task_exception` surfaces anything unexpected.
+                # `action_reconnect` gates dismiss on pending state, so the
+                # implicit `force=False` reconnect is correct.
+                task = asyncio.create_task(self._reconnect_from_viewer_safe())
+                task.add_done_callback(_log_task_exception)
                 return
             if result:
                 # User picked an unauthenticated server — start login.
@@ -17242,10 +17254,13 @@ class DeepAgentsApp(App):
     async def _reconnect_from_viewer_safe(self) -> None:
         """Run the post-viewer reconnect and surface unexpected failures.
 
-        `call_later` schedules this on Textual's message pump, which
-        logs but does not display exceptions. Re-checks pending state
-        so a flip between dismiss and the pump tick silently no-ops
-        instead of degrading to the CLI no-op notice.
+        Scheduled via `asyncio.create_task` from `_show_mcp_viewer`'s
+        dismiss callback so the reconnect runs detached from the message
+        pump; `_log_task_exception` logs any escaped error, and this
+        wrapper additionally catches failures to display an `ErrorMessage`.
+        Re-checks pending state so a flip between the viewer dismiss and
+        this task starting silently no-ops instead of degrading to the
+        CLI no-op notice.
         """
         if not self._pending_mcp_reconnect:
             return

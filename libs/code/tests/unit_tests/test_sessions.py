@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -351,18 +351,66 @@ class TestThreadFunctions:
             cwd = asyncio.run(sessions.get_thread_cwd("thread-empty"))
             assert cwd is None
 
-    def test_delete_thread(self, temp_db):
+    def test_delete_thread(self, temp_db, monkeypatch, tmp_path):
         """Delete thread removes thread."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("thread1"))
             assert result is True
             assert asyncio.run(sessions.thread_exists("thread1")) is False
 
-    def test_delete_thread_not_found(self, temp_db):
+    def test_delete_thread_not_found(self, temp_db, monkeypatch, tmp_path):
         """Delete thread returns False for non-existing thread."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("nonexistent"))
             assert result is False
+
+    def test_delete_thread_cleans_offloaded_history(
+        self, temp_db, monkeypatch, tmp_path
+    ):
+        """Deleting a thread removes its offloaded conversation history."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "thread1.md"
+        archive.write_text("history")
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            result = asyncio.run(sessions.delete_thread("thread1"))
+            assert result is True
+        assert not archive.exists()
+
+    def test_delete_thread_succeeds_when_history_cleanup_fails(
+        self, temp_db, monkeypatch, tmp_path
+    ):
+        """Checkpoint deletion drives the result; history cleanup is best-effort."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # `delete_thread` imports the helper from `offload` at call time, so
+        # patching it there simulates a failed (but swallowed) cleanup.
+        from deepagents_code import offload
+
+        monkeypatch.setattr(
+            offload, "delete_offloaded_history", MagicMock(return_value=False)
+        )
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            result = asyncio.run(sessions.delete_thread("thread1"))
+        assert result is True
+
+    def test_delete_thread_removes_orphan_archive_without_checkpoints(
+        self, temp_db, monkeypatch, tmp_path
+    ):
+        """A thread with no checkpoints still has its orphaned archive cleaned."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "orphan-thread.md"
+        archive.write_text("history")
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            result = asyncio.run(sessions.delete_thread("orphan-thread"))
+        # No checkpoint rows existed, so the thread is reported "not found"...
+        assert result is False
+        # ...but its stranded archive is removed regardless.
+        assert not archive.exists()
 
 
 class TestGetCheckpointer:

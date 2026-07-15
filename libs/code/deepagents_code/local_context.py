@@ -9,6 +9,7 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from typing import (
@@ -797,7 +798,7 @@ class LocalContextMiddleware(AgentMiddleware):
         backend = self.backend
         if not (
             isinstance(backend, _AsyncExecutableBackend)
-            and asyncio.iscoroutinefunction(backend.aexecute)
+            and inspect.iscoroutinefunction(backend.aexecute)
         ):
             try:
                 return await asyncio.to_thread(self._run_detect_script)

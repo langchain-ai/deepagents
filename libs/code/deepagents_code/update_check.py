@@ -1649,6 +1649,18 @@ async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
             proc.kill()
     with suppress(OSError, TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+    # Reaping the process is not enough: when this cleanup runs after we stopped
+    # draining stdout/stderr (timeout/cancellation), those pipes never reach EOF,
+    # so the pipe transports — and the parent subprocess transport — stay open
+    # until garbage collection. If the event loop has closed by then,
+    # `BaseSubprocessTransport.__del__` retries the close on a dead loop and
+    # raises "Event loop is closed" (surfaced as PytestUnraisableExceptionWarning
+    # under pytest). Close it eagerly while the loop is still alive. `_transport`
+    # is the only handle asyncio exposes, and close() must not break teardown.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        with suppress(Exception):
+            transport.close()
 
 
 async def _run_install_subprocess(

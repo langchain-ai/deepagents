@@ -446,6 +446,12 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
+      # test_dcode_release_notes.py shells out to `node --test`; pin Node so the
+      # helper-script tests don't rely on whatever the runner image preinstalls.
+      - name: "🟢 Setup Node"
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
       - name: "📦 Install Dependencies"
         run: python -m pip install packaging pyyaml pytest
       - name: "🔍 Check workflow helper scripts"

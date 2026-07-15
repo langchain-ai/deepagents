@@ -91,6 +91,12 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     categories = _indented_block(dispatch, "      categories:")
     assert 'default: "autonomous,conversation,context"' in categories
 
+    # The deep-agents harness for autonomous/context defaults to bare.
+    agent_impl = _indented_block(dispatch, "      agent_impl:")
+    assert 'default: "bare"' in agent_impl
+    assert "- bare" in agent_impl
+    assert "- dcode" in agent_impl
+
     # Exactly one reusable-workflow call: the flat-pool `eval` job (see
     # test_eval_job_uses_single_flat_pool_matrix below for its shape).
     reusable_call = "uses: ./.github/workflows/_harbor_run.yml"
@@ -105,6 +111,13 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     prep_job = _indented_block(workflow, "  prep:")
     assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in prep_job
     assert "run: python .github/scripts/unified_prep.py" in prep_job
+
+    # The run-configuration summary runs even when prep fails and writes to the
+    # job summary, so every dispatch records what it was asked to run.
+    assert '- name: "📝 Summarize dispatch inputs"' in prep_job
+    assert "if: ${{ always() }}" in prep_job
+    assert 'echo "## Unified evals — run configuration"' in prep_job
+    assert '} >> "$GITHUB_STEP_SUMMARY"' in prep_job
 
     prep_source = PREP_SCRIPT.read_text()
     conversation = _indented_block(prep_source, '    "conversation": {')

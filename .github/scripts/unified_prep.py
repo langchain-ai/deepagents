@@ -49,7 +49,7 @@ CATEGORY_MAP: dict[str, dict] = {
     "autonomous": {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
-        "agent_impl": "dcode",
+        "agent_impl": "bare",
     },
     "conversation": {
         "dataset": "tau3-subset",
@@ -59,13 +59,29 @@ CATEGORY_MAP: dict[str, dict] = {
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
-        "agent_impl": "dcode",
+        "agent_impl": "bare",
     },
 }
 
 # Harnesses selectable for the code categories (autonomous, context) via the
 # `agent_impl` input. Conversation is always tau3 and is never overridden.
 CODE_AGENT_IMPLS = {"dcode", "bare"}
+
+# Harness used when the `agent_impl` input (UNIFIED_AGENT_IMPL) is unset or blank.
+DEFAULT_AGENT_IMPL = "bare"
+
+# Every harness a category may pin in CATEGORY_MAP (code harnesses plus tau3).
+KNOWN_AGENT_IMPLS = CODE_AGENT_IMPLS | {"tau3"}
+
+# A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
+# category ineligible for the override and route it to a nonexistent harness, so
+# validate at import. raise (not assert): asserts are stripped under `python -O`.
+if not all(cm["agent_impl"] in KNOWN_AGENT_IMPLS for cm in CATEGORY_MAP.values()):
+    raise RuntimeError(
+        f"every CATEGORY_MAP agent_impl must be one of {sorted(KNOWN_AGENT_IMPLS)}"
+    )
+if DEFAULT_AGENT_IMPL not in CODE_AGENT_IMPLS:
+    raise RuntimeError(f"DEFAULT_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}")
 
 # Run profiles: "full" = every task in each category; "lite" = the frozen
 # high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
@@ -173,7 +189,7 @@ def build_flat_matrix(
     model: str,
     categories: list[str],
     tasks_by_cat: dict[str, list[str]],
-    dcode_impl: str = "dcode",
+    code_impl: str = DEFAULT_AGENT_IMPL,
 ) -> list[dict]:
     """One flat matrix of single-`harbor run` shards spanning all categories.
 
@@ -202,7 +218,11 @@ def build_flat_matrix(
     entries: list[dict] = []
     for cat in categories:
         cm = CATEGORY_MAP[cat]
-        agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
+        # The override selects the code harness (bare/dcode); a category pinned
+        # to a non-code harness (tau3) is never overridden.
+        agent_impl = (
+            code_impl if cm["agent_impl"] in CODE_AGENT_IMPLS else cm["agent_impl"]
+        )
         cat_budget = budgets.get(cat, shard_matrix.MAX_SHARDS)
         for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, []), cat_budget):
             entries.append(
@@ -257,12 +277,12 @@ def main(argv: list[str] | None = None) -> int:
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
 
-    # Empty defaults to "dcode" (the historical per-category default).
-    dcode_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or "dcode"
-    if dcode_impl not in CODE_AGENT_IMPLS:
+    # Empty defaults to the bare create_deep_agent harness for the code categories.
+    code_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or DEFAULT_AGENT_IMPL
+    if code_impl not in CODE_AGENT_IMPLS:
         raise SystemExit(
             f"UNIFIED_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}, "
-            f"got {dcode_impl!r}"
+            f"got {code_impl!r}"
         )
 
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
@@ -320,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             "model": m,
             "slug": _slug(m),
             "flat_matrix": json.dumps(
-                {"include": build_flat_matrix(m, categories, tasks_by_cat, dcode_impl)},
+                {"include": build_flat_matrix(m, categories, tasks_by_cat, code_impl)},
                 separators=(",", ":"),
             ),
         }

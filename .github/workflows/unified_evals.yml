@@ -12,12 +12,12 @@ on:
         type: string
         default: "autonomous,conversation,context"
       agent_impl:
-        description: "Harness for the code categories (autonomous, context): 'dcode' (Deep Agents Code CLI) or 'bare' (bare create_deep_agent). Conversation always uses tau3."
+        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
         type: choice
-        default: "dcode"
+        default: "bare"
         options:
-          - dcode
           - bare
+          - dcode
       profile:
         description: "Task scope: 'full' (every task) or 'lite' (frozen high-signal subset from lite_tasks.py — fewer tasks, full rollouts)."
         type: choice
@@ -176,6 +176,67 @@ jobs:
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
         run: python .github/scripts/unified_prep.py
+
+      # A single place to see exactly what a dispatch ran with — the raw inputs
+      # plus the values prep derived from them (resolved model list, and the
+      # derived shard-pool parallelism). Runs even if the parse step failed, so a
+      # bad dispatch still shows what was requested. Values are passed via env
+      # (never interpolated into the script) so free-form inputs can't inject.
+      - name: "📝 Summarize dispatch inputs"
+        if: ${{ always() }}
+        env:
+          IN_MODELS: ${{ inputs.models }}
+          RESOLVED_MODELS: ${{ steps.p.outputs.models }}
+          IN_CATEGORIES: ${{ inputs.categories }}
+          RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
+          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_PROFILE: ${{ inputs.profile }}
+          IN_ROLLOUTS: ${{ inputs.rollouts }}
+          IN_CONCURRENCY: ${{ inputs.concurrency }}
+          MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
+          MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
+          IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          IN_FORCE_BUILD: ${{ inputs.force_build }}
+          HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
+        run: |
+          # Never echo the override spec: uv accepts authenticated specs
+          # (e.g. git+https://user:token@host/repo.git) and this summary is
+          # public, so report only whether an override was set.
+          override_status="(pinned)"
+          [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
+
+          # RESOLVED_MODELS is a JSON array; render it as a plain comma list.
+          resolved_models="${RESOLVED_MODELS:-(prep did not complete)}"
+          resolved_models="${resolved_models#[}"
+          resolved_models="${resolved_models%]}"
+          resolved_models="${resolved_models//\"/}"
+
+          # agent_impl only affects the autonomous/context (deep-agents)
+          # categories. When neither ran, the value is inert — flag it rather
+          # than imply a harness was used. An empty RESOLVED_CATEGORIES means
+          # prep didn't complete, so report the requested value as-is.
+          agent_impl_note=""
+          case "${RESOLVED_CATEGORIES}" in
+            *'"autonomous"'* | *'"context"'* | '') ;;
+            *) agent_impl_note=" — not applicable (no autonomous/context category selected)" ;;
+          esac
+          {
+            echo "## Unified evals — run configuration"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| models (requested) | \`${IN_MODELS}\` |"
+            echo "| models (resolved) | \`${resolved_models}\` |"
+            echo "| categories | \`${IN_CATEGORIES}\` |"
+            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| profile | \`${IN_PROFILE}\` |"
+            echo "| rollouts | \`${IN_ROLLOUTS}\` |"
+            echo "| concurrency | \`${IN_CONCURRENCY}\` |"
+            echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
+            echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
+            echo "| force_build | \`${IN_FORCE_BUILD}\` |"
+            echo "| harbor_package_override | \`${override_status}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   eval:
     name: "🚀 Evaluate (${{ matrix.model }})"

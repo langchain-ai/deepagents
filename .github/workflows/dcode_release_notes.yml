@@ -1,0 +1,440 @@
+# Draft and apply curated release notes for ready deepagents-code release PRs.
+# All automation runs from a trusted `main` checkout (`trusted-source`); the ambient
+# GITHUB_TOKEN is read-only for contents. Release PR content is read only through
+# GitHub's API at the validated commit SHA and treated as untrusted data; it is
+# never checked out or executed. Drafting is a single request to a fixed model API:
+# untrusted text is never given filesystem, shell, or network tools, and only the
+# selected provider key is present in that process. Repository mutations —
+# curated-notes comments, PR-body updates, and a
+# non-force Git Data API update to the release-please branch — are performed only by
+# specific helper steps that receive a short-lived GitHub App token. (The validate job's
+# permission/readiness feedback comments use the default GITHUB_TOKEN.)
+
+name: "📝 Curate dcode release notes"
+
+on:
+  pull_request_target:
+    types: [ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dcode-release-notes-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release-notes command
+    # Skip the noise: run only for ready_for_review PR events, or PR comments that
+    # mention the bot AND come from a repo insider. The author_association filter
+    # stops an external drive-by mention from spawning a run (Actions-minute burn)
+    # and mirrors the in-script FEEDBACK_ASSOCIATIONS gate; validateTrigger still
+    # re-checks the exact command and write permission, so this only drops comments
+    # that could never have triggered an action.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@dcode-release-bot') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    outputs:
+      should-run: ${{ steps.validate.outputs.should-run }}
+      command: ${{ steps.validate.outputs.command }}
+      number: ${{ steps.validate.outputs.number }}
+      version: ${{ steps.validate.outputs.version }}
+      head: ${{ steps.validate.outputs.head }}
+      branch: ${{ steps.validate.outputs.branch }}
+    steps:
+      - name: Checkout trusted automation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Validate event, PR, and maintainer permission
+        id: validate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+        with:
+          script: |
+            const { validateTrigger } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            const result = await validateTrigger({
+              github,
+              context,
+              core,
+              botLogin: process.env.BOT_LOGIN,
+              botId: process.env.BOT_ID,
+            });
+            core.setOutput('should-run', String(result.shouldRun === true));
+            for (const key of ['command', 'number', 'version', 'head', 'branch']) {
+              core.setOutput(key, result[key] ?? '');
+            }
+
+      # A transient error while validating an insider's manual @dcode-release-bot
+      # command would otherwise leave only a red job in the Actions tab; surface it
+      # on the PR so the maintainer who ran the command knows to retry. Scoped to the
+      # manual (issue_comment) path so a transient failure on an unrelated
+      # ready_for_review PR does not draw a comment, and best-effort so it can never
+      # mask the underlying failure that already reds the job.
+      - name: Comment on validation failure
+        if: ${{ failure() && github.event_name == 'issue_comment' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            try {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.payload.issue.number,
+                body: 'Could not validate the `@dcode-release-bot` command because of a workflow error; see the run logs and try the command again.',
+              });
+            } catch (error) {
+              core.warning(`Could not post the validation-failure comment: ${error instanceof Error ? error.message : String(error)}`);
+            }
+
+  draft:
+    name: Draft curated release notes
+    needs: validate
+    if: needs.validate.outputs.should-run == 'true' && needs.validate.outputs.command == 'draft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-dcode
+    permissions:
+      contents: read
+    steps:
+      - name: Generate release bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Checkout trusted automation
+        id: checkout-trusted
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Prepare isolated drafting input
+        id: prepare
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.validate.outputs.number }}
+          PR_HEAD: ${{ needs.validate.outputs.head }}
+        with:
+          script: |
+            const { prepareDraft } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            try {
+              const result = await prepareDraft({
+                github,
+                ...context.repo,
+                number: Number(process.env.PR_NUMBER),
+                expectedHead: process.env.PR_HEAD,
+                runnerTemp: process.env.RUNNER_TEMP,
+              });
+              for (const [key, value] of Object.entries(result)) core.setOutput(key, value);
+            } catch (error) {
+              // Record the reason so the failure-comment step can surface it on the
+              // PR instead of the maintainer having to open the Actions logs.
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
+      # Pin Node so the drafting helper (which relies on global fetch and
+      # AbortSignal.timeout) doesn't depend on whatever the runner image
+      # preinstalls; matches the version the helper tests run under in ci.yml.
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Draft polished release notes without model tools
+        id: draft-model
+        continue-on-error: true
+        env:
+          MODEL_SPEC: ${{ vars.DCODE_RELEASE_MODEL }}
+          # Put only the configured provider's credential in this process. The
+          # deterministic helper sends one request to a fixed provider endpoint;
+          # model output is never interpreted as a tool call or URL.
+          MODEL_API_KEY: >-
+            ${{ startsWith(vars.DCODE_RELEASE_MODEL, 'openai:') && secrets.OPENAI_API_KEY ||
+                startsWith(vars.DCODE_RELEASE_MODEL, 'anthropic:') && secrets.ANTHROPIC_API_KEY ||
+                startsWith(vars.DCODE_RELEASE_MODEL, 'google_genai:') && secrets.GOOGLE_API_KEY ||
+                '' }}
+          INPUT_FILE: ${{ steps.prepare.outputs.input }}
+          OUTPUT_FILE: ${{ steps.prepare.outputs.output }}
+        run: node ./trusted-source/.github/scripts/draft-dcode-release-notes.js
+
+      - name: Post bot-authored curated draft
+        id: post
+        if: steps.draft-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRAFT_STATE: ${{ steps.prepare.outputs.state }}
+          DRAFT_OUTPUT: ${{ steps.prepare.outputs.output }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { postDraft } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            try {
+              await postDraft({
+                github,
+                ...context.repo,
+                stateFile: process.env.DRAFT_STATE,
+                outputFile: process.env.DRAFT_OUTPUT,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+              });
+            } catch (error) {
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
+      # Runs for any non-success in prepare/agent/post, including a hard failure in
+      # `prepare` (which would otherwise skip a plain `success()`-gated step and
+      # leave the maintainer with no PR feedback). `!cancelled()` keeps it firing
+      # after an earlier step failed the job.
+      - name: Comment on drafting failure
+        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.draft-model.outcome != 'success' || steps.post.outcome != 'success') }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.validate.outputs.number }}
+          PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
+          POST_ERROR: ${{ steps.post.outputs.error }}
+          DRAFT_OUTCOME: ${{ steps.draft-model.outcome }}
+          CHECKOUT_TRUSTED_OUTCOME: ${{ steps.checkout-trusted.outcome }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            const details = process.env.PREPARE_ERROR
+              || process.env.POST_ERROR
+              || (process.env.CHECKOUT_TRUSTED_OUTCOME !== 'success'
+                ? 'Checking out the trusted automation failed; see the workflow logs.'
+                : `The drafting step did not succeed (outcome: ${process.env.DRAFT_OUTCOME || 'skipped'}); see the workflow logs.`);
+            try {
+              const { postDraftFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+              await postDraftFailure({
+                github,
+                ...context.repo,
+                number,
+                head: process.env.PR_HEAD,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+                message: details,
+              });
+            } catch (error) {
+              // The trusted checkout can itself fail, leaving trusted-source/ (and the
+              // helper module) absent so the require above throws — exactly the case
+              // the CHECKOUT_TRUSTED_OUTCOME branch above is written to report. Fall
+              // back to a direct comment (no bot-identity check or per-head dedup) so
+              // the maintainer still gets PR feedback instead of only a red run.
+              core.warning(`Falling back to a direct drafting-failure comment: ${error instanceof Error ? error.message : String(error)}`);
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: number,
+                body: `Automatic release-note drafting failed.\n\n${details}\n\nAfter resolving the issue, a maintainer should run \`@dcode-release-bot draft\` again.`,
+              });
+            }
+
+      - name: Fail when drafting or comment publication failed
+        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.draft-model.outcome != 'success' || steps.post.outcome != 'success') }}
+        run: |
+          echo "::error::Curated release-note drafting failed; see the PR comment and earlier step logs."
+          exit 1
+
+  apply:
+    name: Apply curated release notes
+    needs: validate
+    if: needs.validate.outputs.should-run == 'true' && needs.validate.outputs.command == 'apply'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-dcode
+    permissions:
+      contents: read
+    steps:
+      - name: Generate release bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Checkout trusted automation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Validate override and prepare changelog/body edits
+        id: prepare-apply
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.validate.outputs.number }}
+          PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          APPLY_STATE: ${{ runner.temp }}/dcode-release-apply.json
+          CHANGELOG_FILE: ${{ runner.temp }}/dcode-release-changelog.md
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { prepareApply } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            try {
+              await prepareApply({
+                github,
+                ...context.repo,
+                number: Number(process.env.PR_NUMBER),
+                expectedHead: process.env.PR_HEAD,
+                changelogFile: process.env.CHANGELOG_FILE,
+                stateFile: process.env.APPLY_STATE,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+              });
+              core.setOutput('state', process.env.APPLY_STATE);
+              core.setOutput('changelog', process.env.CHANGELOG_FILE);
+            } catch (error) {
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
+      - name: Create and publish the apply commit without rewriting history
+        id: commit
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
+          CHANGELOG_FILE: ${{ steps.prepare-apply.outputs.changelog }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { createApplyCommit } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            try {
+              const result = await createApplyCommit({
+                github,
+                ...context.repo,
+                stateFile: process.env.APPLY_STATE,
+                changelogFile: process.env.CHANGELOG_FILE,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+              });
+              core.setOutput('applied-head', result.appliedHead);
+            } catch (error) {
+              // Record the reason so the failure-comment step can surface it on the
+              // PR instead of the maintainer having to open the Actions logs.
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
+      - name: Update PR preview and publish applied metadata
+        id: publish
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
+          APPLIED_HEAD: ${{ steps.commit.outputs.applied-head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { publishAppliedState } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            try {
+              await publishAppliedState({
+                github,
+                ...context.repo,
+                stateFile: process.env.APPLY_STATE,
+                appliedHead: process.env.APPLIED_HEAD,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+              });
+            } catch (error) {
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
+      # The apply steps have no continue-on-error, so any failure reds the job;
+      # this mirrors the draft job's failure comment so a maintainer who ran
+      # `apply` sees the reason on the PR instead of only a red Actions run.
+      - name: Comment on apply failure
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.validate.outputs.number }}
+          PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
+          COMMIT_ERROR: ${{ steps.commit.outputs.error }}
+          PUBLISH_ERROR: ${{ steps.publish.outputs.error }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const number = Number(process.env.PR_NUMBER);
+            // Steps run prepare-apply -> commit -> publish, each skipping the rest on
+            // failure, so this precedence surfaces the first (root-cause) failure.
+            const details = process.env.PREPARE_ERROR
+              || process.env.COMMIT_ERROR
+              || process.env.PUBLISH_ERROR
+              || `commit=${process.env.COMMIT_OUTCOME || 'skipped'}; see the workflow logs.`;
+            try {
+              const { postApplyFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+              await postApplyFailure({
+                github,
+                ...context.repo,
+                number,
+                head: process.env.PR_HEAD,
+                appSlug: process.env.APP_SLUG,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+                message: details,
+              });
+            } catch (error) {
+              // The trusted checkout can itself fail, leaving the helper module absent
+              // so the require above throws. Fall back to a direct comment (no
+              // bot-identity check or per-head dedup) so the maintainer still gets PR
+              // feedback instead of only a red run.
+              core.warning(`Falling back to a direct apply-failure comment: ${error instanceof Error ? error.message : String(error)}`);
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: number,
+                body: `Applying curated release notes failed.\n\n${details}`,
+              });
+            }

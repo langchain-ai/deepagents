@@ -149,10 +149,11 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     return parsed, None
 
 
-# Serializes process-local read-modify-write operations for `config.toml`.
-# Without this, overlapping global-theme and per-terminal-theme saves can each
-# read the same pre-mutation state and then clobber the other's keys.
-_CONFIG_WRITE_LOCK = threading.Lock()
+# Config `config.toml` writes are serialized by the single process-wide lock
+# `model_config._config_write_lock`, imported lazily at each write site (below).
+# It is shared with `model_config`'s writers so a theme/UI write here cannot
+# clobber, e.g., an effort or default-model write; a lock local to this module
+# would not mutually exclude against those. See that lock's docstring.
 
 _DEEPAGENTS_IMPORT_LOCK = threading.RLock()
 """Serializes process-local cold imports into the Deep Agents SDK graph.
@@ -288,6 +289,170 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     return discarded
 
 
+_OFFLOAD_WEDGE_WARNING = (
+    "Offload failed and the conversation may be left in an inconsistent state "
+    "(a compaction request could not be cleaned up). If your next message "
+    "errors, start a new thread."
+)
+"""Shown when a failed `/offload` could not remove its unanswered seed.
+
+A dangling `compact_conversation` tool call the model API later rejects would
+otherwise wedge the thread with only a log warning; surfacing this tells the
+user why an unrelated next turn might fail and how to recover.
+"""
+
+
+def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
+    """Return the absolute cutoff index of a `_summarization_event`.
+
+    Args:
+        event: A `_summarization_event` mapping (as persisted in state), or
+            `None`.
+
+    Returns:
+        The `cutoff_index`, or `0` when the event is missing or malformed.
+    """
+    if isinstance(event, dict):
+        cutoff = event.get("cutoff_index")
+        if isinstance(cutoff, int):
+            return cutoff
+    return 0
+
+
+def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
+    """Reconstruct the effective conversation the model would see.
+
+    A hardened local variant of
+    `SummarizationMiddleware._apply_event_to_messages`, kept in the client
+    because it runs against possibly-malformed remote-snapshot dicts and must
+    degrade gracefully (a `None` summary or non-int cutoff returns the full
+    list) rather than raise or emit a `None`-led list. Like the SDK method,
+    when a prior summarization event exists the effective conversation is the
+    summary message followed by the messages from `cutoff_index` onward, and it
+    works on both LangChain message objects and serialized dicts since it only
+    slices and prepends.
+
+    Args:
+        messages: Full message list from state.
+        event: The `_summarization_event` mapping, or `None`.
+
+    Returns:
+        The effective message list.
+    """
+    if not isinstance(event, dict):
+        return list(messages)
+    summary = event.get("summary_message")
+    cutoff = event.get("cutoff_index")
+    if summary is None or not isinstance(cutoff, int):
+        return list(messages)
+    if cutoff > len(messages):
+        return [summary]
+    return [summary, *messages[cutoff:]]
+
+
+def _message_text(msg: Any) -> str:  # noqa: ANN401
+    """Extract the text content of a message object or serialized dict.
+
+    Handles the shapes `/offload` sees across the LangGraph server boundary:
+    a message object with `.content`, or a serialized dict with `"content"`.
+    A string content is returned as-is; a list of content blocks has its text
+    parts concatenated (so a `ToolMessage` whose content is a block list is not
+    stringified to `"[{...}]"`, which would defeat prefix matching).
+
+    Args:
+        msg: A message object or serialized message dict.
+
+    Returns:
+        The concatenated text content, or an empty string when there is none.
+    """
+    content = (
+        msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+    )
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "".join(parts)
+    return "" if content is None else str(content)
+
+
+def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
+    """Return whether `msg` is a tool message in object or serialized form."""
+    if isinstance(msg, dict):
+        return msg.get("type") == "tool" or msg.get("role") == "tool"
+    from langchain_core.messages import ToolMessage
+
+    # `isinstance` (not a by-name check) so `ToolMessage` subclasses still match.
+    return isinstance(msg, ToolMessage)
+
+
+def _find_compaction_failure(messages: list[Any]) -> str | None:
+    """Return a persisted forced-compaction failure message, if present.
+
+    `/offload` primarily detects tool failures from the live message stream,
+    but a stream hiccup (or an update-injected `ToolMessage` that never surfaces
+    on the `messages` stream) can drop that signal even though the failure
+    `ToolMessage` still lands in durable state. Scanning committed state closes
+    that gap so a genuine failure is not misreported as "nothing to offload".
+
+    The caller passes only the messages produced by the *current* `/offload`
+    attempt (the tail after the pre-seed prefix). This matters because the
+    failure prefix is shared with the SDK's own compaction-failure wording, so
+    an unbounded scan could match a stale failure from an unrelated prior turn;
+    slicing to the current attempt keeps detection specific to this run.
+
+    Args:
+        messages: The messages produced by this `/offload` attempt (objects or
+            serialized dicts), i.e. committed state beyond the pre-seed prefix.
+
+    Returns:
+        The failure message text, or `None` if no failure marker is found.
+    """
+    from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
+
+    for msg in reversed(messages):
+        if not _is_tool_message(msg):
+            continue
+        text = _message_text(msg)
+        if text.startswith(COMPACTION_FAILURE_PREFIX):
+            return text
+    return None
+
+
+def _message_id(msg: Any) -> str | None:  # noqa: ANN401
+    """Return a message's id from object or serialized-dict form."""
+    return msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+
+
+def _message_tool_call_id(msg: Any) -> str | None:  # noqa: ANN401
+    """Return the `tool_call_id` a tool message answers, if any."""
+    return (
+        msg.get("tool_call_id")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_call_id", None)
+    )
+
+
+def _message_tool_call_ids(msg: Any) -> list[str]:  # noqa: ANN401
+    """Return the ids of tool calls requested by a message (object or dict)."""
+    tool_calls = (
+        msg.get("tool_calls")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_calls", None)
+    )
+    ids: list[str] = []
+    for call in tool_calls or []:
+        cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        if isinstance(cid, str):
+            ids.append(cid)
+    return ids
+
+
 def _create_model_with_deepagents_import_lock(
     model_spec: str | None = None,
     *,
@@ -374,6 +539,7 @@ if TYPE_CHECKING:
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
     from textual.widget import Widget
+    from textual.widgets import TextArea
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
@@ -768,10 +934,13 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -957,11 +1126,14 @@ def _save_terminal_theme_mapping_result(
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         repair_messages: list[str] = []
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1055,10 +1227,13 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1114,10 +1289,13 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -2583,8 +2761,10 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
 
-        self._model_params_override: dict[str, Any] | None = None
-        """Per-turn model params override set via `/model --model-params`."""
+        self._model_params_override: dict[str, Any] | None = (
+            model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
+        )
+        """Per-turn model params override set via startup or `/model` params."""
 
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
@@ -3190,6 +3370,9 @@ class DeepAgentsApp(App):
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        model_spec = self._effective_model_spec()
+        if model_spec:
+            await self._restore_effort_override(model_spec)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
@@ -4118,6 +4301,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
             save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
@@ -6020,6 +6204,7 @@ class DeepAgentsApp(App):
             chat.scroll_y,
             chat.size.height,
             bottom_spacer_top,
+            max_scroll=chat.max_scroll_y,
         ):
             self.call_later(self._hydrate_messages_below)
 
@@ -6777,26 +6962,68 @@ class DeepAgentsApp(App):
                     "approval prompts may continue."
                 )
 
-    async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
+    async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
-        widget: AskUserMenu,
+        widget: Widget,
         *,
+        prompt_name: str,
         context: str,
     ) -> None:
-        """Remove an ask_user widget without surfacing cleanup races.
+        """Remove an inline prompt without surfacing cleanup races.
+
+        Swallows only the `AttributeError`/`RuntimeError` a `remove()` raises
+        when the widget was already detached, matching the other teardown
+        paths in this app. A different exception is a real teardown bug and is
+        left to propagate rather than being hidden at debug level.
 
         Args:
-            widget: Ask-user widget instance to remove.
+            widget: Inline prompt widget instance to remove.
+            prompt_name: Flow-specific name included in diagnostics.
             context: Short context string for diagnostics.
         """
         try:
             await widget.remove()
-        except Exception:
+        except (AttributeError, RuntimeError):
             logger.debug(
-                "Failed to remove ask-user widget during %s",
+                "Failed to remove %s widget during %s",
+                prompt_name,
                 context,
                 exc_info=True,
             )
+
+    async def _mount_inline_prompt(
+        self,
+        widget: Widget,
+        *,
+        focus: Callable[[], None],
+    ) -> None:
+        """Mount, scroll, and focus an inline prompt.
+
+        Args:
+            widget: Prompt to mount before queued messages.
+            focus: Flow-specific callback that focuses the active control.
+        """
+        messages = self.query_one("#messages", Container)
+        await self._mount_before_queued(messages, widget)
+        self.call_after_refresh(lambda: self._scroll_inline_prompt_into_view(widget))
+        self.call_after_refresh(focus)
+
+    def _scroll_inline_prompt_into_view(self, widget: Widget) -> None:
+        """Scroll a mounted inline prompt into view.
+
+        A prompt taller than the viewport anchors to its top so the title and
+        top border stay visible, rather than exposing only its bottom edge.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if widget.outer_size.height > chat.size.height:
+            widget.scroll_visible(animate=False, top=True)
+            return
+        widget.scroll_visible()
+
+    def _focus_chat_input_after_refresh(self) -> None:
+        """Restore chat input focus after an inline prompt is removed."""
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
 
     async def _request_ask_user(
         self,
@@ -6827,9 +7054,10 @@ class DeepAgentsApp(App):
                     if old_widget is not None:
                         old_widget.action_cancel()
                         self._pending_ask_user_widget = None
-                        await self._remove_ask_user_widget(
+                        await self._remove_inline_prompt_widget(
                             old_widget,
-                            context="ask-user timeout cleanup",
+                            prompt_name="ask-user",
+                            context="timeout cleanup",
                         )
                     break
                 await asyncio.sleep(0.1)
@@ -6843,10 +7071,7 @@ class DeepAgentsApp(App):
         self._pending_ask_user_widget = menu
 
         try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
-            self.call_after_refresh(menu.focus_active)
+            await self._mount_inline_prompt(menu, focus=menu.focus_active)
         except Exception as e:
             logger.exception(
                 "Failed to mount ask-user menu (id=%s)",
@@ -6858,60 +7083,31 @@ class DeepAgentsApp(App):
 
         return result_future
 
-    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
-        """Scroll mounted ask_user prompts into view.
-
-        Oversized prompts should start at the top of the viewport so the first
-        question and menu border are visible, instead of only exposing the
-        bottom edge of the widget.
-        """
-        chat = self.query_one("#chat", VerticalScroll)
-        if menu.outer_size.height > chat.size.height:
-            menu.scroll_visible(animate=False, top=True)
-            return
-        menu.scroll_visible()
+    async def _finish_ask_user_prompt(self, *, context: str) -> None:
+        """Remove the active ask-user prompt and restore chat input focus."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="ask-user",
+                context=context,
+            )
+        self._focus_chat_input_after_refresh()
 
     async def on_ask_user_menu_answered(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu answers - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user answered")
-
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await self._finish_ask_user_prompt(context="answered")
 
     async def on_ask_user_menu_cancelled(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu cancellation - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
-
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
-
-    async def _remove_goal_review_widget(  # noqa: PLR6301  # kept an instance method for symmetry with the other _*_goal_review_* helpers
-        self,
-        widget: GoalReviewMenu,
-        *,
-        context: str,
-    ) -> None:
-        """Remove a goal review widget without surfacing cleanup races."""
-        try:
-            await widget.remove()
-        except Exception:
-            logger.debug(
-                "Failed to remove goal review widget during %s",
-                context,
-                exc_info=True,
-            )
+        await self._finish_ask_user_prompt(context="cancelled")
 
     def _cancel_goal_review_task(self) -> None:
         """Cancel any pending goal review continuation task."""
@@ -6934,7 +7130,11 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget = None
         if widget is not None:
             widget.action_cancel()
-            await self._remove_goal_review_widget(widget, context=context)
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="goal review",
+                context=context,
+            )
 
     def _cancel_goal_proposal_generation(self) -> bool:
         """Cancel in-flight goal criteria generation.
@@ -7002,10 +7202,7 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget = menu
 
         try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(lambda: self._scroll_goal_review_into_view(menu))
-            self.call_after_refresh(menu.focus_active)
+            await self._mount_inline_prompt(menu, focus=menu.focus_active)
         except Exception as e:
             logger.exception(
                 "Failed to mount goal review menu (id=%s)",
@@ -7016,14 +7213,6 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
-
-    def _scroll_goal_review_into_view(self, menu: GoalReviewMenu) -> None:
-        """Scroll mounted goal review prompts into view."""
-        chat = self.query_one("#chat", VerticalScroll)
-        if menu.outer_size.height > chat.size.height:
-            menu.scroll_visible(animate=False, top=True)
-            return
-        menu.scroll_visible()
 
     async def on_goal_review_menu_decided(
         self,
@@ -7036,10 +7225,13 @@ class DeepAgentsApp(App):
         ):
             widget = self._pending_goal_review_widget
             self._pending_goal_review_widget = None
-            await self._remove_goal_review_widget(widget, context="goal-review decided")
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="goal review",
+                context="decided",
+            )
 
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        self._focus_chat_input_after_refresh()
 
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
@@ -8394,7 +8586,9 @@ class DeepAgentsApp(App):
         await self._mount_message(AppMessage(link))
 
     @staticmethod
-    async def _build_thread_message(prefix: str, thread_id: str) -> str | Content:
+    async def _build_thread_message(
+        prefix: str, thread_id: str, *, suffix: str = ""
+    ) -> str | Content:
         """Build a thread status message, hyperlinking the ID when possible.
 
         Attempts to resolve the LangSmith thread URL with a short timeout.
@@ -8404,6 +8598,8 @@ class DeepAgentsApp(App):
         Args:
             prefix: Label before the thread ID (e.g. `'Resumed thread'`).
             thread_id: The thread identifier.
+            suffix: Optional trailing text appended after the thread ID
+                (e.g. `' (Resume with /threads -r)'`).
 
         Returns:
             `Content` with a clickable thread ID, or a plain string.
@@ -8422,8 +8618,9 @@ class DeepAgentsApp(App):
             return Content.assemble(
                 f"{prefix}: ",
                 (thread_id, TStyle(link=url)),
+                suffix,
             )
-        return f"{prefix}: {thread_id}"
+        return f"{prefix}: {thread_id}{suffix}"
 
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
@@ -10717,16 +10914,17 @@ class DeepAgentsApp(App):
                 else:
                     previous_thread_is_resumable = False
                 if previous_thread_id and previous_thread_is_resumable:
+                    resume_hint = " (Resume with /threads -r)"
                     previous_msg_widget = AppMessage(
-                        f"Previous thread: {previous_thread_id}"
+                        f"Previous thread: {previous_thread_id}{resume_hint}"
                     )
                     await self._mount_message(previous_msg_widget)
                     self._schedule_thread_message_link(
                         previous_msg_widget,
                         prefix="Previous thread",
                         thread_id=previous_thread_id,
+                        suffix=resume_hint,
                     )
-                    await self._mount_message(AppMessage("Resume it with /threads -r"))
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -11418,13 +11616,17 @@ class DeepAgentsApp(App):
             return None
 
     async def _handle_offload(self) -> None:
-        """Offload older messages to free context window space."""
-        from deepagents_code.config import settings
-        from deepagents_code.offload import (
-            OffloadModelError,
-            OffloadThresholdNotMet,
-            perform_offload,
-        )
+        """Offload older messages to free context window space.
+
+        Runs offload SERVER-SIDE by driving the agent's own
+        `compact_conversation` tool (with `force=True`) instead of
+        reimplementing summarization + persistence client-side. This keeps the
+        offloaded archive in the agent's composite backend so it is readable
+        via `read_file` in every run mode (server, sandbox, in-process). The
+        client only seeds the tool call, approves the resulting HITL interrupt,
+        drains the run, and renders the persisted `_summarization_event`.
+        """
+        from langchain_core.messages.utils import count_tokens_approximately
 
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -11462,83 +11664,173 @@ class DeepAgentsApp(App):
             await dispatch_hook("context.compact", {})
             await self._set_spinner("Offloading")
 
-            result = await perform_offload(
-                messages=state_values.get("messages", []),
-                prior_event=state_values.get("_summarization_event"),
-                thread_id=self._lc_thread_id,
-                model_spec=(f"{settings.model_provider}:{settings.model_name}"),
-                profile_overrides=self._profile_override,
-                context_limit=settings.model_context_limit,
-                total_context_tokens=self._context_tokens,
-                backend=self._backend,
+            prior_event = state_values.get("_summarization_event")
+            before_messages = state_values.get("messages", [])
+            prior_cutoff = _summarization_cutoff(prior_event)
+            tokens_before = count_tokens_approximately(
+                _effective_conversation(before_messages, prior_event)
             )
 
-            if isinstance(result, OffloadThresholdNotMet):
-                conv_str = format_token_count(result.conversation_tokens)
-                if (
-                    result.total_context_tokens > 0
-                    and result.context_limit is not None
-                    and result.total_context_tokens > result.context_limit
-                ):
-                    total_str = format_token_count(
-                        result.total_context_tokens,
+            # Own the seeded tool-call id here so a failed run can clean up the
+            # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
+            seed_tool_call_id = str(uuid.uuid4())
+
+            try:
+                tool_error = await self._drive_server_side_compaction(
+                    config, seed_tool_call_id
+                )
+            except Exception as stream_error:
+                # A server graph can checkpoint the tool-node update before a
+                # later stream transport failure reaches this client. Reconcile
+                # the durable event before reporting the operation as failed.
+                logger.warning(
+                    "Offload stream failed; checking for committed compaction state",
+                    exc_info=True,
+                )
+                try:
+                    new_state = await self._get_thread_state_values(self._lc_thread_id)
+                except Exception as state_error:
+                    logger.warning(
+                        "Failed to reconcile state after offload stream error",
+                        exc_info=True,
                     )
-                    await self._mount_message(
-                        AppMessage(
-                            f"Offload threshold not met \u2014 conversation "
-                            f"is only ~{conv_str} tokens.\n\n"
-                            f"The remaining context "
-                            f"({total_str} tokens) is system overhead "
-                            f"that can't be offloaded.\n\n"
-                            f"Use /tokens for a full breakdown.",
-                        ),
-                    )
-                else:
-                    await self._mount_message(
-                        AppMessage(
-                            f"Offload threshold not met \u2014 conversation "
-                            f"(~{conv_str} tokens) is within the "
-                            f"retention budget "
-                            f"({result.budget_str}).\n\n"
-                            f"Use /tokens for a full breakdown.",
-                        ),
-                    )
+                    if not await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
+                    raise stream_error from state_error
+                reconciled_event = new_state.get("_summarization_event")
+                if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                    # Compaction did not commit, so the seeded tool call was
+                    # never answered. Remove it before re-raising so a failed
+                    # `/offload` cannot wedge the thread with a dangling
+                    # `tool_use` that the model API rejects on the next turn.
+                    if not await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
+                    raise
+            else:
+                if tool_error is not None:
+                    await self._mount_message(ErrorMessage(tool_error))
+                    return
+
+                # Read the persisted result back so the UI reflects server state
+                # (the archive now lives in the agent's own backend, not a
+                # client-local directory the server can never read).
+                new_state = await self._get_thread_state_values(self._lc_thread_id)
+            new_event = new_state.get("_summarization_event")
+            new_cutoff = _summarization_cutoff(new_event)
+
+            if new_event is None or new_cutoff <= prior_cutoff:
+                # A failure and a genuine no-op both leave `_summarization_event`
+                # unchanged. Stream-based detection can miss the failure
+                # `ToolMessage` (e.g. an update-injected message that never
+                # surfaces on the `messages` stream), so cross-check committed
+                # state before concluding there was nothing to do.
+                current_messages = new_state.get("messages", [])[len(before_messages) :]
+                failure = _find_compaction_failure(current_messages)
+                if failure is not None:
+                    await self._mount_message(ErrorMessage(failure))
+                    return
+                # A no-op still commits the synthetic assistant seed and its
+                # tool result. Restore the exact pre-run conversation so an
+                # operation reported as doing nothing truly changes nothing.
+                await self._remove_offload_artifacts(
+                    config, current_messages, prior_event
+                )
+                # `force=True` bypasses the eligibility gate, so this branch is
+                # reached when there is nothing older than the retention window
+                # to summarize (effective cutoff 0). It also absorbs the
+                # degenerate chained case where only the prior summary would be
+                # re-summarized (effective cutoff 1 -> new_cutoff == prior_cutoff
+                # via `_compute_state_cutoff`): a fresh event may commit but the
+                # absolute cutoff does not advance, so "nothing to offload" is
+                # the correct, if conservative, report.
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to offload \u2014 the conversation is already "
+                        "compact.",
+                    ),
+                )
                 return
 
-            # OffloadResult — success
-            if result.offload_warning:
-                await self._mount_message(ErrorMessage(result.offload_warning))
-
-            # Intentionally traced: the summarization event is a meaningful state
-            # transition that should surface in LangSmith alongside real agent turns.
-            # The new `_context_tokens` count rides along on the same update so it
-            # shares a checkpoint with the offload and doesn't create a separate
-            # `UpdateState` run.
-            await self._agent.aupdate_state(
-                config,
-                {
-                    "_summarization_event": result.new_event,
-                    "_context_tokens": result.tokens_after,
-                },
+            archive_path = (
+                new_event.get("file_path")
+                if isinstance(new_event, dict)
+                else getattr(new_event, "file_path", None)
+            )
+            # Recompute the post-offload size from the ORIGINAL pre-seed
+            # messages plus the new event. `_effective_conversation` yields
+            # `[summary, *before_messages[new_cutoff:]]` — the compacted
+            # conversation without the tool's own machinery (the seeded tool
+            # call, the tool result, and the trailing model turn), all of which
+            # land in `new_state["messages"]` at/after `new_cutoff`. Counting
+            # `before_messages` keeps this token figure consistent with the
+            # message counts below and avoids understating the reduction.
+            #
+            # This is a client-side approximation for the status bar and is
+            # deliberately not the persisted `_context_tokens` (refreshed from
+            # the trailing turn's real provider usage, which includes
+            # system/tool overhead and the machinery messages). The two can
+            # differ, and if the trailing turn failed `_context_tokens` keeps
+            # its pre-offload value.
+            tokens_after = count_tokens_approximately(
+                _effective_conversation(before_messages, new_event)
+            )
+            # Message counts are likewise derived purely from the absolute
+            # cutoffs, so those same machinery artifacts are never mistaken for
+            # kept conversation.
+            messages_offloaded = max(0, new_cutoff - prior_cutoff)
+            messages_kept = max(0, len(before_messages) - new_cutoff)
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
             )
 
-            before = format_token_count(result.tokens_before)
-            after = format_token_count(result.tokens_after)
-            await self._mount_message(
-                AppMessage(
-                    f"Offloaded {result.messages_offloaded} older messages, "
-                    f"freeing up context window space.\n"
-                    f"Context: {before} \u2192 {after} tokens "
-                    f"({result.pct_decrease}% decrease), "
-                    f"{result.messages_kept} messages kept.",
-                ),
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
+            stats_line = (
+                f"Context: {before} → {after} tokens "
+                f"({pct}% decrease), {messages_kept} messages kept."
             )
+            if archive_path:
+                from deepagents_code.offload import offload_storage_is_ephemeral
 
-            self._on_tokens_update(result.tokens_after)
+                # In local mode the archive may have landed in a temp fallback
+                # directory (persistent `~/.deepagents` was unwritable). The
+                # write succeeded, so context was freed and history is readable
+                # now, but it may not survive a restart -- say so rather than
+                # imply durable storage.
+                caveat = (
+                    "\nNote: history was saved to temporary storage and may not "
+                    "survive a restart."
+                    if offload_storage_is_ephemeral()
+                    else ""
+                )
+                await self._mount_message(
+                    AppMessage(
+                        f"Offloaded {messages_offloaded} older messages, "
+                        f"freeing up context window space.\n{stats_line}{caveat}",
+                    ),
+                )
+            else:
+                # Context was still freed (the summary is in-context), but the
+                # archive write failed, so the offloaded messages are not
+                # recoverable. Surface both facts in one message rather than a
+                # separate warning immediately followed by a success line.
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Offloaded {messages_offloaded} older messages and "
+                        "freed context, but the conversation history could not "
+                        "be saved to storage, so those messages are not "
+                        f"recoverable. Check logs for details.\n{stats_line}",
+                    )
+                )
 
-        except OffloadModelError as exc:
-            logger.warning("Offload model creation failed: %s", exc, exc_info=True)
-            await self._mount_message(ErrorMessage(str(exc)))
+            self._on_tokens_update(tokens_after)
+
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
@@ -11548,6 +11840,337 @@ class DeepAgentsApp(App):
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
+
+    async def _drive_server_side_compaction(
+        self, config: RunnableConfig, seed_tool_call_id: str | None = None
+    ) -> str | None:
+        """Trigger the server-side `compact_conversation` tool with `force=True`.
+
+        Seeds an assistant `compact_conversation` tool call attributed to the
+        model node, then advances the graph so the agent's own `ToolNode`
+        executes the tool. The tool is HITL-gated, so `astream(None)` surfaces
+        an approval interrupt; only the first forced `compact_conversation`
+        request is approved here (this is an explicit user-initiated
+        `/offload`). The runtime context carries the seeded call ID so the
+        compaction middleware can reject every other tool independently of
+        HITL configuration, including tools requested by the trailing model
+        turn.
+
+        A first-turn `Command(update=..., goto=...)` is intentionally avoided:
+        the LangGraph API server rebuilds it with `goto=None` and crashes
+        `_control_branch`. The `aupdate_state(as_node="model")` + `astream`
+        continuation is the stable path.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            seed_tool_call_id: Id for the seeded tool call. Supplied by
+                `_handle_offload` so it can remove the seed if the run fails;
+                a fresh id is generated when omitted (e.g. direct callers).
+
+        Returns:
+            An error string when the tool reported a compaction failure, or
+                `None` when the run completed (whether it compacted or was a
+                no-op — the caller distinguishes those from persisted state).
+                Note the `None` return also covers the bounded-drain-exceeded
+                path, which has already mounted its own user-facing message
+                before returning.
+        """
+        from langchain.agents.middleware.human_in_the_loop import (
+            ApproveDecision,
+            RejectDecision,
+        )
+        from langchain_core.messages import AIMessage
+        from langgraph.types import Command
+
+        from deepagents_code.config import settings
+        from deepagents_code.offload_middleware import (
+            COMPACTION_FAILURE_PREFIX,
+            _offload_seed_message_id,
+        )
+
+        agent = self._agent
+        if agent is None:
+            return None
+
+        tool_call_id = seed_tool_call_id or str(uuid.uuid4())
+        # Stable message id so a failed run can address the seed for removal.
+        seed = AIMessage(
+            content="",
+            id=_offload_seed_message_id(tool_call_id),
+            tool_calls=[
+                {
+                    "name": "compact_conversation",
+                    "args": {"force": True},
+                    "id": tool_call_id,
+                }
+            ],
+        )
+
+        # Remote dev servers separate checkpoint persistence from HTTP thread
+        # registration; register before mutating state so the write lands.
+        if remote := self._remote_agent():
+            await remote.aensure_thread(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        await agent.aupdate_state(config, {"messages": [seed]}, as_node="model")
+
+        tool_error: str | None = None
+        # `self._agent` includes local graphs whose generic context defaults to
+        # `None`, but the graph is built with `CLIContextSchema` at runtime.
+        streaming_agent = cast("Any", agent)
+
+        seeded_compaction_approved = False
+
+        def _decisions_for_interrupt(interrupt_obj: Any) -> list[Any]:  # noqa: ANN401
+            """Approve the forced compaction; reject any other gated tool call.
+
+            HITL action requests do not expose tool-call IDs, so the seeded
+            request is identified by its exact forced arguments and approved
+            at most once. Any repeated compaction request fails closed.
+
+            Args:
+                interrupt_obj: The interrupt surfaced by the HITL middleware.
+
+            Returns:
+                One decision per `action_request`, in order, as the HITL
+                    middleware requires.
+            """
+            nonlocal seeded_compaction_approved
+            value = getattr(interrupt_obj, "value", None)
+            action_requests = (
+                value.get("action_requests") if isinstance(value, dict) else None
+            )
+            if not action_requests:
+                # Without an identifiable action, approving could execute a
+                # different gated tool. A singleton rejection safely answers
+                # the surfaced interrupt.
+                return [
+                    RejectDecision(
+                        type="reject",
+                        message=(
+                            "Not executed: /offload could not identify the "
+                            "requested action."
+                        ),
+                    )
+                ]
+            decisions: list[Any] = []
+            for req in action_requests:
+                name = req.get("name") if isinstance(req, dict) else None
+                args = req.get("args") if isinstance(req, dict) else None
+                is_seeded_request = (
+                    not seeded_compaction_approved
+                    and name == "compact_conversation"
+                    and isinstance(args, dict)
+                    and args.get("force") is True
+                )
+                if is_seeded_request:
+                    decisions.append(ApproveDecision(type="approve"))
+                    seeded_compaction_approved = True
+                else:
+                    decisions.append(
+                        RejectDecision(
+                            type="reject",
+                            message=(
+                                "Not executed: /offload only performs "
+                                "conversation compaction."
+                            ),
+                        )
+                    )
+            return decisions
+
+        async def _drain(stream_input: Any) -> list[tuple[str, dict[str, Any]]]:  # noqa: ANN401
+            """Advance the graph, collecting interrupts that need a resume.
+
+            Sets `tool_error` if the compaction tool reported a failure.
+
+            Args:
+                stream_input: `None` to advance, or a `Command(resume=...)` to
+                    answer pending interrupts.
+
+            Returns:
+                `(interrupt_id, resume_value)` pairs for every interrupt
+                    surfaced during this stream.
+            """
+            nonlocal tool_error
+            pending: list[tuple[str, dict[str, Any]]] = []
+            async for chunk in streaming_agent.astream(
+                stream_input,
+                stream_mode=["messages", "updates"],
+                subgraphs=True,
+                config=config,
+                context=CLIContext(
+                    model=self._effective_model_spec(),
+                    model_params=self._model_params_override or {},
+                    profile_overrides=self._profile_override or {},
+                    model_context_limit=settings.model_context_limit,
+                    thread_id=self._lc_thread_id,
+                    offload_tool_call_id=tool_call_id,
+                ),
+                durability="exit",
+            ):
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
+                    continue
+                _namespace, mode, data = chunk
+                if mode == "updates" and isinstance(data, dict):
+                    for interrupt_obj in data.get("__interrupt__") or []:
+                        iid = getattr(interrupt_obj, "id", None)
+                        if iid:
+                            decisions = _decisions_for_interrupt(interrupt_obj)
+                            pending.append((iid, {"decisions": decisions}))
+                elif mode == "messages" and isinstance(data, tuple):
+                    msg = data[0]
+                    if _is_tool_message(msg):
+                        text = _message_text(msg)
+                        if text.startswith(COMPACTION_FAILURE_PREFIX):
+                            tool_error = text
+            return pending
+
+        # Bound the resume loop: after compaction the model runs again, and a
+        # rejected gated call could prompt another. The middleware blocks
+        # execution even when HITL is disabled; this bound handles HITL retries.
+        max_resume_rounds = 10
+        pending = await _drain(None)
+        rounds = 0
+        while pending:
+            rounds += 1
+            if rounds > max_resume_rounds:
+                logger.warning(
+                    "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
+                    "unresolved",
+                    max_resume_rounds,
+                    len(pending),
+                )
+                # Compaction itself already committed in round 1, so the caller
+                # still reports the offload. Surface the abandoned drain so the
+                # user knows the thread was left paused mid-run and may need a
+                # fresh message to reset. Skip this when a tool failure is
+                # already pending, so the caller shows that error instead of
+                # the user seeing two conflicting messages.
+                if tool_error is None:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Offload completed, but the agent kept requesting "
+                            "tools afterward and the run could not be fully "
+                            "drained. Send a new message to continue; the "
+                            "thread may need to reset."
+                        )
+                    )
+                break
+            resume_payload = dict(pending)
+            pending = await _drain(Command(resume=resume_payload))
+
+        return tool_error
+
+    async def _remove_offload_artifacts(
+        self,
+        config: RunnableConfig,
+        messages: list[Any],
+        prior_event: object,
+    ) -> None:
+        """Restore state changed by a no-op `/offload` graph run.
+
+        Best-effort: a failed restoration is logged and swallowed rather than
+        raised. The no-op path answers the seed with a valid tool result, so the
+        committed seed/result pair left behind is harmless (unlike an unanswered
+        seed); letting the write raise here would misreport a working offload as
+        "Offload failed" via the caller's outer handler.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            messages: Messages appended after the pre-run state snapshot.
+            prior_event: Summarization event from the pre-run state snapshot.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        agent = self._agent
+        if agent is None:
+            return
+        removals = [
+            RemoveMessage(id=message_id)
+            for message in messages
+            if (message_id := _message_id(message)) is not None
+        ]
+        try:
+            await agent.aupdate_state(
+                config,
+                {
+                    "messages": removals,
+                    "_summarization_event": prior_event,
+                },
+                as_node="model",
+            )
+        except Exception:  # best-effort restoration; keep the no-op report
+            logger.warning(
+                "Failed to restore state after a no-op offload run", exc_info=True
+            )
+
+    async def _remove_unanswered_offload_seed(
+        self, config: RunnableConfig, seed_tool_call_id: str
+    ) -> bool:
+        """Remove a committed `/offload` seed whose tool call was never answered.
+
+        The seed `AIMessage` carrying the forced `compact_conversation` call is
+        committed via `aupdate_state` before the run advances — independently of
+        the stream's durability. If the run then fails before the tool produces
+        a `ToolMessage`, the seed is left as an unanswered `tool_use` in
+        committed state, which the model API rejects on the next turn
+        ("tool_use ids ... without tool_result"), potentially wedging the
+        thread. This best-effort removes that seed so a failed `/offload` leaves
+        a valid conversation.
+
+        If the tool *did* run (a `ToolMessage` answers the call), the seed and
+        its result form a valid pair and are left untouched — removing the seed
+        alone would orphan the `ToolMessage`.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            seed_tool_call_id: The id of the seeded `compact_conversation` call.
+
+        Returns:
+            True if the thread is known to be free of a dangling seed (removed,
+                validly answered, or absent). False if a dangling seed may
+                remain because the state read or the removal write failed — the
+                caller should warn the user the thread may be inconsistent.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        agent = self._agent
+        if agent is None or not self._lc_thread_id:
+            return True
+        try:
+            state = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:  # best-effort cleanup; keep the original error
+            logger.warning(
+                "Could not read state to clean up offload seed", exc_info=True
+            )
+            return False
+
+        messages = state.get("messages", [])
+        # An answering ToolMessage means the tool ran; the pair is valid.
+        if any(
+            _is_tool_message(msg) and _message_tool_call_id(msg) == seed_tool_call_id
+            for msg in messages
+        ):
+            return True
+
+        seed_id = next(
+            (
+                _message_id(msg)
+                for msg in messages
+                if seed_tool_call_id in _message_tool_call_ids(msg)
+            ),
+            None,
+        )
+        if not seed_id:
+            return True
+        try:
+            await agent.aupdate_state(
+                config, {"messages": [RemoveMessage(id=seed_id)]}, as_node="model"
+            )
+        except Exception:  # best-effort cleanup; keep the original error
+            logger.warning("Failed to remove dangling offload seed", exc_info=True)
+            return False
+        return True
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -11714,6 +12337,58 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
+    async def _restore_effort_override(self, model_spec: str) -> None:
+        """Restore a persisted reasoning effort when valid for the model.
+
+        Explicit per-session or resumed-thread model params take precedence:
+        a saved effort only fills in when the active params do not already
+        specify one, so `/model ... --model-params` and adopted checkpoints
+        are never silently overridden.
+
+        Config reads (and the stale-entry write below) are offloaded to a
+        worker thread so a slow or locked `config.toml` cannot stall the UI
+        event loop, matching `_set_effort_override`.
+        """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            load_effort_for_model,
+        )
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            merge_effort_model_params,
+            model_params_for_effort,
+        )
+
+        if (
+            current_effort_from_model_params(model_spec, self._model_params_override)
+            is not None
+        ):
+            return
+        effort = await asyncio.to_thread(load_effort_for_model, model_spec)
+        if effort is None:
+            return
+        params = model_params_for_effort(model_spec, effort)
+        if params is None:
+            # Saved label is no longer valid for this model; drop the stale
+            # entry so the model default applies. The active params carry no
+            # effort here (checked above), so there is nothing to strip.
+            #
+            # Best-effort housekeeping: on failure we log rather than mounting a
+            # UI error, because the user did not request this clear. The
+            # interactive `/effort clear` path does surface failures, since
+            # there the clear is user-initiated.
+            if not await asyncio.to_thread(clear_effort_for_model, model_spec):
+                logger.warning(
+                    "Could not clear invalid reasoning effort %r for %s",
+                    effort,
+                    model_spec,
+                )
+            return
+        self._model_params_override = merge_effort_model_params(
+            self._model_params_override,
+            params,
+        )
+
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
         """Resolve the active model spec and its supported reasoning efforts.
 
@@ -11812,6 +12487,10 @@ class DeepAgentsApp(App):
         Args:
             effort: Effort label or clear/reset token.
         """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            save_effort_for_model,
+        )
         from deepagents_code.reasoning_effort import (
             merge_effort_model_params,
             model_params_for_effort,
@@ -11829,7 +12508,16 @@ class DeepAgentsApp(App):
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )
+            saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
+            if not saved:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Reasoning effort cleared for {spec} in this session, but "
+                        "the saved preference could not be removed."
+                    )
+                )
+                return
             message = (
                 f"Reasoning effort override cleared for {spec}."
                 if had_override
@@ -11852,7 +12540,16 @@ class DeepAgentsApp(App):
         self._model_params_override = merge_effort_model_params(
             self._model_params_override, params
         )
+        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
         self._sync_status_model()
+        if not saved:
+            await self._mount_message(
+                ErrorMessage(
+                    f"Reasoning effort for {spec} set to {effort} in this session, "
+                    "but the preference could not be saved."
+                )
+            )
+            return
         await self._mount_message(
             AppMessage(f"Reasoning effort for {spec} set to {effort}."),
         )
@@ -12388,6 +13085,7 @@ class DeepAgentsApp(App):
         *,
         prefix: str,
         thread_id: str,
+        suffix: str = "",
     ) -> None:
         """Upgrade a plain thread message to a linked one when URL resolves.
 
@@ -12395,9 +13093,12 @@ class DeepAgentsApp(App):
             widget: The already-mounted app message.
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
+            suffix: Optional trailing text appended after the thread ID.
         """
         try:
-            thread_msg = await self._build_thread_message(prefix, thread_id)
+            thread_msg = await self._build_thread_message(
+                prefix, thread_id, suffix=suffix
+            )
             if not isinstance(thread_msg, Content):
                 logger.debug(
                     "Skipping thread link upgrade for %s: URL did not resolve",
@@ -12426,6 +13127,7 @@ class DeepAgentsApp(App):
         *,
         prefix: str,
         thread_id: str,
+        suffix: str = "",
     ) -> None:
         """Schedule thread URL link resolution and apply updates in the background.
 
@@ -12433,12 +13135,14 @@ class DeepAgentsApp(App):
             widget: The message widget to update.
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
+            suffix: Optional trailing text appended after the thread ID.
         """
         self.run_worker(
             self._upgrade_thread_message_link(
                 widget,
                 prefix=prefix,
                 thread_id=thread_id,
+                suffix=suffix,
             ),
             exclusive=False,
         )
@@ -13727,14 +14431,60 @@ class DeepAgentsApp(App):
         )
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
+    def _ctrl_d_delete_target(self) -> TextArea | None:
+        """Return the focused text area Ctrl+D should edit instead of quitting.
+
+        Ctrl+D deletes forward — a non-empty selection or the content right of
+        the cursor — rather than quitting whenever the focused widget is an
+        editable prompt with something left to delete. This covers both the
+        primary chat input and the inline free-text prompts (ask-user, goal
+        review). Only at the true end of the text with no selection does Ctrl+D
+        fall through to quitting.
+
+        `self.focused` (the active screen's focused widget) is checked rather
+        than `has_focus`: a draft hidden behind a modal keeps focus but must not
+        be edited from under it, so Ctrl+D quits in that case.
+
+        Returns:
+            The focused text area when it has a non-empty selection or content
+            after the cursor, or `None` when Ctrl+D should quit the app.
+        """
+        from deepagents_code.tui.widgets._inline_prompt import InlinePromptTextArea
+
+        focused = self.focused
+        chat_input = self._chat_input
+        text_area: TextArea | None = None
+        if chat_input is not None:
+            input_widget = chat_input.input_widget
+            if (
+                input_widget is not None
+                and focused is input_widget
+                and chat_input.value
+            ):
+                text_area = input_widget
+        if (
+            text_area is None
+            and isinstance(focused, InlinePromptTextArea)
+            and focused.text
+        ):
+            text_area = focused
+
+        if text_area is None:
+            return None
+        has_content_to_delete = (
+            not text_area.selection.is_empty
+            or text_area.cursor_location != text_area.document.end
+        )
+        return text_area if has_content_to_delete else None
+
     def action_quit_app(self) -> None:
         """Handle the Ctrl+D binding.
 
         Delete-confirm screens and the auth/thread selectors keep their own
-        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
-        deletes a non-empty selection or the character right of the cursor.
-        Only at the end of the prompt with no active selection does it exit
-        the app.
+        Ctrl+D behavior. Otherwise, when an editable prompt (the chat input or
+        an inline free-text field) is focused, Ctrl+D deletes a non-empty
+        selection or the character right of the cursor. Only at the end of the
+        prompt with no active selection does it exit the app.
         """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
@@ -13761,24 +14511,10 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
-        # Delegate Ctrl+D when delete-right can remove selected text or content
-        # after the cursor. Check `self.focused` (the active screen's focused
-        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
-        # focus but must not be edited from under it, so Ctrl+D quits in that case.
-        chat_input = self._chat_input
-        if chat_input is not None:
-            text_area = chat_input.input_widget
-            if (
-                text_area is not None
-                and self.focused is text_area
-                and chat_input.value
-                and (
-                    not text_area.selection.is_empty
-                    or text_area.cursor_location != text_area.document.end
-                )
-            ):
-                text_area.action_delete_right()
-                return
+        text_area = self._ctrl_d_delete_target()
+        if text_area is not None:
+            text_area.action_delete_right()
+            return
 
         self.exit()
 
@@ -15129,12 +15865,17 @@ class DeepAgentsApp(App):
                         )
                 if self._pending_ask_user_widget is not None:
                     try:
-                        await self._pending_ask_user_widget.remove()
-                    except Exception:
+                        self._pending_ask_user_widget.action_cancel()
+                    except (AttributeError, RuntimeError):
                         logger.debug(
-                            "Failed to remove pending ask_user during agent swap",
+                            "Failed to cancel pending ask-user during agent swap",
                             exc_info=True,
                         )
+                    await self._remove_inline_prompt_widget(
+                        self._pending_ask_user_widget,
+                        prompt_name="ask-user",
+                        context="agent swap",
+                    )
                     self._pending_ask_user_widget = None
 
                 self._pending_messages.clear()
@@ -18616,6 +19357,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                await self._restore_effort_override(current)
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
@@ -18669,6 +19411,8 @@ class DeepAgentsApp(App):
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
 
@@ -18698,7 +19442,6 @@ class DeepAgentsApp(App):
                 # touch_recent_model always gets a valid "provider:model"
                 # string. Silent on failure — the debug log captures it when
                 # debug logging is enabled.
-                resolved_spec = f"{result.provider}:{result.model_name}"
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",

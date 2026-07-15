@@ -260,3 +260,13 @@ def test_workflow_warning_comments_link_pin_release() -> None:
     assert text.count(f"${{{link_var}}}") >= 2, (
         "pin release link must be interpolated into the warning comment bodies"
     )
+
+
+def test_workflow_prerelease_warning_has_release_dependency_tip() -> None:
+    """Prerelease warnings explain how to acknowledge intentional release ordering."""
+    workflow = Path(__file__).parents[1] / "workflows" / "check_sdk_pin.yml"
+    text = workflow.read_text()
+
+    assert 'RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"' in text
+    assert "${releaseDepsBypassLabel}" in text
+    assert "release dependency check fails" in text

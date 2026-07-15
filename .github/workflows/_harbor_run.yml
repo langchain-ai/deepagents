@@ -959,6 +959,7 @@ jobs:
 
       - name: "📦 Package Harbor artifacts"
         if: always()
+        working-directory: .
         # Sandbox outputs may contain Linux-valid paths (for example `memory:`)
         # that upload-artifact rejects for cross-platform compatibility. Preserve
         # the tree byte-for-byte inside one safely named archive.

@@ -1,5 +1,8 @@
 name: "📊 Evals - Unified Compare Smoke"
 
+# Temporary branch-only trigger; this edit also reruns the smoke after the
+# archive path correction. Remove this workflow after live verification.
+
 on:
   push:
     branches:

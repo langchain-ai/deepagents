@@ -390,6 +390,7 @@ def test_harbor_artifacts_are_archived_and_extracted_for_aggregation() -> None:
     extract = _indented_block(workflow, '      - name: "📦 Extract shard results"')
     compute = _indented_block(workflow, '      - name: "📊 Compute pass@k / avg@k"')
 
+    assert "working-directory: ." in package
     assert "tar --zstd -cf libs/evals/harbor-shard.tar.zst" in package
     assert "path: libs/evals/harbor-shard.tar.zst" in upload
     assert "compression-level: 0" in upload

@@ -22,7 +22,7 @@ from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_code import theme
-from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -1655,7 +1655,7 @@ class ChatInput(Vertical):
             self._completion_view, cwd=self._cwd
         )
         self._slash_controller = SlashCommandController(
-            SLASH_COMMANDS, self._completion_view
+            get_slash_commands(), self._completion_view
         )
         self._completion_manager = MultiCompletionManager(
             [
@@ -1664,7 +1664,7 @@ class ChatInput(Vertical):
             ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
 
-        self._rebuild_argument_hints(SLASH_COMMANDS)
+        self._rebuild_argument_hints(get_slash_commands())
 
         self._warm_file_cache()
         self.set_interval(

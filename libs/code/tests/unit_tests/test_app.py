@@ -19199,6 +19199,26 @@ class TestNotificationCenterIntegration:
             assert screen._selected_index == 2
             assert app._auto_approve is False
 
+    async def test_plugin_manager_shift_tab_moves_to_previous_tab(self) -> None:
+        """App-level shift+tab routes to PluginManagerScreen.previous_tab."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = PluginManagerScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._tab == "discover"
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._tab == "errors"
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._tab == "discover"
+            assert app._auto_approve is False
+
     async def test_toast_identity_warn_once_semantics(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

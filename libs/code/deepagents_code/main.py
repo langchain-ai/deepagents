@@ -1158,6 +1158,7 @@ async def _preload_session_mcp_server_info(
         return None
 
     from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
     from deepagents_code.project_utils import ProjectContext
 
     session_manager = None
@@ -1167,11 +1168,17 @@ async def _preload_session_mcp_server_info(
         except OSError:
             logger.warning("Could not determine working directory for MCP preload")
             project_context = None
+        project_dir = (
+            project_context.project_root or project_context.user_cwd
+            if project_context is not None
+            else None
+        )
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
         return server_info
     finally:
@@ -1189,6 +1196,8 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "help": (None, "show_help"),
     "agents": ("agents_command", "show_agents_help"),
     "skills": ("skills_command", "show_skills_help"),
+    "plugin": ("plugin_command", "show_plugins_help"),
+    "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
@@ -1386,6 +1395,26 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
     )
+
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if is_env_truthy(EXPERIMENTAL):
+        from deepagents_code.plugins.commands_cli import setup_plugin_parser
+
+        setup_plugin_parser(
+            subparsers,
+            make_help_action=_make_help_action,
+            add_output_args=add_json_output_arg,
+        )
+    else:
+        plugin_parser = subparsers.add_parser(
+            "plugin",
+            aliases=["plugins"],
+            add_help=False,
+            help=argparse.SUPPRESS,
+        )
+        plugin_parser.add_argument("plugin_command", nargs="?")
+        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
 
     setup_config_parser(
         subparsers,
@@ -2197,6 +2226,8 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
+    from deepagents_code.project_utils import ProjectContext
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
@@ -2210,6 +2241,17 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
     model_result.apply_to_settings()
+
+    try:
+        project_context = ProjectContext.from_user_cwd(Path.cwd())
+    except (OSError, RuntimeError):
+        logger.warning("Could not determine working directory for ACP MCP loading")
+        project_context = None
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
 
     # Persist the resolved model so [models].recent is always populated.
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
@@ -2233,6 +2275,12 @@ async def _run_acp_cli_async(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            project_context=project_context,
+            additional_configs=(
+                discover_plugin_mcp_configs(project_dir=project_dir)
+                if not no_mcp
+                else ()
+            ),
         )
         tools.extend(mcp_tools)
     except FileNotFoundError as exc:
@@ -3540,6 +3588,19 @@ def cli_main() -> None:
             from deepagents_code.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command in {"plugin", "plugins"}:
+            from deepagents_code._env_vars import (
+                EXPERIMENTAL,
+                EXPERIMENTAL_HINT,
+                is_env_truthy,
+            )
+
+            if not is_env_truthy(EXPERIMENTAL):
+                print(EXPERIMENTAL_HINT)  # noqa: T201
+                sys.exit(2)
+            from deepagents_code.plugins.commands_cli import execute_plugin_command
+
+            execute_plugin_command(args)
         elif args.command == "mcp":
             from deepagents_code.client.commands.mcp import (
                 run_mcp_config,

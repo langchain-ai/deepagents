@@ -248,6 +248,12 @@ Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
+"""Override the plugin install/marketplace cache root.
+
+When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.
@@ -385,3 +391,6 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
         return default
     classified = classify_env_bool(raw)
     return default if classified is None else classified
+
+
+EXPERIMENTAL_HINT = f"This feature is experimental. Set {EXPERIMENTAL}=1 to enable."

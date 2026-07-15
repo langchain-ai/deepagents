@@ -1,0 +1,67 @@
+PluginManagerScreen {
+    align: center middle;
+    background: transparent;
+}
+
+PluginManagerScreen > Vertical {
+    width: 88;
+    max-width: 94%;
+    height: 80%;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+PluginManagerScreen .plugin-manager-title {
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen .plugin-manager-tabs {
+    color: $text-muted;
+    margin-bottom: 0;
+}
+
+PluginManagerScreen .plugin-manager-divider {
+    color: $text-muted;
+    margin: 0 0 1 0;
+    height: 1;
+}
+
+PluginManagerScreen .plugin-manager-status {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen .plugin-manager-error {
+    height: auto;
+    color: $error;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen #plugin-manager-options {
+    height: 1fr;
+    min-height: 5;
+    background: $background;
+}
+
+PluginManagerScreen #plugin-marketplace-source {
+    margin-top: 1;
+    margin-bottom: 1;
+    border: solid $primary-lighten-2;
+}
+
+PluginManagerScreen #plugin-marketplace-source:focus {
+    border: solid $primary;
+}
+
+PluginManagerScreen .plugin-manager-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+    margin-top: 1;
+}

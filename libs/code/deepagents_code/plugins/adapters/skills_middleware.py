@@ -17,6 +17,7 @@ from deepagents_code.plugins.adapters.skills import (
     SkillNamespace,
     namespaced_skill_name,
 )
+from deepagents_code.skills.merge import merge_skill
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -295,9 +296,12 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         backend = self._get_backend(state, runtime, config)
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
+        source_labels: dict[str, str | None] = {}
         errors: list[str] = []
 
-        for source_path, namespace in zip(self.sources, self._namespaces, strict=True):
+        for source_path, source_label, namespace in zip(
+            self.sources, self.source_labels, self._namespaces, strict=True
+        ):
             if namespace is None:
                 source_skills, source_error = sdk_skills._list_skills_with_errors(
                     backend, source_path
@@ -307,7 +311,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             else:
                 source_skills = load_namespaced_skills(backend, source_path, namespace)
             for skill in source_skills:
-                all_skills[skill["name"]] = skill
+                merge_skill(all_skills, source_labels, skill, source_label=source_label)
 
         return self._state_update(all_skills, errors)
 
@@ -328,9 +332,12 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         backend = self._get_backend(state, runtime, config)
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
+        source_labels: dict[str, str | None] = {}
         errors: list[str] = []
 
-        for source_path, namespace in zip(self.sources, self._namespaces, strict=True):
+        for source_path, source_label, namespace in zip(
+            self.sources, self.source_labels, self._namespaces, strict=True
+        ):
             if namespace is None:
                 (
                     source_skills,
@@ -343,6 +350,6 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     backend, source_path, namespace
                 )
             for skill in source_skills:
-                all_skills[skill["name"]] = skill
+                merge_skill(all_skills, source_labels, skill, source_label=source_label)
 
         return self._state_update(all_skills, errors)

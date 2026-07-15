@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     from textual import events
     from textual.app import ComposeResult
+    from textual.widget import Widget
 
     from deepagents_code._ask_user_types import (
         AskUserWidgetResult,
@@ -291,6 +292,35 @@ class AskUserMenu(Container):
         """Prevent blur from propagating and dismissing the menu."""
         stop_inline_prompt_blur(event)
 
+    def on_click(self, event: events.Click) -> None:
+        """Keep a click anywhere in the menu focused on a question.
+
+        Textual's focus-on-click walks up to the nearest focusable ancestor,
+        which can land focus on the bare menu container (which has no navigation
+        bindings) when the click hits the title, help text, or padding. Route
+        such clicks back to the active question so the arrow/enter bindings
+        always have a target. Clicks that already land on a question's own input
+        are left alone so caret placement is preserved.
+        """
+        focused = self.app.focused
+        clicked = self._question_for(event.widget)
+        if clicked is None:
+            if self._question_for(focused) is None:
+                self.focus_active()
+            return
+        if focused is clicked.focus_target:
+            return
+        self._set_active_question(clicked._index)
+
+    def _question_for(self, widget: Widget | None) -> _QuestionWidget | None:
+        """Return the `_QuestionWidget` that contains `widget`, if any."""
+        node: Any = widget
+        while node is not None and node is not self:
+            if isinstance(node, _QuestionWidget):
+                return node
+            node = node.parent
+        return None
+
 
 class _ChoiceOption(InlinePromptOption):
     """A single selectable ask-user choice option."""
@@ -366,12 +396,21 @@ class _QuestionWidget(Vertical):
 
     def focus_input(self) -> None:
         """Focus the appropriate input for this question."""
+        self.focus_target.focus()
+
+    @property
+    def focus_target(self) -> Widget:
+        """The widget `focus_input` moves focus to for this question.
+
+        Text questions focus their text area; multiple-choice questions focus
+        the question container itself (its choices are not individually
+        focusable) unless the free-text "Other" answer is active.
+        """
         if self._text_input:
-            self._text_input.focus()
-        elif self._is_other_selected and self._other_input:
-            self._other_input.focus()
-        elif self._choice_widgets:
-            self.focus()
+            return self._text_input
+        if self._is_other_selected and self._other_input:
+            return self._other_input
+        return self
 
     def get_answer(self) -> str:
         """Return the current answer text for this question.

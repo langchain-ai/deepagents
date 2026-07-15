@@ -762,6 +762,58 @@ class TestAskUserMenu:
             assert not qw0.has_class("ask-user-question-inactive")
             assert first_input.has_focus
 
+    async def test_clicking_title_refocuses_active_question(self) -> None:
+        """Clicking non-question chrome must not strand focus on the bare menu.
+
+        Textual's focus-on-click lands focus on the menu container when the
+        click hits the title, help text, or padding, and the container has no
+        navigation bindings. The menu re-routes focus to the active question so
+        arrow keys keep paging through choices.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+
+            await pilot.click(".ask-user-title")
+            await pilot.pause()
+            assert qw0.has_focus
+            assert app.focused is not menu
+
+            # Arrow keys still drive the active question's choice list.
+            await pilot.press("down")
+            await pilot.pause()
+            assert qw0._selected_choice == 1
+
+    async def test_border_reflects_focus(self) -> None:
+        """The border brightens while focus is within and dims when it leaves."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert menu.has_focus_within
+            focused_border = menu.styles.border_top
+
+            app.set_focus(None)
+            await pilot.pause()
+            assert not menu.has_focus_within
+            blurred_border = menu.styles.border_top
+
+            # Focus only changes the border color, not its type (solid/ascii).
+            assert focused_border != blurred_border
+            assert focused_border[0] == blurred_border[0]
+
     async def test_click_highlight_preserves_confirmed_and_answers(self) -> None:
         """Following focus on click must not confirm or clear existing answers."""
         app = _AskUserTestApp(

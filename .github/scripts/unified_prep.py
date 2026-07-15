@@ -204,6 +204,7 @@ def build_flat_matrix(
     """
     if code_impls is None:
         code_impls = [DEFAULT_AGENT_IMPL]
+    code_impls = list(dict.fromkeys(code_impls))
     prov = provider_of(model)
 
     # (category, agent_impl, tasks) groups, code categories fanned out over configs.

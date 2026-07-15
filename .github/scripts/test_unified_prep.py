@@ -144,6 +144,15 @@ def test_build_flat_matrix_expands_code_categories_over_configs():
     assert impls == ["bare", "dcode"]
     # Each config gets the full task set for the category.
     assert sum(len(e["include_tasks"].split()) for e in autos if e["agent_impl"] == "bare") == 2
+    # The rest of the entry schema is untouched: existing keys keep the
+    # category's CATEGORY_MAP values and the fixed 1-task/shard fields.
+    cm = up.CATEGORY_MAP["autonomous"]
+    entry = autos[0]
+    assert entry["dataset"] == cm["dataset"]
+    assert entry["dataset_path"] == cm["dataset_path"]
+    assert entry["langsmith_dataset"] == ""
+    assert entry["n_shards"] == 1
+    assert entry["shard"] == 0
 
 
 def test_build_flat_matrix_conversation_not_multiplied_by_configs():
@@ -166,8 +175,9 @@ def test_build_flat_matrix_defaults_to_bare_single_config():
 
 
 def test_build_flat_matrix_caps_entries_at_max_shards():
-    # Two code categories x three configs x 60 tasks = 360 groups pre-pack,
-    # over MAX_SHARDS; packing must keep the emitted entry count within the cap.
+    # Two code categories x two configs x 60 tasks = 240 groups pre-pack, over
+    # MAX_SHARDS; packing must keep the emitted entry count within the cap while
+    # preserving every task exactly once per (category, config) group.
     tasks = {
         "autonomous": [f"a{i}" for i in range(60)],
         "context": [f"c{i}" for i in range(60)],
@@ -176,9 +186,34 @@ def test_build_flat_matrix_caps_entries_at_max_shards():
         "openai:gpt",
         ["autonomous", "context"],
         tasks,
-        code_impls=["bare", "dcode", "dcode"][:3],
+        code_impls=["bare", "dcode"],
     )
     assert len(entries) <= shard_matrix.MAX_SHARDS
+    # Task fidelity: for each (category, config), the union of the group's
+    # packed include_tasks equals the original task list exactly (order
+    # preserved, every task present once, no drops or duplication).
+    for cat in ("autonomous", "context"):
+        for impl in ("bare", "dcode"):
+            seen = [
+                t
+                for e in entries
+                if e["category"] == cat and e["agent_impl"] == impl
+                for t in e["include_tasks"].split()
+            ]
+            assert seen == tasks[cat]
+
+
+def test_build_flat_matrix_dedupes_duplicate_configs():
+    # A repeated config collapses to a single config: ["bare", "bare"] yields
+    # the same entries as ["bare"] (guards the cap invariant, see Fix 1).
+    tasks = {"autonomous": ["a1", "a2"], "context": ["c1"]}
+    once = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare"]
+    )
+    twice = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare", "bare"]
+    )
+    assert twice == once
 
 
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):

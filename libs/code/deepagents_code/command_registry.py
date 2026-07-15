@@ -138,9 +138,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/plugins",
-        description=(
-            "Manage plugins (experimental; requires DEEPAGENTS_CODE_EXPERIMENTAL=1)"
-        ),
+        description="Manage plugins (experimental)",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),

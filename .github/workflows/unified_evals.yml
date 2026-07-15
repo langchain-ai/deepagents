@@ -46,6 +46,10 @@ on:
       sandbox_env:
         type: string
         default: "langsmith"
+      n_tasks:
+        description: "Cap tasks per (model, category); 0 = all. Use 1 for a smoke test (pair with n_shards_* = 1)."
+        type: string
+        default: "0"
       force_build:
         description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         type: boolean
@@ -201,6 +205,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-baseten:
     needs: prep
@@ -226,6 +231,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-fireworks:
     needs: prep
@@ -251,6 +257,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-google_genai:
     needs: prep
@@ -276,6 +283,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-groq:
     needs: prep
@@ -301,6 +309,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-nvidia:
     needs: prep
@@ -326,6 +335,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-ollama:
     needs: prep
@@ -351,6 +361,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-openai:
     needs: prep
@@ -376,6 +387,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-openrouter:
     needs: prep
@@ -401,6 +413,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-xai:
     needs: prep
@@ -426,6 +439,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   eval-other:
     needs: prep
@@ -451,6 +465,7 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
+      n_tasks: ${{ inputs.n_tasks }}
 
   combine:
     name: "📊 Combine cross-model results"

@@ -50,6 +50,10 @@ on:
         description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         type: boolean
         default: false
+      n_retries:
+        description: "Max retries per trial on transient failure (e.g. a LangSmith sandbox snapshot-build or resource-creation error). 0 = no retries."
+        type: string
+        default: "2"
       harbor_package_override:
         description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         type: string
@@ -136,6 +140,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -161,6 +166,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -186,6 +192,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -211,6 +218,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -236,6 +244,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -261,6 +270,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -286,6 +296,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -311,6 +322,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -336,6 +348,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -361,6 +374,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 
@@ -386,6 +400,7 @@ jobs:
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
+      n_retries: ${{ inputs.n_retries }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       include_tasks: ${{ matrix.include_tasks }}
 

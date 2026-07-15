@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,6 +52,7 @@ from deepagents_code.plugins.models import (
     GithubPluginSource,
     LocalMarketplaceSource,
     MarketplaceRecord,
+    PluginMarketplace,
     RepositoryMarketplaceSource,
     UrlMarketplaceSource,
 )
@@ -761,6 +763,113 @@ async def test_plugin_manager_opens_add_marketplace_input(
         help_text = str(screen.query_one("#plugin-manager-help").render())
         assert "Enter to add" in help_text
         assert "Esc to cancel" in help_text
+
+
+async def test_plugin_manager_add_marketplace_runs_in_background(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def add_marketplace(source: str) -> None:
+        nonlocal calls
+        assert source == "owner/repo"
+        calls += 1
+        started.set()
+        assert release.wait(timeout=5)
+        msg = "marketplace failed"
+        raise MarketplaceError(msg)
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.add_marketplace_source",
+        add_marketplace,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("right", "right", "enter")
+        await pilot.pause()
+
+        source_input = screen.query_one("#plugin-marketplace-source", Input)
+        source_input.value = "owner/repo"
+        await pilot.press("enter")
+        await asyncio.to_thread(started.wait, 5)
+        await pilot.pause()
+
+        assert screen._adding_marketplace is True
+        assert source_input.disabled is True
+        assert "Adding marketplace..." in str(
+            screen.query_one("#plugin-manager-status").render()
+        )
+        screen.on_input_submitted(Input.Submitted(source_input, source_input.value))
+        assert calls == 1
+        screen.action_cancel()
+        assert screen._mode == "add_marketplace"
+
+        release.set()
+        while screen._adding_marketplace:
+            await pilot.pause()
+
+        assert calls == 1
+        assert source_input.disabled is False
+        assert source_input.has_focus
+        assert "Could not add marketplace: marketplace failed" in str(
+            screen.query_one("#plugin-manager-error").render()
+        )
+
+
+async def test_plugin_manager_add_marketplace_success_refreshes_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    marketplace = load_marketplace(marketplace_root)
+
+    def add_marketplace(source: str) -> PluginMarketplace:
+        assert source == "owner/repo"
+        add_local_marketplace(marketplace_root)
+        return marketplace
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.add_marketplace_source",
+        add_marketplace,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("right", "right", "enter")
+        source_input = screen.query_one("#plugin-marketplace-source", Input)
+        source_input.value = "owner/repo"
+        await pilot.press("enter")
+
+        while screen._adding_marketplace:
+            await pilot.pause()
+
+        assert screen._mode == "list"
+        assert screen._tab == "discover"
+        assert len(screen._state.marketplaces) == 1
+        assert "Added marketplace company-tools (1 plugin(s))." in str(
+            screen.query_one("#plugin-manager-status").render()
+        )
 
 
 async def test_plugin_manager_discover_rows_show_description_below_name(

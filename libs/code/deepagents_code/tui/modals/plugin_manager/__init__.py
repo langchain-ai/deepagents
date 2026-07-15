@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, ClassVar
 
+from textual import work
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
@@ -12,12 +13,16 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
+from deepagents_code.tui.widgets.loading import Spinner
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from textual.app import ComposeResult
+    from textual.timer import Timer
 
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.plugins.models import PluginMarketplace
     from deepagents_code.tui.modals.plugin_manager.models import (
         PluginManagerView,
         PluginTab,
@@ -94,6 +99,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
+        self._adding_marketplace = False
+        self._marketplace_spinner = Spinner()
+        self._marketplace_spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -371,6 +379,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
 
     def action_cancel(self) -> None:
         """Close or leave the add-marketplace / details prompt."""
+        if self._adding_marketplace:
+            return
         if self._mode == "add_marketplace":
             self._mode = "list"
             self._error = None
@@ -620,24 +630,53 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error = None
         await self._refresh_state()
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         """Add a marketplace from the source input."""
-        if event.input.id != "plugin-marketplace-source":
+        if event.input.id != "plugin-marketplace-source" or self._adding_marketplace:
             return
         source = event.value.strip()
         if not source:
             self._error = "Please enter a marketplace source."
             self._refresh_view()
             return
-        self._status = "Adding marketplace..."
+        self._adding_marketplace = True
+        event.input.disabled = True
         self._error = None
+        self._marketplace_spinner_timer = self.set_interval(
+            0.1, self._tick_marketplace_spinner
+        )
+        self._tick_marketplace_spinner()
+        self._add_marketplace(source)
+
+    def _tick_marketplace_spinner(self) -> None:
+        self._status = f"{self._marketplace_spinner.next_frame()} Adding marketplace..."
         self._refresh_view()
+
+    @work(thread=True, exclusive=True, exit_on_error=False)
+    def _add_marketplace(self, source: str) -> None:
         try:
-            marketplace = await asyncio.to_thread(add_marketplace_source, source)
+            marketplace = add_marketplace_source(source)
         except (MarketplaceError, OSError, RuntimeError) as exc:
+            self.app.call_from_thread(self._finish_marketplace_add, None, str(exc))
+            return
+        self.app.call_from_thread(self._finish_marketplace_add, marketplace, None)
+
+    async def _finish_marketplace_add(
+        self, marketplace: PluginMarketplace | None, error: str | None
+    ) -> None:
+        self._adding_marketplace = False
+        if self._marketplace_spinner_timer is not None:
+            self._marketplace_spinner_timer.stop()
+            self._marketplace_spinner_timer = None
+        source_input = self.query_one("#plugin-marketplace-source", Input)
+        source_input.disabled = False
+        if error is not None:
             self._status = None
-            self._error = f"Could not add marketplace: {exc}"
+            self._error = f"Could not add marketplace: {error}"
             self._refresh_view()
+            source_input.focus()
+            return
+        if marketplace is None:
             return
         self._mode = "list"
         self._tab = "discover"

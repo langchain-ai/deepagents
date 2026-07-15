@@ -104,7 +104,10 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
 
 def test_full_profile_has_empty_include_tasks():
     mats = up.build_provider_matrices(
-        ["openai:gpt"], ["autonomous"], shard_parallel=10, n_shards_by_cat={"autonomous": 10}
+        ["openai:gpt"],
+        ["autonomous"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10},
     )
     assert mats["openai"][0]["include_tasks"] == ""
 
@@ -128,7 +131,7 @@ def test_lite_profile_sets_include_tasks_and_shards_one_task_each():
         # One task per shard: max-parallel drains the queue, GH pulls the next
         # single-task shard as each finishes (dynamic load-balancing).
         assert by_cat[cat]["n_shards"] == n
-    assert by_cat["autonomous"]["n_shards"] == 15
+    assert by_cat["autonomous"]["n_shards"] == 3
 
 
 def test_lite_shards_independent_of_shard_parallel():
@@ -141,7 +144,7 @@ def test_lite_shards_independent_of_shard_parallel():
         n_shards_by_cat={"autonomous": 10},
         profile="lite",
     )
-    assert mats["openai"][0]["n_shards"] == 15
+    assert mats["openai"][0]["n_shards"] == 3
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

@@ -16,26 +16,11 @@ Names are the exact harbor `--include-task-name` filters per category:
 from __future__ import annotations
 
 LITE_TASKS: dict[str, list[str]] = {
-    # 15 — luna is weak here, so a rich frontier: partials + hard-but-solvable.
-    # Excludes the bix* bioinformatics tasks: their ~6 GB `chenzizhao/bixbench`
-    # image exhausts the Docker-sandbox runner disk (and fails the LangSmith
-    # builder). Re-add once lite runs on a sandbox that builds big images.
+    # Isolated rerun of the three autonomous Docker-sandbox failures.
     "autonomous": [
-        "harbor-index/replicationbench-find-galactic-vz-peaks",
         "harbor-index/swebenchverified-fix-span-selector-axes-limits",
-        "harbor-index/omnimath-find-perfect-square-functions",
-        "harbor-index/usaco-assign-cows-to-barns",
         "harbor-index/featurebench-add-feature-mlflow-bedrock-autolog",
-        "harbor-index/build-word2vec-pipeline",
-        "harbor-index/tb-dna-insert",
         "harbor-index/swebenchverified-fix-django-mti-parent-link",
-        "harbor-index/arcagi2-grid-transform-8b7b",
-        "harbor-index/labbench-habenula-fluorescence-change",
-        "harbor-index/labbench-read-asap2f-step-response",
-        "harbor-index/gso-speedup-pydantic-enum",
-        "harbor-index/swebenchpro-fix-file-suffix-chooser",
-        "harbor-index/spider2-dbt-airport-arrivals",
-        "harbor-index/arcagi2-grid-transform-a32d",
     ],
     # 11 — luna is weak on banking (rich frontier); telecom is saturated (1 kept).
     "conversation": [

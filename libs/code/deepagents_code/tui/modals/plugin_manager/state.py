@@ -206,11 +206,11 @@ def _row_from_instance(
         len(skill_names) if instance else None,
         skill_names,
         _plugin_mcp_connected(instance, mcp_server_info)
-        if instance and is_enabled and plugin_id in loaded_plugin_ids
+        if instance and plugin_id in loaded_plugin_ids
         else None,
         mcp_names,
         unsupported,
-        session_loaded=is_enabled and plugin_id in loaded_plugin_ids,
+        session_loaded=plugin_id in loaded_plugin_ids,
         load_error=load_error,
     )
 

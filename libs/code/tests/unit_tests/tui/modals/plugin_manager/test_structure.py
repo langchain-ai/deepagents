@@ -42,6 +42,23 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
     assert "pending /reload" in str(options[2].prompt)
 
 
+def test_plugin_options_show_pending_reload_when_disabled_but_loaded() -> None:
+    rows = (
+        _PluginRow(
+            "loaded@source",
+            "Still loaded",
+            False,
+            "1.0",
+            None,
+            session_loaded=True,
+        ),
+    )
+
+    options = _plugin_options(rows, action="installed", status=None)
+
+    assert "pending /reload" in str(options[0].prompt)
+
+
 def test_plugin_details_content_lists_preview_components() -> None:
     row = _PluginRow(
         "quality@tools",
@@ -111,6 +128,26 @@ def test_installed_details_pending_reload_not_enabled() -> None:
     assert "Status: Installed · pending /reload" in content
     assert "Run /reload" in content
     assert f"{get_glyphs().checkmark} Enabled" not in content
+
+
+def test_installed_details_pending_reload_after_disable() -> None:
+    row = _PluginRow(
+        "quality@tools",
+        "Quality",
+        False,
+        "1.0.0",
+        None,
+        skill_count=1,
+        skill_names=("quality@tools:review",),
+        session_loaded=True,
+    )
+
+    assert row.load_state == "pending_reload"
+    content = str(_installed_plugin_details_content(row))
+
+    assert "Status: Disabled · pending /reload" in content
+    assert "unload this plugin" in content
+    assert "Status: Disabled\n" not in content
 
 
 async def test_plugin_manager_overlays_underlying_content() -> None:

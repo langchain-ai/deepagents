@@ -1381,6 +1381,30 @@ def test_manager_state_surfaces_unsupported_components_for_agents_plugin(
     assert row.load_state == "pending_reload"
 
 
+def test_manager_state_keeps_pending_reload_after_disable_while_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    set_installed_plugin_enabled(plugin_id, enabled=False)
+
+    state = _load_manager_state(loaded_plugin_ids=frozenset({plugin_id}))
+    row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
+
+    assert row.enabled is False
+    assert row.session_loaded is True
+    assert row.load_state == "pending_reload"
+
+
 def test_manager_state_previews_local_discover_components(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

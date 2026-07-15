@@ -35,11 +35,11 @@ class _PluginRow:
         """Session-aware plugin status for list and detail copy."""
         if self.load_error:
             return "error"
-        if not self.enabled:
-            return "disabled"
-        if not self.session_loaded:
+        if self.enabled != self.session_loaded:
             return "pending_reload"
-        return "enabled"
+        if self.enabled:
+            return "enabled"
+        return "disabled"
 
 
 @dataclass(frozen=True, slots=True)

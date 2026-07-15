@@ -52,6 +52,12 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
             meta_parts.append(f"{glyphs.checkmark} connected")
         elif row.mcp_connected is False:
             meta_parts.append("restart to connect")
+    elif (
+        row.load_state == "pending_reload"
+        and row.session_loaded
+        and row.mcp_connected is True
+    ):
+        meta_parts.append(f"{glyphs.checkmark} connected")
     if status:
         meta_parts.append(status)
     return Content.assemble(
@@ -141,9 +147,14 @@ def _status_lines(row: _PluginRow) -> list[str]:
     if row.load_state == "disabled":
         return ["Status: Disabled", "Enable the plugin, then run /reload to load it."]
     if row.load_state == "pending_reload":
+        if row.enabled:
+            return [
+                "Status: Installed · pending /reload",
+                "Run /reload to load this plugin into the current session.",
+            ]
         return [
-            "Status: Installed · pending /reload",
-            "Run /reload to load this plugin into the current session.",
+            "Status: Disabled · pending /reload",
+            "Run /reload to unload this plugin from the current session.",
         ]
     lines = [f"Status: {glyphs.checkmark} Enabled"]
     if row.mcp_connected is False:

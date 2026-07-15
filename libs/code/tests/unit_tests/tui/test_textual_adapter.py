@@ -1114,6 +1114,21 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default", assistant_id=None)
         assert "dcode_experimental" not in config["metadata"]
 
+    def test_auto_approve_included_when_active(self) -> None:
+        """YOLO (auto-approve) runs should be identifiable in trace metadata."""
+        config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
+        assert config["metadata"]["dcode_auto_approve"] is True
+
+    def test_auto_approve_absent_when_inactive(self) -> None:
+        """Manual-approval runs should not carry the auto-approve label."""
+        config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
+        assert "dcode_auto_approve" not in config["metadata"]
+
+    def test_auto_approve_absent_by_default(self) -> None:
+        """The default (param omitted) is not labeled auto-approve."""
+        config = build_stream_config("t-default-approve", assistant_id=None)
+        assert "dcode_auto_approve" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""

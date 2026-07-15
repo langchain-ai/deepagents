@@ -1647,6 +1647,7 @@ def build_stream_config(
     sandbox_type: str | None = None,
     turn_id: str | None = None,
     turn_number: int | None = None,
+    auto_approve: bool = False,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
@@ -1679,6 +1680,11 @@ def build_stream_config(
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
 
+    Also records `dcode_auto_approve=True` when auto-approve ("YOLO") mode is
+    active, so runs that ran tools without HITL approval are filterable in trace
+    metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
+    key (see below), so it is safe to stamp trace-wide.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1690,6 +1696,8 @@ def build_stream_config(
             sandbox is active.
         turn_id: Stable per-turn id for the current user prompt, or `None`.
         turn_number: 1-based per-thread turn index, or `None`.
+        auto_approve: Whether auto-approve ("YOLO") mode is active for this turn.
+            When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -1717,6 +1725,10 @@ def build_stream_config(
     # Mark experimental runs so they are filterable in trace metadata.
     if is_env_truthy(EXPERIMENTAL):
         metadata["dcode_experimental"] = True
+
+    # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
+    if auto_approve:
+        metadata["dcode_auto_approve"] = True
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).

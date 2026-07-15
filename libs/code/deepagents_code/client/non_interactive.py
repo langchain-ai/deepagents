@@ -1555,19 +1555,6 @@ async def run_non_interactive(
 
     thread_id = generate_thread_id()
 
-    # One user turn per process: fresh turn id, turn_number 1.
-    from uuid import uuid4
-
-    from deepagents_code.config import build_stream_config
-
-    config: RunnableConfig = build_stream_config(
-        thread_id,
-        assistant_id,
-        sandbox_type=sandbox_type,
-        turn_id=str(uuid4()),
-        turn_number=1,
-    )
-
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
@@ -1613,6 +1600,23 @@ async def run_non_interactive(
             list(settings.shell_allow_list)
             if use_interrupt_shell_only and settings.shell_allow_list
             else None
+        )
+
+        # One user turn per process: fresh turn id, turn_number 1. Built here so
+        # the resolved `use_auto_approve` is stamped into the trace metadata
+        # (headless auto-approve means tools run without HITL because shell is
+        # unrestricted or disabled).
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        config: RunnableConfig = build_stream_config(
+            thread_id,
+            assistant_id,
+            sandbox_type=sandbox_type,
+            turn_id=str(uuid4()),
+            turn_number=1,
+            auto_approve=use_auto_approve,
         )
 
         if not quiet:

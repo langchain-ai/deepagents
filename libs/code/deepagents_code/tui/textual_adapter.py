@@ -665,6 +665,10 @@ async def execute_task_textual(
     # `build_stream_config` does blocking git filesystem reads and may shell out
     # to `git`; offload it so the Textual event loop stays responsive. Advancing
     # the turn markers above is pure/cheap and stays on the loop.
+    #
+    # `auto_approve` is sampled once here, at turn start, so it labels the trace
+    # with the mode the turn began in. A mid-turn Shift+Tab toggle still changes
+    # execution behavior (via `context`) but does not relabel this turn's trace.
     config = await asyncio.to_thread(
         build_stream_config,
         thread_id,
@@ -672,6 +676,7 @@ async def execute_task_textual(
         sandbox_type=sandbox_type,
         turn_id=turn_id,
         turn_number=turn_number,
+        auto_approve=bool(session_state.auto_approve),
     )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})

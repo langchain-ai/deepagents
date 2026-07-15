@@ -13,8 +13,8 @@ MAX_RUNNERS // max_parallel` bounds how many models run at once so total
 runners stay within MAX_RUNNERS. Both invariants hold by construction:
   per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
   global:     model_parallel * max_parallel <= MAX_RUNNERS (80)
-`total_job_guard` separately caps the total job count (n_models * est_tasks)
-against a fixed budget so an oversized selection fails fast instead of
+`total_job_guard` separately caps the total post-pack job count (summed across
+models) against a fixed budget so an oversized selection fails fast instead of
 launching a firehose.
 """
 
@@ -67,7 +67,7 @@ CATEGORY_MAP: dict[str, dict] = {
 # `agent_impl` input. Conversation is always tau3 and is never overridden.
 CODE_AGENT_IMPLS = {"dcode", "bare"}
 
-# Harness used when the `agent_impl` input (UNIFIED_AGENT_IMPL) is unset or blank.
+# Harness used when the `agent_impl` input (UNIFIED_AGENT_IMPLS) is unset or blank.
 DEFAULT_AGENT_IMPL = "bare"
 
 # Every harness a category may pin in CATEGORY_MAP (code harnesses plus tau3).
@@ -90,21 +90,21 @@ PROFILES = {"full", "lite"}
 TOTAL_JOB_BUDGET = 400
 
 
-def total_job_guard(n_models: int, est_tasks_per_model: int) -> None:
-    """Fail when the flat matrix would generate too many total jobs.
+def total_job_guard(total_jobs: int) -> None:
+    """Fail when the built flat matrices would generate too many total jobs.
 
-    At 1-task/shard the run generates n_models * est_tasks jobs. GitHub-hosted
-    Actions become unreliable well before that count needs to be large, so cap
-    it and point at the worker-pool escalation instead of silently launching a
-    firehose.
+    `total_jobs` is the actual post-pack entry count summed across models (what
+    GitHub launches), not the pre-pack task count. Packing bounds each model at
+    MAX_SHARDS, so this reflects the real matrix size. GitHub-hosted Actions become
+    unreliable well before an unbounded count, so cap it and point at the worker-pool
+    escalation instead of silently launching a firehose.
     """
-    total = n_models * est_tasks_per_model
-    if total > TOTAL_JOB_BUDGET:
+    if total_jobs > TOTAL_JOB_BUDGET:
         raise SystemExit(
-            f"Flat matrix would generate ~{total} jobs "
-            f"({n_models} models x ~{est_tasks_per_model} tasks), over "
-            f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set or task "
-            "count, or move to a worker pool orchestrator (see the flat-pool spec)."
+            f"Flat matrix would generate {total_jobs} jobs, over "
+            f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set, config "
+            "count, or task count, or move to a worker pool orchestrator (see the "
+            "flat-pool spec)."
         )
 
 
@@ -284,12 +284,17 @@ def main(argv: list[str] | None = None) -> int:
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
 
-    # Empty defaults to the bare create_deep_agent harness for the code categories.
-    code_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or DEFAULT_AGENT_IMPL
-    if code_impl not in CODE_AGENT_IMPLS:
+    # Comma list of code harnesses; empty defaults to the bare create_deep_agent
+    # harness. Conversation is always tau3 and is never taken from this input.
+    raw_impls = os.environ.get("UNIFIED_AGENT_IMPLS", "").strip()
+    code_impls = list(
+        dict.fromkeys(s.strip() for s in raw_impls.split(",") if s.strip())
+    ) or [DEFAULT_AGENT_IMPL]
+    unknown_impls = [i for i in code_impls if i not in CODE_AGENT_IMPLS]
+    if unknown_impls:
         raise SystemExit(
-            f"UNIFIED_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}, "
-            f"got {code_impl!r}"
+            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}, "
+            f"got unknown {unknown_impls}"
         )
 
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
@@ -322,33 +327,50 @@ def main(argv: list[str] | None = None) -> int:
             tasks_by_cat = json.load(f)
 
     n_models = len(model_specs)
-    est_tasks = max(sum(len(tasks_by_cat.get(c, [])) for c in categories), 1)
-    total_job_guard(n_models, est_tasks)
 
-    # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
-    n_shards = est_tasks
-    max_parallel, model_parallel = derive_pool(concurrency, rollouts, n_shards, n_models)
+    # Build every model's flat matrix up front so the job guard and pool sizing use
+    # the actual post-pack entry counts (packing can shrink these below the pre-pack
+    # task totals when a large config x task grid packs multiple tasks per shard).
+    per_model_matrices = {
+        m: build_flat_matrix(m, categories, tasks_by_cat, code_impls)
+        for m in model_specs
+    }
+    total_jobs = sum(len(entries) for entries in per_model_matrices.values())
+    total_job_guard(total_jobs)
+
+    # Pool sizing stays per-model. n_shards is the largest per-model entry count
+    # (what one model's shared pool drains); derive_pool caps max_parallel so
+    # per-model concurrency is unchanged by the config axis.
+    n_shards = max((len(v) for v in per_model_matrices.values()), default=1)
+    max_parallel, model_parallel = derive_pool(
+        concurrency, rollouts, n_shards, n_models
+    )
+
+    expected_leaves: list[dict] = []
+    seen_leaves: set[tuple[str, str, str]] = set()
+    for m, entries in per_model_matrices.items():
+        for e in entries:
+            key = (m, e["agent_impl"], e["category"])
+            if key not in seen_leaves:
+                seen_leaves.add(key)
+                expected_leaves.append(
+                    {"model": m, "config": e["agent_impl"], "category": e["category"]}
+                )
 
     outputs: dict[str, object] = {
-        # The expected grid, so the combiner can flag missing/incomplete leaves
-        # instead of silently ranking a model on fewer categories.
         "models": model_specs,
         "categories": categories,
+        "configs": code_impls,
+        "expected_leaves": expected_leaves,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
     }
-    # One eval_matrix entry per model, each carrying its own pre-serialized
-    # flat matrix. GitHub job outputs are statically declared, so a single
-    # matrixable output (rather than one `model_<idx>_matrix` output per
-    # model) is what lets the `eval` job's `strategy.matrix` scale to an
-    # arbitrary model count.
     eval_include = [
         {
             "model": m,
             "slug": _slug(m),
             "flat_matrix": json.dumps(
-                {"include": build_flat_matrix(m, categories, tasks_by_cat, [code_impl])},
-                separators=(",", ":"),
+                {"include": per_model_matrices[m]}, separators=(",", ":")
             ),
         }
         for m in model_specs

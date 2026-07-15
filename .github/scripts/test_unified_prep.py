@@ -39,8 +39,8 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
-    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "deepagent")
-    with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPL must be one of"):
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "deepagent")
+    with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPLS entries must be in"):
         up.main()
 
 
@@ -125,13 +125,14 @@ def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
 
 
 def test_total_job_guard_allows_within_budget():
-    up.total_job_guard(n_models=2, est_tasks_per_model=142)  # 284 <= 400, no raise
+    up.total_job_guard(total_jobs=360)  # <= 400, no raise
 
 
 def test_total_job_guard_rejects_over_budget():
     import pytest
-    with pytest.raises(SystemExit, match=r"worker pool"):
-        up.total_job_guard(n_models=3, est_tasks_per_model=142)  # 426 > 400
+
+    with pytest.raises(SystemExit):
+        up.total_job_guard(total_jobs=401)
 
 
 def test_build_flat_matrix_expands_code_categories_over_configs():
@@ -247,3 +248,32 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "model_slugs" not in lines
     assert "model_0_matrix" not in lines
     assert "openai_matrix" not in lines
+
+
+def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,bogus")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    with pytest.raises(SystemExit):
+        up.main()
+
+
+def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
+    import json as _j
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    up.main()
+    text = out.read_text()
+    line = next(ln for ln in text.splitlines() if ln.startswith("expected_leaves="))
+    leaves = _j.loads(line.split("=", 1)[1])
+    configs = {leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"}
+    assert configs == {"bare", "dcode"}

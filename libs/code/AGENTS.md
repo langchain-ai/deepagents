@@ -4,6 +4,14 @@
 
 For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
+## Editing files with `edit_file`
+
+When `edit_file` returns "String not found in file" or "String ... appears N times in file", do NOT re-issue the same or a near-identical anchor. Retrying the same anchor will fail the same way and just burns turns. Instead:
+
+- Re-read the target region with `read_file` and copy an exact, unique, multi-line anchor (include surrounding context lines) before retrying.
+- Pass `replace_all=True` when the intent is to change every occurrence.
+- Never issue more than one failed `edit_file` on the same anchor without an intervening `read_file`.
+
 ## Textual (terminal UI framework)
 
 `deepagents-code` uses [Textual](https://textual.textualize.io/).

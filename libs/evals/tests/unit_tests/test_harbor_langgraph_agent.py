@@ -137,6 +137,48 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured_create[0]["assistant_id"]
 
 
+def test_make_graph_openai_defaults_to_responses_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # OpenAI gates reasoning_effort + function tools to /v1/responses for
+    # gpt-5.x; the agent builds the model directly, so it must set
+    # use_responses_api=True itself.
+    captured_init: list[dict[str, object]] = []
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        captured_init.append({"model": model, "kwargs": kwargs})
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
+
+    langgraph_agent.make_graph(
+        {"configurable": {"model": "openai:gpt-5.6-luna", "cwd": str(tmp_path)}}
+    )
+
+    assert captured_init == [
+        {"model": "openai:gpt-5.6-luna", "kwargs": {"use_responses_api": True}}
+    ]
+
+
+def test_build_model_respects_explicit_use_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_init: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        langgraph_agent,
+        "init_chat_model",
+        lambda model, **kwargs: captured_init.append({"model": model, "kwargs": kwargs}),
+    )
+
+    langgraph_agent._build_model(
+        {"model": "openai:gpt-5", "model_kwargs": {"use_responses_api": False}}
+    )
+
+    assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
+
+
 def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

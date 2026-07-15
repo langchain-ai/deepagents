@@ -545,7 +545,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = f"Installed {row.plugin_id}. Run /reload-plugins to activate."
+        self._status = f"Installed {row.plugin_id}. Run /reload to activate."
         self._error = None
         await self._refresh_state()
 
@@ -556,16 +556,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         try:
             if row.enabled:
                 set_installed_plugin_enabled(row.plugin_id, enabled=False)
-                self._status = (
-                    f"Disabled {row.plugin_id}. Run /reload-plugins to unload."
-                )
+                self._status = f"Disabled {row.plugin_id}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
                 set_installed_plugin_enabled(row.plugin_id, enabled=True)
-                self._status = (
-                    f"Enabled {row.plugin_id}. Run /reload-plugins to activate."
-                )
+                self._status = f"Enabled {row.plugin_id}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"
                 self._selected_plugin = None
@@ -590,7 +586,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return
         self._mode = "list"
         self._selected_plugin = None
-        reload_hint = " Run /reload-plugins to unload." if row.enabled else ""
+        reload_hint = " Run /reload to unload." if row.enabled else ""
         self._status = f"Uninstalled {row.plugin_id}.{reload_hint}"
         self._error = None
         await self._refresh_state()

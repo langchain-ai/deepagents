@@ -132,7 +132,6 @@ class TestSlashCommands:
     def test_experimental_plugin_commands_hidden_by_default(self) -> None:
         names = {entry.name for entry in get_slash_commands()}
         assert "/plugins" not in names
-        assert "/reload-plugins" not in names
 
     def test_experimental_plugin_commands_visible_when_enabled(
         self, monkeypatch
@@ -142,7 +141,6 @@ class TestSlashCommands:
         monkeypatch.setenv(EXPERIMENTAL, "1")
         names = {entry.name for entry in get_slash_commands()}
         assert "/plugins" in names
-        assert "/reload-plugins" in names
 
 
 class TestHiddenCommands:

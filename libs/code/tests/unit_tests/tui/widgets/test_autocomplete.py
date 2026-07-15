@@ -288,15 +288,10 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/help" in s[0] for s in suggestions)
 
-    def test_prefix_ties_follow_registry_order_for_re_commands(
-        self, mock_view, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_prefix_ties_follow_registry_order_for_re_commands(self, mock_view) -> None:
         """Equal-score prefixes keep registry order (`re`/`rel` disambiguation)."""
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         controller = SlashCommandController(get_slash_commands(), mock_view)
-        assert any(entry.name == "/reload-plugins" for entry in controller._commands)
+        assert any(entry.name == "/reload" for entry in controller._commands)
 
         controller.on_text_changed("/re", 3)
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
@@ -304,7 +299,7 @@ class TestSlashCommandController:
 
         controller.on_text_changed("/rel", 4)
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert suggestions[0][0].startswith("/reload-plugins")
+        assert suggestions[0][0].startswith("/reload")
 
     def test_prefix_match_ranks_first(self, controller, mock_view):
         """Prefix matches on command name rank above description matches."""

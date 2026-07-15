@@ -11071,18 +11071,6 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
                 return
             await self._show_plugin_manager()
-        elif cmd == "/reload-plugins":
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
-                return
-            await self._handle_reload_plugins_command(command)
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
@@ -11237,6 +11225,53 @@ class DeepAgentsApp(App):
                 if removed_skills:
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
+
+            # Experimental plugins: rediscover and restart the owned server so
+            # plugin MCP config is picked up without a separate slash command.
+            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+            if is_env_truthy(EXPERIMENTAL):
+                from deepagents_code.plugins import discover_plugins
+                from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+                plugin_result = discover_plugins()
+                plugin_count = len(plugin_result.plugins)
+                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                mcp_count = sum(
+                    len(servers)
+                    for config in mcp_configs
+                    if isinstance((servers := config.get("mcpServers")), dict)
+                )
+                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                report += (
+                    f"\nPlugins: {plugin_count} plugin"
+                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{plugin_skill_count} skill"
+                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{mcp_count} plugin MCP server"
+                    f"{'s' if mcp_count != 1 else ''}"
+                )
+                if plugin_result.warnings:
+                    report += (
+                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                        "during load."
+                    )
+
+                restarted = False
+                if self._server_proc is not None and self._server_kwargs is not None:
+                    if self._agent_running and self._agent_worker:
+                        self._cancel_worker(self._agent_worker)
+                        self._agent_running = False
+                    else:
+                        self._discard_queue()
+                    restarted = await self._restart_server_manual()
+                    if restarted:
+                        report += "\nAgent server restarted for plugin MCP."
+                    else:
+                        report += (
+                            "\nAgent server was not restarted; plugin MCP may be stale."
+                        )
+
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
@@ -16846,71 +16881,6 @@ class DeepAgentsApp(App):
                 timeout=5,
                 markup=False,
             )
-
-    async def _handle_reload_plugins_command(self, command: str) -> None:
-        """Reload plugin skills and rebuild the agent for plugin MCP.
-
-        Args:
-            command: Raw command string for echoing back to chat.
-        """
-        await self._mount_message(UserMessage(command))
-
-        from deepagents_code.plugins import discover_plugins
-        from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-        old_skill_names = {s["name"] for s in self._discovered_skills}
-        plugin_result = discover_plugins()
-        plugin_count = len(plugin_result.plugins)
-        mcp_configs = plugin_mcp_configs(plugin_result.plugins)
-        mcp_count = sum(
-            len(servers)
-            for config in mcp_configs
-            if isinstance((servers := config.get("mcpServers")), dict)
-        )
-
-        skill_worker = self.run_worker(
-            self._discover_skills(),
-            exclusive=True,
-            group="startup-skill-discovery",
-        )
-        await skill_worker.wait()
-        discovery_ok = skill_worker.result is True
-        new_skill_names = {s["name"] for s in self._discovered_skills}
-        plugin_skill_names = sorted(name for name in new_skill_names if ":" in name)
-        added_skills = sorted(new_skill_names - old_skill_names)
-        removed_skills = sorted(old_skill_names - new_skill_names)
-
-        restarted = False
-        if self._server_proc is not None and self._server_kwargs is not None:
-            if self._agent_running and self._agent_worker:
-                self._cancel_worker(self._agent_worker)
-                self._agent_running = False
-            else:
-                self._discard_queue()
-            if await self._reload_configuration_for_restart():
-                restarted = await self._restart_server_manual()
-
-        skill_count = len(plugin_skill_names)
-        parts = [
-            f"{plugin_count} plugin{'s' if plugin_count != 1 else ''}",
-            f"{skill_count} skill{'s' if skill_count != 1 else ''}",
-            f"{mcp_count} plugin MCP server{'s' if mcp_count != 1 else ''}",
-        ]
-        report = f"Reloaded: {' · '.join(parts)}"
-        if not discovery_ok:
-            report += "\nSkill re-discovery failed; existing /skill: list left as-is."
-        elif added_skills or removed_skills:
-            skill_lines = []
-            if added_skills:
-                skill_lines.append(f"  - Added: {', '.join(added_skills)}")
-            if removed_skills:
-                skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
-            report += "\nSkills updated:\n" + "\n".join(skill_lines)
-        if plugin_result.warnings:
-            report += f"\n{len(plugin_result.warnings)} warning(s) during load."
-        if self._server_proc is not None and not restarted:
-            report += "\nAgent server was not restarted; MCP may be stale."
-        await self._mount_message(AppMessage(report))
 
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""

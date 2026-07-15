@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (35)
+## Public (34)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -33,7 +33,6 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/plugins` |  | Manage plugins (experimental; requires DEEPAGENTS_CODE_EXPERIMENTAL=1) |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
-| `/reload-plugins` |  | Reload installed plugins (experimental; requires DEEPAGENTS_CODE_EXPERIMENTAL=1) |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |

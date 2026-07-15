@@ -1033,3 +1033,66 @@ class TestReloadThemeReapply:
         )
         assert active == "langchain"
         assert "Switched theme to" not in text
+
+
+class TestReloadPluginsViaReload:
+    """Experimental plugins should reload through `/reload`."""
+
+    async def test_reports_plugin_summary_when_experimental(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` includes a plugin summary when experimental mode is on."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=()),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Plugins: 0 plugins · 0 skills · 0 plugin MCP servers" in text
+
+    async def test_skips_plugin_summary_when_experimental_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` omits plugin summary when experimental mode is off."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Plugins:" not in text

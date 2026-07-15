@@ -169,15 +169,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="[context]",
     ),
     # Keep after `/remember` so equal-score prefix ties resolve as
-    # `re` → `/remember`, `rel` → `/reload-plugins` (ahead of `/reload`).
+    # `re` → `/remember`, `rel` → `/reload`.
     SlashCommand(
-        name="/reload-plugins",
-        description=(
-            "Reload installed plugins (experimental; requires "
-            "DEEPAGENTS_CODE_EXPERIMENTAL=1)"
-        ),
+        name="/reload",
+        description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="plugin plugins refresh marketplace",
+        hidden_keywords="refresh plugin plugins marketplace",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",
@@ -208,12 +205,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="List the tools available to the agent",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="mcp functions capabilities builtin built-in",
-    ),
-    SlashCommand(
-        name="/reload",
-        description="Reload environment and config",
-        bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="refresh",
     ),
     SlashCommand(
         name="/rubric",
@@ -412,9 +403,7 @@ class CommandEntry(NamedTuple):
         return self.display_name or self.name
 
 
-_EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset(
-    {"/plugins", "/reload-plugins"}
-)
+_EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset({"/plugins"})
 """Slash commands gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`."""
 
 

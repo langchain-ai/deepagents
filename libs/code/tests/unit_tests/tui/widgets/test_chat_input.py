@@ -2578,7 +2578,7 @@ class TestSlashCompletionCursorMapping:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            # Shared prefix `re`: shorter `/remember` ranks above `/reload-plugins`.
+            # Shared prefix `re`: shorter `/remember` ranks above `/reload`.
             chat._text_area.insert("re")
             await pilot.pause()
 

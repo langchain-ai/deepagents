@@ -145,8 +145,7 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         if instance.version is not None:
             details = f" (version: {instance.version})"
         text = (
-            f"Installed plugin {instance.plugin_id}{details}. "
-            "Run /reload-plugins to activate."
+            f"Installed plugin {instance.plugin_id}{details}. Run /reload to activate."
         )
         print(text)  # noqa: T201
         return text

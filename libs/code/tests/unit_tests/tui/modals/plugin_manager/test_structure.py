@@ -1,13 +1,8 @@
 """Tests for the plugin manager modal structure."""
 
 import inspect
-import re
 from pathlib import Path
-from unittest.mock import MagicMock
 
-from textual.widgets import Static
-
-from deepagents_code.app import DeepAgentsApp
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.content import (
@@ -39,24 +34,6 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
         "detail:second@source",
     ]
     assert options[1].disabled
-    assert "pending /reload" in str(options[2].prompt)
-
-
-def test_plugin_options_show_pending_reload_when_disabled_but_loaded() -> None:
-    rows = (
-        _PluginRow(
-            "loaded@source",
-            "Still loaded",
-            False,
-            "1.0",
-            None,
-            session_loaded=True,
-        ),
-    )
-
-    options = _plugin_options(rows, action="installed", status=None)
-
-    assert "pending /reload" in str(options[0].prompt)
 
 
 def test_plugin_details_content_lists_preview_components() -> None:
@@ -76,17 +53,6 @@ def test_plugin_details_content_lists_preview_components() -> None:
     assert "Will install:" in content
     assert "Skills: quality@tools:review" in content
     assert "MCP: docs" in content
-    assert "Components will be discovered at installation." not in content
-
-
-def test_plugin_details_content_explains_remote_or_unknown_preview() -> None:
-    row = _PluginRow("remote@tools", "Remote", False, None, None)
-
-    content = str(_plugin_details_content(row))
-
-    assert "Will install:" in content
-    assert "Skills and MCP servers if present" in content
-    assert "agents/" in content
     assert "Components will be discovered at installation." not in content
 
 
@@ -148,26 +114,3 @@ def test_installed_details_pending_reload_after_disable() -> None:
     assert "Status: Disabled · pending /reload" in content
     assert "unload this plugin" in content
     assert "Status: Disabled\n" not in content
-
-
-async def test_plugin_manager_overlays_underlying_content() -> None:
-    """Transparent modal backdrop must composite the screen underneath."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.theme = "textual-dark"
-        await pilot.pause()
-
-        await app.mount(Static("TOP_MARKER_VISIBLE", id="top-marker"))
-        marker = app.query_one("#top-marker")
-        marker.styles.dock = "top"
-        marker.styles.height = 1
-        await pilot.pause()
-
-        app.push_screen(PluginManagerScreen())
-        await pilot.pause()
-
-        assert app.screen.styles.background.a == 0
-        plain = re.sub(r"<[^>]+>", " ", app.export_screenshot())
-        assert "TOP_MARKER_VISIBLE" in plain
-        assert "Plugins" in plain

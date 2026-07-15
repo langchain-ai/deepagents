@@ -251,19 +251,42 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
+def _head_tail(text: str, limit: int = 10000) -> str:
+    """Truncate long tool output to ``limit`` chars, keeping the head and tail.
+
+    Coding output (build logs, disassembly, file dumps) is often huge; capping what
+    the agent sees per call keeps context small. Combined with the prompt guidance to
+    save expensive output to a file and slice it, this avoids re-injecting large dumps.
+    """
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    omitted = len(text) - 2 * half
+    return (
+        f"{text[:half]}\n"
+        f"[... {omitted} chars omitted; output limited to {limit} chars, "
+        f"redirect to a file and read slices ...]\n"
+        f"{text[-half:]}"
+    )
+
+
 def _make_execute_tool(backend: LocalShellBackend) -> BaseTool:
     """Build a single shell-execution tool backed by ``backend``.
 
     The returned tool runs a command in the sandbox and returns the combined
-    stdout/stderr, appending a truncation note and a non-zero exit code when
-    present. It is the only tool the minimal baseline agent exposes.
+    stdout/stderr (capped head/tail), appending a truncation note and a non-zero exit
+    code when present.
     """
 
     @tool
     def execute(command: str, timeout: int | None = None) -> str:
-        """Run a shell command in the sandbox and return its output."""
+        """Run a shell command in the sandbox and return its output.
+
+        Chain a sequence with `&&`/`;` to run it in one call. Output is capped, so
+        redirect large output to a file and read slices instead of dumping it.
+        """
         result = backend.execute(command, timeout=timeout)
-        output = result.output
+        output = _head_tail(result.output)
         if result.truncated:
             output += "\n[output truncated]"
         if result.exit_code:
@@ -349,6 +372,12 @@ process and `kill` to stop one. This lets you observe partial progress and never
 for a command to finish.
 - Prefer non-interactive flags; never run a command that silently waits for human input without \
 driving it with `write_stdin`.
+- Batch a natural sequence into ONE `execute` call with `&&` or `;` (for example \
+`gcc -o p p.c && ./p && python check.py`) instead of one command per turn. Fewer, batched turns \
+are dramatically faster.
+- Run an expensive command once and save its output to a file (for example \
+`objdump -d bin > /tmp/d.asm`), then read slices with `grep`/`sed`/`head`. Tool output is capped, \
+so do not re-run the same command or re-read the same large file: cache it once and slice it.
 
 If the task forbids reading a file (for example, reproduce an image without reading it), do NOT \
 read or even sample that file: it wastes turns and violates the task. Instead commit fully to \
@@ -356,15 +385,17 @@ reverse-engineering any provided reference program or binary as your ground trut
 it, decode its constants, reconstruct the algorithm, and verify by matching its output exactly. \
 Pick one strategy and drive it to completion rather than oscillating between approaches.
 
-Build artifacts incrementally. Do not emit a large file or a big data table in a single response: \
-write a small script to generate or decode it, or build it in pieces, compiling and running to \
-check as you go. One-shot mega-outputs are slow, hit output limits, and are hard to debug.
+Build artifacts incrementally, and never paste large file contents, data tables, or generated \
+code into your message. Write files with a heredoc (`cat > f <<'EOF' ... EOF`) or a generator \
+script, and build in pieces, compiling and running to check as you go. One-shot mega-outputs are \
+slow, hit output limits, and are hard to debug.
 
 Be mindful of your time budget. Do not loop the same failing approach: if something is not \
 working after a couple of attempts, step back and commit to a genuinely different strategy rather \
 than burning the whole budget repeating a dead end.
 
-Keep going until the task is complete and verified. Do not stop early.
+Before you declare the task complete, run the task's own tests or verifier ONE more time and \
+confirm you have actually observed them pass. Keep going until then; do not stop early.
 """
 
 
@@ -531,8 +562,7 @@ class _ProcessManager:
         with rec["lock"]:
             new = "".join(rec["buf"][rec["read"] :])
             rec["read"] = len(rec["buf"])
-        if len(new) > 8000:
-            new = new[:3000] + "\n[... output truncated ...]\n" + new[-5000:]
+        new = _head_tail(new)
         status = "still running" if proc.poll() is None else f"exited with code {proc.returncode}"
         return f"[{handle}: {status}]\n{new}" if new else f"[{handle}: {status}] (no new output)"
 

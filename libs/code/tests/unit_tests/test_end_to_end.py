@@ -81,7 +81,13 @@ def mock_settings(
     skills_dir.mkdir(parents=True)
 
     # Patch settings
-    with patch("deepagents_code.agent.settings") as mock_settings_obj:
+    with (
+        patch("deepagents_code.agent.settings") as mock_settings_obj,
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+    ):
         mock_settings_obj.user_deepagents_dir = tmp_path / "agents"
         mock_settings_obj.ensure_agent_dir.return_value = agent_dir
         mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
@@ -235,6 +241,9 @@ class TestDeepAgentsCLIEndToEnd:
             # mode the history prefix lives under the backend's `artifacts_root`
             # (a per-session temp dir), routed to persistent storage.
             assert backend.ls(f"{backend.artifacts_root}/conversation_history/").entries
+            assert (
+                tmp_path / ".deepagents" / "conversation_history" / f"{thread_id}.md"
+            ).exists()
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

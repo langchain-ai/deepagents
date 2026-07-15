@@ -1393,6 +1393,8 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
         _env_vars.ENABLED_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

@@ -15,7 +15,7 @@ from deepagents.backends.utils import validate_path
 
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.command_registry import SLASH_COMMANDS
+from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.offload import (
     _artifacts_root,
     _filesystem_tool_path,
@@ -96,13 +96,13 @@ class TestOffloadInAutocomplete:
     """Verify /offload is registered in the autocomplete system."""
 
     def test_offload_in_slash_commands(self) -> None:
-        """The /offload command should be in the SLASH_COMMANDS list."""
-        labels = [entry.name for entry in SLASH_COMMANDS]
+        """The /offload command should be in the get_slash_commands() list."""
+        labels = [entry.name for entry in get_slash_commands()]
         assert "/offload" in labels
 
     def test_offload_sorted_alphabetically(self) -> None:
         """The /offload entry should appear between /model and /quit."""
-        labels = [entry.name for entry in SLASH_COMMANDS]
+        labels = [entry.name for entry in get_slash_commands()]
         model_idx = labels.index("/model")
         offload_idx = labels.index("/offload")
         quit_idx = labels.index("/quit")

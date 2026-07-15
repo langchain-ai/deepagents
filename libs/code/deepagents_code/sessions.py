@@ -1408,12 +1408,14 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints and any offloaded conversation history.
 
-    Removes the thread's checkpoint/write rows and cleans up the per-thread
-    offloaded conversation-history archive under `~/.deepagents` (local mode),
-    so deleting a thread does not leave orphaned history behind.
+    Removes the thread's checkpoint/write rows, then makes a best-effort attempt
+    to remove the per-thread offloaded conversation-history archive under
+    `~/.deepagents` (local mode) so deletion does not leave orphaned history
+    behind. History cleanup failures are logged, not raised, and do not affect
+    the return value, which reflects only whether checkpoint rows were removed.
 
     Returns:
-        True if thread was deleted, False if not found.
+        True if thread checkpoints were deleted, False if not found.
     """
     deleted = False
     async with _connect() as conn:

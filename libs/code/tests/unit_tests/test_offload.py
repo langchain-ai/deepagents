@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from deepagents.backends.utils import validate_path
 
+from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
@@ -1078,6 +1079,7 @@ class TestOffloadFallbackRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
+        monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
 
         root = _offload_fallback_root()
 
@@ -1124,6 +1126,7 @@ class TestOffloadFallbackRoot:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
         monkeypatch.setattr(Path, "lstat", fake_lstat)
+        monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
 
         root = _offload_fallback_root()
 
@@ -1210,7 +1213,36 @@ class TestDeleteOffloadedHistory:
         # Unrelated threads' archives are left untouched.
         assert keep.exists()
 
-    def test_missing_archive_is_noop(
+    def test_removes_archive_from_reused_unique_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cleanup reuses the random root selected when the archive was written."""
+        home_root = tmp_path / "home" / ".deepagents"
+        home_root.mkdir(parents=True)
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        getuid = getattr(os, "getuid", None)
+        uid = getuid() if getuid is not None else os.getpid()
+        (temp_dir / f"deepagents-{uid}").write_text("not a directory")
+        probe = MagicMock(
+            side_effect=[PermissionError("read-only home"), nullcontext()]
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
+        monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
+
+        root = _offload_fallback_root()
+        archive = root / "conversation_history" / "thread-1.md"
+        archive.parent.mkdir(parents=True)
+        archive.write_text("history")
+
+        assert delete_offloaded_history("thread-1") is True
+        assert not archive.exists()
+        assert probe.call_count == 2
+
+    def test_missing_archive_reports_nothing_removed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Deleting a thread with no archive reports nothing removed."""
@@ -1226,17 +1258,57 @@ class TestDeleteOffloadedHistory:
 
         assert delete_offloaded_history("") is False
 
+    def test_unlink_failure_is_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failing `unlink` is logged and reported as nothing removed."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(offload, "_UNIQUE_OFFLOAD_FALLBACK_ROOT", None)
+        archive_dir = tmp_path / ".deepagents" / "conversation_history"
+        archive_dir.mkdir(parents=True)
+        archive = archive_dir / "thread-1.md"
+        archive.write_text("history")
+        monkeypatch.setattr(
+            Path, "unlink", MagicMock(side_effect=PermissionError("read-only mount"))
+        )
+
+        assert delete_offloaded_history("thread-1") is False
+        # The archive survives the failed deletion rather than being lost.
+        assert archive.exists()
+
+    def test_unresolvable_root_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unresolvable offload root is swallowed, not raised."""
+        monkeypatch.setattr(
+            offload,
+            "_offload_fallback_root",
+            MagicMock(side_effect=OSError("no writable location")),
+        )
+
+        assert delete_offloaded_history("thread-1") is False
+
     def test_rejects_thread_id_path_traversal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A crafted thread id cannot escape the archive directory."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         (tmp_path / ".deepagents" / "conversation_history").mkdir(parents=True)
-        secret = tmp_path / ".deepagents" / "config.toml"
-        secret.write_text("secret")
+        # A relative escape resolves to `.deepagents/config.md`, so a decoy there
+        # is load-bearing: were the guard removed, `unlink` would delete it.
+        relative_decoy = tmp_path / ".deepagents" / "config.md"
+        relative_decoy.write_text("secret")
+        # An absolute thread id resets the join, escaping the archive tree
+        # entirely; place its decoy where that reset lands.
+        outside = tmp_path / "outside.md"
+        outside.write_text("secret")
 
         assert delete_offloaded_history("../config") is False
-        assert secret.exists()
+        assert delete_offloaded_history(str(tmp_path / "outside")) is False
+        # An embedded separator lands in a subdirectory, not `archive_dir`.
+        assert delete_offloaded_history("sub/thread") is False
+        assert relative_decoy.exists()
+        assert outside.exists()
 
 
 class TestArtifactsRoot:

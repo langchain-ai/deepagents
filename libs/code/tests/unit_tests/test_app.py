@@ -3671,6 +3671,24 @@ class TestMessageQueue:
             assert not app.query(StartupTip)
             assert app._pending_messages[0].text == "task"
 
+    async def test_startup_tip_removed_by_initial_submission(self) -> None:
+        """A `-m` initial prompt dismisses the tip via initial submission."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.query(StartupTip)) == 1
+            # Simulate the `-m` startup path without kicking off agent work:
+            # `_submit_initial_submission` should dismiss the tip before
+            # dispatching the prompt.
+            app._initial_prompt = "hello world"
+            app._handle_user_message = AsyncMock()  # ty: ignore
+
+            await app._submit_initial_submission()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+            app._handle_user_message.assert_awaited_once_with("hello world")
+
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()

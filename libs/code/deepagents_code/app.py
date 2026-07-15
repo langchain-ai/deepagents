@@ -7553,6 +7553,10 @@ class DeepAgentsApp(App):
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        # These startup paths (`-m`, `--skill`, `--goal`) submit outside
+        # `_submit_input`, so dismiss the startup tip here to match the
+        # interactive submission behavior.
+        await self._dismiss_startup_tip()
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(

@@ -12300,11 +12300,15 @@ class TestRequestApprovalBranching:
         ]
         future = asyncio.get_running_loop().create_future()
 
-        with patch.object(asyncio, "get_running_loop") as mock_loop:
+        with (
+            patch.object(asyncio, "get_running_loop") as mock_loop,
+            patch.object(app, "_reveal_pending_tool_calls") as reveal_pending,
+        ):
             mock_loop.return_value.create_future.return_value = future
             returned = await app._request_approval(action_requests, None)
 
         assert returned is future
+        reveal_pending.assert_called_once_with()
         assert ApprovalMenu in mounted_types, (
             f"Expected ApprovalMenu to be mounted, got {mounted_types}"
         )
@@ -25695,6 +25699,45 @@ class TestToolGroupCollapse:
                 tool.set_error("boom")
         await pilot.pause()
         return tools
+
+    async def test_approval_reveals_pending_calls_and_closes_live_group(self) -> None:
+        """Approval surfaces unfinished rows without reusing the pre-approval group."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-group")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            stale = ToolCallMessage("grep", {"pattern": "old"})
+            await messages.mount(stale)
+            stale_group = ToolGroupSummary(tools=[stale], collapsible=[stale])
+            stale.add_class("-grouped")
+            await messages.mount(stale_group, before=stale)
+
+            completed = ToolCallMessage("read_file", {"file_path": "a.py"})
+            pending = ToolCallMessage("execute", {"command": "rm scratch.txt"})
+            await app._mount_message(completed)
+            completed.set_success("done")
+            await app._mount_message(pending)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            assert stale.display is False
+            assert completed.display is False
+            assert pending.display is False
+
+            app._reveal_pending_tool_calls()
+            await pilot.pause()
+
+            assert app._active_tool_group is None
+            assert stale.display is False
+            assert stale_group.is_attached
+            assert completed.display is False
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._finalized is True
+            assert summary._tools == [completed]
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""

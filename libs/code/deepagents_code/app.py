@@ -6794,6 +6794,8 @@ class DeepAgentsApp(App):
             while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
 
+        self._reveal_pending_tool_calls()
+
         # Pause the elapsed-time counter while the user decides, then resume it
         # when the decision future completes. Resolve, reject, and cancel all
         # fire the done-callback; the `_set_spinner` backstop covers the
@@ -13734,6 +13736,17 @@ class DeepAgentsApp(App):
         if pruned_ids:
             self._message_store.mark_pruned_below(pruned_ids)
             self._sync_transcript_spacers(messages_container)
+
+    def _reveal_pending_tool_calls(self) -> None:
+        """Surface grouped tool calls before asking for approval."""
+        group = self._active_tool_group
+        self._close_active_tool_group()
+        if group is None or not group.is_attached:
+            return
+        try:
+            group.reveal_pending()
+        except Exception:
+            logger.exception("Failed to reveal pending tool calls")
 
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""

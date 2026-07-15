@@ -550,6 +550,7 @@ if TYPE_CHECKING:
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
+    from deepagents_code.plugins.models import PluginInstance
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
@@ -3198,6 +3199,9 @@ class DeepAgentsApp(App):
         Used by `_invoke_skill` to skip re-walking all skill directories on
         every invocation.
         """
+
+        self._plugin_fingerprints: dict[str, tuple[object, ...]] | None = None
+        """Plugin state before manager changes, consumed by `/reload`."""
 
         self._skill_allowed_roots: list[Path] = []
         """Pre-resolved skill root directories for containment checks in
@@ -11263,6 +11267,11 @@ class DeepAgentsApp(App):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
                 plugin_result = discover_plugins()
+                new_plugin_fingerprints = self._fingerprint_plugins(
+                    plugin_result.plugins
+                )
+                old_plugin_fingerprints = self._plugin_fingerprints
+                self._plugin_fingerprints = new_plugin_fingerprints
                 plugin_count = len(plugin_result.plugins)
                 mcp_configs = plugin_mcp_configs(plugin_result.plugins)
                 mcp_count = sum(
@@ -11279,6 +11288,29 @@ class DeepAgentsApp(App):
                     f"{mcp_count} plugin MCP server"
                     f"{'s' if mcp_count != 1 else ''}"
                 )
+                if old_plugin_fingerprints is not None:
+                    old_ids = set(old_plugin_fingerprints)
+                    new_ids = set(new_plugin_fingerprints)
+                    added_count = len(new_ids - old_ids)
+                    removed_count = len(old_ids - new_ids)
+                    changed_count = sum(
+                        old_plugin_fingerprints[plugin_id]
+                        != new_plugin_fingerprints[plugin_id]
+                        for plugin_id in old_ids & new_ids
+                    )
+                    change_parts = []
+                    for count, label in (
+                        (added_count, "added"),
+                        (removed_count, "removed"),
+                        (changed_count, "changed"),
+                    ):
+                        if count:
+                            noun = "plugin" if count == 1 else "plugins"
+                            change_parts.append(f"{count} {noun} {label}")
+                    if change_parts:
+                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
+                    else:
+                        report += "\nPlugin changes: no changes detected."
                 if plugin_result.warnings:
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
@@ -17034,14 +17066,53 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    @staticmethod
+    def _fingerprint_plugins(
+        plugins: tuple[PluginInstance, ...],
+    ) -> dict[str, tuple[object, ...]]:
+        """Build reload-comparison fingerprints for discovered plugins.
+
+        Returns:
+            Plugin fingerprints keyed by plugin id.
+        """
+        fingerprints: dict[str, tuple[object, ...]] = {}
+        for plugin in plugins:
+            paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
+            file_state = tuple(
+                (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+                for path in paths
+                if path.exists()
+            )
+            fingerprints[plugin.plugin_id] = (
+                plugin.version,
+                repr(plugin.manifest),
+                file_state,
+            )
+        return fingerprints
+
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
+        from deepagents_code.plugins import discover_plugins
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        self._plugin_fingerprints = self._fingerprint_plugins(
+            discover_plugins().plugins
+        )
+
+        def on_close(changed: bool | None) -> None:
+            if changed is None:
+                return
+            if changed:
+                self.call_after_refresh(
+                    self._mount_message,
+                    AppMessage("Plugin changes require /reload to take effect."),
+                )
 
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
-            )
+            ),
+            on_close,
         )
 
     async def _handle_mcp_subcommand(self, args: str) -> None:

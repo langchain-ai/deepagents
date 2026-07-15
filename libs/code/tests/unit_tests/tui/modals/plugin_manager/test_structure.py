@@ -36,6 +36,19 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
     assert options[1].disabled
 
 
+def test_plugin_manager_reports_only_relevant_changes_on_close() -> None:
+    screen = PluginManagerScreen()
+    screen.dismiss = MagicMock()
+
+    screen.action_cancel()
+    screen.dismiss.assert_called_once_with(False)
+
+    screen.dismiss.reset_mock()
+    screen._plugins_changed = True
+    screen.action_cancel()
+    screen.dismiss.assert_called_once_with(True)
+
+
 async def test_plugin_manager_overlays_underlying_content() -> None:
     """Transparent modal backdrop must composite the screen underneath."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

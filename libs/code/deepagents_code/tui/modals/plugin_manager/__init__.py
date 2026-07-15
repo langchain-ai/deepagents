@@ -51,7 +51,7 @@ from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 
-class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
+class PluginManagerScreen(ModalScreen[bool]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -94,6 +94,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
+        self._plugins_changed = False
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -388,7 +389,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._error = None
             self._refresh_view()
             return
-        self.dismiss(None)
+        self.dismiss(self._plugins_changed)
 
     def action_next_tab(self) -> None:
         """Switch to the next tab."""
@@ -545,6 +546,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
+        self._plugins_changed = True
         self._status = f"Installed {row.plugin_id}. Run /reload to activate."
         self._error = None
         await self._refresh_state()
@@ -570,6 +572,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
             return
+        self._plugins_changed = True
         self._error = None
         await self._refresh_state()
 
@@ -586,6 +589,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return
         self._mode = "list"
         self._selected_plugin = None
+        self._plugins_changed = self._plugins_changed or row.enabled
         reload_hint = " Run /reload to unload." if row.enabled else ""
         self._status = f"Uninstalled {row.plugin_id}.{reload_hint}"
         self._error = None
@@ -610,6 +614,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             await self._refresh_state()
             return
         plugin_label = "plugin" if row.installed_count == 1 else "plugins"
+        self._plugins_changed = self._plugins_changed or row.installed_count > 0
         self._mode = "list"
         self._tab = "marketplaces"
         self._selected_marketplace = None

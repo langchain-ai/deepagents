@@ -176,8 +176,9 @@ class GoalCriteriaState(ResumeState):
 
     This intentionally uses normal last-value state: earlier middleware can
     consume an ephemeral channel before `GoalCriteriaMiddleware` runs. Success
-    clears the request here, while normal TUI and headless turns submit `None`
-    to clear a request left behind by cancellation.
+    clears the request here, while the TUI uses a request-correlated checkpoint
+    update after failure or cancellation. Normal TUI and headless turns also
+    submit `None` defensively so a terminal request can never rerun as chat.
     """
 
     goal_criteria_request: NotRequired[
@@ -1335,6 +1336,7 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
             "_pending_goal_objective": objective,
             "_pending_goal_rubric": criteria,
             "_pending_goal_kind": request["kind"],
+            "_pending_goal_request_id": request["request_id"],
             "jump_to": "end",
         }
 

@@ -485,6 +485,100 @@ class TestInterruptCleanup:
         agent.acancel_active_runs.assert_awaited_once_with(config)
         assert calls == ["cancel", "update"]
 
+    async def test_criteria_cancel_skips_conversation_interruption_recovery(
+        self,
+    ) -> None:
+        """Criteria cancellation cleans runtime UI without adding chat messages."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        tool_widget = MagicMock()
+        tool_widget.tool_name = "docs_search"
+        tool_widget.args = {"query": "login"}
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(),
+            aupdate_state=AsyncMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial criteria output"},
+            captured_input_tokens=10,
+            captured_output_tokens=5,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+            recover_interrupted_turn=False,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once()
+        agent.aupdate_state.assert_not_awaited()
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
+        assert not any(
+            isinstance(widget, AppMessage)
+            and "Interrupted by user" in str(widget._content)
+            for widget in mounted
+        )
+
+    async def test_chat_cancel_retains_conversation_interruption_recovery(
+        self,
+    ) -> None:
+        """Ordinary chat cancellation still records and displays interruption."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial answer"},
+            captured_input_tokens=10,
+            captured_output_tokens=5,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert any(
+            isinstance(widget, AppMessage)
+            and str(widget._content) == "Interrupted by user"
+            for widget in mounted
+        )
+        assert len(agent.aupdate_state.await_args_list) == 2
+        persisted = [
+            value
+            for call in agent.aupdate_state.await_args_list
+            for value in call.args[1]["messages"]
+        ]
+        assert any("partial answer" in str(message.content) for message in persisted)
+        assert any(
+            "Task interrupted by user" in str(message.content) for message in persisted
+        )
+
     async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
         """Interrupt cleanup remains best-effort when remote cancel fails."""
         agent = SimpleNamespace(
@@ -6845,11 +6939,12 @@ class TestTextualEndOfStreamDiagnostics:
             request_approval=_mock_approval,
         )
         chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
+        cleanup = AsyncMock()
         with (
             patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
             patch(
                 "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
-                new_callable=AsyncMock,
+                cleanup,
             ),
             caplog.at_level("INFO", logger="deepagents_code.tui.textual_adapter"),
         ):
@@ -6862,6 +6957,41 @@ class TestTextualEndOfStreamDiagnostics:
             )
 
         assert any("arguments never parsed" in r.message for r in caplog.records)
+        assert cleanup.await_args is not None
+        assert cleanup.await_args.kwargs["recover_interrupted_turn"] is True
+
+    async def test_criteria_cancel_disables_chat_interruption_recovery(self) -> None:
+        """Criteria graph input selects operation cleanup, not chat recovery."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        cleanup = AsyncMock()
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-cancel",
+                "kind": "create",
+                "objective": "ship it",
+            },
+        }
+
+        with patch(
+            "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
+            cleanup,
+        ):
+            await execute_task_textual(
+                user_input="",
+                agent=_RaisingAgent([], asyncio.CancelledError()),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                graph_input=request,
+            )
+
+        assert cleanup.await_args is not None
+        assert cleanup.await_args.kwargs["recover_interrupted_turn"] is False
 
 
 class TestTextualNonCleanExitTerminalHooks:

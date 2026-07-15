@@ -5761,6 +5761,18 @@ class TestWarnDiscardedGoalChannels:
         """A recognized pending proposal kind must not be reported as discarded."""
         assert _warn_discarded_goal_channels({"_pending_goal_kind": "amend"}) == []
 
+    def test_flags_blank_pending_goal_request_id(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A blank proposal correlation ID is malformed and fails closed."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            discarded = _warn_discarded_goal_channels(
+                {"_pending_goal_request_id": "  "}
+            )
+
+        assert discarded == ["_pending_goal_request_id"]
+
 
 class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
@@ -6958,6 +6970,7 @@ class TestGoalCommand:
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
                     "_pending_goal_kind": None,
+                    "_pending_goal_request_id": None,
                 },
             )
 
@@ -7273,6 +7286,7 @@ class TestGoalCommand:
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
                 "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
             }
 
     async def test_completed_goal_is_cleared_before_next_turn(self) -> None:
@@ -7694,6 +7708,7 @@ class TestGoalCommand:
             app._lc_thread_id = "thread-1"
             app._pending_goal_objective = "ship login"
             app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_request_id = "request-amend"
             remount = AsyncMock()
             mount = AsyncMock()
             with (
@@ -7707,7 +7722,10 @@ class TestGoalCommand:
                 patch.object(app, "_mount_message", mount),
                 patch.object(app, "notify"),
             ):
-                await app._sync_goal_rubric_state_from_thread(force=True)
+                await app._sync_goal_rubric_state_from_thread(
+                    force=True,
+                    proposal_request_id="request-amend",
+                )
 
             remount.assert_awaited_once()
             mount.assert_not_awaited()
@@ -8274,6 +8292,7 @@ class TestRubricCommand:
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
                     "_pending_goal_kind": None,
+                    "_pending_goal_request_id": None,
                 },
             )
 
@@ -8535,6 +8554,7 @@ class TestRubricCommand:
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
                 "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
             updater.aupdate_state.assert_awaited_once_with(config, state_update)
@@ -8605,6 +8625,7 @@ class TestRubricCommand:
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
                 "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
             updater.aupdate_state.assert_has_awaits(

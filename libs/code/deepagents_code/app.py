@@ -263,6 +263,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
         "_pending_goal_objective",
         "_pending_goal_rubric",
         "_pending_goal_kind",
+        "_pending_goal_request_id",
     ):
         value = state_values.get(channel)
         if value is not None and not isinstance(value, str):
@@ -285,6 +286,13 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
             and coerce_goal_proposal_kind(value) is None
         ):
             logger.warning("Discarding unknown persisted goal proposal kind %r", value)
+            discarded.append(channel)
+        elif (
+            channel == "_pending_goal_request_id"
+            and isinstance(value, str)
+            and not value.strip()
+        ):
+            logger.warning("Discarding blank persisted goal proposal request ID")
             discarded.append(channel)
     return discarded
 
@@ -1652,6 +1660,9 @@ class _ThreadHistoryPayload:
     pending_goal_kind: GoalProposalKind | None = None
     """Whether the pending review creates or amends a goal."""
 
+    pending_goal_request_id: str | None = None
+    """Request that produced the pending proposal."""
+
 
 @dataclass(frozen=True, slots=True)
 class _GoalApplication:
@@ -2828,6 +2839,9 @@ class DeepAgentsApp(App):
 
         self._pending_goal_kind: GoalProposalKind | None = None
         """Whether the pending review creates or amends a goal."""
+
+        self._pending_goal_request_id: str | None = None
+        """Request that produced the pending proposal."""
 
         self._queued_goal_application: _GoalApplication | None = None
         """Accepted proposal deferred until the active graph run is quiescent."""
@@ -9039,6 +9053,11 @@ class DeepAgentsApp(App):
             "_pending_goal_kind": (
                 self._pending_goal_kind if self._pending_goal_objective else None
             ),
+            "_pending_goal_request_id": (
+                self._pending_goal_request_id
+                if self._pending_goal_objective and self._pending_goal_rubric
+                else None
+            ),
         }
 
     async def _wait_for_agent_quiescence(self) -> None:
@@ -9100,6 +9119,55 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    async def _clear_submitted_goal_criteria_request(self, request_id: str) -> bool:
+        """Clear a terminal criteria request if it is still the submitted one.
+
+        The read-before-write check prevents cleanup for an older failed or
+        cancelled run from clearing a newer request. The update contains only
+        the request channel so proposal and accepted-goal state are untouched.
+
+        Args:
+            request_id: Criteria request whose run reached a terminal path.
+
+        Returns:
+            `True` when the request was absent or cleared, and `False` when it
+                had already been superseded or the checkpoint update failed.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return True
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            current = state_values.get("goal_criteria_request")
+            if current is None:
+                return True
+            if not isinstance(current, dict) or current.get("request_id") != request_id:
+                return False
+            if remote := self._remote_agent():
+                await remote.aupdate_state(
+                    config,
+                    {"goal_criteria_request": None},
+                    as_node="model",
+                )
+            else:
+                await self._agent.aupdate_state(
+                    config,
+                    {"goal_criteria_request": None},
+                )
+        except Exception:
+            logger.warning(
+                "Failed to clear terminal goal criteria request %s",
+                request_id,
+                exc_info=True,
+            )
+            self.notify(
+                "Could not clear the completed goal-criteria request from this thread.",
+                severity="warning",
+                markup=False,
+            )
+            return False
+        return True
+
     async def _mount_goal_rubric_result(
         self, message: str, *, persisted: bool, suppress_success: bool = False
     ) -> None:
@@ -9142,6 +9210,7 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
         self._pending_goal_kind = None
+        self._pending_goal_request_id = None
 
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
@@ -9192,6 +9261,9 @@ class DeepAgentsApp(App):
         def _as_str(value: object) -> str | None:
             return value if isinstance(value, str) else None
 
+        def _as_nonblank_str(value: object) -> str | None:
+            return value if isinstance(value, str) and value.strip() else None
+
         return _ThreadHistoryPayload(
             messages,
             context_tokens,
@@ -9212,6 +9284,9 @@ class DeepAgentsApp(App):
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
             pending_goal_kind=coerce_goal_proposal_kind(
                 state_values.get("_pending_goal_kind")
+            ),
+            pending_goal_request_id=_as_nonblank_str(
+                state_values.get("_pending_goal_request_id")
             ),
         )
 
@@ -9241,6 +9316,7 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
         self._pending_goal_kind = payload.pending_goal_kind
+        self._pending_goal_request_id = payload.pending_goal_request_id
         if not preserve_queued_application:
             self._queued_goal_application = None
         if self._pending_goal_objective and self._pending_goal_kind is None:
@@ -9296,6 +9372,7 @@ class DeepAgentsApp(App):
         pending_goal_objective = self._pending_goal_objective
         pending_goal_rubric = self._pending_goal_rubric
         pending_goal_kind = self._pending_goal_kind
+        pending_goal_request_id = self._pending_goal_request_id
         next_rubric = self._next_rubric
         last_consumed_next_rubric = self._last_consumed_next_rubric
         last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
@@ -9322,6 +9399,7 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = pending_goal_objective
         self._pending_goal_rubric = pending_goal_rubric
         self._pending_goal_kind = pending_goal_kind
+        self._pending_goal_request_id = pending_goal_request_id
         self._next_rubric = next_rubric
         self._last_consumed_next_rubric = last_consumed_next_rubric
         self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
@@ -9432,11 +9510,19 @@ class DeepAgentsApp(App):
         await self._clear_pending_goal_completion(message)
         return False
 
-    async def _sync_goal_rubric_state_from_thread(self, *, force: bool = False) -> None:
+    async def _sync_goal_rubric_state_from_thread(
+        self,
+        *,
+        force: bool = False,
+        proposal_request_id: str | None = None,
+    ) -> None:
         """Refresh goal/rubric metadata from the active checkpoint.
 
         Args:
             force: Read the checkpoint even when no goal fields are set locally.
+            proposal_request_id: When set, restore a pending proposal only if it
+                originated from this criteria request. Resume callers omit it so
+                persisted proposals remain reviewable across clients.
         """
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
@@ -9457,6 +9543,7 @@ class DeepAgentsApp(App):
             or self._pending_goal_completion_note
             or self._pending_goal_objective
             or self._pending_goal_rubric
+            or self._pending_goal_request_id
             or self._last_consumed_next_rubric is not None
             or self._last_consumed_next_previous_rubric is not None
         ):
@@ -9497,7 +9584,15 @@ class DeepAgentsApp(App):
                 # widget. On a first create there is no local pending state, so a
                 # remount is a no-op — tell the user the proposal was generated
                 # but could not be loaded, and how to recover.
-                if self._pending_goal_objective and self._pending_goal_rubric:
+                pending_matches = (
+                    proposal_request_id is None
+                    or self._pending_goal_request_id == proposal_request_id
+                )
+                if (
+                    pending_matches
+                    and self._pending_goal_objective
+                    and self._pending_goal_rubric
+                ):
                     await self._remount_pending_goal_rubric_review()
                 else:
                     await self._mount_message(
@@ -9519,6 +9614,18 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
+        if (
+            proposal_request_id is not None
+            and payload.pending_goal_request_id != proposal_request_id
+        ):
+            payload = replace(
+                payload,
+                pending_goal_objective=None,
+                pending_goal_rubric=None,
+                pending_goal_kind=None,
+                pending_goal_request_id=None,
+            )
+            self._clear_pending_goal_rubric()
         if not any(
             (
                 payload.rubric,
@@ -9531,6 +9638,7 @@ class DeepAgentsApp(App):
                 payload.pending_goal_objective,
                 payload.pending_goal_rubric,
                 payload.pending_goal_kind,
+                payload.pending_goal_request_id,
             )
         ):
             self._last_consumed_next_rubric = None
@@ -12597,6 +12705,14 @@ class DeepAgentsApp(App):
         from deepagents_code.config import settings
         from deepagents_code.tui.textual_adapter import execute_task_textual
 
+        criteria_request_id: str | None = None
+        if graph_input is not None:
+            criteria_request = graph_input.get("goal_criteria_request")
+            if isinstance(criteria_request, dict):
+                raw_request_id = criteria_request.get("request_id")
+                if isinstance(raw_request_id, str):
+                    criteria_request_id = raw_request_id
+
         # Create the stats object up-front and store on the app so
         # exit() can merge it synchronously if the worker is cancelled
         # before this method can return (e.g. Ctrl+D during HITL).
@@ -12726,7 +12842,10 @@ class DeepAgentsApp(App):
             # Collapse the open tool group so an interrupted turn doesn't leave a
             # summary spinning "Running…" forever (synchronous, cancel-safe).
             self._close_active_tool_group()
-            await self._cleanup_agent_task(force_goal_sync=graph_input is not None)
+            await self._cleanup_agent_task(
+                force_goal_sync=graph_input is not None,
+                goal_criteria_request_id=criteria_request_id,
+            )
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -12777,7 +12896,12 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
-    async def _cleanup_agent_task(self, *, force_goal_sync: bool = False) -> None:
+    async def _cleanup_agent_task(
+        self,
+        *,
+        force_goal_sync: bool = False,
+        goal_criteria_request_id: str | None = None,
+    ) -> None:
         """Tear down after a turn completes or is cancelled.
 
         Resets spinner/cursor/token display, refreshes the git branch, drains
@@ -12789,6 +12913,8 @@ class DeepAgentsApp(App):
 
         Args:
             force_goal_sync: Read goal state even when no local goal fields are set.
+            goal_criteria_request_id: Terminal criteria request to clear and use
+                when correlating a newly generated proposal.
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
@@ -12805,7 +12931,14 @@ class DeepAgentsApp(App):
                     self._chat_input.set_cursor_active(active=True)
                 self._show_tokens(approximate=self._tokens_approximate)
                 self._schedule_git_branch_refresh()
-                await self._sync_goal_rubric_state_from_thread(force=force_goal_sync)
+                if goal_criteria_request_id is not None:
+                    await self._clear_submitted_goal_criteria_request(
+                        goal_criteria_request_id
+                    )
+                await self._sync_goal_rubric_state_from_thread(
+                    force=force_goal_sync,
+                    proposal_request_id=goal_criteria_request_id,
+                )
 
                 try:
                     await self._maybe_drain_deferred()

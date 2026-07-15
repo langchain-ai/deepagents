@@ -50,7 +50,10 @@ class TestServerGraph:
         module = _import_fresh_server_graph()
         from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
-        mcp_tool = SimpleNamespace(name="repository_search")
+        mcp_tool = SimpleNamespace(
+            name="repository_search",
+            metadata={"readOnlyHint": True, "destructiveHint": False},
+        )
         mcp_lookalike = SimpleNamespace(name="repository_search")
         unknown_builtin = object()
 
@@ -75,6 +78,36 @@ class TestServerGraph:
                 strict=True,
             )
         )
+
+    def test_criteria_context_tools_fail_closed_on_mcp_annotations(self) -> None:
+        """Only unambiguously read-only MCP annotations grant criteria access."""
+        from mcp.types import ToolAnnotations
+
+        module = _import_fresh_server_graph()
+        from deepagents_code.tools import fetch_url, web_search
+
+        readonly_metadata = ToolAnnotations(readOnlyHint=True).model_dump()
+        assert readonly_metadata["readOnlyHint"] is True
+        readonly = SimpleNamespace(
+            name="search",
+            metadata=readonly_metadata,
+        )
+        mutating = SimpleNamespace(
+            name="write",
+            metadata={"readOnlyHint": False, "destructiveHint": True},
+        )
+        unannotated = SimpleNamespace(name="unknown", metadata=None)
+        ambiguous = SimpleNamespace(
+            name="contradictory",
+            metadata={"readOnlyHint": True, "destructiveHint": True},
+        )
+
+        result = module._criteria_context_tools(
+            [mutating, fetch_url, readonly, unannotated, web_search, ambiguous],
+            [readonly, mutating, unannotated, ambiguous],
+        )
+
+        assert result == [fetch_url, readonly, web_search]
 
     async def test_make_graph_emits_marker_and_exits_on_failure(
         self, capsys: pytest.CaptureFixture[str]
@@ -105,7 +138,9 @@ class TestServerGraph:
         fetch_tool = object()
         thread_tool = object()
         web_tool = object()
-        mcp_tool = object()
+        mcp_tool = SimpleNamespace(
+            metadata={"readOnlyHint": True, "destructiveHint": False}
+        )
         mcp_server_info = [SimpleNamespace(name="docs")]
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []

@@ -26,9 +26,10 @@ write sites are called out below:
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
-- `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` — a
-    proposed goal or amendment written by `GoalCriteriaMiddleware` inside the
-    main graph, then cleared by the TUI when the user accepts or rejects it.
+- `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` /
+    `_pending_goal_request_id` — a proposed goal or amendment and its originating
+    request, written by `GoalCriteriaMiddleware` inside the main graph, then
+    cleared by the TUI when the user accepts or rejects it.
 
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
@@ -178,6 +179,9 @@ class ResumeState(GoalRubricChannels):
         NotRequired[GoalProposalKind | None], PrivateStateAttr
     ]
     """Whether the pending review creates or amends a goal."""
+
+    _pending_goal_request_id: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Request that produced the pending proposal."""
 
 
 def _extract_context_tokens(message: AIMessage) -> int | None:

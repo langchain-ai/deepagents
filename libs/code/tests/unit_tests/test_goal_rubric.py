@@ -687,6 +687,7 @@ class TestGoalCriteriaMiddleware:
             "_pending_goal_objective": "ship it",
             "_pending_goal_rubric": "- observable result",
             "_pending_goal_kind": "create",
+            "_pending_goal_request_id": "request-1",
             "jump_to": "end",
         }
         child_input = criteria.invoke.call_args.args[0]
@@ -741,6 +742,7 @@ class TestGoalCriteriaMiddleware:
         assert update["_pending_goal_objective"] == "ship login with passkeys"
         assert update["_pending_goal_rubric"] == "- passkeys work"
         assert update["_pending_goal_kind"] == "amend"
+        assert update["_pending_goal_request_id"] == "request-2"
         awaited = criteria.ainvoke.await_args
         assert awaited is not None
         prompt = awaited.args[0]["messages"][0]["content"]

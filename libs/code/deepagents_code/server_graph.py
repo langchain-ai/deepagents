@@ -156,13 +156,36 @@ def _criteria_context_tools(
         mcp_tools: Exact tool objects returned by MCP discovery.
 
     Returns:
-        External context tools available to criteria generation.
+        External context tools available to criteria generation. MCP tools are
+        included only when their protocol annotations explicitly declare them
+        read-only.
     """
     from deepagents_code.tools import fetch_url, web_search
 
     allowed_ids = {id(fetch_url), id(web_search)}
-    allowed_ids.update(id(tool) for tool in mcp_tools)
+    allowed_ids.update(
+        id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
+    )
     return [tool for tool in tools if id(tool) in allowed_ids]
+
+
+def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
+    """Return whether a wrapped MCP tool is unambiguously read-only.
+
+    MCP `ToolAnnotations.readOnlyHint` is serialized by the installed adapter
+    into the LangChain tool's metadata as the camel-case `readOnlyHint` key.
+    Require the literal boolean `True` and reject a contradictory destructive
+    hint so absent, malformed, or ambiguous annotations fail closed.
+
+    Returns:
+        `True` only for an explicitly and consistently read-only MCP tool.
+    """
+    metadata = getattr(tool, "metadata", None)
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("readOnlyHint") is True
+        and metadata.get("destructiveHint") is not True
+    )
 
 
 async def _make_graph() -> Any:  # noqa: ANN401

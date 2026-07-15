@@ -758,6 +758,9 @@ async def execute_task_textual(
             stream_input["rubric"] = rubric
     else:
         stream_input = dict(graph_input)
+    recover_interrupted_turn = not (
+        graph_input is not None and graph_input.get("goal_criteria_request") is not None
+    )
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -1931,6 +1934,7 @@ async def execute_task_textual(
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
             start_time=start_time,
+            recover_interrupted_turn=recover_interrupted_turn,
         )
         return turn_stats
     finally:
@@ -2050,6 +2054,7 @@ async def _handle_interrupt_cleanup(
     captured_output_tokens: int,
     turn_stats: SessionStats,
     start_time: float,
+    recover_interrupted_turn: bool = True,
 ) -> None:
     """Shared cleanup for CancelledError and KeyboardInterrupt.
 
@@ -2063,6 +2068,8 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+        recover_interrupted_turn: Whether to append the normal partial assistant
+            and cancellation messages for an interrupted conversation turn.
 
     Raises:
         ValueError: If proactive remote-run cancellation is attempted without a
@@ -2084,7 +2091,8 @@ async def _handle_interrupt_cleanup(
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
-    await adapter._mount_message(AppMessage("Interrupted by user"))
+    if recover_interrupted_turn:
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This
@@ -2109,9 +2117,13 @@ async def _handle_interrupt_cleanup(
                 exc_info=True,
             )
 
-    interrupted_msg = _build_interrupted_ai_message(
-        pending_text_by_namespace,
-        adapter._current_tool_messages,
+    interrupted_msg = (
+        _build_interrupted_ai_message(
+            pending_text_by_namespace,
+            adapter._current_tool_messages,
+        )
+        if recover_interrupted_turn
+        else None
     )
 
     # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
@@ -2155,22 +2167,23 @@ async def _handle_interrupt_cleanup(
         # cancellation notice), not user-driven agent activity; surfacing them as
         # standalone peer runs alongside real agent turns clutters the trace view.
         with tracing_context(enabled=False):
-            if interrupted_msg:
-                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+            if recover_interrupted_turn:
+                if interrupted_msg:
+                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
-            cancellation_msg = HumanMessage(
-                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                "Previous operation was cancelled."
-            )
-            cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
-            # Piggy-back the latest token count on this already-required write
-            # instead of issuing a separate `aupdate_state`. `after_model` never
-            # ran on the partial turn, so without this the count would be stale
-            # on resume.
-            captured_total = captured_input_tokens + captured_output_tokens
-            if captured_total:
-                cancellation_values["_context_tokens"] = captured_total
-            await agent.aupdate_state(config, cancellation_values)
+                cancellation_msg = HumanMessage(
+                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                    "Previous operation was cancelled."
+                )
+                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                # Piggy-back the latest token count on this already-required
+                # write instead of issuing a separate `aupdate_state`.
+                # `after_model` never ran on the partial turn, so without this
+                # the count would be stale on resume.
+                captured_total = captured_input_tokens + captured_output_tokens
+                if captured_total:
+                    cancellation_values["_context_tokens"] = captured_total
+                await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception as exc:  # interrupt cleanup must not propagate

@@ -104,6 +104,7 @@ async def test_goal_criteria_runs_inside_main_server_graph(
                 "- server repository context is available"
             )
             assert state.values["_pending_goal_kind"] == "create"
+            assert state.values["_pending_goal_request_id"] == "request-1"
             messages = state.values.get("messages", [])
             assert len(messages) == 2
             assert [(message["type"], message["content"]) for message in messages] == [

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import ErrorMessage
@@ -201,7 +205,7 @@ async def test_failed_criteria_turn_shows_actionable_message() -> None:
             "deepagents_code.tui.textual_adapter.execute_task_textual",
             execute,
         ),
-        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock) as cleanup,
         patch.object(app, "_mount_message", mount),
         patch(
             "deepagents_code.app._langsmith_gateway_key_mismatch",
@@ -226,6 +230,180 @@ async def test_failed_criteria_turn_shows_actionable_message() -> None:
     body = str(mount.await_args.args[0]._content)
     assert "Could not generate acceptance criteria" in body
     assert "internal error occurred" not in body
+    cleanup.assert_awaited_once_with(
+        force_goal_sync=True,
+        goal_criteria_request_id="request-fail",
+    )
+
+
+async def test_matching_request_id_loads_generated_proposal() -> None:
+    app = _app()
+    state_values = {
+        "_pending_goal_objective": "ship it",
+        "_pending_goal_rubric": "- observable result",
+        "_pending_goal_kind": "create",
+        "_pending_goal_request_id": "request-match",
+    }
+
+    with (
+        patch.object(
+            app, "_get_thread_state_values", AsyncMock(return_value=state_values)
+        ),
+        patch.object(
+            app,
+            "_resolve_pending_goal_completion",
+            AsyncMock(return_value=False),
+        ),
+        patch.object(app, "_announce_goal_status_transition", AsyncMock()),
+        patch.object(
+            app, "_remount_pending_goal_rubric_review", AsyncMock()
+        ) as remount,
+    ):
+        await app._sync_goal_rubric_state_from_thread(
+            force=True,
+            proposal_request_id="request-match",
+        )
+
+    assert app._pending_goal_objective == "ship it"
+    assert app._pending_goal_rubric == "- observable result"
+    assert app._pending_goal_request_id == "request-match"
+    remount.assert_awaited_once_with()
+
+
+async def test_mismatched_request_id_does_not_display_stale_proposal() -> None:
+    app = _app()
+    app._pending_goal_objective = "prior local proposal"
+    app._pending_goal_rubric = "- prior criteria"
+    app._pending_goal_request_id = "request-old"
+    state_values = {
+        "_pending_goal_objective": "stale checkpoint proposal",
+        "_pending_goal_rubric": "- stale criteria",
+        "_pending_goal_kind": "create",
+        "_pending_goal_request_id": "request-old",
+    }
+
+    with (
+        patch.object(
+            app, "_get_thread_state_values", AsyncMock(return_value=state_values)
+        ),
+        patch.object(
+            app, "_remount_pending_goal_rubric_review", AsyncMock()
+        ) as remount,
+    ):
+        await app._sync_goal_rubric_state_from_thread(
+            force=True,
+            proposal_request_id="request-current",
+        )
+
+    assert app._pending_goal_objective is None
+    assert app._pending_goal_rubric is None
+    assert app._pending_goal_request_id is None
+    remount.assert_not_awaited()
+
+
+async def test_persisted_proposal_remains_reviewable_on_resume() -> None:
+    app = _app()
+    state_values = {
+        "_pending_goal_objective": "resume this proposal",
+        "_pending_goal_rubric": "- resumed criteria",
+        "_pending_goal_kind": "amend",
+        "_pending_goal_request_id": "request-from-other-client",
+    }
+
+    with (
+        patch.object(
+            app, "_get_thread_state_values", AsyncMock(return_value=state_values)
+        ),
+        patch.object(
+            app,
+            "_resolve_pending_goal_completion",
+            AsyncMock(return_value=False),
+        ),
+        patch.object(app, "_announce_goal_status_transition", AsyncMock()),
+        patch.object(
+            app, "_remount_pending_goal_rubric_review", AsyncMock()
+        ) as remount,
+    ):
+        await app._sync_goal_rubric_state_from_thread(force=True)
+
+    assert app._pending_goal_objective == "resume this proposal"
+    assert app._pending_goal_request_id == "request-from-other-client"
+    remount.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("terminal_path", ["failure", "cancellation"])
+async def test_terminal_criteria_path_clears_matching_request(
+    terminal_path: str,
+) -> None:
+    """Failure and cancellation use the same request-correlated cleanup."""
+    request_id = f"request-{terminal_path}"
+    app = _app()
+    agent = app._agent
+    assert agent is not None
+    agent.aget_state = AsyncMock(
+        return_value=SimpleNamespace(
+            values={
+                "goal_criteria_request": {
+                    "request_id": request_id,
+                    "kind": "create",
+                    "objective": "ship it",
+                }
+            }
+        )
+    )
+    agent.aupdate_state = AsyncMock()
+
+    cleared = await app._clear_submitted_goal_criteria_request(request_id)
+
+    assert cleared is True
+    agent.aupdate_state.assert_awaited_once_with(
+        {"configurable": {"thread_id": "thread-1"}},
+        {"goal_criteria_request": None},
+    )
+
+
+async def test_terminal_cleanup_does_not_clear_newer_request() -> None:
+    app = _app()
+    agent = app._agent
+    assert agent is not None
+    agent.aget_state = AsyncMock(
+        return_value=SimpleNamespace(
+            values={"goal_criteria_request": {"request_id": "request-new"}}
+        )
+    )
+    agent.aupdate_state = AsyncMock()
+
+    cleared = await app._clear_submitted_goal_criteria_request("request-old")
+
+    assert cleared is False
+    agent.aupdate_state.assert_not_awaited()
+
+
+async def test_cancelled_criteria_turn_still_runs_request_cleanup() -> None:
+    app = _app()
+    execute = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with (
+        patch("deepagents_code.tui.textual_adapter.execute_task_textual", execute),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock) as cleanup,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await app._run_agent_task(
+            "",
+            graph_input={
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-cancel",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+    cleanup.assert_awaited_once_with(
+        force_goal_sync=True,
+        goal_criteria_request_id="request-cancel",
+    )
 
 
 async def test_goal_submission_never_constructs_a_model_client_side() -> None:

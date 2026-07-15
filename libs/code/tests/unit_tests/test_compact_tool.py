@@ -6,6 +6,7 @@ Core compact tool logic tests live in the SDK at
 
 from __future__ import annotations
 
+import warnings
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -445,7 +446,11 @@ class TestCLICompactionMiddleware:
                 new_callable=AsyncMock,
                 return_value=command,
             ) as forced,
+            warnings.catch_warnings(),
         ):
+            warnings.filterwarnings(
+                "error", message="Pydantic serializer warnings", category=UserWarning
+            )
             await graph.ainvoke(
                 ToolState(messages=[seed]),  # ty: ignore[invalid-argument-type]
                 context=CLIContextSchema(  # ty: ignore[invalid-argument-type]

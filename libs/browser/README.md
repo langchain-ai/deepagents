@@ -56,6 +56,14 @@ unless private agent state contains the strict boolean `{"_browser_enabled": Tru
 execution checks the same flag again before touching the runtime. Tools are async-only. Call
 `await browser.aclose()` at application shutdown.
 
+`browser_snapshot` preserves its original node fields and adds bounded semantic metadata gathered
+from each exact Playwright element handle: tag, accessible-ish role/name, and
+`disabled`/`checked`/`selected`/`expanded`/`readonly`/`required`/`focused`/`editable` states.
+`browser_screenshot` returns standard text and image content blocks. Its concise text block contains
+only page reference, MIME type, and byte count. The tool artifact repeats that metadata and the
+standard JSON-compatible image block, so checkpoints never need to serialize raw bytes; base64 is
+confined to structured image data and is never included in the plain-text block.
+
 ## Security model
 
 - only HTTP(S) navigation is accepted;
@@ -67,8 +75,16 @@ execution checks the same flag again before touching the runtime. Tools are asyn
 - each LangGraph thread gets an isolated incognito context;
 - contexts, tabs, requests, snapshot nodes/chars, fixed-viewport screenshot bytes, DNS time, and
   action time are bounded with non-overridable hard caps;
-- actions accept only latest-generation opaque references and allowlisted `click`, `type`, `press`,
-  or `select` discriminators;
+- actions accept only allowlisted strict discriminators: exact-reference `click`, `type`, `press`,
+  `select`, and `scroll_into_view`, plus reference-free `scroll` with fixed direction and
+  viewport-relative distance literals;
+- page scrolling runs only a package-owned script with validated literals—never user JavaScript,
+  coordinates, amounts, selectors, or deltas—and reports bounded before/after positions plus whether
+  the page moved;
+- every action uses the configured operation timeout, invalidates all element references after the
+  attempt, and returns bounded diagnostics on success;
+- operational action failures return stable error codes plus resnapshot guidance, while attempts on
+  sensitive controls still raise and fail closed;
 - references pin the exact snapshotted element identity, cannot retarget after DOM reorder or
   replacement, and are invalidated by top-level navigation;
 - password and payment controls are omitted from snapshots and blocked again immediately before
@@ -90,8 +106,15 @@ sandbox.
 ## Resource lifecycle
 
 The first activated operation lazily starts one Playwright driver and Chromium browser. Concurrent
-first calls are single-flight. A context is created per stable LangGraph `thread_id` and retained
-until idempotent asynchronous cleanup.
+first calls are single-flight. A context is created per stable LangGraph `thread_id`. Middleware
+holds a manager lease for every complete tool operation, so an in-flight context cannot be evicted.
+When `max_contexts` is full, the least-recently-used zero-lease session is closed before a new
+isolated context is created; if all sessions are leased, the operation fails with
+`context_limit_reached`. `BrowserRuntimeManager.get_session()` remains available for advanced direct
+usage, but its return value is intentionally unleased and immediately eligible for eviction; hosts
+that span retrieval and operation must use `lease_session()`. Advanced hosts can call
+`aclose_session(thread_id)` for targeted idle cleanup, and middleware shutdown waits for bounded
+in-flight leases before closing all remaining resources.
 
 ## Testing
 

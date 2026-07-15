@@ -1,5 +1,7 @@
+import base64
 import json
 import sys
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import ModuleType
 from typing import Any, cast, get_type_hints
@@ -14,7 +16,15 @@ from pydantic import Strict, ValidationError
 
 from deepagents_browser.errors import BrowserErrorCode, BrowserRuntimeError
 from deepagents_browser.middleware import BrowserAccessError, BrowserMiddleware
-from deepagents_browser.schemas import ActInput, NavigateInput, ScreenshotInput, TypeAction
+from deepagents_browser.runtime import ScreenshotResult
+from deepagents_browser.schemas import (
+    ActInput,
+    NavigateInput,
+    PageScrollAction,
+    ScreenshotInput,
+    ScrollIntoViewAction,
+    TypeAction,
+)
 from deepagents_browser.state import BrowserState
 
 
@@ -27,8 +37,17 @@ class _Session:
     async def navigate(self, url, page_ref=None):
         return f"visited:{url}:{page_ref}"
 
+    async def snapshot(self, page_ref=None):
+        return json.dumps({"page_ref": page_ref or "p_test", "nodes": []})
+
     async def act(self, action):
         return json.dumps({"ok": True, "page_ref": "p_test"})
+
+    async def screenshot(self, page_ref=None):
+        return ScreenshotResult(page_ref=page_ref or "p_test", media_type="image/png", data=b"png")
+
+    async def tabs(self, operation, page_ref=None):
+        return json.dumps({"operation": operation, "page_ref": page_ref})
 
 
 class _Manager:
@@ -41,9 +60,10 @@ class _Manager:
     async def validate_url(self, url):
         self.validated.append(url)
 
-    async def get_session(self, thread_id):
+    @asynccontextmanager
+    async def lease_session(self, thread_id):
         self.session_calls.append(thread_id)
-        return self.session
+        yield self.session
 
     async def aclose(self):
         self.closed += 1
@@ -87,6 +107,7 @@ def test_construction_is_lazy_and_creates_exactly_five_base_tools():
     configs = [cast("Any", tool.args_schema).model_config for tool in middleware.tools]
     assert all(config["extra"] == "forbid" for config in configs)
     assert all(config["strict"] is True for config in configs)
+    assert middleware.tools[3].response_format == "content_and_artifact"
     assert manager.validated == []
     assert manager.session_calls == []
 
@@ -105,6 +126,19 @@ def test_strict_schemas_reject_extra_fields_and_unsafe_actions():
         ScreenshotInput(full_page=True)
     with pytest.raises(ValidationError):
         ActInput(action={"kind": "javascript", "ref": "e_12345678"})
+    scroll = ActInput(action={"kind": "scroll", "direction": "down"})
+    assert isinstance(scroll.action, PageScrollAction)
+    assert scroll.action.distance == "half_page"
+    into_view = ActInput(action={"kind": "scroll_into_view", "ref": "e_12345678"})
+    assert isinstance(into_view.action, ScrollIntoViewAction)
+    with pytest.raises(ValidationError):
+        ActInput(action={"kind": "scroll", "direction": "down", "ref": "e_12345678"})
+    with pytest.raises(ValidationError):
+        ActInput(action={"kind": "scroll", "direction": "down", "amount": 100})
+    with pytest.raises(ValidationError):
+        ActInput(action={"kind": "scroll", "direction": "diagonal"})
+    with pytest.raises(ValidationError):
+        ActInput(action={"kind": "scroll_into_view", "ref": "e_12345678", "selector": "body"})
 
 
 def test_sync_wrapper_filters_only_exact_names_when_inactive():
@@ -186,6 +220,80 @@ async def test_active_navigation_runs_through_langgraph_tool_node():
     assert result["messages"][-1].content == "visited:https://example.com:None"
 
 
+async def test_screenshot_returns_standard_blocks_and_separate_raw_artifact():
+    manager = _Manager()
+    middleware = BrowserMiddleware(runtime_manager=manager)
+    builder = StateGraph(cast("Any", BrowserState))
+    builder.add_node("tools", ToolNode(middleware.tools))
+    builder.add_edge(START, "tools")
+    builder.add_edge("tools", END)
+    graph = builder.compile()
+
+    result = await graph.ainvoke(
+        cast(
+            "Any",
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "browser_screenshot",
+                                "args": {"page_ref": "p_current_page"},
+                                "id": "call-browser-screenshot",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ],
+                "_browser_enabled": True,
+            },
+        ),
+        config={"configurable": {"thread_id": "browser-screenshot-test"}},
+    )
+
+    message = result["messages"][-1]
+    assert message.content == [
+        {
+            "type": "text",
+            "text": '{"page_ref":"p_current_page","media_type":"image/png","bytes":3}',
+        },
+        {
+            "type": "image",
+            "base64": base64.b64encode(b"png").decode("ascii"),
+            "mime_type": "image/png",
+        },
+    ]
+    assert "base64" not in message.content[0]["text"]
+    assert message.artifact == {
+        "page_ref": "p_current_page",
+        "media_type": "image/png",
+        "bytes": 3,
+        "image": {
+            "type": "image",
+            "base64": base64.b64encode(b"png").decode("ascii"),
+            "mime_type": "image/png",
+        },
+    }
+    assert json.loads(json.dumps(message.artifact)) == message.artifact
+
+
+async def test_tabs_operation_uses_manager_session_lease():
+    manager = _Manager()
+    middleware = BrowserMiddleware(runtime_manager=manager)
+
+    result = json.loads(
+        await middleware.tools[4].coroutine(
+            operation="list",
+            page_ref=None,
+            runtime=_Runtime({"_browser_enabled": True}),
+        )
+    )
+
+    assert result == {"operation": "list", "page_ref": None}
+    assert len(manager.session_calls) == 1
+
+
 async def test_active_navigation_validates_before_session_access():
     events = []
 
@@ -193,9 +301,10 @@ async def test_active_navigation_validates_before_session_access():
         async def validate_url(self, url):
             events.append("validate")
 
-        async def get_session(self, thread_id):
+        @asynccontextmanager
+        async def lease_session(self, thread_id):
             events.append("session")
-            return self.session
+            yield self.session
 
     middleware = BrowserMiddleware(runtime_manager=OrderedManager())
     await middleware.tools[0].coroutine(
@@ -223,9 +332,10 @@ async def test_playwright_blockbuster_exemption_is_scoped_to_browser_calls(monke
         async def validate_url(self, url):
             events.append(("validate", skip.get()))
 
-        async def get_session(self, thread_id):
+        @asynccontextmanager
+        async def lease_session(self, thread_id):
             events.append(("session", skip.get()))
-            return self.session
+            yield self.session
 
     middleware = BrowserMiddleware(runtime_manager=ScopedManager())
     result = await middleware.tools[0].coroutine(
@@ -359,6 +469,41 @@ async def test_stale_action_reference_returns_recovery_instructions_to_model():
         "next": "Call browser_snapshot, then retry with a new element reference.",
     }
     assert "browser_snapshot after every successful action" in middleware.tools[2].description
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        BrowserErrorCode.ELEMENT_DISABLED,
+        BrowserErrorCode.ELEMENT_NOT_EDITABLE,
+        BrowserErrorCode.ACTION_TARGET_MISMATCH,
+        BrowserErrorCode.ACTION_TIMEOUT,
+        BrowserErrorCode.SCROLL_FAILED,
+        BrowserErrorCode.ACTION_FAILED,
+    ],
+)
+async def test_operational_action_errors_are_recoverable(code):
+    class OperationalFailureSession(_Session):
+        async def act(self, action):
+            msg = "Stable operational failure"
+            raise BrowserRuntimeError(msg, code=code)
+
+    manager = _Manager()
+    manager.session = OperationalFailureSession()
+    middleware = BrowserMiddleware(runtime_manager=manager)
+
+    result = json.loads(
+        await middleware.tools[2].coroutine(
+            action=PageScrollAction(kind="scroll", direction="down"),
+            runtime=_Runtime({"_browser_enabled": True}),
+        )
+    )
+
+    assert result == {
+        "ok": False,
+        "error": {"code": code.value, "message": "Stable operational failure"},
+        "next": "Call browser_snapshot, then retry with a new element reference.",
+    }
 
 
 async def test_nonrecoverable_action_error_remains_fail_closed():

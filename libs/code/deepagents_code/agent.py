@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import tomllib
 import warnings
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -99,6 +100,7 @@ from deepagents_code.unicode_security import (
     detect_dangerous_unicode,
     format_warning_detail,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
@@ -1152,6 +1154,70 @@ def _format_fetch_url_description(
     )
 
 
+_BROWSER_APPROVAL_VALUE_MAX_LENGTH = 300
+_BROWSER_PAGE_REF_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def _browser_approval_value(value: object) -> str:
+    """Return a sanitized, single-line browser argument for an approval prompt."""
+    if not isinstance(value, str):
+        return "unknown"
+    return sanitize_control_chars(
+        value,
+        keep_newlines=False,
+        max_length=_BROWSER_APPROVAL_VALUE_MAX_LENGTH,
+    )
+
+
+def _browser_tool_args(tool_call: ToolCall) -> Mapping[str, object]:
+    """Return browser tool arguments, or an empty mapping when malformed."""
+    args = tool_call.get("args")
+    return args if isinstance(args, Mapping) else {}
+
+
+def _format_browser_navigate_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format a browser navigation without rendering an unbounded URL.
+
+    Returns:
+        A safe, bounded description of the navigation target.
+    """
+    args = _browser_tool_args(tool_call)
+    return f"Navigate browser to URL: {_browser_approval_value(args.get('url'))}"
+
+
+def _format_browser_act_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format a browser action without exposing typed or selected values.
+
+    Returns:
+        A description containing only the action kind and opaque element reference.
+    """
+    args = _browser_tool_args(tool_call)
+    action = args.get("action")
+    if not isinstance(action, Mapping):
+        return "Browser action: unknown\nElement ref: unknown"
+    kind = _browser_approval_value(action.get("kind"))
+    ref = _browser_approval_value(action.get("ref"))
+    return f"Browser action: {kind}\nElement ref: {ref}"
+
+
+def _format_browser_tabs_description(
+    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format a browser tab operation and its opaque page reference.
+
+    Returns:
+        A safe description of the tab operation and page reference.
+    """
+    args = _browser_tool_args(tool_call)
+    operation = _browser_approval_value(args.get("operation", "list"))
+    page_ref = _browser_approval_value(args.get("page_ref"))
+    return f"Browser tab operation: {operation}\nPage ref: {page_ref}"
+
+
 def _format_task_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -1301,6 +1367,49 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
             type(ctx).__name__,
         )
     return True
+
+
+def _should_interrupt_browser_tabs(request: ToolCallRequest) -> bool:
+    """Interrupt only for valid consequential browser tab operations.
+
+    Listing tabs and selecting a valid opaque page reference are
+    non-consequential. Creating and closing tabs use the shared
+    auto-approval-aware predicate. Any malformed or unknown input interrupts so
+    invalid data cannot accidentally bypass review.
+
+    Args:
+        request: The pending `browser_tabs` call under review.
+
+    Returns:
+        Whether the tool call should pause for human approval.
+    """
+    tool_call = getattr(request, "tool_call", None)
+    if not isinstance(tool_call, Mapping):
+        return True
+    args = tool_call.get("args")
+    if not isinstance(args, Mapping) or not set(args) <= {"operation", "page_ref"}:
+        return True
+
+    operation = args.get("operation", "list")
+    if not isinstance(operation, str) or operation not in {
+        "list",
+        "new",
+        "select",
+        "close",
+    }:
+        return True
+    page_ref = args.get("page_ref")
+    if operation == "select" and page_ref is None:
+        return True
+    if page_ref is not None and (
+        not isinstance(page_ref, str)
+        or _BROWSER_PAGE_REF_PATTERN.fullmatch(page_ref) is None
+    ):
+        return True
+
+    if operation in {"list", "select"}:
+        return False
+    return _should_interrupt_tool_call(request)
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -2006,13 +2115,35 @@ def create_cli_agent(
         if not auto_approve:
             if interrupt_on is None:
                 interrupt_on = {}
-            browser_interrupt_config: InterruptOnConfig = {
+            browser_navigate_interrupt_config: InterruptOnConfig = {
+                "allowed_decisions": ["approve", "reject"],
+                "description": _format_browser_navigate_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+                "when": _should_interrupt_tool_call,
+            }
+            browser_act_interrupt_config: InterruptOnConfig = {
+                "allowed_decisions": ["approve", "reject"],
+                "description": _format_browser_act_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+                "when": _should_interrupt_tool_call,
+            }
+            browser_tabs_interrupt_config: InterruptOnConfig = {
+                "allowed_decisions": ["approve", "reject"],
+                "description": _format_browser_tabs_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+                "when": _should_interrupt_browser_tabs,
+            }
+            browser_default_interrupt_config: InterruptOnConfig = {
                 "allowed_decisions": ["approve", "reject"],
                 "description": "Perform a consequential browser action.",
                 "when": _should_interrupt_tool_call,
             }
+            browser_interrupt_configs = {
+                "browser_navigate": browser_navigate_interrupt_config,
+                "browser_act": browser_act_interrupt_config,
+                "browser_tabs": browser_tabs_interrupt_config,
+            }
             for tool_name in browser_consequential_tool_names:
-                interrupt_on[tool_name] = browser_interrupt_config
+                interrupt_on[tool_name] = browser_interrupt_configs.get(
+                    tool_name, browser_default_interrupt_config
+                )
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

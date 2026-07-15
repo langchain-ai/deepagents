@@ -24,11 +24,15 @@ if TYPE_CHECKING:
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
+    _BROWSER_APPROVAL_VALUE_MAX_LENGTH,
     _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
     _create_rubric_grader_tools,
+    _format_browser_act_description,
+    _format_browser_navigate_description,
+    _format_browser_tabs_description,
     _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
@@ -38,6 +42,7 @@ from deepagents_code.agent import (
     _format_write_file_description,
     _reserved_agent_dir_names,
     _sanitize_agent_message_name,
+    _should_interrupt_browser_tabs,
     _should_interrupt_tool_call,
     build_model_identity_section,
     create_cli_agent,
@@ -142,6 +147,60 @@ def _request_with_context(
     return cast(
         "ToolCallRequest",
         SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
+    )
+
+
+def _browser_tabs_request(
+    args: object,
+    *,
+    auto_approve: bool = False,
+) -> "ToolCallRequest":
+    return cast(
+        "ToolCallRequest",
+        SimpleNamespace(
+            tool_call={"name": "browser_tabs", "args": args, "id": "call-tabs"},
+            runtime=SimpleNamespace(
+                context=CLIContextSchema(auto_approve=auto_approve), store=None
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [{}, {"operation": "list"}, {"operation": "select", "page_ref": "page_ref_123"}],
+)
+def test_browser_tabs_safe_operations_do_not_interrupt(args: dict[str, object]) -> None:
+    assert not _should_interrupt_browser_tabs(_browser_tabs_request(args))
+
+
+@pytest.mark.parametrize("operation", ["new", "close"])
+def test_browser_tabs_consequential_operations_respect_auto_approve(
+    operation: str,
+) -> None:
+    args = {"operation": operation}
+
+    assert _should_interrupt_browser_tabs(_browser_tabs_request(args))
+    assert not _should_interrupt_browser_tabs(
+        _browser_tabs_request(args, auto_approve=True)
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        None,
+        {"operation": "unknown"},
+        {"operation": ["list"]},
+        {"operation": "list", "unexpected": True},
+        {"operation": "select"},
+        {"operation": "select", "page_ref": None},
+        {"operation": "select", "page_ref": "short"},
+    ],
+)
+def test_browser_tabs_malformed_args_fail_closed(args: object) -> None:
+    assert _should_interrupt_browser_tabs(
+        _browser_tabs_request(args, auto_approve=True)
     )
 
 
@@ -589,6 +648,89 @@ def test_format_fetch_url_description_default_timeout():
 
     assert "URL: https://api.example.com" in description
     assert "Timeout: 30s" in description
+
+
+@pytest.mark.parametrize(
+    ("raw_url", "safe_url"),
+    [
+        pytest.param("safe\nforged", "safe forged", id="newline"),
+        pytest.param("safe\rforged", "safe forged", id="carriage-return"),
+        pytest.param("safe\tforged", "safe forged", id="tab"),
+        pytest.param("\x1b[31mred\x1b[0m", "[31mred [0m", id="ansi"),
+        pytest.param("safe\u202eforged", "safeforged", id="bidi"),
+        pytest.param("safe\u200bforged", "safeforged", id="invisible"),
+    ],
+)
+def test_format_browser_navigate_description_sanitizes_url(
+    raw_url: str, safe_url: str
+) -> None:
+    tool_call = cast(
+        "ToolCall",
+        {"name": "browser_navigate", "args": {"url": raw_url}, "id": "navigate"},
+    )
+
+    description = _format_browser_navigate_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert description == f"Navigate browser to URL: {safe_url}"
+    assert "\n" not in description
+    assert "\r" not in description
+    assert "\t" not in description
+    assert "\x1b" not in description
+
+
+def test_format_browser_navigate_description_truncates_url() -> None:
+    raw_url = "x" * (_BROWSER_APPROVAL_VALUE_MAX_LENGTH + 100)
+    tool_call = cast(
+        "ToolCall",
+        {"name": "browser_navigate", "args": {"url": raw_url}, "id": "navigate"},
+    )
+
+    description = _format_browser_navigate_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    display = description.removeprefix("Navigate browser to URL: ")
+
+    assert len(display) == _BROWSER_APPROVAL_VALUE_MAX_LENGTH
+    assert display == "x" * (_BROWSER_APPROVAL_VALUE_MAX_LENGTH - 1) + "…"
+
+
+def test_format_browser_act_description_never_exposes_text_or_value() -> None:
+    secrets = ("typed-password", "selected-secret")
+    for action in (
+        {"kind": "type", "ref": "element_123", "text": secrets[0]},
+        {"kind": "select", "ref": "element_456", "value": secrets[1]},
+    ):
+        tool_call = cast(
+            "ToolCall",
+            {"name": "browser_act", "args": {"action": action}, "id": "act"},
+        )
+
+        description = _format_browser_act_description(
+            tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+        )
+
+        assert f"Browser action: {action['kind']}" in description
+        assert f"Element ref: {action['ref']}" in description
+        assert all(secret not in description for secret in secrets)
+
+
+def test_format_browser_tabs_description_includes_operation_and_page_ref() -> None:
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "browser_tabs",
+            "args": {"operation": "close", "page_ref": "page_ref_123"},
+            "id": "tabs",
+        },
+    )
+
+    description = _format_browser_tabs_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert description == "Browser tab operation: close\nPage ref: page_ref_123"
 
 
 def test_format_task_description():
@@ -3938,6 +4080,7 @@ class TestCreateCliAgentBrowserWiring:
                 self.consequential_tool_names = {
                     "browser_navigate",
                     "browser_act",
+                    "browser_tabs",
                 }
 
             async def aclose(self) -> None:
@@ -4009,10 +4152,26 @@ class TestCreateCliAgentBrowserWiring:
         middleware = kwargs["middleware"]
         assert isinstance(middleware[-1], browser_type)
         assert any(isinstance(item, RubricMiddleware) for item in middleware[:-1])
-        for name in ("browser_navigate", "browser_act"):
+        descriptions = {
+            "browser_navigate": _format_browser_navigate_description,
+            "browser_act": _format_browser_act_description,
+            "browser_tabs": _format_browser_tabs_description,
+        }
+        for name, description in descriptions.items():
             config = kwargs["interrupt_on"][name]
             assert config["allowed_decisions"] == ["approve", "reject"]
-            assert config["when"] is _should_interrupt_tool_call
+            assert config["description"] is description
+        assert (
+            kwargs["interrupt_on"]["browser_navigate"]["when"]
+            is _should_interrupt_tool_call
+        )
+        assert (
+            kwargs["interrupt_on"]["browser_act"]["when"] is _should_interrupt_tool_call
+        )
+        assert (
+            kwargs["interrupt_on"]["browser_tabs"]["when"]
+            is _should_interrupt_browser_tabs
+        )
 
     def test_registers_browser_cleanup_callback(self, tmp_path: Path) -> None:
         module, browser_type = self._browser_module()

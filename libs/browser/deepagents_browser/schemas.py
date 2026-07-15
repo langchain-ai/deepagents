@@ -76,8 +76,23 @@ class SelectAction(_StrictSchema):
     value: ShortText
 
 
+class PageScrollAction(_StrictSchema):
+    """Scroll the active page by one constrained viewport-relative distance."""
+
+    kind: Literal["scroll"]
+    direction: Literal["up", "down", "left", "right"]
+    distance: Literal["half_page", "page"] = "half_page"
+
+
+class ScrollIntoViewAction(_StrictSchema):
+    """Scroll an exact snapshotted element into view."""
+
+    kind: Literal["scroll_into_view"]
+    ref: Reference
+
+
 BrowserAction = Annotated[
-    ClickAction | TypeAction | PressAction | SelectAction,
+    ClickAction | TypeAction | PressAction | SelectAction | PageScrollAction | ScrollIntoViewAction,
     Field(discriminator="kind"),
 ]
 

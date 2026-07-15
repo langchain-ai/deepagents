@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import uuid
-from collections.abc import Awaitable, Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, NoReturn
 
 from langchain.agents.middleware.types import (
@@ -51,6 +52,12 @@ _RECOVERABLE_ACTION_ERROR_CODES = frozenset(
         BrowserErrorCode.ELEMENT_CHANGED.value,
         BrowserErrorCode.PAGE_NAVIGATED.value,
         BrowserErrorCode.NAVIGATION_INVALIDATED_REFERENCE.value,
+        BrowserErrorCode.ELEMENT_DISABLED.value,
+        BrowserErrorCode.ELEMENT_NOT_EDITABLE.value,
+        BrowserErrorCode.ACTION_TARGET_MISMATCH.value,
+        BrowserErrorCode.ACTION_TIMEOUT.value,
+        BrowserErrorCode.SCROLL_FAILED.value,
+        BrowserErrorCode.ACTION_FAILED.value,
     }
 )
 _ACTION_REFRESH_INSTRUCTION = "Call browser_snapshot before the next browser_act."
@@ -195,9 +202,12 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
         """Return browser tools that should require human approval."""
         return _BROWSER_CONSEQUENTIAL_TOOL_NAMES
 
-    async def _session(self, runtime: ToolRuntime[Any, Any]) -> BrowserSession:
+    @asynccontextmanager
+    async def _session(self, runtime: ToolRuntime[Any, Any]) -> AsyncIterator[BrowserSession]:
         _require_active(runtime)
-        return await self._runtime.get_session(_resolve_thread_id(self._fallback_thread_id))
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        async with self._runtime.lease_session(thread_id) as session:
+            yield session
 
     def _build_navigate_tool(self) -> BaseTool:
         middleware = self
@@ -219,8 +229,8 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
             _require_active(runtime)
             await middleware._runtime.validate_url(url)
             with _allow_playwright_blocking_instrumentation():
-                session = await middleware._session(runtime)
-                return await session.navigate(url, page_ref)
+                async with middleware._session(runtime) as session:
+                    return await session.navigate(url, page_ref)
 
         return StructuredTool.from_function(
             name="browser_navigate",
@@ -248,22 +258,22 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
         ) -> str:
             _require_active(runtime)
             with _allow_playwright_blocking_instrumentation():
-                session = await middleware._session(runtime)
-                for attempt in range(_SNAPSHOT_ATTEMPTS):
-                    try:
-                        return await session.snapshot(page_ref)
-                    except BrowserRuntimeError as exc:
-                        if exc.code != BrowserErrorCode.PAGE_NAVIGATED.value:
-                            raise
-                        if attempt == _SNAPSHOT_ATTEMPTS - 1:
-                            return json.dumps(
-                                {
-                                    "ok": False,
-                                    "error": exc.as_dict(),
-                                    "next": _SNAPSHOT_RECOVERY_INSTRUCTION,
-                                },
-                                separators=(",", ":"),
-                            )
+                async with middleware._session(runtime) as session:
+                    for attempt in range(_SNAPSHOT_ATTEMPTS):
+                        try:
+                            return await session.snapshot(page_ref)
+                        except BrowserRuntimeError as exc:
+                            if exc.code != BrowserErrorCode.PAGE_NAVIGATED.value:
+                                raise
+                            if attempt == _SNAPSHOT_ATTEMPTS - 1:
+                                return json.dumps(
+                                    {
+                                        "ok": False,
+                                        "error": exc.as_dict(),
+                                        "next": _SNAPSHOT_RECOVERY_INSTRUCTION,
+                                    },
+                                    separators=(",", ":"),
+                                )
             msg = "Snapshot retry loop exited unexpectedly"
             raise BrowserRuntimeError(msg)
 
@@ -287,28 +297,30 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
         async def act_async(action: BrowserAction, runtime: ToolRuntime[Any, Any]) -> str:
             _require_active(runtime)
             with _allow_playwright_blocking_instrumentation():
-                session = await middleware._session(runtime)
-                try:
-                    result = json.loads(await session.act(action))
-                except BrowserRuntimeError as exc:
-                    if exc.code not in _RECOVERABLE_ACTION_ERROR_CODES:
-                        raise
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": exc.as_dict(),
-                            "next": _ACTION_RECOVERY_INSTRUCTION,
-                        },
-                        separators=(",", ":"),
-                    )
+                async with middleware._session(runtime) as session:
+                    try:
+                        result = json.loads(await session.act(action))
+                    except BrowserRuntimeError as exc:
+                        if exc.code not in _RECOVERABLE_ACTION_ERROR_CODES:
+                            raise
+                        return json.dumps(
+                            {
+                                "ok": False,
+                                "error": exc.as_dict(),
+                                "next": _ACTION_RECOVERY_INSTRUCTION,
+                            },
+                            separators=(",", ":"),
+                        )
                 result["next"] = _ACTION_REFRESH_INSTRUCTION
                 return json.dumps(result, separators=(",", ":"))
 
         return StructuredTool.from_function(
             name="browser_act",
             description=(
-                "Perform one allowlisted action using a fresh, single-use opaque reference; "
-                "raw selectors and JavaScript are not accepted. Call browser_snapshot after "
+                "Perform one allowlisted action: constrained viewport-relative page scrolling, or "
+                "an exact-element action using a fresh, single-use opaque reference. Raw "
+                "selectors, coordinates, deltas, and JavaScript are not accepted. Call "
+                "browser_snapshot after "
                 "every successful action before calling browser_act again."
             ),
             func=act_sync,
@@ -331,11 +343,26 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
         async def screenshot_async(
             runtime: ToolRuntime[Any, Any],
             page_ref: str | None = None,
-        ) -> str:
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             _require_active(runtime)
             with _allow_playwright_blocking_instrumentation():
-                session = await middleware._session(runtime)
-                return await session.screenshot(page_ref)
+                async with middleware._session(runtime) as session:
+                    screenshot = await session.screenshot(page_ref)
+            metadata = screenshot.metadata()
+            image = {
+                "type": "image",
+                "base64": base64.b64encode(screenshot.data).decode("ascii"),
+                "mime_type": screenshot.media_type,
+            }
+            content: list[dict[str, Any]] = [
+                {
+                    "type": "text",
+                    "text": json.dumps(metadata, separators=(",", ":")),
+                },
+                image,
+            ]
+            artifact = {**metadata, "image": image}
+            return content, artifact
 
         return StructuredTool.from_function(
             name="browser_screenshot",
@@ -344,6 +371,7 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
             coroutine=screenshot_async,
             infer_schema=False,
             args_schema=_ScreenshotToolInput,
+            response_format="content_and_artifact",
         )
 
     def _build_tabs_tool(self) -> BaseTool:
@@ -365,8 +393,8 @@ class BrowserMiddleware(AgentMiddleware[BrowserState, ContextT, ResponseT]):
         ) -> str:
             _require_active(runtime)
             with _allow_playwright_blocking_instrumentation():
-                session = await middleware._session(runtime)
-                return await session.tabs(operation, page_ref)
+                async with middleware._session(runtime) as session:
+                    return await session.tabs(operation, page_ref)
 
         return StructuredTool.from_function(
             name="browser_tabs",

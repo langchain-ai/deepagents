@@ -26,7 +26,13 @@ class BrowserErrorCode(StrEnum):
     BROWSER_NOT_PROVISIONED = "browser_not_provisioned"
     STARTUP_FAILED = "startup_failed"
     INVALID_RUNTIME_FACTORY = "invalid_runtime_factory"
+    ELEMENT_DISABLED = "element_disabled"
+    ELEMENT_NOT_EDITABLE = "element_not_editable"
+    ACTION_TARGET_MISMATCH = "action_target_mismatch"
+    ACTION_TIMEOUT = "action_timeout"
+    SCROLL_FAILED = "scroll_failed"
     ACTION_FAILED = "action_failed"
+    CLEANUP_FAILED = "cleanup_failed"
     RUNTIME_CLOSED = "runtime_closed"
 
 

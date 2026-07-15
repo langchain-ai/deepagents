@@ -12,6 +12,7 @@ PluginManagerView = Literal[
     "marketplace_details",
     "confirm_remove_marketplace",
 ]
+PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,20 @@ class _PluginRow:
     skill_names: tuple[str, ...] = ()
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
+    unsupported_components: tuple[str, ...] = ()
+    session_loaded: bool = False
+    load_error: str | None = None
+
+    @property
+    def load_state(self) -> PluginLoadState:
+        """Session-aware plugin status for list and detail copy."""
+        if self.load_error:
+            return "error"
+        if not self.enabled:
+            return "disabled"
+        if not self.session_loaded:
+            return "pending_reload"
+        return "enabled"
 
 
 @dataclass(frozen=True, slots=True)

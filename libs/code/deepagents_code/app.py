@@ -2598,6 +2598,9 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._session_plugin_ids: frozenset[str] = self._snapshot_session_plugin_ids()
+        """Plugin ids loaded into the current session (startup or last `/reload`)."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -11263,6 +11266,9 @@ class DeepAgentsApp(App):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
                 plugin_result = discover_plugins()
+                self._session_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugin_result.plugins
+                )
                 plugin_count = len(plugin_result.plugins)
                 mcp_configs = plugin_mcp_configs(plugin_result.plugins)
                 mcp_count = sum(
@@ -17041,8 +17047,23 @@ class DeepAgentsApp(App):
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
+                loaded_plugin_ids=self._session_plugin_ids,
             )
         )
+
+    @staticmethod
+    def _snapshot_session_plugin_ids() -> frozenset[str]:
+        """Return enabled plugin ids that should count as loaded for this session."""
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            return frozenset()
+        try:
+            from deepagents_code.plugins import discover_plugins
+
+            return frozenset(plugin.plugin_id for plugin in discover_plugins().plugins)
+        except (OSError, RuntimeError, ValueError):
+            return frozenset()
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

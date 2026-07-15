@@ -67,10 +67,14 @@ class PluginManifest:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ComponentInventory:
-    """Inventory of supported plugin components."""
+    """Inventory of supported plugin components.
+
+    `unsupported` lists plugin component directories that are not loaded by dcode`
+    """
 
     skills: tuple[Path, ...] = ()
     mcp_files: tuple[Path, ...] = ()
+    unsupported: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
 

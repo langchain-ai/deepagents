@@ -25,20 +25,33 @@ def _plugin_options(
     return options
 
 
+def _load_state_label(row: _PluginRow) -> str | None:
+    glyphs = get_glyphs()
+    if row.load_state == "error":
+        return "error"
+    if row.load_state == "pending_reload":
+        return "pending /reload"
+    if row.load_state == "enabled":
+        return f"{glyphs.checkmark} enabled"
+    return None
+
+
 def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
     glyphs = get_glyphs()
     plugin_name, _, marketplace = row.plugin_id.partition("@")
     meta_parts = ["Plugin", marketplace]
-    if row.enabled:
-        meta_parts.append(f"{glyphs.checkmark} enabled")
+    load_label = _load_state_label(row)
+    if load_label:
+        meta_parts.append(load_label)
     if row.skill_count:
         meta_parts.append(
             f"{row.skill_count} {'skill' if row.skill_count == 1 else 'skills'}"
         )
-    if row.mcp_connected is True:
-        meta_parts.append(f"{glyphs.checkmark} connected")
-    elif row.mcp_connected is False:
-        meta_parts.append("restart to connect")
+    if row.load_state == "enabled":
+        if row.mcp_connected is True:
+            meta_parts.append(f"{glyphs.checkmark} connected")
+        elif row.mcp_connected is False:
+            meta_parts.append("restart to connect")
     if status:
         meta_parts.append(status)
     return Content.assemble(
@@ -67,6 +80,74 @@ def _installed_details_options(row: _PluginRow) -> list[Option]:
     ]
 
 
+def _component_summary_lines(row: _PluginRow) -> list[str]:
+    lines: list[str] = []
+    if row.skill_names:
+        lines.append(f"Skills: {', '.join(row.skill_names)}")
+    elif row.skill_count:
+        lines.append(f"Skills: {row.skill_count}")
+    if row.mcp_server_names:
+        lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
+    if row.unsupported_components:
+        names = ", ".join(f"{name}/" for name in row.unsupported_components)
+        lines.append(f"Unsupported (not loaded): {names}")
+    return lines
+
+
+def _unsupported_summary(components: tuple[str, ...]) -> str:
+    return f"Found unsupported: {', '.join(f'{name}/' for name in components)}."
+
+
+def _will_install_lines(row: _PluginRow) -> list[str]:
+    lines = _component_summary_lines(row)
+    if row.skill_names or row.mcp_server_names or row.skill_count:
+        return lines
+    if row.unsupported_components:
+        return [
+            "No supported components (skills/MCP).",
+            _unsupported_summary(row.unsupported_components),
+        ]
+    if row.skill_count is None:
+        return [
+            "Skills and MCP servers if present (agents/, commands/, and hooks/ are not loaded)."
+        ]
+    return [
+        "No supported components (skills/MCP).",
+        "agents/, commands/, and hooks/ are not loaded by deepagents-code.",
+    ]
+
+
+def _installed_component_lines(row: _PluginRow) -> list[str]:
+    lines = _component_summary_lines(row)
+    if lines:
+        has_supported = bool(row.skill_names or row.mcp_server_names)
+        if not has_supported and row.unsupported_components:
+            return [
+                "No supported components (skills/MCP).",
+                _unsupported_summary(row.unsupported_components),
+            ]
+        return lines
+    return ["No components found."]
+
+
+def _status_lines(row: _PluginRow) -> list[str]:
+    glyphs = get_glyphs()
+    if row.load_state == "error":
+        detail = row.load_error or "Plugin failed to load."
+        return [f"Status: Error — {detail}", "Fix the error, then run /reload."]
+    if row.load_state == "disabled":
+        return ["Status: Disabled", "Enable the plugin, then run /reload to load it."]
+    if row.load_state == "pending_reload":
+        return [
+            "Status: Installed · pending /reload",
+            "Run /reload to load this plugin into the current session.",
+        ]
+    lines = [f"Status: {glyphs.checkmark} Enabled"]
+    if row.mcp_connected is False:
+        lines.append("MCP servers need a server restart (/reload) to connect.")
+    return lines
+
+
 def _plugin_details_content(row: _PluginRow) -> Content:
     plugin_name, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
@@ -82,12 +163,11 @@ def _plugin_details_content(row: _PluginRow) -> Content:
         parts.extend(["\n\n", row.description])
     if row.author:
         parts.extend(["\n\n", Content.styled(f"By: {row.author}", "dim")])
+    parts.extend(["\n\n", Content.styled("Will install:", "bold")])
+    for line in _will_install_lines(row):
+        parts.extend(["\n  ", Content.styled(line, "dim")])
     parts.extend(
         [
-            "\n\n",
-            Content.styled("Will install:", "bold"),
-            "\n  ",
-            Content.styled("Components will be discovered at installation.", "dim"),
             "\n\n",
             Content.styled(
                 "Make sure you trust a plugin before installing, updating, "
@@ -100,7 +180,6 @@ def _plugin_details_content(row: _PluginRow) -> Content:
 
 
 def _installed_plugin_details_content(row: _PluginRow) -> Content:
-    glyphs = get_glyphs()
     plugin_name, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
         Content.styled(f"{plugin_name} @ {marketplace}", "bold")
@@ -111,23 +190,13 @@ def _installed_plugin_details_content(row: _PluginRow) -> Content:
         parts.extend(["\n\n", row.description])
     if row.author:
         parts.extend(["\n\n", Content.styled(f"Author: {row.author}", "dim")])
-    status = f"{glyphs.checkmark} Enabled" if row.enabled else "Disabled"
-    parts.extend(
-        [
-            "\n\n",
-            Content.styled(f"Status: {status}", "dim"),
-            "\n\n",
-            Content.styled("Installed components:", "bold"),
-        ]
-    )
-    lines = (
-        [f"Skills: {', '.join(row.skill_names)}"]
-        if row.skill_names
-        else ([f"Skills: {row.skill_count}"] if row.skill_count else [])
-    )
-    if row.mcp_server_names:
-        lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
-    for line in lines or ["No components discovered."]:
+    parts.extend(["\n\n"])
+    for index, line in enumerate(_status_lines(row)):
+        if index:
+            parts.append("\n")
+        parts.append(Content.styled(line, "dim"))
+    parts.extend(["\n\n", Content.styled("Installed components:", "bold")])
+    for line in _installed_component_lines(row):
         parts.extend(["\n  ", Content.styled(line, "dim")])
     return Content.assemble(*parts)
 

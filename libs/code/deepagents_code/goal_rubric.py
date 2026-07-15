@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import logging
 import threading
@@ -10,6 +11,10 @@ from collections import OrderedDict
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    SandboxBackendProtocol,
+)
 from deepagents.middleware.filesystem import FilesystemState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -32,7 +37,6 @@ from deepagents_code.resume_state import ResumeState
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.language_models import BaseChatModel
@@ -60,6 +64,8 @@ _CONVERSATION_CONTEXT_TOTAL_TEXT_LIMIT = 6_000
 _CONVERSATION_CONTEXT_SERIALIZED_LIMIT = 12_000
 _CRITERIA_OBJECTIVE_DISPLAY_LIMIT = 160
 _CRITERIA_RESULT_LOG_LIMIT = 500
+_REPOSITORY_PATH_RESULT_PREFIX = "__DEEPAGENTS_REPOSITORY_PATH__"
+_REPOSITORY_PATH_ERROR = "Repository path is unavailable."
 
 GOAL_RUBRIC_SYSTEM_PROMPT = f"""You draft minimal acceptance criteria for a
 coding agent goal.
@@ -225,14 +231,25 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
 class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
     """Bound repository inspection calls and read/result sizes."""
 
-    def __init__(self, backend: BackendProtocol) -> None:
+    def __init__(self, backend: BackendProtocol, *, root: str = "/") -> None:
         """Initialize a per-operation repository tool budget.
 
         Args:
             backend: Server-side repository backend used by filesystem tools.
+            root: Absolute backend path that bounds repository reads.
+
+        Raises:
+            ValueError: If `root` is not a safe absolute path.
         """
         super().__init__()
+        normalized = root.replace("\\", "/")
+        path = PurePosixPath(normalized)
+        if not normalized.startswith("/") or ".." in path.parts or "~" in root:
+            msg = f"Repository root must be an absolute contained path: {root!r}"
+            raise ValueError(msg)
         self._backend = backend
+        self._root = str(path)
+        self._sandbox = backend if isinstance(backend, SandboxBackendProtocol) else None
         self._calls: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -269,12 +286,68 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             status="error",
         )
 
-    @staticmethod
-    def _safe_path(raw_path: str) -> bool:
+    def _safe_path(self, raw_path: str) -> bool:
         """Return whether an explicit repository path is absolute and contained."""
         path = PurePosixPath(raw_path.replace("\\", "/"))
-        return bool(
-            raw_path.startswith("/") and ".." not in path.parts and "~" not in raw_path
+        root = PurePosixPath(self._root)
+        return (
+            raw_path.startswith("/")
+            and ".." not in path.parts
+            and "~" not in raw_path
+            and (root == PurePosixPath("/") or path == root or root in path.parents)
+        )
+
+    def _containment_command(self, raw_path: str) -> str:
+        """Build a sandbox command that checks the canonical repository boundary.
+
+        Returns:
+            A command that emits a private success marker only for contained paths.
+        """
+        payload = base64.b64encode(json.dumps([self._root, raw_path]).encode()).decode()
+        return (
+            'python3 -c "import base64,json,os;'
+            f"values=json.loads(base64.b64decode('{payload}'));"
+            "root=os.path.realpath(values[0]);path=os.path.realpath(values[1]);"
+            "contained=os.path.commonpath([root,path])==root;"
+            f"print('{_REPOSITORY_PATH_RESULT_PREFIX}'+str(int(contained)))\""
+        )
+
+    def _sandbox_contains(self, raw_path: str) -> bool:
+        """Return whether the sandbox resolves a path below the repository root."""
+        if self._sandbox is None:
+            return True
+        try:
+            result = self._sandbox.execute(self._containment_command(raw_path))
+        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Repository containment check failed; treating the path as unavailable",
+                exc_info=True,
+            )
+            return False
+        return result.exit_code in {None, 0} and any(
+            line == f"{_REPOSITORY_PATH_RESULT_PREFIX}1"
+            for line in result.output.splitlines()
+        )
+
+    async def _asandbox_contains(self, raw_path: str) -> bool:
+        """Asynchronously check canonical sandbox repository containment.
+
+        Returns:
+            `True` when the sandbox resolves the path below the repository root.
+        """
+        if self._sandbox is None:
+            return True
+        try:
+            result = await self._sandbox.aexecute(self._containment_command(raw_path))
+        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Repository containment check failed; treating the path as unavailable",
+                exc_info=True,
+            )
+            return False
+        return result.exit_code in {None, 0} and any(
+            line == f"{_REPOSITORY_PATH_RESULT_PREFIX}1"
+            for line in result.output.splitlines()
         )
 
     @staticmethod
@@ -318,7 +391,13 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         name = request.tool_call["name"]
         args = request.tool_call.get("args") or {}
         if name in {"glob", "grep"}:
-            return self._validate_search_paths(request, args)
+            error = self._validate_search_paths(request, args)
+            if error is not None:
+                return error
+            raw_path = args.get("path", self._root)
+            if isinstance(raw_path, str) and not self._sandbox_contains(raw_path):
+                return self._error(request, _REPOSITORY_PATH_ERROR)
+            return None
 
         key = "file_path" if name == "read_file" else "path"
         raw_path = args.get(key)
@@ -327,7 +406,9 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
 
         path = PurePosixPath(raw_path.replace("\\", "/"))
         if not self._safe_path(raw_path):
-            return self._error(request, "Repository path is unavailable.")
+            return self._error(request, _REPOSITORY_PATH_ERROR)
+        if not self._sandbox_contains(raw_path):
+            return self._error(request, _REPOSITORY_PATH_ERROR)
 
         try:
             if name == "ls":
@@ -382,7 +463,15 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         name = request.tool_call["name"]
         args = request.tool_call.get("args") or {}
         if name in {"glob", "grep"}:
-            return self._validate_search_paths(request, args)
+            error = self._validate_search_paths(request, args)
+            if error is not None:
+                return error
+            raw_path = args.get("path", self._root)
+            if isinstance(raw_path, str) and not await self._asandbox_contains(
+                raw_path
+            ):
+                return self._error(request, _REPOSITORY_PATH_ERROR)
+            return None
 
         key = "file_path" if name == "read_file" else "path"
         raw_path = args.get(key)
@@ -391,7 +480,9 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
 
         path = PurePosixPath(raw_path.replace("\\", "/"))
         if not self._safe_path(raw_path):
-            return self._error(request, "Repository path is unavailable.")
+            return self._error(request, _REPOSITORY_PATH_ERROR)
+        if not await self._asandbox_contains(raw_path):
+            return self._error(request, _REPOSITORY_PATH_ERROR)
 
         try:
             result = await self._backend.als(
@@ -488,8 +579,7 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             content = content[: _REPOSITORY_TOOL_RESULT_LIMIT - len(marker)] + marker
         return result.model_copy(update={"content": content})
 
-    @staticmethod
-    def _bounded_request(request: ToolCallRequest) -> ToolCallRequest:
+    def _bounded_request(self, request: ToolCallRequest) -> ToolCallRequest:
         """Clamp repository-tool arguments that directly control result size.
 
         Returns:
@@ -502,7 +592,9 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             if not isinstance(limit, int) or isinstance(limit, bool):
                 limit = _REPOSITORY_READ_LINE_LIMIT
             args["limit"] = max(1, min(limit, _REPOSITORY_READ_LINE_LIMIT))
-        elif name == "grep":
+        elif name in {"glob", "grep"}:
+            args.setdefault("path", self._root)
+        if name == "grep":
             count = args.get("max_count", _REPOSITORY_GREP_MATCH_LIMIT)
             if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
                 count = _REPOSITORY_GREP_MATCH_LIMIT
@@ -1147,6 +1239,7 @@ def create_goal_criteria_agent(
     *,
     model: str | BaseChatModel,
     repository_backend: BackendProtocol | None,
+    repository_root: str = "/",
     context_tools: Sequence[BaseTool | Callable[..., Any]],
 ) -> Any:  # noqa: ANN401
     """Create the ephemeral server-side criteria agent graph.
@@ -1155,6 +1248,7 @@ def create_goal_criteria_agent(
         model: Chat model or model identifier used by the server graph.
         repository_backend: Server backend rooted at the active repository or
             sandbox, or `None` when repository context is unavailable.
+        repository_root: Absolute path that bounds reads on `repository_backend`.
         context_tools: Loaded `fetch_url`, optional `web_search`, and MCP tools.
 
     Returns:
@@ -1187,7 +1281,10 @@ def create_goal_criteria_agent(
                     grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
                     tool_token_limit_before_evict=None,
                 ),
-                _RepositoryToolBudgetMiddleware(repository_backend),
+                _RepositoryToolBudgetMiddleware(
+                    repository_backend,
+                    root=repository_root,
+                ),
             ]
         )
     middleware.append(
@@ -1202,7 +1299,11 @@ def create_goal_criteria_agent(
         model=model,
         tools=normalized_context_tools,
         middleware=middleware,
-        system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT,
+        system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT.replace(
+            "Repository paths are absolute, rooted at `/`.",
+            "Repository paths are absolute and confined to repository root "
+            f"`{repository_root}`.",
+        ),
         response_format=ToolStrategy(schema=GoalProposal),
         state_schema=GoalCriteriaAgentState,
         context_schema=CLIContextSchema,

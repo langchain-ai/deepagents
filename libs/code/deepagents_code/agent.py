@@ -1945,17 +1945,25 @@ def create_cli_agent(
         )
 
         if sandbox is not None:
-            criteria_backend = sandbox
+            if sandbox_type is not None:
+                criteria_backend = sandbox
+                criteria_root = get_default_working_dir(sandbox_type)
+            else:
+                criteria_backend = None
+                criteria_root = "/"
         elif project_context is not None and project_context.project_root is not None:
             criteria_backend = FilesystemBackend(
                 root_dir=project_context.project_root,
                 virtual_mode=True,
             )
+            criteria_root = "/"
         else:
             criteria_backend = None
+            criteria_root = "/"
         criteria_agent = create_goal_criteria_agent(
             model=model,
             repository_backend=criteria_backend,
+            repository_root=criteria_root,
             context_tools=goal_criteria_tools,
         )
         agent_middleware.append(GoalCriteriaMiddleware(criteria_agent))

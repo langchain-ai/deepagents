@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import FileInfo, LsResult
 from langchain.agents import create_agent
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
@@ -60,6 +61,7 @@ from deepagents_code.goal_rubric import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
     from typing import Any
 
     from langchain_core.runnables import RunnableConfig
@@ -447,6 +449,21 @@ class TestRepositoryToolBudgetMiddleware:
         bounded = handler.call_args.args[0]
         assert bounded.tool_call["args"]["max_count"] == _REPOSITORY_GREP_MATCH_LIMIT
 
+    @pytest.mark.parametrize("name", ["glob", "grep"])
+    def test_search_without_path_defaults_to_repository_root(self, name: str) -> None:
+        middleware = _RepositoryToolBudgetMiddleware(
+            self._backend(),
+            root="/workspace",
+        )
+        handler = MagicMock(return_value=ToolMessage(content="ok", tool_call_id="s"))
+        request = self._request(call_id="s", name=name, path="/workspace")
+        request.tool_call["args"].pop("path")
+
+        middleware.wrap_tool_call(request, handler)
+
+        bounded = handler.call_args.args[0]
+        assert bounded.tool_call["args"]["path"] == "/workspace"
+
     def test_glob_match_count_and_output_are_bounded(self) -> None:
         middleware = _RepositoryToolBudgetMiddleware(self._backend())
         paths = [f"/{index}.py" for index in range(_REPOSITORY_GLOB_MATCH_LIMIT + 5)]
@@ -785,6 +802,7 @@ class TestCreateGoalCriteriaAgent:
             result = create_goal_criteria_agent(
                 model=model,
                 repository_backend=backend,
+                repository_root="/workspace",
                 context_tools=[fetch, web, mcp],
             )
 
@@ -800,14 +818,17 @@ class TestCreateGoalCriteriaAgent:
         assert kwargs["tools"] == [fetch, web, mcp]
         assert kwargs["name"] == "goal_criteria_agent"
         assert kwargs["state_schema"] is GoalCriteriaAgentState
+        assert "repository root `/workspace`" in kwargs["system_prompt"]
         assert all(
             name not in {"write_file", "edit_file", "delete", "execute"}
             for name in (tool.name for tool in kwargs["tools"])
         )
-        assert any(
-            isinstance(item, _RepositoryToolBudgetMiddleware)
+        budget = next(
+            item
             for item in kwargs["middleware"]
+            if isinstance(item, _RepositoryToolBudgetMiddleware)
         )
+        assert budget._root == "/workspace"
 
     def test_client_generation_symbols_are_removed(self) -> None:
         import deepagents_code.goal_rubric as module
@@ -1050,6 +1071,96 @@ class TestRepositoryPathGuards:
         assert result.status == "error"
         handler.assert_not_awaited()
         backend.als.assert_not_awaited()
+
+    @pytest.mark.parametrize("name", ["read_file", "ls", "glob", "grep"])
+    def test_sync_rejects_absolute_paths_outside_configured_root(
+        self, name: str
+    ) -> None:
+        backend = self._backend()
+        middleware = _RepositoryToolBudgetMiddleware(backend, root="/workspace")
+        handler = MagicMock()
+
+        result = middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="outside",
+                name=name,
+                path="/etc/passwd",
+            ),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["read_file", "ls", "glob", "grep"])
+    async def test_async_rejects_absolute_paths_outside_configured_root(
+        self, name: str
+    ) -> None:
+        backend = self._backend()
+        middleware = _RepositoryToolBudgetMiddleware(backend, root="/workspace")
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="outside",
+                name=name,
+                path="/etc/passwd",
+            ),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_awaited()
+
+    def test_sync_rejects_sandbox_symlink_escape(self, tmp_path: Path) -> None:
+        root = tmp_path / "repository"
+        outside = tmp_path / "outside"
+        root.mkdir()
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("secret")
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+        backend = LocalShellBackend(root_dir=tmp_path, virtual_mode=False)
+        middleware = _RepositoryToolBudgetMiddleware(backend, root=str(root))
+        handler = MagicMock()
+
+        result = middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="symlink",
+                path=str(root / "escape" / secret.name),
+            ),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_called()
+
+    async def test_async_rejects_sandbox_symlink_escape(self, tmp_path: Path) -> None:
+        root = tmp_path / "repository"
+        outside = tmp_path / "outside"
+        root.mkdir()
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("secret")
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+        backend = LocalShellBackend(root_dir=tmp_path, virtual_mode=False)
+        middleware = _RepositoryToolBudgetMiddleware(backend, root=str(root))
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="symlink",
+                path=str(root / "escape" / secret.name),
+            ),
+            handler,
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        handler.assert_not_awaited()
 
     @pytest.mark.parametrize("name", ["glob", "grep"])
     @pytest.mark.parametrize("pattern", ["../*.py", "~/secrets/*", "a/../b/*"])

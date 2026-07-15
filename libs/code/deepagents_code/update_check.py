@@ -358,8 +358,8 @@ def _canonical_prerelease_pin(raw: object) -> str | None:
     without widening the candidate set for anything else — only when it is:
 
     - **mandatory** — no environment marker at all, so it is neither gated behind
-      an optional `extra` (`; extra == "litellm"`) nor conditioned on the target
-      interpreter/platform (`; python_version >= "3.10"`);
+        an optional `extra` (`; extra == "litellm"`) nor conditioned on
+        the target interpreter/platform (`; python_version >= "3.10"`);
     - a **positive exact pin** — the specifier set is a single `==`/`===` clause;
     - whose pinned version is a **pre-release** (`0.7.0a7`, `1.2.0rc1`, ...).
 

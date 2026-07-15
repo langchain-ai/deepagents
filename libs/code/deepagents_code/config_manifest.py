@@ -1404,6 +1404,8 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
         _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Detection-only migration sentinel; the removed env var is not an option.
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

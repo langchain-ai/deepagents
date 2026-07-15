@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
 
+from deepagents_code import _env_vars
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
@@ -2497,9 +2498,9 @@ async def resolve_and_load_mcp_tools(
                 (
                     Path("<env>"),
                     (
-                        "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS is no longer "
-                        "used; it was renamed to "
-                        "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+                        f"{_env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS} is no "
+                        "longer used; it was renamed to "
+                        f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}"
                     ),
                 )
             )

@@ -203,6 +203,13 @@ The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
 """
 
+LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
+"""Removed project MCP allowlist env var retained for migration detection only.
+
+The app no longer honors this value. It detects the old name so users receive a
+migration notice pointing to `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`.
+"""
+
 LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
 """Minimum level for `deepagents_code` runtime logging.
 

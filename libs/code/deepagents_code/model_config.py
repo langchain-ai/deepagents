@@ -3681,14 +3681,6 @@ class McpServerTrustLists:
         return approval in self.approvals
 
 
-_LEGACY_ENABLED_PROJECT_MCP_SERVERS_ENV = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
-"""Removed env var, renamed to `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`.
-
-Detection-only: kept as a bare literal (not an `_env_vars` constant) so it stays
-out of the config manifest for a var this build no longer honors, while still
-letting the loader warn when a user has the old name set."""
-
-
 def _parse_csv_env(name: str) -> list[str] | None:
     """Parse a comma-separated env var into a list of trimmed, non-empty names.
 
@@ -3936,11 +3928,11 @@ def load_mcp_server_trust_lists(
     # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
     # longer read; flag it set-but-ignored so callers can explain the rename
     # instead of the names silently ceasing to pre-approve.
-    legacy_env_ignored = _LEGACY_ENABLED_PROJECT_MCP_SERVERS_ENV in os.environ
+    legacy_env_ignored = _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in os.environ
     if legacy_env_ignored:
         logger.warning(
             "%s is no longer used; it was renamed to %s",
-            _LEGACY_ENABLED_PROJECT_MCP_SERVERS_ENV,
+            _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
             _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         )
 

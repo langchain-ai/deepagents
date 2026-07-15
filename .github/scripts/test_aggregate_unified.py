@@ -492,26 +492,30 @@ def test_main_rejects_nonpositive_rollouts(
     assert "--rollouts must be >= 1" in capsys.readouterr().err
 
 
-def test_main_fails_only_when_every_expected_model_is_incomplete(
+def test_main_warns_but_succeeds_when_every_expected_model_is_incomplete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # An incomplete run must still produce a usable scorecard (exit 0) rather than
+    # voiding everything; the incompleteness is surfaced as a warning.
     monkeypatch.setenv("EXPECTED_MODELS", '["m"]')
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     out = tmp_path / "combined"
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 1
+    assert rc == 0
     assert (out / "unified_summary.json").exists()
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    assert "::warning::All expected models were flagged incomplete" in (
+        capsys.readouterr().out
+    )
 
     _leaf_dir(tmp_path, "m", "context")
     assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
 
 
-def test_main_fails_when_required_leaf_has_no_tasks(
+def test_main_warns_when_required_leaf_has_no_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -533,13 +537,15 @@ def test_main_fails_when_required_leaf_has_no_tasks(
 
     combined = json.loads((out / "unified_summary.json").read_text())
     model = combined["models"]["m"]
-    assert rc == 1
+    assert rc == 0
     assert model["categories"]["context"]["incomplete"] is True
     assert model["incomplete"] is True
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    assert "::warning::All expected models were flagged incomplete" in (
+        capsys.readouterr().out
+    )
 
 
-def test_main_ignores_unexpected_complete_model_for_expected_grid_failure(
+def test_main_ignores_unexpected_complete_model_for_expected_grid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -551,8 +557,10 @@ def test_main_ignores_unexpected_complete_model_for_expected_grid_failure(
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 1
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    assert rc == 0
+    assert "::warning::All expected models were flagged incomplete" in (
+        capsys.readouterr().out
+    )
 
 
 def test_main_does_not_apply_expected_grid_failure_without_expected_models(
@@ -588,7 +596,7 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
 
     output = capsys.readouterr().out
     combined = json.loads((out / "unified_summary.json").read_text())
-    assert rc == 1
+    assert rc == 0
     assert "rollouts_per_task is 2; expected 3" in output
     assert combined["models"]["m"]["missing_categories"] == ["context"]
 

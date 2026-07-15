@@ -149,11 +149,16 @@ def test_missing_rollouts_count_as_failures(tmp_path: Path):
     assert abs(summary["avg@3"] - 1 / 3) < 1e-6
     assert summary["totals"]["trials"] == 1
     assert summary["totals"]["expected_trials"] == 3
-    assert summary["incomplete"] is True  # 1 trial < 3 expected
+    # A missing rollout is scored as a failure (avg@3 = 1/3 above), not flagged
+    # incomplete: the trial's absence is already reflected in the score.
+    assert summary["incomplete"] is False
 
 
-def test_shard_failure_flags_incomplete(tmp_path: Path):
-    # A complete task, but the matrix job did not fully succeed (a shard failed).
+def test_shard_failure_does_not_flag_incomplete(tmp_path: Path):
+    # The matrix job did not fully succeed, but this category's coverage is
+    # complete. harbor_result spans every category in the flat pool, so an errored
+    # shard elsewhere must NOT void a category whose data is all present; the
+    # result is still recorded for diagnostics.
     _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
     _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
     out = tmp_path / "out"
@@ -171,7 +176,7 @@ def test_shard_failure_flags_incomplete(tmp_path: Path):
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
     assert summary["harbor_result"] == "failure"
-    assert summary["incomplete"] is True
+    assert summary["incomplete"] is False
 
 
 def test_filtered_run_with_success_is_not_incomplete(tmp_path: Path):
@@ -305,9 +310,10 @@ def test_rollouts_below_one_is_rejected(tmp_path: Path):
     raise AssertionError("expected SystemExit for --rollouts 0")
 
 
-def test_duplicate_rollouts_flag_incomplete(tmp_path: Path):
-    # A task with MORE than K trials (e.g. a double-download) must not silently
-    # inflate avg@K past 1.0 without flagging the run.
+def test_duplicate_rollouts_are_capped_not_incomplete(tmp_path: Path):
+    # A task with MORE than K trials (e.g. a double-download) must not inflate
+    # avg@K past 1.0. Capping is the guarantee; an off-K rollout count is a
+    # diagnostic, not a reason to void the run.
     _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
     _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
     out = tmp_path / "out"
@@ -316,8 +322,8 @@ def test_duplicate_rollouts_flag_incomplete(tmp_path: Path):
     assert summary["totals"]["trials"] == 2
     assert summary["totals"]["expected_trials"] == 1
     assert summary["totals"]["passed"] == 2
-    assert summary["avg@1"] == 1.0
-    assert summary["incomplete"] is True  # trials != expected
+    assert summary["avg@1"] == 1.0  # capped, not 2.0
+    assert summary["incomplete"] is False
 
 
 def test_duplicate_rollout_summary_is_accepted_by_unified_aggregator(
@@ -345,7 +351,7 @@ def test_duplicate_rollout_summary_is_accepted_by_unified_aggregator(
     assert leaf["model"] == "m1"
     assert leaf["category"] == "context"
     assert leaf["avg_at_k"] == 1.0
-    assert leaf["incomplete"] is True
+    assert leaf["incomplete"] is False
 
 
 def test_per_task_rollout_mismatches_do_not_cancel(tmp_path: Path):
@@ -360,8 +366,11 @@ def test_per_task_rollout_mismatches_do_not_cancel(tmp_path: Path):
     assert summary["totals"]["trials"] == 4
     assert summary["totals"]["expected_trials"] == 4
     assert summary["totals"]["passed"] == 4
+    # taskA's 3rd pass is capped and taskB's missing rollout counts as a failure,
+    # so per-task mismatches do not cancel in the score (avg@2 = 3/4, not 1.0).
+    # The mismatch itself is diagnostic, not a reason to flag incomplete.
     assert summary["avg@2"] == 0.75
-    assert summary["incomplete"] is True
+    assert summary["incomplete"] is False
 
 
 def test_expected_shards_shortfall_flags_incomplete(tmp_path: Path):

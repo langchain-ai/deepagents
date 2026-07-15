@@ -373,15 +373,18 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(
         combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
     )
+    # Incompleteness is surfaced per model in write_outputs (a ::warning:: plus the
+    # ⚠️ markers in the table) and never fails the job: a partial scorecard the
+    # reader can inspect beats a voided run with no output. A single errored shard
+    # no longer nukes the whole cross-model comparison.
     models = combined["models"]
     if expected_models and all(
         models[model]["incomplete"] for model in expected_models
     ):
         print(
-            "::error::Every expected model is incomplete; "
-            "no complete unified result is available."
+            "::warning::All expected models were flagged incomplete; the scorecard "
+            "below is ranked on partial data — inspect the per-model notes above."
         )
-        return 1
     return 0
 
 

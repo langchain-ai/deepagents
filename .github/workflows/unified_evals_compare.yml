@@ -324,6 +324,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.12"
+          enable-cache: "false"
           cache-suffix: unified-compare
           working-directory: libs/evals
 

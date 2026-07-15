@@ -12,7 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UNIFIED_WORKFLOW = ROOT / ".github/workflows/unified_evals.yml"
 COMPARE_WORKFLOW = ROOT / ".github/workflows/unified_evals_compare.yml"
-COMPARE_SMOKE_WORKFLOW = ROOT / ".github/workflows/unified_evals_compare_smoke.yml"
 HARBOR_WORKFLOW = ROOT / ".github/workflows/_harbor_run.yml"
 HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
@@ -423,20 +422,9 @@ def test_unified_compare_is_additive_and_reuses_harbor_workflow() -> None:
     assert "uses: ./.github/workflows/_harbor_run.yml" in eval_job
     assert "version_id: ${{ matrix.version_id }}" in eval_job
     assert "source_sha: ${{ matrix.source_sha }}" in eval_job
-
-
-def test_unified_compare_smoke_calls_real_workflow_with_bare_two_task_run() -> None:
-    """Keep the temporary pre-merge smoke run narrow and branch-scoped."""
-    workflow = COMPARE_SMOKE_WORKFLOW.read_text()
-    assert "uses: ./.github/workflows/unified_evals_compare.yml" in workflow
-    assert "version_1_branch: ss/benchmark-unified-evals-no-todos" in workflow
-    assert "version_2_branch: nh/benchmark-unified-evals" in workflow
-    assert "models: openai:gpt-5.6-luna" in workflow
-    assert "agent_impl: bare" in workflow
-    assert "categories: autonomous" in workflow
-    assert 'rollouts: "2"' in workflow
-    assert 'concurrency: "2"' in workflow
-    assert workflow.count("harbor-index/") == 2
+    compare_job = _indented_block(workflow, "  compare:")
+    setup = _indented_block(compare_job, '      - name: "🐍 Set up Python + UV"')
+    assert 'enable-cache: "false"' in setup
 
 
 def test_harbor_comparison_mode_checks_out_only_product_packages() -> None:

@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, eof_read_result
 
 logger = logging.getLogger(__name__)
 
@@ -476,7 +476,10 @@ try:
             at_eof = f.tell() == st.st_size
 
     if returned_lines == 0 and not truncated:
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+        if offset == line_count and line_count > 0:
+            print(json.dumps({{'info': 'eof', 'total_lines': line_count, 'offset': offset}}))
+        else:
+            print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
         sys.exit(0)
 
     # When the page already reached EOF, reuse its scan's count for free.
@@ -614,6 +617,10 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
     if "error" in data:
         return ReadResult(error=f"File '{file_path}': {data['error']}")
+    if data.get("info") == "eof":
+        # A read whose 0-indexed offset lands exactly at end-of-file is a benign
+        # boundary, not a failure; surface a self-correcting notice instead.
+        return eof_read_result(int(data["offset"]), int(data["total_lines"]))
     # A parseable-but-malformed payload (missing `content`, or a pagination-key
     # combination `ReadResult.__post_init__` rejects) must degrade to the same
     # clean error result as a decode failure, not escape as a raw traceback.

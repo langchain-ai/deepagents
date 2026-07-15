@@ -315,6 +315,21 @@ def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: P
     assert result.next_offset is None
 
 
+def test_filesystem_backend_read_offset_at_eof_returns_info(tmp_path: Path) -> None:
+    """An offset exactly at EOF returns a non-error notice, not a failure."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=5, limit=10)
+
+    assert result.error is None
+    assert result.file_data is None
+    assert result.info is not None
+    assert "5 lines" in result.info
+    assert "offset 4" in result.info
+
+
 def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Path) -> None:
     """An empty file returns the empty-content warning with no pagination metadata."""
     target = tmp_path / "empty.txt"

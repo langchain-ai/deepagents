@@ -421,6 +421,32 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
     return sliced_fd
 
 
+def eof_read_result(offset: int, total_lines: int) -> ReadResult:
+    """Build a non-error read result for an offset sitting exactly at end-of-file.
+
+    `read_file`'s `offset` is 0-indexed, so an `offset` equal to the file's line
+    count points one line past the last line. This is a common 0-index/1-index
+    slip (line gutters are 1-indexed), so rather than surface the benign boundary
+    as a failure, return an informational result that states the file length and
+    how to reach the last line, letting the model self-correct.
+
+    Args:
+        offset: The requested 0-indexed line offset (equal to `total_lines`).
+        total_lines: The file's total source line count.
+
+    Returns:
+        A `ReadResult` whose `info` carries the self-correcting notice.
+    """
+    line_word = "line" if total_lines == 1 else "lines"
+    return ReadResult(
+        info=(
+            f"File has {total_lines} {line_word}. Offset is 0-indexed, so offset {offset} "
+            f"is at the end of the file — there is nothing to read. To read the last line, "
+            f"use offset {total_lines - 1}."
+        )
+    )
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
@@ -460,7 +486,9 @@ def slice_read_response(
     end_idx = min(start_idx + limit, len(lines))
     total_lines = len(lines)
 
-    if start_idx >= total_lines:
+    if start_idx == total_lines:
+        return eof_read_result(offset, total_lines)
+    if start_idx > total_lines:
         return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
     # Normalize line endings to LF, but only across the requested window.

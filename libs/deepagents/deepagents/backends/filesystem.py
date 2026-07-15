@@ -45,6 +45,7 @@ from deepagents.backends.utils import (
     check_empty_content,
     compile_grep_include_glob,
     compile_recursive_glob,
+    eof_read_result,
     perform_string_replacement,
 )
 
@@ -494,7 +495,13 @@ class FilesystemBackend(BackendProtocol):
                     total_lines = len(lines)
 
                     if start_idx >= total_lines:
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
+                        # An offset exactly at EOF is a benign 0-index/1-index slip,
+                        # not a failure; only a genuinely out-of-range offset errors.
+                        return (
+                            eof_read_result(offset, total_lines)
+                            if start_idx == total_lines
+                            else ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
+                        )
 
                     file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
                     start_line = start_idx + 1

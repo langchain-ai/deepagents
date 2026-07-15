@@ -1609,6 +1609,26 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
 
+    def test_read_file_offset_at_eof_returns_success_notice(self):
+        """An offset exactly at EOF is a success with a self-correcting notice, not an error."""
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree\nfour\nfive",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 5, "limit": 10})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert not result.content.startswith("Error")
+        assert "5 lines" in result.content
+        assert "offset 4" in result.content
+
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
             "/notes.txt": FileData(

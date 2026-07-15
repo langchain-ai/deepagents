@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, eof_read_result
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox
@@ -201,7 +201,9 @@ class LangSmithSandbox(BaseSandbox):
         limit = int(limit)
 
         total_lines = len(lines)
-        if not lines or offset >= total_lines:
+        if lines and offset == total_lines:
+            return eof_read_result(offset, total_lines)
+        if not lines or offset > total_lines:
             return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
 
         page = lines[offset : offset + limit]

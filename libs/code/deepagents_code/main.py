@@ -2619,12 +2619,11 @@ def _project_mcp_picker_has_terminal() -> bool:
 
 
 def _run_project_mcp_trust_action_picker(
-    server_count: int, console: "Console"
+    console: "Console",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
     """Show the inline project MCP trust action picker.
 
     Args:
-        server_count: Number of unresolved servers covered by the decision.
         console: Console to print fallback notices to (stderr).
 
     Returns:
@@ -2655,26 +2654,15 @@ def _run_project_mcp_trust_action_picker(
     from deepagents_code.config import get_glyphs
 
     glyphs = get_glyphs()
-    noun = "server" if server_count == 1 else "servers"
     actions = [
-        (
-            _ProjectMcpTrustAction.ALLOW_ONCE,
-            f"Allow once — load {server_count} {noun} for this session",
-        ),
-        (
-            _ProjectMcpTrustAction.REMEMBER,
-            (
-                "Remember... — choose servers for this project while definitions "
-                "stay unchanged"
-            ),
-        ),
-        (_ProjectMcpTrustAction.DENY, f"Deny — do not load these {noun}"),
+        (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
+        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
+        (_ProjectMcpTrustAction.DENY, "Deny"),
     ]
     selected_index = len(actions) - 1
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
-            ("class:prompt.title", "Choose how to continue\n"),
             (
                 "class:prompt.help",
                 (
@@ -2724,14 +2712,13 @@ def _run_project_mcp_trust_action_picker(
             layout=Layout(
                 Window(
                     FormattedTextControl(_rows),
-                    height=len(actions) + 2,
+                    height=len(actions) + 1,
                     dont_extend_height=True,
                 )
             ),
             key_bindings=key_bindings,
             style=Style.from_dict(
                 {
-                    "prompt.title": "bold",
                     "prompt.help": "ansibrightblack",
                     "item.current": "reverse",
                 }
@@ -2757,18 +2744,17 @@ def _run_project_mcp_trust_action_picker(
 
 
 def _select_project_mcp_trust_action(
-    server_count: int, console: "Console"
+    console: "Console",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
     """Choose whether to allow once, remember selected servers, or deny.
 
     Args:
-        server_count: Number of unresolved servers covered by the decision.
         console: Console used by the text fallback.
 
     Returns:
         The selected trust action, or `INTERRUPTED` when the user presses Ctrl+C.
     """
-    selected = _run_project_mcp_trust_action_picker(server_count, console)
+    selected = _run_project_mcp_trust_action_picker(console)
     if selected is not None:
         return selected
 
@@ -3158,33 +3144,17 @@ def _check_mcp_project_trust(
     if not prompt_servers:
         return None
 
-    docs_url = (
-        "https://docs.langchain.com/oss/python/deepagents/code/"
-        "mcp-tools#project-level-trust"
-    )
     prompt_console.print()
-    prompt_console.print(
-        "[bold yellow]Project MCP servers require approval:[/bold yellow]"
-    )
+    prompt_console.print("[bold yellow]Approve project MCP servers:[/bold yellow]")
     for name, kind, summary in prompt_servers:
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
         )
     prompt_console.print()
-    prompt_console.print(
-        "[dim]Remembered approvals apply only to this project while each server "
-        "definition remains unchanged.[/dim]",
-        highlight=False,
-    )
-    prompt_console.print(
-        f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
-        highlight=False,
-    )
-    prompt_console.print()
 
     server_count = len(prompt_servers)
     noun = "server" if server_count == 1 else "servers"
-    action = _select_project_mcp_trust_action(server_count, prompt_console)
+    action = _select_project_mcp_trust_action(prompt_console)
     if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     if action is _ProjectMcpTrustAction.DENY:

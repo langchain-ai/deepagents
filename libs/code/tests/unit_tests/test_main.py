@@ -2483,12 +2483,11 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         captured = capsys.readouterr()
         assert "debug-project-mcp" in captured.err
-        assert "Learn more:" in captured.err
 
-    def test_prompt_includes_docs_link(
+    def test_prompt_is_concise(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
-        """When the prompt fires, it should print the project-level-trust docs URL."""
+        """The prompt keeps required server details without extra explanation."""
         from deepagents_code.main import _check_mcp_project_trust
 
         project_root = tmp_path / "proj"
@@ -2528,16 +2527,10 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is False
         captured = capsys.readouterr()
-        flattened = captured.err.replace("\n", "")
-        assert (
-            "https://docs.langchain.com/oss/python/deepagents/code/"
-            "mcp-tools#project-level-trust" in flattened
-        )
-        assert "Learn more:" in captured.err
-        assert (
-            "Remembered approvals apply only to this project while each server "
-            "definition remains unchanged." in flattened
-        )
+        assert "Approve project MCP servers:" in captured.err
+        assert '"fs" (stdio):  node server.js' in captured.err
+        assert "Learn more:" not in captured.err
+        assert "Remembered approvals apply" not in captured.err
 
     def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
@@ -3478,7 +3471,7 @@ class TestSelectProjectServersToPersist:
                 return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
+        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
 
         assert result is _ProjectMcpTrustAction.DENY
         assert captured["full_screen"] is False
@@ -3486,8 +3479,9 @@ class TestSelectProjectServersToPersist:
             text for _style, text in captured["layout"].container.content.text()
         )
         assert "Allow once" in rendered
-        assert "Remember..." in rendered
+        assert "Allow for this project — until changed" in rendered
         assert "Deny" in rendered
+        assert "Choose how to continue" not in rendered
 
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3504,7 +3498,7 @@ class TestSelectProjectServersToPersist:
             "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
         )
 
-        result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
+        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
 
         assert result is None
 
@@ -3960,7 +3954,7 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
+        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
 
         assert result is None
 
@@ -4154,7 +4148,7 @@ class TestSelectProjectMcpTrustAction:
         )
         monkeypatch.setattr("builtins.input", lambda _prompt="": token)
 
-        result = _select_project_mcp_trust_action(2, Console(stderr=True))
+        result = _select_project_mcp_trust_action(Console(stderr=True))
 
         assert result is _ProjectMcpTrustAction[expected_name]
 

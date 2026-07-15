@@ -10,7 +10,7 @@ import shutil
 import tomllib
 import warnings
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
-    from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
@@ -47,7 +46,11 @@ if TYPE_CHECKING:
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
 
 from langchain.agents.middleware import TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    PrivateStateAttr,
+)
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
 )
@@ -1241,6 +1244,110 @@ def _is_auto_approve_enabled(value: object) -> bool:
     return isinstance(value, bool) and value
 
 
+def _approval_mode_key_from_context(ctx: object) -> str | None:
+    """Return the live approval-mode store key carried in run context.
+
+    Accepts both context shapes: the `CLIContextSchema` dataclass (in-process)
+    and the plain dict delivered over the JSON/RemoteGraph boundary.
+    """
+    if isinstance(ctx, CLIContextSchema):
+        return ctx.approval_mode_key
+    if isinstance(ctx, dict):
+        raw_key = ctx.get("approval_mode_key")
+        return raw_key if isinstance(raw_key, str) else None
+    return None
+
+
+class _LiveApprovalModeState(AgentState):
+    """Private state channel carrying the prefetched live approval decision."""
+
+    _live_auto_approve: Annotated[NotRequired[bool | None], PrivateStateAttr]
+    """Resolved live approval mode for the current turn.
+
+    `True`/`False` are authoritative (a live Store read succeeded, or the read
+    failed with a configured key and fails closed to `False`). `None` means no
+    live key is configured, so the interrupt predicate falls back to the static
+    `auto_approve` context snapshot.
+    """
+
+
+class ApprovalModePrefetchMiddleware(AgentMiddleware[_LiveApprovalModeState, Any]):
+    """Threads the live approval mode into state before each model turn.
+
+    The `interrupt_on` `when` predicate is synchronous, but the LangGraph API
+    server's runtime Store is an `AsyncBatchedBaseStore` whose synchronous
+    `get()` raises on the running event loop. Reading the live mode here
+    (asynchronously, before the model turn) and stashing the resolved decision
+    in private state lets the sync predicate honor a live toggle without a
+    forbidden sync Store read. In-process runs configure no live key, so this
+    resolves to `None` and the predicate uses the static context snapshot.
+    """
+
+    state_schema = _LiveApprovalModeState
+
+    @staticmethod
+    def _resolved_update(key: str | None, value: bool | None) -> dict[str, Any]:
+        """Fail-closed state update for a resolved live mode.
+
+        A configured key whose Store item is unreadable (`value is None`) fails
+        closed to `False` (interrupt); a missing key resolves to `None` so the
+        predicate falls back to the static context snapshot.
+
+        Returns:
+            State update for the `_live_auto_approve` private channel.
+        """
+        if key is None:
+            return {"_live_auto_approve": None}
+        return {"_live_auto_approve": value if value is not None else False}
+
+    async def abefore_model(
+        self,
+        state: _LiveApprovalModeState,  # noqa: ARG002
+        runtime: Runtime[Any],
+    ) -> dict[str, Any]:
+        """Read the live mode via the async Store interface (server path).
+
+        Returns:
+            State update carrying the resolved live approval decision.
+        """
+        from deepagents_code.approval_mode import aread_approval_mode_from_store
+
+        key = _approval_mode_key_from_context(getattr(runtime, "context", None))
+        store = getattr(runtime, "store", None)
+        value = (
+            await aread_approval_mode_from_store(store, key)
+            if key is not None
+            else None
+        )
+        return self._resolved_update(key, value)
+
+    def before_model(
+        self,
+        state: _LiveApprovalModeState,  # noqa: ARG002
+        runtime: Runtime[Any],
+    ) -> dict[str, Any]:
+        """Read the live mode synchronously (in-process / sync execution).
+
+        Returns:
+            State update carrying the resolved live approval decision.
+        """
+        key = _approval_mode_key_from_context(getattr(runtime, "context", None))
+        store = getattr(runtime, "store", None)
+        value = _read_live_store_value(store, key) if key is not None else None
+        return self._resolved_update(key, value)
+
+
+def _read_live_store_value(store: object, key: str | None) -> bool | None:
+    """Sync live-Store read used by the prefetch middleware's sync path.
+
+    Returns:
+        The live `auto_approve` bool, or `None` when unreadable/unconfigured.
+    """
+    from deepagents_code.approval_mode import read_approval_mode_from_store
+
+    return read_approval_mode_from_store(store, key)
+
+
 def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
     """Return live approval mode from the LangGraph Store when configured.
 
@@ -1287,12 +1394,24 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     with `goto=None` — crashing `_control_branch` on a fresh thread. Context
     is also safer: the model cannot self-approve by writing state.
 
+    The live approval mode is prefetched by `ApprovalModePrefetchMiddleware`
+    (which can read the async server Store off the sync predicate path) and
+    threaded into private state; a prefetched boolean is authoritative here.
+    When no prefetched value is present (in-process paths, or unit requests
+    without state), the logic falls back to a synchronous Store read and then
+    the static `auto_approve` context snapshot.
+
     Args:
         request: The pending tool call under review.
 
     Returns:
         `True` to interrupt for approval, `False` to auto-approve.
     """
+    state = getattr(request, "state", None)
+    prefetched = state.get("_live_auto_approve") if isinstance(state, dict) else None
+    if isinstance(prefetched, bool):
+        return not prefetched
+
     runtime = getattr(request, "runtime", None)
     ctx = getattr(runtime, "context", None)
     store = getattr(runtime, "store", None)
@@ -1639,6 +1758,13 @@ def create_cli_agent(
                 "available; falling back to standard HITL interrupts"
             )
 
+    # Whether the main agent (and, by inheritance, subagents) will run HITL
+    # approval interrupts. Mirrors the `interrupt_on` decision made below:
+    # auto-approve and the restrictive shell-allow-list path both disable HITL.
+    # Computed here so the live approval-mode prefetch middleware can be added
+    # to subagent stacks, which are built before `interrupt_on` is resolved.
+    hitl_active = not auto_approve and restrictive_shell_allow_list is None
+
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
@@ -1646,11 +1772,18 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
-    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
-        middleware: list[AgentMiddleware] = []
+    def _subagent_cli_middleware(
+        *, has_explicit_model: bool
+    ) -> list[AgentMiddleware[Any, Any]]:
+        middleware: list[AgentMiddleware[Any, Any]] = []
         # Experimental: mirror the main agent and drop TodoListMiddleware /
         # write_todos from subagent stacks too. No-op unless the flag is set.
         middleware.extend(_todo_list_middleware_override())
+        # Subagents inherit the main agent's `interrupt_on`, so they need the
+        # same live approval-mode prefetch to honor auto-approve without a
+        # forbidden sync Store read on the server event loop.
+        if hitl_active:
+            middleware.append(ApprovalModePrefetchMiddleware())
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
@@ -1727,6 +1860,13 @@ def create_cli_agent(
     from deepagents_code.resume_state import ResumeStateMiddleware
 
     agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+
+    # Prefetch the live approval mode into private state before each model turn
+    # so the sync `interrupt_on` `when` predicate can honor auto-approve without
+    # reading the async server Store synchronously (which raises on the event
+    # loop). Only needed when HITL interrupts are active.
+    if hitl_active:
+        agent_middleware.append(ApprovalModePrefetchMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

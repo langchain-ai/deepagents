@@ -512,6 +512,200 @@ def test_should_interrupt_tool_call_warns_on_unexpected_context_shape(
     assert "unexpected context type" not in caplog.text
 
 
+def _request_with_state(
+    state: object,
+    *,
+    context: object = None,
+    store: object | None = None,
+) -> "ToolCallRequest":
+    return cast(
+        "ToolCallRequest",
+        SimpleNamespace(
+            state=state,
+            runtime=SimpleNamespace(context=context, store=store),
+        ),
+    )
+
+
+def test_should_interrupt_tool_call_uses_prefetched_state() -> None:
+    """A prefetched live decision in state is authoritative for the predicate."""
+    # Auto-approve prefetched -> suppress the interrupt.
+    assert not _should_interrupt_tool_call(
+        _request_with_state({"_live_auto_approve": True})
+    )
+    # Manual prefetched -> interrupt.
+    assert _should_interrupt_tool_call(
+        _request_with_state({"_live_auto_approve": False})
+    )
+
+
+def test_should_interrupt_tool_call_prefetched_state_overrides_context() -> None:
+    """A prefetched manual decision overrides a stale auto-approve context."""
+    assert _should_interrupt_tool_call(
+        _request_with_state(
+            {"_live_auto_approve": False},
+            context=CLIContextSchema(auto_approve=True),
+        )
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_state(
+            {"_live_auto_approve": True},
+            context=CLIContextSchema(auto_approve=False),
+        )
+    )
+
+
+def test_should_interrupt_tool_call_falls_back_without_prefetched_state() -> None:
+    """Absent or non-bool prefetched state falls back to the context snapshot."""
+    assert not _should_interrupt_tool_call(
+        _request_with_state(
+            {"_live_auto_approve": None},
+            context=CLIContextSchema(auto_approve=True),
+        )
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_state({}, context=CLIContextSchema(auto_approve=False))
+    )
+    # A non-bool prefetched value must not bypass approval on mere truthiness.
+    assert _should_interrupt_tool_call(
+        _request_with_state(
+            {"_live_auto_approve": "yes"},
+            context=CLIContextSchema(auto_approve=False),
+        )
+    )
+
+
+async def test_prefetch_middleware_resolves_live_store_true() -> None:
+    """`abefore_model` threads a live auto-approve decision into state."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(auto_approve=True))
+    runtime = SimpleNamespace(
+        context=CLIContextSchema(auto_approve=False, approval_mode_key=key),
+        store=store,
+    )
+
+    update = await ApprovalModePrefetchMiddleware().abefore_model(
+        cast("Any", {}), cast("Any", runtime)
+    )
+    assert update == {"_live_auto_approve": True}
+
+
+async def test_prefetch_middleware_resolves_live_store_false() -> None:
+    """A live manual mode is threaded into state as `False`."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(auto_approve=False))
+    runtime = SimpleNamespace(
+        context=CLIContextSchema(auto_approve=True, approval_mode_key=key),
+        store=store,
+    )
+
+    update = await ApprovalModePrefetchMiddleware().abefore_model(
+        cast("Any", {}), cast("Any", runtime)
+    )
+    assert update == {"_live_auto_approve": False}
+
+
+async def test_prefetch_middleware_fails_closed_on_unreadable_store() -> None:
+    """A configured key with a missing store item fails closed to interrupt."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+    from deepagents_code.approval_mode import approval_mode_key
+
+    key = approval_mode_key("thread-1")
+    runtime = SimpleNamespace(
+        context=CLIContextSchema(auto_approve=True, approval_mode_key=key),
+        store=_FakeStore(),
+    )
+
+    update = await ApprovalModePrefetchMiddleware().abefore_model(
+        cast("Any", {}), cast("Any", runtime)
+    )
+    # `False` -> the predicate will interrupt, never silently auto-approve.
+    assert update == {"_live_auto_approve": False}
+
+
+async def test_prefetch_middleware_no_key_defers_to_context() -> None:
+    """With no live key the prefetch yields `None` so context wins."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+
+    runtime = SimpleNamespace(
+        context=CLIContextSchema(auto_approve=True, approval_mode_key=None),
+        store=_FakeStore(),
+    )
+
+    update = await ApprovalModePrefetchMiddleware().abefore_model(
+        cast("Any", {}), cast("Any", runtime)
+    )
+    assert update == {"_live_auto_approve": None}
+
+
+async def test_prefetch_middleware_switch_auto_to_manual() -> None:
+    """A mid-session flip from auto to manual is picked up on the next turn."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    mw = ApprovalModePrefetchMiddleware()
+    runtime = SimpleNamespace(
+        context=CLIContextSchema(auto_approve=True, approval_mode_key=key),
+        store=store,
+    )
+
+    store.put(APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(auto_approve=True))
+    first = await mw.abefore_model(cast("Any", {}), cast("Any", runtime))
+    assert first == {"_live_auto_approve": True}
+    assert not _should_interrupt_tool_call(_request_with_state(first))
+
+    # User toggles to manual mid-session; the store item flips.
+    store.put(APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(auto_approve=False))
+    second = await mw.abefore_model(cast("Any", {}), cast("Any", runtime))
+    assert second == {"_live_auto_approve": False}
+    assert _should_interrupt_tool_call(_request_with_state(second))
+
+
+def test_prefetch_middleware_sync_path_resolves_from_dict_context() -> None:
+    """The sync `before_model` path resolves a dict (RemoteGraph) context."""
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(auto_approve=True))
+    runtime = SimpleNamespace(
+        context={"auto_approve": False, "approval_mode_key": key},
+        store=store,
+    )
+
+    update = ApprovalModePrefetchMiddleware().before_model(
+        cast("Any", {}), cast("Any", runtime)
+    )
+    assert update == {"_live_auto_approve": True}
+
+
 def test_cli_context_field_parity() -> None:
     """`CLIContext` and `CLIContextSchema` must declare the same field set.
 
@@ -3535,6 +3729,101 @@ class TestExperimentalTodoMiddlewareWiring:
         assert not self._has_todo_standin(kwargs["middleware"])
         for spec in kwargs["subagents"]:
             assert not self._has_todo_standin(spec.get("middleware", []))
+
+
+class TestApprovalModePrefetchWiring:
+    """`create_cli_agent` wires the prefetch middleware into every HITL stack.
+
+    The live approval-mode prefetch must reach both the main agent and every
+    subagent (which inherit the main `interrupt_on`) so auto-approve is honored
+    without a forbidden sync Store read on the server event loop. It must be
+    absent when HITL is disabled (auto-approve / restrictive shell allow-list).
+    """
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+        return mock_settings
+
+    def _capture_kwargs(self, tmp_path: Path, **create_kwargs: Any) -> dict[str, Any]:
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.list_subagents", return_value=[subagent_meta]),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+                **create_kwargs,
+            )
+        _, kwargs = mock_create.call_args
+        return kwargs
+
+    @staticmethod
+    def _has_prefetch(middleware: list[Any]) -> bool:
+        from deepagents_code.agent import ApprovalModePrefetchMiddleware
+
+        return any(isinstance(mw, ApprovalModePrefetchMiddleware) for mw in middleware)
+
+    def test_present_on_main_and_subagents_when_hitl_active(
+        self, tmp_path: Path
+    ) -> None:
+        kwargs = self._capture_kwargs(tmp_path, auto_approve=False)
+
+        assert self._has_prefetch(kwargs["middleware"])
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        assert {"researcher", "general-purpose"} <= set(subagents_by_name)
+        for name, spec in subagents_by_name.items():
+            assert self._has_prefetch(spec.get("middleware", [])), (
+                f"Expected prefetch middleware on subagent {name!r}"
+            )
+
+    def test_absent_from_all_stacks_when_auto_approve(self, tmp_path: Path) -> None:
+        kwargs = self._capture_kwargs(tmp_path, auto_approve=True)
+
+        assert not self._has_prefetch(kwargs["middleware"])
+        for spec in kwargs["subagents"]:
+            assert not self._has_prefetch(spec.get("middleware", []))
 
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:

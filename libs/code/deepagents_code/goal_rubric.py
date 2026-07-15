@@ -1454,6 +1454,7 @@ def create_goal_criteria_agent(
     from langchain_core.tools import BaseTool, StructuredTool
 
     from deepagents_code._cli_context import CLIContextSchema
+    from deepagents_code.agent import ApprovalModePrefetchMiddleware
     from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
     normalized_context_tools: list[BaseTool] = []
@@ -1479,6 +1480,9 @@ def create_goal_criteria_agent(
         raise ValueError(msg)
     middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(persist_model_state=False),
+        # Honor live auto-approve for the criteria agent's gated context tools
+        # (`fetch_url`, `web_search`, MCP) without a sync Store read on the loop.
+        ApprovalModePrefetchMiddleware(),
         _GoalContextFallbackMiddleware(),
         _WebSearchBudgetMiddleware(),
         _CriteriaContextBudgetMiddleware(),

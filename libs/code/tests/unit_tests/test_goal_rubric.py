@@ -973,6 +973,14 @@ class TestCreateGoalCriteriaAgent:
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]
         )
+        # The criteria agent's gated context tools must honor live auto-approve
+        # without a sync Store read on the server event loop.
+        from deepagents_code.agent import ApprovalModePrefetchMiddleware
+
+        assert any(
+            isinstance(item, ApprovalModePrefetchMiddleware)
+            for item in kwargs["middleware"]
+        )
 
     def test_client_generation_symbols_are_removed(self) -> None:
         import deepagents_code.goal_rubric as module

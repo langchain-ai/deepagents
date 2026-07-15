@@ -17038,11 +17038,44 @@ class DeepAgentsApp(App):
         """Open the interactive plugin manager."""
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
+        def on_close(result: tuple[str, bool] | None) -> None:
+            if result is None:
+                return
+            label, needs_login = result
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    self._offer_reconnect_after_plugin_install(
+                        label, needs_login=needs_login
+                    ),
+                    exclusive=True,
+                    group="plugin-install-reconnect",
+                )
+            )
+
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
-            )
+            ),
+            on_close,
         )
+
+    async def _offer_reconnect_after_plugin_install(
+        self, label: str, *, needs_login: bool
+    ) -> None:
+        """Offer reconnect after installing a plugin that declares MCP servers.
+
+        Reuses the `/mcp login` reconnect-now / defer modal. When the plugin's
+        MCP servers typically need auth, surface a follow-up toast pointing
+        users at `/mcp`.
+        """
+        await self._prompt_mcp_reconnect(label)
+        if needs_login:
+            self.notify(
+                f"Sign in to {label} via `/mcp` after reconnect.",
+                severity="information",
+                timeout=10,
+                markup=False,
+            )
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

@@ -21,10 +21,19 @@ class _PluginRow:
     enabled: bool
     version: str | None
     author: str | None
+    display_name: str = ""
     skill_count: int | None = None
     skill_names: tuple[str, ...] = ()
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
+    mcp_login_servers: tuple[str, ...] = ()
+
+    @property
+    def label(self) -> str:
+        """Human-readable plugin name for UI copy."""
+        if self.display_name:
+            return self.display_name
+        return self.plugin_id.partition("@")[0]
 
 
 @dataclass(frozen=True, slots=True)

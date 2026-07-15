@@ -27,7 +27,7 @@ def _plugin_options(
 
 def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
     glyphs = get_glyphs()
-    plugin_name, _, marketplace = row.plugin_id.partition("@")
+    _, _, marketplace = row.plugin_id.partition("@")
     meta_parts = [Content.styled("Plugin", "dim"), Content.styled(marketplace, "dim")]
     if row.enabled:
         meta_parts.append(Content.styled(f"{glyphs.checkmark} enabled", "bold"))
@@ -37,12 +37,12 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
     if row.mcp_connected is True:
         meta_parts.append(Content.styled(f"{glyphs.checkmark} connected", "dim"))
     elif row.mcp_connected is False:
-        meta_parts.append(Content.styled("restart to connect", "dim"))
+        meta_parts.append(Content.styled("restart to connect", "bold $warning"))
     if status:
         meta_parts.append(Content.styled(status, "dim"))
     separator = Content.styled(" · ", "dim")
     return Content.assemble(
-        plugin_name,
+        row.label,
         separator,
         separator.join(meta_parts),
         "\n  ",
@@ -69,11 +69,11 @@ def _installed_details_options(row: _PluginRow) -> list[Option]:
 
 
 def _plugin_details_content(row: _PluginRow) -> Content:
-    plugin_name, _, marketplace = row.plugin_id.partition("@")
+    _, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
         Content.styled("Plugin details", "bold"),
         "\n\n",
-        Content.styled(plugin_name, "bold"),
+        Content.styled(row.label, "bold"),
         "\n",
         Content.styled(f"from {marketplace}", "dim"),
     ]
@@ -102,9 +102,9 @@ def _plugin_details_content(row: _PluginRow) -> Content:
 
 def _installed_plugin_details_content(row: _PluginRow) -> Content:
     glyphs = get_glyphs()
-    plugin_name, _, marketplace = row.plugin_id.partition("@")
+    _, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
-        Content.styled(f"{plugin_name} @ {marketplace}", "bold")
+        Content.styled(f"{row.label} @ {marketplace}", "bold")
     ]
     if row.version:
         parts.extend(["\n", Content.styled(f"Version: {row.version}", "dim")])
@@ -188,18 +188,15 @@ def _marketplace_details_content(row: _MarketplaceRow) -> Content:
 
 def _marketplace_removal_content(row: _MarketplaceRow) -> Content:
     suffix = "s" if row.installed_count != 1 else ""
-    warning = (
-        f"This also uninstalls {row.installed_count} plugin{suffix} from this "
-        "marketplace. "
-        if row.installed_count
-        else ""
-    )
+    if row.installed_count:
+        detail = (
+            f"This removes the marketplace and uninstalls {row.installed_count} "
+            f"plugin{suffix} from it."
+        )
+    else:
+        detail = "This removes the marketplace from your installed list."
     return Content.assemble(
         Content.styled(f"Remove marketplace {row.name}?", "bold"),
         "\n\n",
-        Content.styled(
-            f"{warning}The marketplace record and managed caches will be removed. "
-            "Local source directories are not deleted.",
-            "dim",
-        ),
+        Content.styled(detail, "dim"),
     )

@@ -51,8 +51,13 @@ from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 
-class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
-    """Arrow-key navigable plugin manager for `/plugins`."""
+class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
+    """Arrow-key navigable plugin manager for `/plugins`.
+
+    Dismisses with `(label, needs_mcp_login)` after an MCP-bearing plugin
+    install so the app can offer reconnect + login guidance, otherwise
+    `None`.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
@@ -557,12 +562,20 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
             return
+        label = row.label
+        needs_login = bool(row.mcp_login_servers)
+        has_mcp = bool(row.mcp_server_names)
+        self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = f"Installed {row.plugin_id}. Run /reload to activate."
+        self._status = f"Installed {label}."
         self._error = None
         await self._refresh_state()
+        if has_mcp:
+            # Close the manager so the reconnect prompt is not buried under it.
+            self.dismiss((label, needs_login))
+            return
 
     async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin
@@ -571,12 +584,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         try:
             if row.enabled:
                 set_installed_plugin_enabled(row.plugin_id, enabled=False)
-                self._status = f"Disabled {row.plugin_id}. Run /reload to unload."
+                self._status = f"Disabled {row.label}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
                 set_installed_plugin_enabled(row.plugin_id, enabled=True)
-                self._status = f"Enabled {row.plugin_id}. Run /reload to activate."
+                self._status = f"Enabled {row.label}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"
                 self._selected_plugin = None
@@ -602,7 +615,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._mode = "list"
         self._selected_plugin = None
         reload_hint = " Run /reload to unload." if row.enabled else ""
-        self._status = f"Uninstalled {row.plugin_id}.{reload_hint}"
+        self._status = f"Uninstalled {row.label}.{reload_hint}"
         self._error = None
         await self._refresh_state()
 

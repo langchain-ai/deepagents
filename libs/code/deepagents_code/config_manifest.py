@@ -1406,6 +1406,8 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
         # Detection-only migration sentinel; the removed env var is not an option.
         _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

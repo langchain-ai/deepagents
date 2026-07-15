@@ -2368,6 +2368,7 @@ async def resolve_and_load_mcp_tools(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    additional_configs: tuple[dict[str, Any], ...] = (),
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -2402,6 +2403,8 @@ async def resolve_and_load_mcp_tools(
             even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        additional_configs: Config layers injected by higher-level composition,
+            such as plugin-provided MCP servers.
         stateless: When `True`, do not return an owned runtime session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2444,7 +2447,9 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
+    configs.extend(additional_configs)
     loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
+
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:

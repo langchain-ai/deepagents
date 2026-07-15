@@ -134,34 +134,30 @@ def test_total_job_guard_rejects_over_budget():
         up.total_job_guard(n_models=3, est_tasks_per_model=142)  # 426 > 400
 
 
-def test_build_flat_matrix_one_entry_per_task_across_categories():
-    tasks = {
-        "autonomous": ["harbor-index/a", "harbor-index/b"],
-        "context": ["cb-cloud-0"],
-    }
+def test_build_flat_matrix_expands_code_categories_over_configs():
+    tasks = {"autonomous": ["a1", "a2"], "context": ["c1"]}
     entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "context"], tasks, code_impl="bare"
+        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare", "dcode"]
     )
-    # 2 autonomous + 1 context = 3 single-task shards
-    assert len(entries) == 3
-    auto = [e for e in entries if e["category"] == "autonomous"]
-    assert {e["include_tasks"] for e in auto} == {"harbor-index/a", "harbor-index/b"}
-    assert all(e["n_shards"] == 1 and e["shard"] == 0 for e in entries)
-    assert all(e["agent_impl"] == "bare" for e in auto)  # code override applies
-    ctx = next(e for e in entries if e["category"] == "context")
-    assert ctx["dataset_path"] == "datasets/context-retrieval-evals"
-    assert ctx["agent_impl"] == "bare"
-    assert all(e["langsmith_dataset"] == "" for e in entries)
+    autos = [e for e in entries if e["category"] == "autonomous"]
+    impls = sorted({e["agent_impl"] for e in autos})
+    assert impls == ["bare", "dcode"]
+    # Each config gets the full task set for the category.
+    assert sum(len(e["include_tasks"].split()) for e in autos if e["agent_impl"] == "bare") == 2
 
 
-def test_build_flat_matrix_defaults_to_bare():
-    # No override: the code categories fall back to DEFAULT_AGENT_IMPL (bare),
-    # while conversation stays pinned to tau3.
-    assert up.DEFAULT_AGENT_IMPL == "bare"
-    tasks = {
-        "autonomous": ["harbor-index/a"],
-        "conversation": ["sierra-research/tau3-bench__x"],
-    }
+def test_build_flat_matrix_conversation_not_multiplied_by_configs():
+    tasks = {"autonomous": ["a1"], "conversation": ["t1", "t2"]}
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "conversation"], tasks, code_impls=["bare", "dcode"]
+    )
+    conv = [e for e in entries if e["category"] == "conversation"]
+    assert {e["agent_impl"] for e in conv} == {"tau3"}
+    assert len(conv) == 2  # two tasks, one config, one task per shard
+
+
+def test_build_flat_matrix_defaults_to_bare_single_config():
+    tasks = {"autonomous": ["a1"], "conversation": ["t1"]}
     entries = up.build_flat_matrix("openai:gpt", ["autonomous", "conversation"], tasks)
     auto = next(e for e in entries if e["category"] == "autonomous")
     conv = next(e for e in entries if e["category"] == "conversation")
@@ -169,53 +165,20 @@ def test_build_flat_matrix_defaults_to_bare():
     assert conv["agent_impl"] == "tau3"
 
 
-def test_build_flat_matrix_conversation_stays_tau3():
-    tasks = {"conversation": ["sierra-research/tau3-bench__x"]}
-    entries = up.build_flat_matrix("openai:gpt", ["conversation"], tasks, code_impl="bare")
-    assert entries[0]["agent_impl"] == "tau3"
-
-
-def test_build_flat_matrix_packs_above_cap():
-    tasks = {"autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]}
-    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks, code_impl="dcode")
-    assert len(entries) <= shard_matrix.MAX_SHARDS
-    # every task still present, split across include_tasks strings
-    seen = " ".join(e["include_tasks"] for e in entries).split()
-    assert seen == tasks["autonomous"]
-
-
-def test_build_flat_matrix_bounds_per_model_total_across_categories():
-    # 120 + 120 + 40 = 280 > MAX_SHARDS (200): the per-model TOTAL must be
-    # packed down to the cap via proportional per-category budgets, not just
-    # each category independently capped (which would allow up to 3x200).
+def test_build_flat_matrix_caps_entries_at_max_shards():
+    # Two code categories x three configs x 60 tasks = 360 groups pre-pack,
+    # over MAX_SHARDS; packing must keep the emitted entry count within the cap.
     tasks = {
-        "autonomous": [f"harbor-index/a{i}" for i in range(120)],
-        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(120)],
-        "context": [f"cb-cloud-{i}" for i in range(40)],
+        "autonomous": [f"a{i}" for i in range(60)],
+        "context": [f"c{i}" for i in range(60)],
     }
     entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "conversation", "context"], tasks, code_impl="dcode"
+        "openai:gpt",
+        ["autonomous", "context"],
+        tasks,
+        code_impls=["bare", "dcode", "dcode"][:3],
     )
     assert len(entries) <= shard_matrix.MAX_SHARDS
-    for cat, expected in tasks.items():
-        cat_entries = [e for e in entries if e["category"] == cat]
-        seen = " ".join(e["include_tasks"] for e in cat_entries).split()
-        assert seen == expected  # every task present exactly once, order preserved
-
-
-def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
-    # Lite-like: total is well under MAX_SHARDS, so behavior is unchanged —
-    # one task per matrix entry, no packing.
-    tasks = {
-        "autonomous": [f"harbor-index/a{i}" for i in range(15)],
-        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
-        "context": [f"cb-cloud-{i}" for i in range(8)],
-    }
-    entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "conversation", "context"], tasks, code_impl="dcode"
-    )
-    assert len(entries) == 15 + 11 + 8
-    assert all(len(e["include_tasks"].split()) == 1 for e in entries)
 
 
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):

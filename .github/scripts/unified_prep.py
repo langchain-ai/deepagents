@@ -189,42 +189,48 @@ def build_flat_matrix(
     model: str,
     categories: list[str],
     tasks_by_cat: dict[str, list[str]],
-    code_impl: str = DEFAULT_AGENT_IMPL,
+    code_impls: list[str] | None = None,
 ) -> list[dict]:
-    """One flat matrix of single-`harbor run` shards spanning all categories.
+    """One flat matrix of single-`harbor run` shards spanning categories x configs.
 
-    Each category's task list is packed into a per-category shard budget; each
-    group is one matrix entry carrying its own dataset and agent so the leaf's
-    max-parallel pool drains the mixed queue across category boundaries.
-    `provider` is retained only as an aggregation tag.
-
-    The per-model total entry count is bounded by `shard_matrix.MAX_SHARDS`:
-    when the categories' combined task count fits under the cap, each category
-    packs 1 task/shard as usual. Above the cap, `MAX_SHARDS` is allocated across
-    the active categories proportional to their task counts (via
-    `_allocate_shard_budgets`) and each category is packed into its own budget,
-    so the sum across categories never exceeds `MAX_SHARDS`.
+    Code categories (their CATEGORY_MAP agent_impl is in CODE_AGENT_IMPLS) emit one
+    shard group per (category, config) across `code_impls`. A non-code category
+    (conversation / tau3) emits one group with its pinned agent_impl and is never
+    multiplied by configs. The per-model entry count is bounded by
+    `shard_matrix.MAX_SHARDS`: the 1-task/shard packing applies when the combined
+    (category, config) task count fits under the cap, otherwise MAX_SHARDS is
+    allocated across the groups proportional to their task counts and each group is
+    packed into its own budget, so the total never exceeds MAX_SHARDS.
     """
+    if code_impls is None:
+        code_impls = [DEFAULT_AGENT_IMPL]
     prov = provider_of(model)
-    active_counts = {
-        cat: len(tasks_by_cat[cat]) for cat in categories if tasks_by_cat.get(cat)
-    }
-    total = sum(active_counts.values())
-    if total > shard_matrix.MAX_SHARDS:
-        budgets = _allocate_shard_budgets(active_counts, shard_matrix.MAX_SHARDS)
-    else:
-        budgets = dict.fromkeys(active_counts, shard_matrix.MAX_SHARDS)
 
-    entries: list[dict] = []
+    # (category, agent_impl, tasks) groups, code categories fanned out over configs.
+    groups: list[tuple[str, str, list[str]]] = []
     for cat in categories:
         cm = CATEGORY_MAP[cat]
-        # The override selects the code harness (bare/dcode); a category pinned
-        # to a non-code harness (tau3) is never overridden.
-        agent_impl = (
-            code_impl if cm["agent_impl"] in CODE_AGENT_IMPLS else cm["agent_impl"]
-        )
-        cat_budget = budgets.get(cat, shard_matrix.MAX_SHARDS)
-        for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, []), cat_budget):
+        tasks = tasks_by_cat.get(cat, [])
+        if not tasks:
+            continue
+        if cm["agent_impl"] in CODE_AGENT_IMPLS:
+            for impl in code_impls:
+                groups.append((cat, impl, tasks))
+        else:
+            groups.append((cat, cm["agent_impl"], tasks))
+
+    counts = {(cat, impl): len(tasks) for cat, impl, tasks in groups}
+    total = sum(counts.values())
+    if total > shard_matrix.MAX_SHARDS:
+        budgets = _allocate_shard_budgets(counts, shard_matrix.MAX_SHARDS)
+    else:
+        budgets = dict.fromkeys(counts, shard_matrix.MAX_SHARDS)
+
+    entries: list[dict] = []
+    for cat, impl, tasks in groups:
+        cm = CATEGORY_MAP[cat]
+        budget = budgets.get((cat, impl), shard_matrix.MAX_SHARDS)
+        for group in shard_matrix.pack_tasks(tasks, budget):
             entries.append(
                 {
                     "model": model,
@@ -232,7 +238,7 @@ def build_flat_matrix(
                     "category": cat,
                     "dataset": cm["dataset"],
                     "dataset_path": cm["dataset_path"],
-                    "agent_impl": agent_impl,
+                    "agent_impl": impl,
                     "include_tasks": " ".join(group),
                     "langsmith_dataset": "",
                     "n_shards": 1,
@@ -340,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             "model": m,
             "slug": _slug(m),
             "flat_matrix": json.dumps(
-                {"include": build_flat_matrix(m, categories, tasks_by_cat, code_impl)},
+                {"include": build_flat_matrix(m, categories, tasks_by_cat, [code_impl])},
                 separators=(",", ":"),
             ),
         }

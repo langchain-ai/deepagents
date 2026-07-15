@@ -91,11 +91,10 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     categories = _indented_block(dispatch, "      categories:")
     assert 'default: "autonomous,conversation,context"' in categories
 
-    # The deep-agents harness for autonomous/context defaults to bare.
-    agent_impl = _indented_block(dispatch, "      agent_impl:")
-    assert 'default: "bare"' in agent_impl
-    assert "- bare" in agent_impl
-    assert "- dcode" in agent_impl
+    # The deep-agents harness list for autonomous/context defaults to bare.
+    agent_impls = _indented_block(dispatch, "      agent_impls:")
+    assert "type: string" in agent_impls
+    assert 'default: "bare"' in agent_impls
 
     # Exactly one reusable-workflow call: the flat-pool `eval` job (see
     # test_eval_job_uses_single_flat_pool_matrix below for its shape).
@@ -182,7 +181,7 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     p_env = _indented_block(p_step, "        env:")
     assert "UNIFIED_MODELS: ${{ inputs.models }}" in p_env
     assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in p_env
-    assert "UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}" in p_env
+    assert "UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}" in p_env
     assert "UNIFIED_PROFILE: ${{ inputs.profile }}" in p_env
     assert "UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}" in p_env
     assert "UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}" in p_env
@@ -201,6 +200,12 @@ def test_combine_needs_prep_and_eval() -> None:
     # marker line ("needs:") plus exactly the two job names, no leftover
     # provider jobs.
     assert len([line for line in needs.splitlines() if line.strip()]) == 3
+
+
+def test_combine_receives_expected_leaves() -> None:
+    reusable = UNIFIED_WORKFLOW.read_text()
+    assert "EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}" in reusable
+    assert "expected_leaves: ${{ steps.p.outputs.expected_leaves }}" in reusable
 
 
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:

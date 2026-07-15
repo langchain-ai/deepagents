@@ -88,6 +88,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
+          RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_STALE: ${{ steps.check.outputs.stale }}
@@ -106,6 +107,7 @@ jobs:
             const pkgPyproject = process.env.PKG_PYPROJECT;
             const pkgLockdir = process.env.PKG_LOCKDIR;
             const sdkPinBypassLabel = process.env.SDK_PIN_BYPASS_LABEL;
+            const releaseDepsBypassLabel = process.env.RELEASE_DEPS_BYPASS_LABEL;
             const marker = `<!-- sdk-pin-check:${pkgName} -->`;
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -158,6 +160,8 @@ jobs:
                 `> **Prerelease SDK pin** — ${pkgLabel} currently pins ${pkgPinLink}, which is a prerelease.`,
                 '>',
                 '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
+                '>',
+                `> **Tip:** if this pin is part of an intentional cross-package release sequence and the release dependency check fails because the SDK prerelease is not on PyPI yet, add the \`${releaseDepsBypassLabel}\` label to acknowledge and skip that check.`,
               ].join('\n');
               warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; verify this is intentional.`;
             }

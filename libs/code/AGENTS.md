@@ -67,6 +67,17 @@ For Textual tests that intentionally replace concrete app methods with `MagicMoc
 
 Casts are acceptable when the type violation is the point of the test (for example, passing a wrong runtime type to exercise defensive validation) or when a third-party overload is narrower than verified runtime behavior. In those cases, keep the cast narrowly scoped and add a short comment explaining why it is intentional.
 
+## Input surface nomenclature
+
+The REPL has **many** text-entry surfaces, so "the input" / "the input box" is ambiguous. Use these precise terms in code, comments, commit messages, and when talking to an agent. Each maps to a concrete class so there is a single, greppable referent.
+
+- **Chat input** (a.k.a. the composer): the primary prompt field at the bottom of the REPL where the user types messages to the agent. The widget is `ChatInput` (`tui/widgets/chat_input.py`), a container whose bordered box has id `#input-box`. Its editable field is the `ChatTextArea` with id `#chat-input`. When an unqualified "the input box" is used, it means **this** — but prefer "chat input" to stay unambiguous.
+- **Inline prompt**: a multi-line `TextArea` rendered inline in the message flow (not the chat input, not inside a modal). Base class `InlinePromptTextArea` (`tui/widgets/_inline_prompt.py`), subclassed by `AskUserTextArea` (free-text answers to agent `ask_user` questions, `ask_user.py`) and `GoalReviewTextArea` (editing goal text, `goal_review.py`).
+- **Modal field**: a single-line Textual `Input` inside a modal screen. Refer to it by its owner, e.g. the *auth key field* (`auth.py`), *MCP login field* (`#ml-input`, `mcp_login.py`), or the *rejection reason field* (`approval.py`).
+- **Filter input**: the single-line `Input` that filters an `OptionList`/`Select` in a picker — the *model-selector filter* (`model_selector.py`), *thread-selector filter* (`thread_selector.py`), and *MCP viewer filter* (`#mcp-filter`, `mcp_viewer.py`). A specialized modal field; call it a "filter input" when the point is filtering.
+
+Rule of thumb: say **chat input** for the main composer and name any other surface by its owner (`<owner> field` / `<owner> filter`). Reserve bare "input box" for the chat input only.
+
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.
@@ -92,7 +103,7 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 - Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
 - The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; that path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
-- Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
+- Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records *per log level*), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
 ## CLI help screen
 

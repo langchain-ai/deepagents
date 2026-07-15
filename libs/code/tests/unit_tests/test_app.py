@@ -62,9 +62,13 @@ from deepagents_code.app import (
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.media_utils import ImageData, VideoData
-from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
-from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+from deepagents_code.tui.widgets.goal_review import (
+    GoalReviewMenu,
+    GoalReviewResult,
+    GoalReviewTextArea,
+)
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
@@ -2204,6 +2208,156 @@ class TestCtrlDChatInput:
             exit_mock.assert_called_once()
 
 
+class TestCtrlDInlinePrompt:
+    """Test Ctrl+D deletion and quit behavior in inline free-text prompts.
+
+    These fields (`GoalReviewTextArea`, `AskUserTextArea`) should match the
+    primary chat input: Ctrl+D deletes forward while content remains after the
+    cursor, and only quits at the true end with no selection.
+    """
+
+    async def _open_goal_edit(
+        self, app: DeepAgentsApp, pilot: Pilot[DeepAgentsApp]
+    ) -> GoalReviewTextArea:
+        """Mount a goal review, enter edit mode, and return the focused editor."""
+        messages = app.query_one("#messages", Container)
+        menu = GoalReviewMenu("goal", "- crit")
+        await messages.mount(menu)
+        app._pending_goal_review_widget = menu
+        await pilot.pause()
+        menu.focus()
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        edit = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+        assert app.focused is edit
+        return edit
+
+    async def test_ctrl_d_deletes_right_in_goal_review_edit(self) -> None:
+        """Ctrl+D mid-text in the goal-review editor deletes right, no quit."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.move_cursor((0, 0))
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == "ello"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_selection_in_goal_review_edit(self) -> None:
+        """Ctrl+D with a selection deletes it rather than quitting."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.select_all()
+            assert not edit.selection.is_empty
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == ""
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_end_of_goal_review_edit(self) -> None:
+        """Ctrl+D at the end of the editor with no selection quits the app."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.move_cursor(edit.document.end)
+            assert edit.selection.is_empty
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == "hello"
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_deletes_right_in_ask_user_text_input(self) -> None:
+        """Ctrl+D mid-text in an ask-user free-text answer deletes right."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hello"
+            text_input.focus()
+            text_input.move_cursor((0, 0))
+            await pilot.pause()
+            assert app.focused is text_input
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert text_input.text == "ello"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_end_of_ask_user_text_input(self) -> None:
+        """Ctrl+D at the end of an ask-user answer with no selection quits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hello"
+            text_input.focus()
+            text_input.move_cursor(text_input.document.end)
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.selection.is_empty
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert text_input.text == "hello"
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_when_ask_user_text_input_empty(self) -> None:
+        """Ctrl+D in an empty ask-user answer quits rather than swallowing it."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.text == ""
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+
 class TestCtrlCCopySelection:
     """Test Ctrl+C copying a focused input's selection instead of quitting."""
 
@@ -4217,7 +4371,7 @@ class TestAskUserLifecycle:
         chat.size = SimpleNamespace(height=20)
 
         with patch.object(app, "query_one", return_value=chat):
-            app._scroll_ask_user_into_view(menu)
+            app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with(animate=False, top=True)
 
@@ -4230,7 +4384,7 @@ class TestAskUserLifecycle:
         chat.size = SimpleNamespace(height=20)
 
         with patch.object(app, "query_one", return_value=chat):
-            app._scroll_ask_user_into_view(menu)
+            app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with()
 
@@ -5173,16 +5327,18 @@ class TestClearCommand:
 
             app_msgs = list(app.query(AppMessage))
             assert any(
-                str(widget._content) == "Previous thread: old-thread"
+                str(widget._content)
+                == "Previous thread: old-thread (Resume with /threads -r)"
                 for widget in app_msgs
             )
-            assert any(
+            assert not any(
                 str(widget._content) == "Resume it with /threads -r"
                 for widget in app_msgs
             )
             assert schedule.call_args_list[1].kwargs == {
                 "prefix": "Previous thread",
                 "thread_id": "old-thread",
+                "suffix": " (Resume with /threads -r)",
             }
 
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
@@ -6565,7 +6721,7 @@ class TestGoalCommand:
             await pilot.press("e")
             await pilot.pause()
 
-            edit = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            edit = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert edit.display is True
             assert app.focused is edit
 
@@ -6586,6 +6742,22 @@ class TestGoalCommand:
 
             assert app._pending_goal_review_widget is current
             assert current in app.query(GoalReviewMenu)
+
+    async def test_goal_review_decision_ignores_remove_errors(self) -> None:
+        """Decision cleanup should swallow remove races and clear tracking."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_goal_review_widget = widget
+            event = GoalReviewMenu.Decided({"type": "cancelled"}, widget)
+
+            await app.on_goal_review_menu_decided(event)
+            await pilot.pause()
+
+            assert app._pending_goal_review_widget is None
+            widget.remove.assert_awaited_once()
 
     async def test_goal_replacement_cancels_stale_review_before_drafting(self) -> None:
         """Replacing `/goal` should remove the old review before drafting finishes."""
@@ -16467,6 +16639,35 @@ class TestRestartServerForAgentSwap:
             defer_server_start=True,
         )
         return app, server_proc
+
+    async def test_swap_ignores_pending_ask_user_remove_error(self) -> None:
+        """A failing ask-user cleanup must not abort the agent swap.
+
+        The teardown cancels the stale prompt (rejecting its bound request)
+        and tolerates a remove race, so the swap still completes.
+        """
+        app, _server_proc = self._make_app()
+
+        widget = MagicMock()
+        widget.action_cancel = MagicMock()
+        widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_ask_user_widget = widget
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+            widget.action_cancel.assert_called_once()
+            widget.remove.assert_awaited_once()
+            assert app._pending_ask_user_widget is None
+            assert app._assistant_id == "researcher"
 
     async def test_happy_path_rebuilds_agent_and_updates_identity(
         self,

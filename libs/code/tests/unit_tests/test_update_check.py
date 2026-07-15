@@ -3936,6 +3936,52 @@ class TestRunInstallSubprocessFailureModes:
         # The EPERM fallback (`proc.kill()`) must have reaped the child.
         assert proc.returncode is not None
 
+    async def test_terminate_closes_real_subprocess_transport(self) -> None:
+        """Cleanup leaves the real subprocess transport closed, not pending.
+
+        A subprocess transport that is merely reaped (`proc.wait()`) but never
+        closed lingers until GC. If the event loop has closed by then,
+        `BaseSubprocessTransport.__del__` retries the close on a dead loop and
+        raises "Event loop is closed" — the `PytestUnraisableExceptionWarning`
+        seen in CI. `_terminate_install_process` must close the transport while
+        the loop is still alive, so it is never `is_closing() == False` on
+        return.
+        """
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX-specific")
+        proc = await asyncio.create_subprocess_shell(
+            "sleep 30",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        await _terminate_install_process(proc)
+
+        assert proc.returncode is not None
+        transport = getattr(proc, "_transport", None)
+        assert transport is not None
+        assert transport.is_closing()
+
+    async def test_terminate_closes_transport_after_reaping(self) -> None:
+        """`_terminate_install_process` explicitly closes the transport.
+
+        Deterministic guard for the CI `PytestUnraisableExceptionWarning`: real
+        subprocesses can close their transport naturally depending on timing, so
+        this pins the contract that cleanup closes it regardless. Fails if the
+        eager `transport.close()` is dropped and the transport is left pending.
+        """
+        proc = MagicMock()
+        proc.pid = 987654
+        proc.returncode = -9
+        proc.wait = AsyncMock(return_value=-9)
+        transport = MagicMock()
+        proc._transport = transport
+        # Patch `killpg` so the fake pid never signals a real process group.
+        with patch("deepagents_code.update_check.os.killpg"):
+            await _terminate_install_process(proc)
+        transport.close.assert_called_once_with()
+
     async def test_oserror_includes_exception_detail(self, tmp_path) -> None:
         """An OSError during exec must surface the exception class + message."""
         log_path = tmp_path / "install.log"

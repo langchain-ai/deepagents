@@ -162,9 +162,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             if not self._state.marketplaces:
                 return [
                     Option(
-                        "No plugins available. Add a marketplace first.",
+                        "No marketplaces installed. Add one to discover plugins.",
                         id="empty",
-                    )
+                        disabled=True,
+                    ),
+                    Option("+ Add marketplace", id="add-marketplace"),
                 ]
             if not self._state.available_plugins:
                 return [Option("All available plugins are installed.", id="empty")]
@@ -182,10 +184,18 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 status=None,
             )
         if self._tab == "marketplaces":
-            options = [Option("+ Add Marketplace", id="add-marketplace")]
+            options = [Option("+ Add marketplace", id="add-marketplace")]
+            if self._state.marketplaces:
+                options.append(
+                    Option(
+                        Content.styled(glyphs.box_horizontal * 72, "dim"),
+                        id="marketplace-divider",
+                        disabled=True,
+                    )
+                )
             options.extend(
                 Option(
-                    Content(_marketplace_label(row, glyphs.bullet)),
+                    _marketplace_label(row),
                     id=f"marketplace:{row.name}",
                 )
                 for row in self._state.marketplaces
@@ -328,7 +338,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 f"Left/Right tabs {glyphs.bullet} Esc close"
             )
         elif self._tab in {"discover", "installed"}:
-            action = "view" if self._tab == "installed" else "install"
+            if self._tab == "installed":
+                action = "view"
+            elif not self._state.marketplaces:
+                action = "add marketplace"
+            else:
+                action = "install"
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
                 f"Enter {action} {glyphs.bullet} Left/Right tabs "

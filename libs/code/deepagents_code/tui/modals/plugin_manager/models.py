@@ -35,6 +35,16 @@ class _MarketplaceRow:
     installed_count: int
     error: str | None = None
 
+    @property
+    def has_error(self) -> bool:
+        """Whether the configured marketplace could not be loaded.
+
+        Marketplace loading failures set `error` and produce an error status. Warnings
+        from a marketplace that loaded successfully appear on the Errors tab without
+        marking the marketplace itself as errored.
+        """
+        return self.error is not None
+
 
 @dataclass(frozen=True, slots=True)
 class _ManagerState:

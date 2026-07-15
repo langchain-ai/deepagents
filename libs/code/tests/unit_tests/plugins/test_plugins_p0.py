@@ -689,8 +689,9 @@ async def test_plugin_manager_confirms_marketplace_removal(
         await pilot.press("right")
         await pilot.pause()
         options = screen.query_one("#plugin-manager-options", OptionList)
-        assert options.option_count == 2
-        options.highlighted = 1
+        assert options.option_count == 3
+        assert options.get_option_at_index(1).disabled
+        options.highlighted = 2
         await pilot.press("enter")
         await pilot.pause()
 
@@ -730,16 +731,11 @@ async def test_plugin_manager_opens_add_marketplace_input(
         await pilot.pause()
 
         options = screen.query_one("#plugin-manager-options", OptionList)
-        assert options.option_count == 1
-        assert "No plugins available" in str(options.get_option_at_index(0).prompt)
-
-        await pilot.press("right")
-        await pilot.pause()
-        await pilot.press("right")
-        await pilot.pause()
-        assert "> Marketplaces <" in str(
-            screen.query_one("#plugin-manager-tabs").render()
-        )
+        assert options.option_count == 2
+        assert options.get_option_at_index(0).disabled
+        assert "No marketplaces installed" in str(options.get_option_at_index(0).prompt)
+        assert options.get_option_at_index(1).id == "add-marketplace"
+        assert options.highlighted == 1
 
         await pilot.press("enter")
         await pilot.pause()

@@ -9,8 +9,9 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
-from textual.events import Click, MouseMove
-from textual.message import Message
+from textual.events import (
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
+)
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
@@ -54,65 +55,11 @@ from deepagents_code.tui.modals.plugin_manager.models import (
     _ManagerState,
 )
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
-
-_TAB_LABELS: dict[PluginTab, str] = {
-    "discover": "Plugins",
-    "installed": "Installed",
-    "marketplaces": "Marketplaces",
-    "errors": "Errors",
-}
-
-
-class PluginTabSelected(Message):
-    """Posted when a plugin manager tab label is clicked."""
-
-    def __init__(self, tab: PluginTab) -> None:
-        """Initialize with the selected tab id.
-
-        Args:
-            tab: Tab to activate.
-        """
-        super().__init__()
-        self.tab = tab
-
-
-class PluginTabLabel(Static):
-    """Mouse-clickable tab label in the plugin manager header."""
-
-    def __init__(self, tab: PluginTab, label: str) -> None:
-        """Create a tab label.
-
-        Args:
-            tab: Tab id this label activates.
-            label: Display text for the tab.
-        """
-        super().__init__(
-            f"  {label}  ",
-            id=f"plugin-tab-{tab}",
-            classes="plugin-manager-tab",
-            markup=False,
-        )
-        self._tab = tab
-        self._label = label
-        self.can_focus = False
-
-    def set_active(self, active: bool) -> None:
-        """Update the active marker and style.
-
-        Args:
-            active: Whether this tab is the current tab.
-        """
-        self.update(f"> {self._label} <" if active else f"  {self._label}  ")
-        self.set_class(active, "active")
-
-    def on_click(self, event: Click) -> None:
-        """Select this tab on click.
-
-        Args:
-            event: The click event.
-        """
-        event.stop()
-        self.post_message(PluginTabSelected(self._tab))
+from deepagents_code.tui.modals.plugin_manager.tabs import (
+    TAB_LABELS,
+    PluginTabLabel,
+    PluginTabSelected,
+)
 
 
 class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
@@ -196,7 +143,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             )
             with Horizontal(id="plugin-manager-tabs", classes="plugin-manager-tabs"):
                 for tab in self._tabs:
-                    yield PluginTabLabel(tab, _TAB_LABELS[tab])
+                    yield PluginTabLabel(tab, TAB_LABELS[tab])
             yield Rule(
                 line_style="heavy" if not is_ascii_mode() else "ascii",
                 id="plugin-manager-divider",

@@ -525,6 +525,10 @@ jobs:
               HARBOR_AGENT_GRAPH=minimal_deepagent
               HARBOR_AGENT_LABEL="minimal coding agent (create_agent + background exec)"
               ;;
+            structured)
+              HARBOR_AGENT_GRAPH=structured_deepagent
+              HARBOR_AGENT_LABEL="structured per-turn contract (terminus-style)"
+              ;;
             tau3)
               # Requires a Harbor build that forwards the task environment's MCP
               # servers into the LangGraph graph configurable. The pinned Harbor

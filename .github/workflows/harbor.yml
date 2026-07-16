@@ -134,6 +134,7 @@ on:
           - dcode
           - bare
           - minimal
+          - structured
           - tau3
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."

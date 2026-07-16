@@ -123,17 +123,29 @@ def is_effort_supported_for_model(
     return effort in supported_efforts_for_model(model_spec, cli_override=cli_override)
 
 
+def _str_or_none(value: object, *, key: str) -> str | None:
+    """Return `value` if it's a `str`, else log and return `None`.
+
+    Logs and ignores mistyped values instead of raising, so malformed effort
+    settings don't fail silently.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    logger.warning("Ignoring non-str %s of type %s", key, type(value).__name__)
+    return None
+
+
 def current_effort_from_model_params(
     model_spec: str | None, model_params: dict[str, Any] | None
 ) -> str | None:
     """Read the configured effort from model params when present.
 
-    `/effort` only ever writes a flat `reasoning_effort` sentinel — provider
-    translation happens later, natively inside the model itself, driven by
-    `model.profile`. A model-shaped key (`output_config`, `thinking_level`,
-    etc.) can still appear here only via a raw user-supplied `--model-params`
-    value that bypassed `/effort` entirely; such a value isn't read back as
-    "the current effort" by this function.
+        `/effort` now writes only the flat `reasoning_effort` sentinel, which is
+        checked first. Provider-specific fields are recognized only as a fallback for
+        raw `--model-params` values, so explicit user settings aren't overwritten by
+        a saved preference.
 
     Args:
         model_spec: `provider:model` spec for the active model.
@@ -144,8 +156,42 @@ def current_effort_from_model_params(
     """
     if not model_spec or not model_params:
         return None
-    sentinel = model_params.get("reasoning_effort")
-    return sentinel if isinstance(sentinel, str) else None
+
+    sentinel = _str_or_none(
+        model_params.get("reasoning_effort"), key="reasoning_effort"
+    )
+    if sentinel is not None:
+        return sentinel
+
+    reasoning = model_params.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = _str_or_none(reasoning.get("effort"), key="reasoning.effort")
+        if effort is not None:
+            return effort
+
+    output_config = model_params.get("output_config")
+    if isinstance(output_config, dict):
+        effort = _str_or_none(output_config.get("effort"), key="output_config.effort")
+        if effort is not None:
+            return effort
+
+    model_kwargs = model_params.get("model_kwargs")
+    if isinstance(model_kwargs, dict):
+        effort = _str_or_none(
+            model_kwargs.get("reasoning_effort"), key="model_kwargs.reasoning_effort"
+        )
+        if effort is not None:
+            return effort
+
+    extra_body = model_params.get("extra_body")
+    if isinstance(extra_body, dict):
+        effort = _str_or_none(
+            extra_body.get("reasoning_effort"), key="extra_body.reasoning_effort"
+        )
+        if effort is not None:
+            return effort
+
+    return _str_or_none(model_params.get("thinking_level"), key="thinking_level")
 
 
 def merge_effort_model_params(

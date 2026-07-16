@@ -172,9 +172,11 @@ def test_default_effort_for_model_real_profiles(
 
 
 # current_effort_from_model_params
-# `/effort` writes only the standard `reasoning_effort` key. Provider-specific
-# translation happens in the model, so provider-shaped keys are treated as raw
-# `--model-params` values and are not read back as the current effort.
+# `/effort` writes only the standard `reasoning_effort` key going forward, but
+# a provider-shaped key can still arrive via a raw `--model-params` value that
+# bypassed `/effort` -- it must still be recognized as an explicit effort
+# setting, since `_restore_effort_override` uses this function to decide
+# whether a saved preference should be merged on top of it.
 
 
 def test_current_effort_reads_flat_sentinel() -> None:
@@ -186,11 +188,82 @@ def test_current_effort_reads_flat_sentinel() -> None:
     )
 
 
-def test_current_effort_ignores_legacy_nested_shapes() -> None:
+@pytest.mark.parametrize(
+    "model_params",
+    [
+        {"reasoning": {"effort": "low"}},
+        {"output_config": {"effort": "low"}},
+        {"model_kwargs": {"reasoning_effort": "low"}},
+        {"extra_body": {"reasoning_effort": "low"}},
+        {"thinking_level": "low"},
+    ],
+)
+def test_current_effort_recognizes_provider_shaped_values(
+    model_params: dict[str, object],
+) -> None:
+    """A raw `--model-params` value in any provider's shape is still detected.
+
+    Regression test: an explicit provider-shaped effort must not be treated
+    as "no effort set", or `_restore_effort_override` would incorrectly merge
+    a saved preference on top of it.
+    """
+    assert (
+        current_effort_from_model_params("anthropic:claude-opus-4-8", model_params)
+        == "low"
+    )
+
+
+def test_current_effort_flat_sentinel_takes_priority_over_provider_shape() -> None:
+    """When both are present, the flat sentinel (`/effort`'s own write path) wins."""
     assert (
         current_effort_from_model_params(
-            "anthropic:claude-opus-4-8", {"output_config": {"effort": "low"}}
+            "anthropic:claude-opus-4-8",
+            {"reasoning_effort": "high", "output_config": {"effort": "low"}},
         )
+        == "high"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_params",
+    [
+        {"reasoning": {"effort": 5}},
+        {"output_config": {"effort": 5}},
+        {"model_kwargs": {"reasoning_effort": 5}},
+        {"extra_body": {"reasoning_effort": 5}},
+        {"thinking_level": 5},
+    ],
+)
+def test_current_effort_warns_on_malformed_provider_shaped_value(
+    model_params: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        assert (
+            current_effort_from_model_params("anthropic:claude-opus-4-8", model_params)
+            is None
+        )
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "model_params",
+    [
+        {"reasoning": "raw"},
+        {"output_config": "raw"},
+        {"model_kwargs": "raw"},
+        {"extra_body": "raw"},
+    ],
+)
+def test_current_effort_non_dict_container_is_silent(
+    model_params: dict[str, object],
+) -> None:
+    """A non-dict container is a legitimate shape and must not warn.
+
+    E.g. preserved verbatim by `without_effort_model_params`.
+    """
+    assert (
+        current_effort_from_model_params("anthropic:claude-opus-4-8", model_params)
         is None
     )
 
@@ -362,6 +435,23 @@ async def test_startup_model_params_precede_persisted_effort() -> None:
     await app._restore_effort_override("openai:gpt-5.5")
 
     assert app._model_params_override == {"reasoning_effort": "low"}
+
+
+async def test_restore_effort_override_keeps_explicit_provider_shaped_params() -> None:
+    """A raw `--model-params` value in a provider's own shape blocks the merge.
+
+    Regression test for the exact scenario a review flagged: an explicit
+    per-session effort supplied through `--model-params` in a provider's own
+    shape (here, OpenAI's `reasoning.effort`) must be recognized so a saved
+    preference isn't merged on top of -- and silently conflicting with -- it.
+    """
+    model_config.save_effort_for_model("openai:gpt-5.5", "high")
+    app = DeepAgentsApp()
+    app._model_params_override = {"reasoning": {"effort": "low"}}
+
+    await app._restore_effort_override("openai:gpt-5.5")
+
+    assert app._model_params_override == {"reasoning": {"effort": "low"}}
 
 
 async def test_restore_effort_override_prunes_invalid_model_choice() -> None:

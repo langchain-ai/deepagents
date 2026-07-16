@@ -201,7 +201,6 @@ def test_current_effort_requires_spec_and_params() -> None:
     assert current_effort_from_model_params("anthropic:claude-opus-4-8", {}) is None
 
 
-
 def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> None:
     merged = merge_effort_model_params(
         {"temperature": 0.2, "model_kwargs": {"top_p": 0.9}},

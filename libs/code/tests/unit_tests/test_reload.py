@@ -1045,6 +1045,34 @@ class TestReloadThemeReapply:
 class TestReloadPluginsViaReload:
     """Experimental plugins should reload through `/reload`."""
 
+    def test_fingerprint_detects_nested_skill_edits(self, tmp_path: Path) -> None:
+        """Editing `SKILL.md` under a skills directory must change the fingerprint."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        skills_root = tmp_path / "skills"
+        skill_dir = skills_root / "demo"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("---\nname: demo\n---\noriginal\n", encoding="utf-8")
+
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(skills_root,)),
+        )
+
+        before = DeepAgentsApp._fingerprint_plugins((plugin,))
+        skill_md.write_text("---\nname: demo\n---\nedited\n", encoding="utf-8")
+        after = DeepAgentsApp._fingerprint_plugins((plugin,))
+
+        assert before != after
+
     async def test_reports_plugin_summary_when_experimental(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

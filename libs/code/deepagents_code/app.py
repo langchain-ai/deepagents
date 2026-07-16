@@ -17726,6 +17726,39 @@ class DeepAgentsApp(App):
             )
 
     @staticmethod
+    def _fingerprint_component_paths(
+        paths: tuple[Path, ...],
+    ) -> tuple[tuple[str, int, int], ...]:
+        """Collect path/mtime/size entries for files under component paths.
+
+        Directory components (e.g. `skills/`) are walked recursively so edits to
+        nested files like `SKILL.md` change the fingerprint even when the
+        directory's own mtime/size stay the same.
+        """
+        entries: list[tuple[str, int, int]] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            if path.is_file():
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+                continue
+            if not path.is_dir():
+                continue
+            for child in sorted(path.rglob("*")):
+                if not child.is_file():
+                    continue
+                try:
+                    stat = child.stat()
+                except OSError:
+                    continue
+                entries.append((str(child), stat.st_mtime_ns, stat.st_size))
+        return tuple(entries)
+
+    @staticmethod
     def _fingerprint_plugins(
         plugins: tuple[PluginInstance, ...],
     ) -> dict[str, tuple[object, ...]]:
@@ -17737,15 +17770,10 @@ class DeepAgentsApp(App):
         fingerprints: dict[str, tuple[object, ...]] = {}
         for plugin in plugins:
             paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
-            file_state = tuple(
-                (str(path), path.stat().st_mtime_ns, path.stat().st_size)
-                for path in paths
-                if path.exists()
-            )
             fingerprints[plugin.plugin_id] = (
                 plugin.version,
                 repr(plugin.manifest),
-                file_state,
+                DeepAgentsApp._fingerprint_component_paths(paths),
             )
         return fingerprints
 

@@ -20,8 +20,9 @@ from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
-    STARTUP_MODE_DANGEROUSLY_AUTO,
+    STARTUP_MODE_AUTO,
     STARTUP_MODE_MANUAL,
+    STARTUP_MODE_YOLO,
     THREAD_COLUMN_DEFAULTS,
     McpProjectServerApproval,
     McpServerTrustLists,
@@ -7233,18 +7234,28 @@ class TestLoadStartupMode:
         config.write_text("[startup]\nmode = 'manual'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
-    def test_explicit_dangerously_auto(self, tmp_path: Path) -> None:
-        """`mode = 'dangerously-auto'` is returned verbatim."""
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", STARTUP_MODE_AUTO), ("yolo", STARTUP_MODE_YOLO)],
+    )
+    def test_explicit_autonomous_modes(
+        self, tmp_path: Path, value: str, expected: str
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nmode = '{value}'\n")
+        assert load_startup_mode(config) == expected
+
+    def test_dangerously_auto_is_rejected(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         config.write_text("[startup]\nmode = 'dangerously-auto'\n")
-        assert load_startup_mode(config) == STARTUP_MODE_DANGEROUSLY_AUTO
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
     def test_invalid_value_returns_default(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unrecognized mode logs a warning and falls back to the default."""
         config = tmp_path / "config.toml"
-        config.write_text("[startup]\nmode = 'yolo'\n")
+        config.write_text("[startup]\nmode = 'hands-off'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             assert load_startup_mode(config) == STARTUP_MODE_MANUAL
         assert any("startup" in r.getMessage().lower() for r in caplog.records)

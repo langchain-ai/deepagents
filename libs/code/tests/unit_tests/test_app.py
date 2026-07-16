@@ -6092,11 +6092,14 @@ class TestGoalCommand:
             assert "Goal amended by the user" in control_message
             assert "Do not repeat completed work" in control_message
 
-    async def test_regenerated_goal_auto_accepts_if_yolo_enabled_during_generation(
+    async def test_regenerated_goal_still_requires_review_if_auto_enabled(
         self,
     ) -> None:
-        """A regeneration should consult live mode only after generation finishes."""
+        """Classifier-backed Auto does not bypass semantic goal review."""
+        from deepagents_code.approval_mode import ApprovalMode
+
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        app._auto_mode_eligible = True
         started = asyncio.Event()
         release = asyncio.Event()
         captured: dict[str, object] = {}
@@ -6113,8 +6116,6 @@ class TestGoalCommand:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._session_state is not None
-            app._session_state.auto_approve = False
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- old criteria"
             app._pending_goal_kind = "create"
@@ -6143,25 +6144,22 @@ class TestGoalCommand:
                 feedback.focus()
                 await pilot.press("enter")
                 await started.wait()
-
-                assert app._pending_goal_objective is None
-                assert app._active_goal is None
                 await pilot.press("shift+tab")
-                assert app._session_state.auto_approve is True
-                assert app._active_goal is None
+                assert app._session_state is not None
+                assert app._session_state.approval_mode is ApprovalMode.AUTO
 
                 release.set()
                 for _ in range(30):
                     await pilot.pause()
-                    if app._active_goal is not None:
+                    if any(app.query(GoalReviewMenu)):
                         break
 
             assert captured["feedback"] == "include migration coverage"
             assert captured["previous_criteria"] == "- old criteria"
-            assert app._active_goal == "add refresh tokens"
-            assert app._active_rubric == "- regenerated criteria"
-            assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("add refresh tokens")
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert any(app.query(GoalReviewMenu))
+            handle.assert_not_awaited()
 
     async def test_restored_pending_goal_auto_accepts_in_yolo_mode(self) -> None:
         """Thread restoration should apply a complete persisted proposal in YOLO."""
@@ -6240,15 +6238,14 @@ class TestGoalCommand:
             assert not any(app.query(GoalReviewMenu))
             handle.assert_not_awaited()
 
-    async def test_enabling_yolo_on_mounted_review_accepts_once_and_cleans_up(
-        self,
-    ) -> None:
-        """The live toggle should remove an existing review and resolve it once."""
+    async def test_enabling_auto_keeps_mounted_goal_review_pending(self) -> None:
+        """Auto changes action policy without deciding a goal proposal."""
+        from deepagents_code.approval_mode import ApprovalMode
+
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._session_state is not None
-            app._session_state.auto_approve = False
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
             app._pending_goal_kind = "create"
@@ -6264,52 +6261,27 @@ class TestGoalCommand:
             review_task = app._goal_review_task
             assert future is not None
             assert review_task is not None
-            await pilot.press("e")
-            await pilot.pause()
-            assert menu.query_one(GoalReviewTextArea).display is True
-            handle = AsyncMock()
-            with (
-                patch.object(
-                    app,
-                    "_write_live_approval_mode",
-                    new=AsyncMock(return_value=True),
-                ),
-                patch.object(app, "_handle_user_message", handle),
+            with patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
             ):
-                await pilot.press("shift+tab")
-                for _ in range(20):
-                    await pilot.pause()
-                    if app._active_goal is not None:
-                        break
-
-                assert app._session_state.auto_approve is True
-                assert app._active_goal == "add refresh tokens"
-                assert app._pending_goal_review_widget is None
-                assert app._pending_goal_review_future is None
-                assert app._goal_review_task is None
-                assert menu not in app.query(GoalReviewMenu)
-                assert future.done()
-                assert review_task.done()
-                handle.assert_awaited_once_with("add refresh tokens")
-
                 await pilot.press("shift+tab")
                 await pilot.pause()
 
-            assert app._session_state.auto_approve is False
-            assert app._active_goal == "add refresh tokens"
-            handle.assert_awaited_once_with("add refresh tokens")
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                rendered.count(
-                    "Goal criteria automatically accepted because YOLO mode is enabled."
-                )
-                == 1
-            )
-            assert "Goal proposal cancelled." not in rendered
+            assert app._session_state is not None
+            assert app._session_state.approval_mode is ApprovalMode.AUTO
+            assert app._active_goal is None
+            assert app._pending_goal_review_widget is menu
+            assert not future.done()
+            assert not review_task.done()
 
-    async def test_enabling_yolo_honors_already_submitted_cancel(self) -> None:
-        """A Cancel decision should win if it reaches the Future before YOLO."""
+    async def test_enabling_auto_honors_already_submitted_cancel(self) -> None:
+        """A submitted goal cancellation stays authoritative when Auto starts."""
+        from deepagents_code.approval_mode import ApprovalMode
+
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
@@ -6344,7 +6316,7 @@ class TestGoalCommand:
                     if app._pending_goal_objective is None:
                         break
 
-            assert app._session_state.auto_approve is True
+            assert app._session_state.approval_mode is ApprovalMode.AUTO
             assert app._active_goal is None
             assert app._active_rubric is None
             assert app._pending_goal_objective is None
@@ -21915,6 +21887,30 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
+    def test_auto_startup_requires_experimental_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.approval_mode import ApprovalMode
+
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+
+        app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.MANUAL
+
+    def test_auto_startup_enabled_by_experimental_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.approval_mode import ApprovalMode
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+
+        app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.AUTO
+
     async def test_write_live_approval_mode_records_key(self) -> None:
         from deepagents_code.approval_mode import (
             APPROVAL_MODE_NAMESPACE,
@@ -21934,7 +21930,7 @@ class TestLiveApprovalModeWrites:
         assert writer.item == (
             APPROVAL_MODE_NAMESPACE,
             approval_mode_key("thread-1"),
-            {"auto_approve": True},
+            {"mode": "yolo"},
         )
 
     async def test_write_live_approval_mode_clears_key_on_failure(self) -> None:
@@ -21982,9 +21978,9 @@ class TestLiveApprovalModeWrites:
             ):
                 await app.action_toggle_auto_approve()
 
-        assert app._auto_approve is False
-        assert app._session_state.auto_approve is False
-        assert app._session_state.approval_mode_key is None
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
+        assert app._approval_mode_blocked is True
         force.assert_called_once()
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
@@ -22010,13 +22006,14 @@ class TestLiveApprovalModeWrites:
             ):
                 await app.action_toggle_auto_approve()
 
-        assert app._auto_approve is False
-        assert app._session_state.auto_approve is False
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
         assert app._session_state.approval_mode_key is None
+        assert app._approval_mode_blocked is True
         force.assert_called_once()
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
-        assert "cancelled for safety" in notify.call_args.args[0]
+        assert "new runs are blocked" in notify.call_args.args[0]
 
     async def test_toggle_off_failed_write_does_not_cancel_when_idle(self) -> None:
         app = DeepAgentsApp(auto_approve=True)
@@ -22040,11 +22037,12 @@ class TestLiveApprovalModeWrites:
 
         force.assert_not_called()
         notify.assert_called_once()
-        # The idle branch emits a distinct message from the cancel branch.
-        assert "start a new run" in notify.call_args.args[0]
+        assert app._approval_mode_blocked is True
+        assert "new runs are blocked" in notify.call_args.args[0]
 
     async def test_toggle_on_failed_write_does_not_cancel_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=False)
+        app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState(
@@ -22063,15 +22061,15 @@ class TestLiveApprovalModeWrites:
             ):
                 await app.action_toggle_auto_approve()
 
-        assert app._auto_approve is True
-        assert app._session_state.auto_approve is True
+        assert app._auto_approve is False
+        assert app._session_state.auto_approve is False
         force.assert_not_called()
         notify.assert_called_once()
-        # Toggling on emits the auto-approve warning, not the manual one.
-        assert "Auto-approve could not sync" in notify.call_args.args[0]
+        assert "Auto could not be persisted" in notify.call_args.args[0]
 
     async def test_auto_approve_all_failed_write_warns(self) -> None:
         app = DeepAgentsApp(auto_approve=False)
+        app._auto_mode_eligible = True
         app._session_state = TextualSessionState(
             thread_id="thread-1",
             auto_approve=False,
@@ -22086,8 +22084,8 @@ class TestLiveApprovalModeWrites:
         ):
             await app._on_auto_approve_enabled()
 
-        assert app._auto_approve is True
-        assert app._session_state.auto_approve is True
+        assert app._auto_approve is False
+        assert app._session_state.auto_approve is False
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
 

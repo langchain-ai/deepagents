@@ -22,7 +22,12 @@ from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
 )
-from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
+from deepagents_code.approval_mode import (
+    APPROVAL_MODE_NAMESPACE,
+    ApprovalMode,
+    approval_mode_key,
+)
+from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY
 from deepagents_code.client.non_interactive import (
     StreamState,
     _process_ai_message,
@@ -1585,6 +1590,14 @@ class _FakeAgent:
     def __init__(self, chunks: list[tuple]) -> None:
         self._chunks = chunks
 
+    async def aput_store_item(
+        self,
+        _namespace: tuple[str, ...],
+        _key: str,
+        _value: dict[str, Any],
+    ) -> None:
+        """Acknowledge approval-mode persistence."""
+
     async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
         """Yield preconfigured stream chunks."""
         for chunk in self._chunks:
@@ -1602,6 +1615,14 @@ class _RaisingAgent:
     def __init__(self, chunks: list[tuple], error: BaseException) -> None:
         self._chunks = chunks
         self._error = error
+
+    async def aput_store_item(
+        self,
+        _namespace: tuple[str, ...],
+        _key: str,
+        _value: dict[str, Any],
+    ) -> None:
+        """Acknowledge approval-mode persistence."""
 
     async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
         """Yield the preconfigured chunks, then raise the configured error."""
@@ -1746,17 +1767,19 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
-        assert stream_input == {
-            "messages": [{"role": "user", "content": "hi"}],
-            "goal_criteria_request": None,
-        }
+        assert stream_input["goal_criteria_request"] is None
+        user_message = stream_input["messages"][0]
+        assert user_message["role"] == "user"
+        assert user_message["content"] == "hi"
+        metadata = user_message["additional_kwargs"][USER_PROMPT_METADATA_KEY]
+        assert metadata["literal_user_text"] == "hi"
+        assert metadata["referenced_paths"] == []
         assert agent.contexts[0]["auto_approve"] is True
+        assert agent.contexts[0]["approval_mode"] == "yolo"
         assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
-        assert agent.store_items == [
-            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
-        ]
+        assert agent.store_items == [(APPROVAL_MODE_NAMESPACE, key, {"mode": "yolo"})]
 
     async def test_rubric_is_sent_as_graph_state(self) -> None:
         """Rubrics should travel beside messages, not inside user content."""
@@ -1778,11 +1801,11 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
-        assert stream_input == {
-            "messages": [{"role": "user", "content": "hi"}],
-            "rubric": "tests pass",
-            "goal_criteria_request": None,
-        }
+        assert stream_input["rubric"] == "tests pass"
+        assert stream_input["goal_criteria_request"] is None
+        user_message = stream_input["messages"][0]
+        assert user_message["content"] == "hi"
+        assert USER_PROMPT_METADATA_KEY in user_message["additional_kwargs"]
 
     async def test_blocked_goal_retry_context_is_not_user_input(
         self,
@@ -1809,10 +1832,12 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
-        assert stream_input == {
-            "messages": [{"role": "user", "content": "continue now"}],
-            "goal_criteria_request": None,
-        }
+        assert stream_input["goal_criteria_request"] is None
+        user_message = stream_input["messages"][0]
+        assert user_message["content"] == "continue now"
+        metadata = user_message["additional_kwargs"][USER_PROMPT_METADATA_KEY]
+        assert metadata["literal_user_text"] == "continue now"
+        assert metadata["referenced_paths"] == []
         assert (
             agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
         )
@@ -1861,20 +1886,20 @@ class TestExecuteTaskTextualAutoApproveInput:
             approval_mode_key="stale",
         )
 
-        await execute_task_textual(
-            user_input="hi",
-            agent=agent,
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
+        with pytest.raises(
+            RuntimeError, match="Manual approval mode could not be persisted"
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
 
-        stream_input = agent.stream_inputs[0]
-        assert not isinstance(stream_input, Command)
-        assert agent.contexts[0]["auto_approve"] is False
-        assert "approval_mode_key" not in agent.contexts[0]
+        assert agent.stream_inputs == []
         assert agent.store_items == []
-        # The stale key must be cleared so later turns don't reuse it.
+        assert session_state.approval_mode is ApprovalMode.MANUAL
         assert session_state.approval_mode_key is None
 
     @pytest.mark.parametrize("use_async_callback", [True, False])
@@ -1936,18 +1961,27 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         callback_seen: list[bool] = []
 
-        on_auto_approve_enabled: Callable[[], Awaitable[None] | None]
+        session_state = SimpleNamespace(
+            thread_id="thread-1",
+            approval_mode=ApprovalMode.MANUAL,
+            auto_approve=False,
+        )
+        on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool]
         if use_async_callback:
 
-            async def _async_callback() -> None:
+            async def _async_callback() -> bool:
                 await asyncio.sleep(0)
                 callback_seen.append(True)
+                session_state.approval_mode = ApprovalMode.AUTO
+                return True
 
             on_auto_approve_enabled = _async_callback
         else:
 
-            def _sync_callback() -> None:
+            def _sync_callback() -> bool:
                 callback_seen.append(True)
+                session_state.approval_mode = ApprovalMode.AUTO
+                return True
 
             on_auto_approve_enabled = _sync_callback
 
@@ -1957,7 +1991,6 @@ class TestExecuteTaskTextualAutoApproveInput:
             request_approval=request_approval,
             on_auto_approve_enabled=on_auto_approve_enabled,
         )
-        session_state = SimpleNamespace(thread_id="thread-1", auto_approve=False)
 
         await execute_task_textual(
             user_input="hi",
@@ -1970,6 +2003,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         # Two stream iterations: the initial turn and the resume after the
         # decision. The flag must flip between them, not stay frozen.
         assert len(agent.contexts) == 2
+        assert agent.contexts[0]["approval_mode"] == "manual"
+        assert agent.contexts[1]["approval_mode"] == "auto"
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
         assert agent.contexts[0]["thread_id"] == "thread-1"
@@ -1978,11 +2013,11 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.contexts[1]["approval_mode_key"] == key
         assert agent.store_items == [
-            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": False}),
-            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True}),
+            (APPROVAL_MODE_NAMESPACE, key, {"mode": "manual"}),
+            (APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"}),
         ]
         assert callback_seen == [True]
-        assert session_state.auto_approve is True
+        assert session_state.approval_mode is ApprovalMode.AUTO
 
 
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:

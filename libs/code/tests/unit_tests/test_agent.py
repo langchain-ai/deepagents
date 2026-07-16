@@ -462,6 +462,16 @@ def test_should_interrupt_tool_call_fails_closed_without_live_mode_store() -> No
     )
 
 
+def test_typed_autonomous_mode_requires_live_store_key() -> None:
+    """New Auto and YOLO context values cannot bypass Store acknowledgement."""
+    assert _should_interrupt_tool_call(
+        _request_with_context({"approval_mode": "auto", "auto_approve": True})
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context({"approval_mode": "yolo", "auto_approve": True})
+    )
+
+
 def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
     """Missing or malformed context must not auto-approve."""
     assert _should_interrupt_tool_call(_request_with_context({}))
@@ -667,6 +677,22 @@ def test_format_delete_description() -> None:
     )
 
     assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_only_non_read_only_mcp_tools() -> None:
+    read_only = SimpleNamespace(
+        name="mcp_read",
+        metadata={"readOnlyHint": True, "destructiveHint": False},
+    )
+    mutating = SimpleNamespace(
+        name="mcp_write",
+        metadata={"readOnlyHint": False, "destructiveHint": False},
+    )
+
+    interrupt_map = _add_interrupt_on(mcp_tools=cast("Any", [read_only, mutating]))
+
+    assert "mcp_read" not in interrupt_map
+    assert interrupt_map["mcp_write"]["allowed_decisions"] == ["approve", "reject"]
 
 
 def test_add_interrupt_on_gates_delete() -> None:
@@ -3670,6 +3696,58 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc = False
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
+
+    @pytest.mark.parametrize(
+        ("experimental", "expected"), [(False, False), (True, True)]
+    )
+    def test_auto_mode_requires_experimental_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        experimental: bool,
+        expected: bool,
+    ) -> None:
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        if experimental:
+            monkeypatch.setenv(EXPERIMENTAL, "1")
+        else:
+            monkeypatch.delenv(EXPERIMENTAL, raising=False)
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                auto_mode_enabled=True,
+                cwd=tmp_path,
+            )
+
+        middleware = mock_create.call_args.kwargs["middleware"]
+        assert (
+            any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+            is expected
+        )
+        assert "hitl_middleware" not in mock_create.call_args.kwargs
 
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware

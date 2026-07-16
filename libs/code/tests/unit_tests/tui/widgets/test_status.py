@@ -33,6 +33,24 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestApprovalModeDisplay:
+    """Tests for the three-state approval indicator."""
+
+    @pytest.mark.parametrize(
+        ("mode", "label"),
+        [("manual", "manual"), ("auto", "auto"), ("yolo", "YOLO")],
+    )
+    async def test_displays_mode(self, mode: str, label: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode(mode)
+            await pilot.pause()
+
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == label
+            assert indicator.has_class(mode)
+
+
 class TestCwdDisplay:
     """Tests for the cwd display in the status bar."""
 

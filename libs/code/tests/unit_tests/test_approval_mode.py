@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
+    ApprovalMode,
     approval_mode_key,
     approval_mode_payload,
     awrite_approval_mode,
+    has_yolo_acknowledgement,
     read_approval_mode_from_store,
+    save_yolo_acknowledgement,
 )
 
 
@@ -52,21 +58,21 @@ class _Writer:
 
 
 def test_approval_mode_payload_shape() -> None:
-    assert approval_mode_payload(auto_approve=True) == {"auto_approve": True}
+    assert approval_mode_payload(mode=ApprovalMode.AUTO) == {"mode": "auto"}
 
 
 def test_read_approval_mode_from_store_accepts_mapping_item() -> None:
     key = approval_mode_key("thread-1")
-    item = {"value": {"auto_approve": True}}
+    item = {"value": {"mode": "auto"}}
 
-    assert read_approval_mode_from_store(_Store(item), key) is True
+    assert read_approval_mode_from_store(_Store(item), key) is ApprovalMode.AUTO
 
 
 def test_read_approval_mode_from_store_accepts_attribute_item() -> None:
     key = approval_mode_key("thread-1")
-    item = _StoreItem({"auto_approve": False})
+    item = _StoreItem({"mode": "yolo"})
 
-    assert read_approval_mode_from_store(_Store(item), key) is False
+    assert read_approval_mode_from_store(_Store(item), key) is ApprovalMode.YOLO
 
 
 @pytest.mark.parametrize(
@@ -117,13 +123,30 @@ def test_read_approval_mode_from_store_exception_fails_closed(
 
 async def test_awrite_approval_mode_writes_payload() -> None:
     writer = _Writer()
-    key = await awrite_approval_mode(writer, "thread-1", auto_approve=True)
+    key = await awrite_approval_mode(writer, "thread-1", mode=ApprovalMode.AUTO)
 
     assert key == approval_mode_key("thread-1")
     assert writer.items == [
-        (APPROVAL_MODE_NAMESPACE, approval_mode_key("thread-1"), {"auto_approve": True})
+        (APPROVAL_MODE_NAMESPACE, approval_mode_key("thread-1"), {"mode": "auto"})
     ]
 
 
 async def test_awrite_approval_mode_returns_none_without_writer() -> None:
-    assert (await awrite_approval_mode(object(), "thread-1", auto_approve=True)) is None
+    assert (
+        await awrite_approval_mode(object(), "thread-1", mode=ApprovalMode.AUTO)
+    ) is None
+
+
+def test_yolo_acknowledgement_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / ".state" / "approval.json"
+
+    assert not has_yolo_acknowledgement(path)
+    assert save_yolo_acknowledgement(path)
+    assert has_yolo_acknowledgement(path)
+
+
+def test_yolo_acknowledgement_rejects_stale_policy(tmp_path: Path) -> None:
+    path = tmp_path / "approval.json"
+    path.write_text('{"version":1,"policy_version":"old","acknowledged":true}\n')
+
+    assert not has_yolo_acknowledgement(path)

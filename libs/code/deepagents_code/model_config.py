@@ -816,6 +816,13 @@ It is reentrant so a caller can hold it across several of these helpers without
 self-deadlock. Cross-process races are out of scope (mirrors the existing
 helpers)."""
 _ollama_installed_models_cache: dict[str, list[str]] = {}
+_ollama_unreachable_endpoints: set[str] = set()
+"""Normalized endpoints whose daemon failed the TCP presence preflight.
+
+Lets `_get_ollama_installed_models` negatively-cache the empty result for an
+*unreachable* daemon so it probes and logs "not detected" once per reload,
+while a *reachable* daemon that merely has no models pulled yet is still
+re-probed (its empty result is not cached). Cleared by `clear_caches()`."""
 _ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
@@ -832,6 +839,7 @@ def clear_caches() -> None:
     _default_config_cache = None
     _provider_profiles_cache.clear()
     _ollama_installed_models_cache.clear()
+    _ollama_unreachable_endpoints.clear()
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
@@ -1447,6 +1455,12 @@ def _ollama_discovery_enabled() -> bool:
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
+    The result is cached when the daemon returns models, and also when the
+    daemon is unreachable so the two startup callers (`get_available_models`
+    and `get_model_profiles`) share a single probe and a single "not detected"
+    log line per reload. A reachable daemon that reports no models is left
+    uncached so a later pull can still be discovered without `/reload`.
+
     Args:
         endpoint: Base URL of the Ollama daemon. When `None`, defaults to
             `OLLAMA_DEFAULT_BASE_URL`.
@@ -1459,7 +1473,7 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     if cached is not None:
         return list(cached)
     models = _fetch_ollama_installed_models(endpoint)
-    if models:
+    if models or key in _ollama_unreachable_endpoints:
         _ollama_installed_models_cache[key] = models
     return list(models)
 
@@ -1567,6 +1581,7 @@ def _fetch_ollama_installed_models(
     # "discovery failed ... Connection refused" debug line.
     if _is_local_endpoint(base) and not _ollama_host_reachable(base, timeout=timeout):
         logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
+        _ollama_unreachable_endpoints.add(base)
         return []
 
     url = f"{base}/api/tags"

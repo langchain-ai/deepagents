@@ -43,9 +43,13 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
-Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
+Only inspect goals/rubrics when a goal is active or the acceptance criteria are genuinely
+unclear. For a direct, unambiguous file edit (e.g. "add word X to file Y") with no active
+goal, proceed straight to `read_file` + `edit_file` and confirm completion in the same
+turn — do not call `get_goal`/`get_rubric` first.
+When a goal is active, use `get_goal` to inspect the objective and current status, and
+`get_rubric` to inspect active acceptance criteria before deciding whether work is
 complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
 A paused goal is persisted for later but must not drive work until the user resumes it.
 A goal is marked complete automatically when its current grading turn satisfies the
 accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains

@@ -559,7 +559,7 @@ if TYPE_CHECKING:
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
-    from deepagents_code.plugins.models import PluginInstance
+    from deepagents_code.plugins.models import PluginDiscoveryResult, PluginInstance
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
@@ -611,6 +611,7 @@ watchdogs so the three stay in lockstep.
 """
 
 _PLUGIN_RELOAD_REMINDER = "Plugin changes are pending. Run /reload when ready."
+_PLUGIN_RELOAD_CHECK_FAILED = "Couldn't check plugin state. Run /reload to be safe."
 
 
 def _resolve_theme_name(value: object) -> str | None:
@@ -3288,7 +3289,12 @@ class DeepAgentsApp(App):
         """
 
         self._plugin_fingerprints: dict[str, tuple[object, ...]] | None = None
-        """Plugin state before manager changes, consumed by `/reload`."""
+        """Rolling plugin-fingerprint baseline keyed by plugin id.
+
+        Captured when the plugin manager opens (see `_show_plugin_manager`),
+        compared against on manager close (`_check_plugin_manager_changes`), and
+        refreshed after each `/reload`. `None` until first captured.
+        """
 
         self._skill_allowed_roots: list[Path] = []
         """Pre-resolved skill root directories for containment checks in
@@ -11712,12 +11718,10 @@ class DeepAgentsApp(App):
             from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
             if is_env_truthy(EXPERIMENTAL):
-                from deepagents_code.plugins import discover_plugins
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
-                plugin_result = discover_plugins()
-                new_plugin_fingerprints = self._fingerprint_plugins(
-                    plugin_result.plugins
+                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                    self._discover_plugins_with_fingerprints
                 )
                 old_plugin_fingerprints = self._plugin_fingerprints
                 self._plugin_fingerprints = new_plugin_fingerprints
@@ -11763,6 +11767,10 @@ class DeepAgentsApp(App):
                         report += "\nPlugin changes: " + ", ".join(change_parts) + "."
                     else:
                         report += "\nPlugin changes: no changes detected."
+                    for label in self._plugin_login_labels(
+                        plugin_result.plugins, new_ids - old_ids
+                    ):
+                        report += f"\nSign in to {label} via `/mcp`."
                 if plugin_result.warnings:
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
@@ -17738,7 +17746,8 @@ class DeepAgentsApp(App):
         directory's own mtime/size stay the same.
 
         Returns:
-            Sorted fingerprint entries of `(path, mtime_ns, size)`.
+            Deterministic fingerprint entries of `(path, mtime_ns, size)` (each
+            directory walked in sorted order).
         """
         entries: list[tuple[str, int, int]] = []
         for path in paths:
@@ -17748,6 +17757,9 @@ class DeepAgentsApp(App):
                 try:
                     stat = path.stat()
                 except OSError:
+                    logger.debug(
+                        "Skipping unreadable component path %s", path, exc_info=True
+                    )
                     continue
                 entries.append((str(path), stat.st_mtime_ns, stat.st_size))
                 continue
@@ -17759,6 +17771,9 @@ class DeepAgentsApp(App):
                 try:
                     stat = child.stat()
                 except OSError:
+                    logger.debug(
+                        "Skipping unreadable component path %s", child, exc_info=True
+                    )
                     continue
                 entries.append((str(child), stat.st_mtime_ns, stat.st_size))
         return tuple(entries)
@@ -17782,44 +17797,117 @@ class DeepAgentsApp(App):
             )
         return fingerprints
 
-    async def _show_plugin_manager(self) -> None:
-        """Open the interactive plugin manager."""
+    def _discover_plugins_with_fingerprints(
+        self,
+    ) -> tuple[PluginDiscoveryResult, dict[str, tuple[object, ...]]]:
+        """Discover plugins and fingerprint their reload-relevant files.
+
+        This performs recursive filesystem scans and must be called off the UI
+        thread.
+
+        Returns:
+            Plugin discovery output and fingerprints keyed by plugin id.
+        """
         from deepagents_code.plugins import discover_plugins
+
+        result = discover_plugins()
+        return result, self._fingerprint_plugins(result.plugins)
+
+    @staticmethod
+    def _plugin_login_labels(
+        plugins: tuple[PluginInstance, ...], plugin_ids: set[str]
+    ) -> tuple[str, ...]:
+        """List newly added plugins whose MCP servers require sign-in.
+
+        Args:
+            plugins: Plugins discovered by `/reload`.
+            plugin_ids: Newly added plugin ids to inspect.
+
+        Returns:
+            Deduplicated display labels in plugin discovery order.
+        """
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+        labels: list[str] = []
+        for plugin in plugins:
+            if plugin.plugin_id not in plugin_ids:
+                continue
+            entries = plugin_mcp_server_entries(plugin)
+            if not any(needs_login for _label, _scoped, needs_login in entries):
+                continue
+            manifest = plugin.manifest
+            labels.append(
+                manifest.display_name
+                if manifest is not None and manifest.display_name
+                else plugin.name
+            )
+        return tuple(dict.fromkeys(labels))
+
+    def _snapshot_plugin_state(
+        self,
+    ) -> tuple[frozenset[str], dict[str, tuple[object, ...]]]:
+        """Read enabled plugin ids and filesystem fingerprints.
+
+        This performs recursive filesystem scans and must be called off the UI
+        thread.
+
+        Returns:
+            Enabled plugin ids and fingerprints for all discovered plugins.
+        """
         from deepagents_code.plugins.store import load_enabled_plugin_ids
-        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
         enabled_plugin_ids = load_enabled_plugin_ids()
-        self._plugin_fingerprints = self._fingerprint_plugins(
-            discover_plugins().plugins
+        _, fingerprints = self._discover_plugins_with_fingerprints()
+        return enabled_plugin_ids, fingerprints
+
+    async def _check_plugin_manager_changes(
+        self,
+        enabled_plugin_ids: frozenset[str],
+        plugin_fingerprints: dict[str, tuple[object, ...]],
+    ) -> None:
+        """Offer a reload when plugin state changed while the manager was open.
+
+        Args:
+            enabled_plugin_ids: Enabled plugin ids from before the manager opened.
+            plugin_fingerprints: Plugin fingerprints from before the manager opened.
+        """
+        try:
+            current_enabled_ids, current_fingerprints = await asyncio.to_thread(
+                self._snapshot_plugin_state
+            )
+        except Exception:
+            # Preserve a manual reload path if state discovery fails after the
+            # modal has closed. Pending state is unknown here, so point the user
+            # at /reload without asserting that changes are pending.
+            logger.exception("Failed to check plugin state after manager close")
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+            return
+
+        if (
+            current_enabled_ids != enabled_plugin_ids
+            or current_fingerprints != plugin_fingerprints
+        ):
+            await self._offer_plugin_reload()
+
+    async def _show_plugin_manager(self) -> None:
+        """Open the interactive plugin manager."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        enabled_plugin_ids, plugin_fingerprints = await asyncio.to_thread(
+            self._snapshot_plugin_state
         )
+        self._plugin_fingerprints = plugin_fingerprints
 
         def on_close(_result: None) -> None:
-            try:
-                current_fingerprints = self._fingerprint_plugins(
-                    discover_plugins().plugins
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    self._check_plugin_manager_changes(
+                        enabled_plugin_ids, plugin_fingerprints
+                    ),
+                    exclusive=True,
+                    group="plugin-reload-prompt",
                 )
-                if (
-                    load_enabled_plugin_ids() != enabled_plugin_ids
-                    or current_fingerprints != self._plugin_fingerprints
-                ):
-                    self.call_after_refresh(
-                        lambda: self.run_worker(
-                            self._offer_plugin_reload(),
-                            exclusive=True,
-                            group="plugin-reload-prompt",
-                        )
-                    )
-            except Exception:
-                # State discovery may fail while the modal unwinds; preserve a
-                # manual reload path instead of raising from its dismiss callback.
-                logger.exception("Failed to check plugin state after manager close")
-                self.call_after_refresh(
-                    lambda: self.run_worker(
-                        self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER)),
-                        exclusive=True,
-                        group="plugin-reload-prompt",
-                    )
-                )
+            )
 
         self.push_screen(
             PluginManagerScreen(

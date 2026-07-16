@@ -468,8 +468,13 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if not enabled:
             return
         current = options.highlighted
-        position = enabled.index(current) if current in enabled else 0
-        options.highlighted = enabled[(position + step) % len(enabled)]
+        if current in enabled:
+            position = enabled.index(current)
+            options.highlighted = enabled[(position + step) % len(enabled)]
+        else:
+            # Nothing highlighted yet: step forward to the first option, back to
+            # the last.
+            options.highlighted = enabled[0] if step > 0 else enabled[-1]
         options.focus()
 
     def action_next_tab(self) -> None:
@@ -624,18 +629,28 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if row is None:
             return
         try:
-            await asyncio.to_thread(install_plugin, row.plugin_id)
+            instance = await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
             self._refresh_view()
             return
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
         label = row.label
+        needs_login = any(
+            needs_login
+            for _server_label, _scoped, needs_login in plugin_mcp_server_entries(
+                instance
+            )
+        )
         self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
         self._status = f"Installed {label}. Run /reload to activate."
+        if needs_login:
+            self._status += f" After reload, sign in to {label} via /mcp."
         self._error = None
         await self._refresh_state()
 

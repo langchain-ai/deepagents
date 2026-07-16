@@ -1546,7 +1546,6 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
-    _register_cleanup: Callable[[Callable[[], Awaitable[None]]], None] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1660,8 +1659,6 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
-        _register_cleanup: Private server lifecycle integration used to register
-            asynchronous cleanup for process-lifetime resources.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1969,8 +1966,6 @@ def create_cli_agent(
         # the optional dependency unnecessary unless browser capability is asked for.
         browser_module = importlib.import_module("deepagents_browser")
         browser_middleware = browser_module.BrowserMiddleware()
-        if _register_cleanup is not None:
-            _register_cleanup(browser_middleware.aclose)
         browser_consequential_tool_names = set(
             browser_middleware.consequential_tool_names
         )

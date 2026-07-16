@@ -187,7 +187,7 @@ class TestStartServerAndGetAgent:
         kwargs = mock_generate_langgraph_json.call_args.kwargs
         assert kwargs["graph_ref"] == "deepagents_code.server_graph:make_graph"
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
-        assert kwargs["http_app"] == "deepagents_code._server_lifecycle:app"
+        assert "http_app" not in kwargs
 
         # The graph is imported as a package module, so the scaffold must not
         # copy server_graph.py into the runtime workdir (a relic of the old
@@ -398,12 +398,11 @@ class TestStartServerAndGetAgent:
             tmp_path,
             graph_ref="./server_graph.py:make_graph",
             checkpointer_path="./checkpointer.py:create_checkpointer",
-            http_app="deepagents_code._server_lifecycle:app",
         )
         config = json.loads((tmp_path / "langgraph.json").read_text())
         assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
-        assert config["http"]["app"] == "deepagents_code._server_lifecycle:app"
+        assert "http" not in config
 
 
 class TestWritePyproject:

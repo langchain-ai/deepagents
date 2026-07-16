@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import math
+import queue
 import secrets
+import threading
+import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
+from concurrent.futures import Future
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_browser.errors import BrowserError, BrowserErrorCode, BrowserRuntimeError
-from deepagents_browser.network import NetworkPolicy, RouteLike
+from deepagents_browser.network import NetworkPolicy
+
+RuntimeFactory = Callable[[], tuple[Any, Any]]
 
 if TYPE_CHECKING:
     from deepagents_browser.schemas import BrowserAction
 
-RuntimeFactory = Callable[[], Awaitable[tuple[Any, Any]]]
 _MAX_THREAD_ID_CHARS = 512
 _ACTIONABLE_SELECTOR = (
     "a,button,input,textarea,select,summary,[role=button],[role=link],"
@@ -122,18 +128,19 @@ _ELEMENT_SEMANTICS_SCRIPT = """element => {
 }"""
 
 
-async def _element_semantics(
+def _element_semantics(
     handle: Any,  # noqa: ANN401
     *,
     timeout_ms: int,
 ) -> Mapping[str, object]:
-    """Collect optional package semantics within a strict wall-clock bound."""
+    """Collect optional semantics on the worker under Playwright page defaults."""
     evaluate = getattr(handle, "evaluate", None)
     if not callable(evaluate):
         return {}
+    # Sync evaluate has no per-call timeout; the page default applies where supported.
+    _ = timeout_ms
     try:
-        async with asyncio.timeout(timeout_ms / 1_000):
-            value = await evaluate(_ELEMENT_SEMANTICS_SCRIPT)
+        value = evaluate(_ELEMENT_SEMANTICS_SCRIPT)
     except Exception:  # noqa: BLE001  # optional metadata must not fail or stall snapshots
         return {}
     return value if isinstance(value, Mapping) else {}
@@ -201,7 +208,7 @@ class BrowserLimits:
         max_screenshot_output_chars: Maximum serialized screenshot response characters.
         max_requests_per_context: Maximum intercepted requests over a context lifetime.
         action_timeout_ms: Playwright timeout applied to user-driven operations.
-        semantic_timeout_ms: Wall-clock timeout for optional element semantic evaluation.
+        semantic_timeout_ms: Requested bound for optional semantic evaluation where supported.
         startup_timeout_seconds: Maximum lazy browser startup time.
     """
 
@@ -360,11 +367,11 @@ class _ElementReference:
 
 
 @dataclass(slots=True)
-class BrowserSession:
+class _SyncBrowserSession:
     """One isolated browser context owned by a LangGraph thread."""
 
     context: Any
-    policy: NetworkPolicy
+    validate_request: Callable[[str], bool]
     limits: BrowserLimits
     _active_page: Any | None = None
     _page_refs: dict[str, Any] = field(default_factory=dict)
@@ -374,33 +381,35 @@ class BrowserSession:
     _generation: int = 0
     _request_count: int = 0
     _closed: bool = False
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    _route_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def initialize(self) -> None:
+    def initialize(self) -> None:
         """Install request interception before any page is used."""
 
-        async def handle_route(route: RouteLike) -> None:
-            await self._handle_route(route)
+        def handle_route(route: Any) -> None:  # noqa: ANN401
+            self._handle_route(route)
 
-        await self.context.route("**/*", handle_route)
+        self.context.route("**/*", handle_route)
         pages = list(self.context.pages)
         if pages:
             self._active_page = pages[0]
             self._register_page(pages[0])
 
-    async def _handle_route(self, route: RouteLike) -> None:
-        async with self._route_lock:
-            self._request_count += 1
-            over_limit = self._request_count > self.limits.max_requests_per_context
+    def _handle_route(self, route: Any) -> None:  # noqa: ANN401
+        self._request_count += 1
+        over_limit = self._request_count > self.limits.max_requests_per_context
         if over_limit:
-            await route.abort("blockedbyclient")
+            route.abort("blockedbyclient")
             return
-        await self.policy.handle_route(route)
+        if self.validate_request(route.request.url):
+            route.continue_()
+        else:
+            route.abort("blockedbyclient")
 
     def _register_page(self, page: Any) -> str:  # noqa: ANN401
         page_id = id(page)
         if self._observed_pages.get(page_id) is not page:
+            page.set_default_timeout(self.limits.action_timeout_ms)
+            page.set_default_navigation_timeout(self.limits.action_timeout_ms)
             page.on(
                 "framenavigated",
                 lambda frame, observed_page=page: self._handle_frame_navigated(
@@ -419,7 +428,7 @@ class BrowserSession:
         if frame is page.main_frame:
             self._invalidate_elements(code=_NAVIGATION_INVALIDATED_REFERENCE)
 
-    async def _page(
+    def _page(
         self,
         page_ref: str | None = None,
         *,
@@ -456,14 +465,13 @@ class BrowserSession:
         if not create:
             msg = "No browser tab is open"
             raise BrowserRuntimeError(msg)
-        return await self._new_page()
+        return self._new_page()
 
-    async def _new_page(self) -> Any:  # noqa: ANN401
+    def _new_page(self) -> Any:  # noqa: ANN401
         if len(self.context.pages) >= self.limits.max_tabs_per_context:
             msg = "Tab limit reached"
             raise BrowserRuntimeError(msg, code=BrowserErrorCode.TAB_LIMIT_REACHED)
-        page = await self.context.new_page()
-        page.set_default_timeout(self.limits.action_timeout_ms)
+        page = self.context.new_page()
         self._active_page = page
         self._register_page(page)
         self._invalidate_elements()
@@ -479,12 +487,12 @@ class BrowserSession:
             self._invalidated_element_codes = dict.fromkeys(self._element_refs, code)
             self._element_refs.clear()
 
-    async def _enforce_page_limit(self) -> None:
+    def _enforce_page_limit(self) -> None:
         pages = list(self.context.pages)
         if len(pages) <= self.limits.max_tabs_per_context:
             return
         for page in pages[self.limits.max_tabs_per_context :]:
-            await page.close()
+            page.close()
         live_pages = set(self.context.pages)
         self._page_refs = {
             page_ref: page for page_ref, page in self._page_refs.items() if page in live_pages
@@ -496,30 +504,32 @@ class BrowserSession:
         msg = "Page attempted to exceed the configured tab limit"
         raise BrowserRuntimeError(msg, code=BrowserErrorCode.TAB_LIMIT_REACHED)
 
-    async def navigate(self, url: str, page_ref: str | None = None) -> str:
+    def navigate(self, url: str, page_ref: str | None = None) -> str:
         """Navigate a selected tab after validating the destination."""
-        await self.policy.validate_url(url)
-        async with self._lock:
-            page = await self._page(page_ref)
-            await page.goto(url, wait_until="domcontentloaded")
-            await self._enforce_page_limit()
-            self._invalidate_elements()
-            return json.dumps(
-                {
-                    "page_ref": self._register_page(page),
-                    "title": (await page.title())[:300],
-                    "url": page.url[:8_192],
-                },
-                separators=(",", ":"),
-            )
+        page = self._page(page_ref)
+        page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self.limits.action_timeout_ms,
+        )
+        self._enforce_page_limit()
+        self._invalidate_elements()
+        return json.dumps(
+            {
+                "page_ref": self._register_page(page),
+                "title": (page.title())[:300],
+                "url": page.url[:8_192],
+            },
+            separators=(",", ":"),
+        )
 
-    async def _describe_element(self, handle: Any) -> _ElementDescription:  # noqa: ANN401
-        async def bounded_attribute(name: str, limit: int = 300) -> str | None:
-            value = await handle.get_attribute(name)
+    def _describe_element(self, handle: Any) -> _ElementDescription:  # noqa: ANN401
+        def bounded_attribute(name: str, limit: int = 300) -> str | None:
+            value = handle.get_attribute(name)
             return None if value is None else value[:limit]
 
         attributes = {
-            name: await bounded_attribute(name, 2_048 if name == "href" else 300)
+            name: bounded_attribute(name, 2_048 if name == "href" else 300)
             for name in (
                 "role",
                 "aria-label",
@@ -538,7 +548,7 @@ class BrowserSession:
                 "required",
             )
         }
-        semantics = await _element_semantics(
+        semantics = _element_semantics(
             handle,
             timeout_ms=min(self.limits.semantic_timeout_ms, self.limits.action_timeout_ms),
         )
@@ -549,7 +559,7 @@ class BrowserSession:
                 return None
             return value.strip().lower() == "true" if name.startswith("aria-") else True
 
-        text = (await handle.text_content() or "").strip()[:300]
+        text = (handle.text_content() or "").strip()[:300]
         aria_label = attributes["aria-label"]
         name = attributes["name"]
         placeholder = attributes["placeholder"]
@@ -599,82 +609,81 @@ class BrowserSession:
             editable=_semantic_bool(semantics, "editable", fallback=fallback_editable),
         )
 
-    async def snapshot(self, page_ref: str | None = None) -> str:
+    def snapshot(self, page_ref: str | None = None) -> str:
         """Return a bounded snapshot with opaque, generation-scoped references."""
-        async with self._lock:
-            await self._enforce_page_limit()
-            page = await self._page(page_ref)
-            self._invalidate_elements()
-            generation = self._generation
-            locator = page.locator(_ACTIONABLE_SELECTOR)
-            total = await locator.count()
-            count = min(total, self.limits.max_snapshot_nodes)
-            nodes: list[dict[str, str | bool | None]] = []
-            for index in range(count):
-                item = locator.nth(index)
-                if not await item.is_visible():
-                    continue
-                handle = await item.element_handle()
-                if handle is None or not await handle.is_visible():
-                    continue
-                description = await self._describe_element(handle)
-                if self._generation != generation:
-                    self._invalidate_elements(code=BrowserErrorCode.PAGE_NAVIGATED)
-                    msg = "Page navigated while the snapshot was being captured"
-                    raise BrowserRuntimeError(msg, code=BrowserErrorCode.PAGE_NAVIGATED)
-                if description.is_sensitive:
-                    continue
-                node_ref = f"e_{generation}_{secrets.token_urlsafe(18)}"
-                candidate = {
-                    "ref": node_ref,
-                    "role": description.role,
-                    "label": description.aria_label or description.name,
-                    "type": description.element_type,
-                    "href": description.href,
-                    "text": description.text,
-                    "tag": description.tag,
-                    "name": description.accessible_name,
-                    "disabled": description.disabled,
-                    "checked": description.checked,
-                    "selected": description.selected,
-                    "expanded": description.expanded,
-                    "readonly": description.readonly,
-                    "required": description.required,
-                    "focused": description.focused,
-                    "editable": description.editable,
-                }
-                prospective = json.dumps(
-                    {"page_ref": self._register_page(page), "nodes": [*nodes, candidate]},
-                    separators=(",", ":"),
-                )
-                if len(prospective) > self.limits.max_snapshot_chars:
-                    break
-                self._element_refs[node_ref] = _ElementReference(
-                    page=page,
-                    handle=handle,
-                    generation=generation,
-                    description=description,
-                )
-                nodes.append(candidate)
+        self._enforce_page_limit()
+        page = self._page(page_ref)
+        self._invalidate_elements()
+        generation = self._generation
+        locator = page.locator(_ACTIONABLE_SELECTOR)
+        total = locator.count()
+        count = min(total, self.limits.max_snapshot_nodes)
+        nodes: list[dict[str, str | bool | None]] = []
+        for index in range(count):
+            item = locator.nth(index)
+            if not item.is_visible():
+                continue
+            handle = item.element_handle()
+            if handle is None or not handle.is_visible():
+                continue
+            description = self._describe_element(handle)
             if self._generation != generation:
                 self._invalidate_elements(code=BrowserErrorCode.PAGE_NAVIGATED)
                 msg = "Page navigated while the snapshot was being captured"
                 raise BrowserRuntimeError(msg, code=BrowserErrorCode.PAGE_NAVIGATED)
-            result = json.dumps(
-                {
-                    "page_ref": self._register_page(page),
-                    "generation": generation,
-                    "nodes": nodes,
-                    "truncated": count < total or len(nodes) < count,
-                },
+            if description.is_sensitive:
+                continue
+            node_ref = f"e_{generation}_{secrets.token_urlsafe(18)}"
+            candidate = {
+                "ref": node_ref,
+                "role": description.role,
+                "label": description.aria_label or description.name,
+                "type": description.element_type,
+                "href": description.href,
+                "text": description.text,
+                "tag": description.tag,
+                "name": description.accessible_name,
+                "disabled": description.disabled,
+                "checked": description.checked,
+                "selected": description.selected,
+                "expanded": description.expanded,
+                "readonly": description.readonly,
+                "required": description.required,
+                "focused": description.focused,
+                "editable": description.editable,
+            }
+            prospective = json.dumps(
+                {"page_ref": self._register_page(page), "nodes": [*nodes, candidate]},
                 separators=(",", ":"),
             )
-            if len(result) > self.limits.max_snapshot_chars:
-                msg = "Snapshot metadata exceeds configured output limit"
-                raise BrowserRuntimeError(msg)
-            return result
+            if len(prospective) > self.limits.max_snapshot_chars:
+                break
+            self._element_refs[node_ref] = _ElementReference(
+                page=page,
+                handle=handle,
+                generation=generation,
+                description=description,
+            )
+            nodes.append(candidate)
+        if self._generation != generation:
+            self._invalidate_elements(code=BrowserErrorCode.PAGE_NAVIGATED)
+            msg = "Page navigated while the snapshot was being captured"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.PAGE_NAVIGATED)
+        result = json.dumps(
+            {
+                "page_ref": self._register_page(page),
+                "generation": generation,
+                "nodes": nodes,
+                "truncated": count < total or len(nodes) < count,
+            },
+            separators=(",", ":"),
+        )
+        if len(result) > self.limits.max_snapshot_chars:
+            msg = "Snapshot metadata exceeds configured output limit"
+            raise BrowserRuntimeError(msg)
+        return result
 
-    async def _resolve_action_reference(
+    def _resolve_action_reference(
         self, element_ref: str
     ) -> tuple[_ElementReference, _ElementDescription]:
         """Resolve and revalidate one identity-pinned actionable element."""
@@ -694,8 +703,8 @@ class BrowserSession:
             msg = "Element identity is no longer available"
             raise BrowserRuntimeError(msg, code=_ELEMENT_IDENTITY_UNAVAILABLE)
         try:
-            is_visible = await reference.handle.is_visible()
-            current_description = await self._describe_element(reference.handle)
+            is_visible = reference.handle.is_visible()
+            current_description = self._describe_element(reference.handle)
         except Exception as exc:
             msg = "Element identity is no longer available"
             raise BrowserRuntimeError(msg, code=_ELEMENT_IDENTITY_UNAVAILABLE) from exc
@@ -725,7 +734,7 @@ class BrowserSession:
             msg = "Action does not match the referenced element; take a new snapshot"
             raise BrowserRuntimeError(msg, code=BrowserErrorCode.ACTION_TARGET_MISMATCH)
 
-    async def _perform_element_action(
+    def _perform_element_action(
         self,
         action: BrowserAction,
         handle: Any,  # noqa: ANN401
@@ -733,28 +742,28 @@ class BrowserSession:
         timeout = self.limits.action_timeout_ms
         match action.kind:
             case "click":
-                await handle.click(timeout=timeout)
+                handle.click(timeout=timeout)
             case "type":
-                await handle.fill(action.text, timeout=timeout)
+                handle.fill(action.text, timeout=timeout)
             case "press":
-                await handle.press(action.key, timeout=timeout)
+                handle.press(action.key, timeout=timeout)
             case "select":
-                await handle.select_option(action.value, timeout=timeout)
+                handle.select_option(action.value, timeout=timeout)
             case "scroll_into_view":
-                await handle.scroll_into_view_if_needed(timeout=timeout)
+                handle.scroll_into_view_if_needed(timeout=timeout)
             case "scroll":
                 msg = "Page scroll does not have an element target"
                 raise TypeError(msg)
 
     @staticmethod
-    async def _perform_page_scroll(
+    def _perform_page_scroll(
         action: BrowserAction,
         page: Any,  # noqa: ANN401
     ) -> tuple[dict[str, int], dict[str, int]]:
         if action.kind != "scroll":
             msg = "Element action cannot be used for page scrolling"
             raise TypeError(msg)
-        result = await page.evaluate(
+        result = page.evaluate(
             _PAGE_SCROLL_SCRIPT,
             {"direction": action.direction, "distance": action.distance},
         )
@@ -784,121 +793,118 @@ class BrowserSession:
             msg = "Browser action failed"
         return BrowserRuntimeError(msg, code=code)
 
-    async def act(self, action: BrowserAction) -> str:
+    def act(self, action: BrowserAction) -> str:
         """Execute one bounded page action or exact-handle element action."""
-        async with self._lock:
-            try:
-                if action.kind == "scroll":
-                    page = await self._page()
-                    try:
-                        async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                            before, after = await self._perform_page_scroll(action, page)
-                    except Exception as exc:
-                        raise self._action_failure(action.kind, exc) from exc
-                    await self._enforce_page_limit()
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "page_ref": self._register_page(page),
-                            "action": action.kind,
-                            "direction": action.direction,
-                            "distance": action.distance,
-                            "before": before,
-                            "after": after,
-                            "moved": before != after,
-                        },
-                        separators=(",", ":"),
-                    )
-
-                reference, description = await self._resolve_action_reference(action.ref)
-                self._validate_action_target(action, description)
+        try:
+            if action.kind == "scroll":
+                page = self._page()
                 try:
-                    async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                        await self._perform_element_action(action, reference.handle)
+                    before, after = self._perform_page_scroll(action, page)
                 except Exception as exc:
                     raise self._action_failure(action.kind, exc) from exc
-                await self._enforce_page_limit()
+                self._enforce_page_limit()
                 return json.dumps(
                     {
                         "ok": True,
-                        "page_ref": self._register_page(reference.page),
+                        "page_ref": self._register_page(page),
                         "action": action.kind,
-                        "target": description.diagnostics(),
+                        "direction": action.direction,
+                        "distance": action.distance,
+                        "before": before,
+                        "after": after,
+                        "moved": before != after,
                     },
                     separators=(",", ":"),
                 )
-            finally:
-                self._invalidate_elements()
 
-    async def screenshot(self, page_ref: str | None = None) -> ScreenshotResult:
-        """Return bounded raw PNG data with metadata that excludes base64."""
-        async with self._lock:
-            await self._enforce_page_limit()
-            page = await self._page(page_ref)
-            payload = await page.screenshot(type="png", full_page=False)
-            result = ScreenshotResult(
-                page_ref=self._register_page(page),
-                media_type="image/png",
-                data=payload,
-            )
-            if (
-                len(payload) > self.limits.max_screenshot_bytes
-                or result.projected_output_chars() > self.limits.max_screenshot_output_chars
-            ):
-                msg = "Screenshot exceeds configured output limit"
-                raise BrowserRuntimeError(msg, code=BrowserErrorCode.SCREENSHOT_TOO_LARGE)
-            return result
-
-    async def tabs(self, operation: str, page_ref: str | None = None) -> str:
-        """List, create, select, or close tabs without exposing raw page objects."""
-        async with self._lock:
-            await self._enforce_page_limit()
-            if operation == "new":
-                await self._new_page()
-            elif operation == "select":
-                if page_ref is None:
-                    msg = "page_ref is required when selecting a tab"
-                    raise BrowserRuntimeError(msg)
-                await self._page(page_ref, create=False)
-            elif operation == "close":
-                page = await self._page(page_ref, create=False)
-                await page.close()
-                stale = [ref for ref, candidate in self._page_refs.items() if candidate is page]
-                for ref in stale:
-                    self._page_refs.pop(ref, None)
-                self._observed_pages.pop(id(page), None)
-                self._active_page = None
-                self._invalidate_elements()
-            elif operation != "list":
-                msg = "Unsupported tab operation"
-                raise BrowserRuntimeError(msg)
-            tabs = [
-                {
-                    "page_ref": self._register_page(page),
-                    "active": page is self._active_page,
-                    "title": (await page.title())[:300],
-                    "url": page.url[:8_192],
-                }
-                for page in list(self.context.pages)[: self.limits.max_tabs_per_context]
-            ]
-            return json.dumps({"tabs": tabs}, separators=(",", ":"))
-
-    async def aclose(self) -> None:
-        """Close this context once while preserving retryability after failure."""
-        async with self._lock:
-            if self._closed:
-                return
+            reference, description = self._resolve_action_reference(action.ref)
+            self._validate_action_target(action, description)
             try:
-                async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                    await self.context.close()
+                self._perform_element_action(action, reference.handle)
             except Exception as exc:
-                msg = "Browser context cleanup failed"
-                raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
-            self._closed = True
-            self._element_refs.clear()
-            self._invalidated_element_codes.clear()
-            self._page_refs.clear()
-            self._observed_pages.clear()
+                raise self._action_failure(action.kind, exc) from exc
+            self._enforce_page_limit()
+            return json.dumps(
+                {
+                    "ok": True,
+                    "page_ref": self._register_page(reference.page),
+                    "action": action.kind,
+                    "target": description.diagnostics(),
+                },
+                separators=(",", ":"),
+            )
+        finally:
+            self._invalidate_elements()
+
+    def screenshot(self, page_ref: str | None = None) -> ScreenshotResult:
+        """Return bounded raw PNG data with metadata that excludes base64."""
+        self._enforce_page_limit()
+        page = self._page(page_ref)
+        payload = page.screenshot(
+            type="png",
+            full_page=False,
+            timeout=self.limits.action_timeout_ms,
+        )
+        result = ScreenshotResult(
+            page_ref=self._register_page(page),
+            media_type="image/png",
+            data=payload,
+        )
+        if (
+            len(payload) > self.limits.max_screenshot_bytes
+            or result.projected_output_chars() > self.limits.max_screenshot_output_chars
+        ):
+            msg = "Screenshot exceeds configured output limit"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.SCREENSHOT_TOO_LARGE)
+        return result
+
+    def tabs(self, operation: str, page_ref: str | None = None) -> str:
+        """List, create, select, or close tabs without exposing raw page objects."""
+        self._enforce_page_limit()
+        if operation == "new":
+            self._new_page()
+        elif operation == "select":
+            if page_ref is None:
+                msg = "page_ref is required when selecting a tab"
+                raise BrowserRuntimeError(msg)
+            self._page(page_ref, create=False)
+        elif operation == "close":
+            page = self._page(page_ref, create=False)
+            page.close()
+            stale = [ref for ref, candidate in self._page_refs.items() if candidate is page]
+            for ref in stale:
+                self._page_refs.pop(ref, None)
+            self._observed_pages.pop(id(page), None)
+            self._active_page = None
+            self._invalidate_elements()
+        elif operation != "list":
+            msg = "Unsupported tab operation"
+            raise BrowserRuntimeError(msg)
+        tabs = [
+            {
+                "page_ref": self._register_page(page),
+                "active": page is self._active_page,
+                "title": (page.title())[:300],
+                "url": page.url[:8_192],
+            }
+            for page in list(self.context.pages)[: self.limits.max_tabs_per_context]
+        ]
+        return json.dumps({"tabs": tabs}, separators=(",", ":"))
+
+    def aclose(self) -> None:
+        """Close this context once while preserving retryability after failure."""
+        if self._closed:
+            return
+        try:
+            self.context.close()
+        except Exception as exc:
+            msg = "Browser context cleanup failed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
+        self._closed = True
+        self._element_refs.clear()
+        self._invalidated_element_codes.clear()
+        self._page_refs.clear()
+        self._observed_pages.clear()
 
 
 def _require_provisioned_chromium(playwright: Any) -> None:  # noqa: ANN401
@@ -914,28 +920,276 @@ def _require_provisioned_chromium(playwright: Any) -> None:  # noqa: ANN401
         )
 
 
-async def _default_runtime_factory() -> tuple[Any, Any]:
-    """Import and launch Playwright only when browser access is first used."""
-    from playwright.async_api import async_playwright  # noqa: PLC0415
+def _default_runtime_factory() -> tuple[Any, Any]:
+    """Import and launch Playwright only on the dedicated worker thread."""
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
-    playwright = await async_playwright().start()
+    playwright = sync_playwright().start()
     try:
         _require_provisioned_chromium(playwright)
-        browser = await playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(headless=False)
     except BaseException:
-        await playwright.stop()
+        playwright.stop()
         raise
     return playwright, browser
 
 
-class BrowserRuntimeManager:
-    """Lazily own one browser and bounded, thread-isolated contexts.
+class _BrowserWorkerState:
+    """All raw Playwright state, accessed only by one dedicated worker thread."""
 
-    Args:
-        limits: Browser resource limits.
-        network_policy: Policy used for pre-navigation and request validation.
-        runtime_factory: Internal dependency injection point for deterministic tests.
+    def __init__(self) -> None:
+        self.playwright: Any | None = None
+        self.browser: Any | None = None
+        self.sessions: dict[str, _SyncBrowserSession] = {}
+        self.thread_id: int | None = None
+        self._validate_request: Callable[[str], bool] | None = None
+
+    def start(
+        self,
+        factory: RuntimeFactory,
+        validate_request: Callable[[str], bool],
+    ) -> None:
+        self._assert_worker_thread()
+        if self.browser is not None:
+            return
+        try:
+            result = factory()
+        except BrowserError:
+            raise
+        except Exception as exc:
+            msg = "Browser runtime startup failed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+        playwright, browser = self._validate_factory_result(result)
+        self.playwright = playwright
+        self.browser = browser
+        self._validate_request = validate_request
+
+    def _assert_worker_thread(self) -> None:
+        current = threading.get_ident()
+        if self.thread_id is None:
+            self.thread_id = current
+        elif current != self.thread_id:
+            msg = "Playwright state accessed outside its dedicated worker thread"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
+
+    @staticmethod
+    def _validate_factory_result(result: object) -> tuple[Any, Any]:
+        if not isinstance(result, tuple) or len(result) != 2:  # noqa: PLR2004
+            msg = "Browser runtime factory must return (playwright, browser)"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
+        playwright, browser = cast("tuple[Any, Any]", result)
+        if not callable(getattr(playwright, "stop", None)):
+            msg = "Browser runtime factory returned an invalid Playwright runtime"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
+        if not callable(getattr(browser, "new_context", None)) or not callable(
+            getattr(browser, "close", None)
+        ):
+            try:
+                playwright.stop()
+            except Exception as exc:
+                msg = "Invalid browser runtime could not be cleaned up"
+                raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+            msg = "Browser runtime factory returned an invalid browser"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
+        return playwright, browser
+
+    def create_session(self, session_id: str, limits: BrowserLimits) -> None:
+        self._assert_worker_thread()
+        if self.browser is None or self._validate_request is None:
+            msg = "Browser runtime is not started"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
+        try:
+            context = self.browser.new_context(
+                accept_downloads=False,
+                service_workers="block",
+                viewport={"width": 1280, "height": 720},
+            )
+        except Exception as exc:
+            msg = "Browser context initialization failed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+        session = _SyncBrowserSession(
+            context=context,
+            validate_request=self._validate_request,
+            limits=limits,
+        )
+        try:
+            session.initialize()
+        except BaseException as exc:
+            try:
+                context.close()
+            except Exception as cleanup_error:
+                msg = "Failed browser context initialization could not be cleaned up"
+                raise BrowserRuntimeError(
+                    msg,
+                    code=BrowserErrorCode.CLEANUP_FAILED,
+                ) from cleanup_error
+            if isinstance(exc, BrowserError):
+                raise
+            if isinstance(exc, Exception):
+                msg = "Browser context initialization failed"
+                raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+            raise
+        self.sessions[session_id] = session
+
+    def call_session(self, session_id: str, method: str, *args: object) -> object:
+        self._assert_worker_thread()
+        try:
+            session = self.sessions[session_id]
+        except KeyError as exc:
+            msg = "Browser session is closed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED) from exc
+        try:
+            return getattr(session, method)(*args)
+        except BrowserError:
+            raise
+        except Exception as exc:
+            msg = "Browser operation failed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.ACTION_FAILED) from exc
+
+    def close_session(self, session_id: str) -> None:
+        self._assert_worker_thread()
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        session.aclose()
+        self.sessions.pop(session_id, None)
+
+    def close_all(self) -> None:
+        """Synchronously close all resources; failures remain retryable."""
+        self._assert_worker_thread()
+        for session_id in tuple(self.sessions):
+            self.close_session(session_id)
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception as exc:
+                msg = "Browser cleanup failed"
+                raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
+            self.browser = None
+        if self.playwright is not None:
+            try:
+                self.playwright.stop()
+            except Exception as exc:
+                msg = "Playwright cleanup failed"
+                raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
+            self.playwright = None
+
+
+class _BrowserWorker:
+    """Single daemon command thread that exclusively owns Playwright state."""
+
+    def __init__(self) -> None:
+        self._commands: queue.Queue[tuple[str, tuple[object, ...], Future[object]] | None] = (
+            queue.Queue()
+        )
+        self._shutdown = False
+        self._lifecycle_lock = threading.Lock()
+        self._stopped: Future[None] = Future()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="deepagents-browser",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        state = _BrowserWorkerState()
+        try:
+            while (command := self._commands.get()) is not None:
+                method, args, future = command
+                if not future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    result = getattr(state, method)(*args)
+                except BaseException as exc:  # noqa: BLE001  # preserve worker future semantics
+                    future.set_exception(exc)
+                else:
+                    future.set_result(result)
+        finally:
+            self._stopped.set_result(None)
+
+    def submit(self, method: str, *args: object) -> Future[object]:
+        with self._lifecycle_lock:
+            if self._shutdown:
+                msg = "Browser worker is closed"
+                raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
+            future: Future[object] = Future()
+            self._commands.put((method, args, future))
+            return future
+
+    def shutdown(self, *, wait: bool, timeout: float | None = None) -> None:
+        with self._lifecycle_lock:
+            if not self._shutdown:
+                self._shutdown = True
+                self._commands.put(None)
+        if wait:
+            self._thread.join(timeout)
+
+    @property
+    def is_alive(self) -> bool:
+        """Return whether the dedicated worker thread is still running."""
+        return self._thread.is_alive()
+
+    @property
+    def stopped(self) -> Future[None]:
+        """Return a future completed after the worker command loop exits."""
+        return self._stopped
+
+
+@dataclass(slots=True)
+class BrowserSession:
+    """Async facade for one worker-owned isolated browser context.
+
+    Cancellation of an awaiting caller cannot preempt a synchronous Playwright call
+    that has already started on the worker. Native Playwright timeouts bound methods
+    that expose one. Manager action deadlines can return while a non-preemptible sync
+    evaluate is still running, and the worker finishes it before the next command.
     """
+
+    _manager: BrowserRuntimeManager
+    _session_id: str
+    policy: NetworkPolicy
+    limits: BrowserLimits
+    _closed: bool = False
+
+    async def _call(self, method: str, *args: object) -> object:
+        if self._closed:
+            msg = "Browser session is closed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
+        return await self._manager._call_session(  # noqa: SLF001
+            self._session_id, method, *args
+        )
+
+    async def navigate(self, url: str, page_ref: str | None = None) -> str:
+        """Validate and navigate a selected tab."""
+        await self.policy.validate_url(url)
+        return cast("str", await self._call("navigate", url, page_ref))
+
+    async def snapshot(self, page_ref: str | None = None) -> str:
+        """Return a bounded snapshot with opaque references."""
+        return cast("str", await self._call("snapshot", page_ref))
+
+    async def act(self, action: BrowserAction) -> str:
+        """Execute one validated action."""
+        return cast("str", await self._call("act", action))
+
+    async def screenshot(self, page_ref: str | None = None) -> ScreenshotResult:
+        """Return bounded screenshot bytes and metadata."""
+        return cast("ScreenshotResult", await self._call("screenshot", page_ref))
+
+    async def tabs(self, operation: str, page_ref: str | None = None) -> str:
+        """List, create, select, or close tabs."""
+        return cast("str", await self._call("tabs", operation, page_ref))
+
+    async def aclose(self) -> None:
+        """Close this worker-owned context once, preserving retryability."""
+        if self._closed:
+            return
+        await self._manager._aclose_facade(self)  # noqa: SLF001
+
+
+class BrowserRuntimeManager:
+    """Lazily own a dedicated Playwright worker and bounded contexts."""
 
     def __init__(
         self,
@@ -944,15 +1198,18 @@ class BrowserRuntimeManager:
         network_policy: NetworkPolicy | None = None,
         runtime_factory: RuntimeFactory | None = None,
     ) -> None:
-        """Configure the manager without importing, starting, or launching Playwright."""
+        """Configure the manager without starting a thread or registering atexit."""
         self.limits = limits or BrowserLimits()
         self.network_policy = network_policy or NetworkPolicy()
         self._runtime_factory = runtime_factory or _default_runtime_factory
-        self._playwright: Any | None = None
-        self._browser: Any | None = None
+        self._worker: _BrowserWorker | None = None
+        self._retired_workers: set[_BrowserWorker] = set()
+        self._runtime_started = False
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._sessions: OrderedDict[str, BrowserSession] = OrderedDict()
         self._leases: dict[str, int] = {}
         self._closing_sessions: set[str] = set()
+        self._orphaned_session_ids: set[str] = set()
         self._startup_lock = asyncio.Lock()
         self._sessions_lock = asyncio.Lock()
         self._lease_condition = asyncio.Condition(self._sessions_lock)
@@ -960,68 +1217,181 @@ class BrowserRuntimeManager:
         self._shutdown_lock = asyncio.Lock()
         self._closed = False
         self._shutdown_complete = False
+        self._atexit_registered = False
+        self._atexit_complete = False
+        self._lifecycle_lock = threading.Lock()
 
     async def validate_url(self, url: str) -> None:
         """Validate a URL without creating or accessing a browser runtime."""
         await self.network_policy.validate_url(url)
 
-    @staticmethod
-    async def _validate_runtime_factory_result(result: object) -> tuple[Any, Any]:
-        if not isinstance(result, tuple) or len(result) != 2:  # noqa: PLR2004
-            msg = "Browser runtime factory must return (playwright, browser)"
-            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
-        playwright: Any = result[0]
-        browser: Any = result[1]
-        if not callable(getattr(playwright, "stop", None)):
-            msg = "Browser runtime factory returned an invalid Playwright runtime"
-            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
-        if not callable(getattr(browser, "new_context", None)) or not callable(
-            getattr(browser, "close", None)
-        ):
-            try:
-                await playwright.stop()
-            except Exception as exc:
-                msg = "Invalid browser runtime could not be cleaned up"
-                raise BrowserRuntimeError(
-                    msg,
-                    code=BrowserErrorCode.STARTUP_FAILED,
-                ) from exc
-            msg = "Browser runtime factory returned an invalid browser"
-            raise BrowserRuntimeError(msg, code=BrowserErrorCode.INVALID_RUNTIME_FACTORY)
-        return playwright, browser
+    async def _validate_request_url(self, url: str) -> bool:
+        try:
+            await self.network_policy.validate_url(url)
+        except Exception:  # noqa: BLE001  # interception must fail closed
+            return False
+        return True
 
-    async def _ensure_browser(self) -> Any:  # noqa: ANN401
+    def _worker_validate_request(self, url: str) -> bool:
+        loop = self._owner_loop
+        if loop is None or loop.is_closed():
+            return False
+        future = asyncio.run_coroutine_threadsafe(self._validate_request_url(url), loop)
+        try:
+            return future.result(timeout=self.limits.action_timeout_ms / 1_000)
+        except Exception:  # noqa: BLE001  # timeout, cancellation, and policy errors fail closed
+            future.cancel()
+            return False
+
+    def _register_atexit(self) -> None:
+        if self._atexit_registered:
+            return
+        atexit.register(self._atexit_close)
+        self._atexit_registered = True
+
+    def _retire_worker(self, worker: _BrowserWorker) -> None:
+        """Queue cleanup after an unpreemptible timed-out startup and retire its thread."""
+        with suppress(BrowserRuntimeError):
+            worker.submit("close_all")
+        worker.shutdown(wait=False)
+        self._retired_workers.add(worker)
+        if self._worker is worker:
+            self._worker = None
+        self._runtime_started = False
+
+    def _atexit_close(self) -> None:
+        """Best-effort bounded synchronous fallback; explicit close is preferred."""
+        with self._lifecycle_lock:
+            if self._atexit_complete or self._shutdown_complete:
+                return
+            deadline = time.monotonic() + self.limits.action_timeout_ms / 1_000
+            worker = self._worker
+            close_succeeded = worker is None
+            if worker is not None:
+                try:
+                    future = worker.submit("close_all")
+                except Exception:  # noqa: BLE001  # interpreter shutdown cannot report
+                    future = None
+                worker.shutdown(wait=False)
+                if future is not None:
+                    try:
+                        future.result(timeout=max(0.0, deadline - time.monotonic()))
+                    except Exception as exc:  # noqa: BLE001  # interpreter shutdown cannot report
+                        _ = exc
+                    else:
+                        close_succeeded = True
+                worker.shutdown(
+                    wait=True,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
+            all_stopped = worker is None or not worker.is_alive
+            for retired in self._retired_workers:
+                retired.shutdown(
+                    wait=True,
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
+                all_stopped = all_stopped and not retired.is_alive
+            if close_succeeded and all_stopped:
+                self._atexit_complete = True
+
+    async def _await_future(
+        self,
+        future: Future[object],
+        *,
+        wait_seconds: float | None = None,
+    ) -> object:
+        """Await a worker command without pretending cancellation can preempt it."""
+        wrapped = asyncio.wrap_future(future)
+        if wait_seconds is None:
+            return await asyncio.shield(wrapped)
+        async with asyncio.timeout(wait_seconds):
+            return await asyncio.shield(wrapped)
+
+    @staticmethod
+    async def _reconcile_future(
+        future: Future[object],
+        *,
+        cancel_if_queued: bool,
+    ) -> tuple[object | None, BaseException | None, asyncio.CancelledError | None, bool]:
+        """Wait through cancellation and report the exact worker command outcome."""
+        wrapped = asyncio.wrap_future(future)
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(wrapped)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                if cancel_if_queued and future.cancel():
+                    return None, None, cancellation, False
+            except BaseException as exc:  # noqa: BLE001  # lifecycle state needs exact outcome
+                return None, exc, cancellation, True
+            else:
+                return result, None, cancellation, True
+
+    async def _ensure_worker(self) -> _BrowserWorker:
         if self._closed:
             msg = "Browser runtime manager is closed"
             raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
-        if self._browser is not None:
-            return self._browser
+        if self._worker is not None and self._runtime_started:
+            return self._worker
         async with self._startup_lock:
             if self._closed:
                 msg = "Browser runtime manager is closed"
                 raise BrowserRuntimeError(msg, code=BrowserErrorCode.RUNTIME_CLOSED)
-            if self._browser is None:
+            if self._worker is None:
+                self._owner_loop = asyncio.get_running_loop()
+                self._worker = _BrowserWorker()
+                self._register_atexit()
+            worker = self._worker
+            if not self._runtime_started:
                 try:
-                    async with asyncio.timeout(self.limits.startup_timeout_seconds):
-                        result = await self._runtime_factory()
-                    playwright, browser = await self._validate_runtime_factory_result(result)
+                    future = worker.submit(
+                        "start", self._runtime_factory, self._worker_validate_request
+                    )
+                    await self._await_future(
+                        future,
+                        wait_seconds=self.limits.startup_timeout_seconds,
+                    )
+                    self._runtime_started = True
                 except TimeoutError as exc:
+                    self._retire_worker(worker)
                     msg = "Browser runtime startup timed out"
-                    raise BrowserRuntimeError(
-                        msg,
-                        code=BrowserErrorCode.STARTUP_TIMEOUT,
-                    ) from exc
+                    raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_TIMEOUT) from exc
                 except BrowserError:
                     raise
                 except Exception as exc:
                     msg = "Browser runtime startup failed"
-                    raise BrowserRuntimeError(
-                        msg,
-                        code=BrowserErrorCode.STARTUP_FAILED,
-                    ) from exc
-                self._playwright = playwright
-                self._browser = browser
-            return self._browser
+                    raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+        return worker
+
+    async def _call_session(self, session_id: str, method: str, *args: object) -> object:
+        worker = await self._ensure_worker()
+        future = worker.submit("call_session", session_id, method, *args)
+        try:
+            return await self._await_future(
+                future,
+                wait_seconds=(self.limits.action_timeout_ms / 1_000 if method == "act" else None),
+            )
+        except TimeoutError as exc:
+            msg = "Browser action timed out"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.ACTION_TIMEOUT) from exc
+
+    async def _close_worker_session(self, session: BrowserSession) -> None:
+        worker = self._worker
+        if worker is None:
+            session._closed = True  # noqa: SLF001
+            return
+        future = worker.submit("close_session", session._session_id)  # noqa: SLF001
+        _, error, cancellation, ran = await self._reconcile_future(
+            future,
+            cancel_if_queued=True,
+        )
+        if error is None and ran:
+            session._closed = True  # noqa: SLF001
+        if cancellation is not None:
+            raise cancellation
+        if error is not None:
+            raise error
 
     @staticmethod
     def _validate_thread_id(thread_id: str) -> None:
@@ -1034,27 +1404,98 @@ class BrowserRuntimeManager:
         msg = "Browser context limit reached; all contexts are currently in use"
         return BrowserRuntimeError(msg, code=BrowserErrorCode.CONTEXT_LIMIT_REACHED)
 
+    async def _close_orphaned_sessions(self, worker: _BrowserWorker) -> None:
+        for session_id in tuple(self._orphaned_session_ids):
+            future = worker.submit("close_session", session_id)
+            _, error, cancellation, ran = await self._reconcile_future(
+                future,
+                cancel_if_queued=True,
+            )
+            if error is None and ran:
+                self._orphaned_session_ids.discard(session_id)
+            if cancellation is not None:
+                raise cancellation
+            if error is not None:
+                raise error
+
     async def _create_session(self) -> BrowserSession:
-        browser = await self._ensure_browser()
-        context = await browser.new_context(
-            accept_downloads=False,
-            service_workers="block",
-            viewport={"width": 1280, "height": 720},
-        )
-        session = BrowserSession(context=context, policy=self.network_policy, limits=self.limits)
+        worker = await self._ensure_worker()
+        await self._close_orphaned_sessions(worker)
+        session_id = secrets.token_urlsafe(24)
+        future = worker.submit("create_session", session_id, self.limits)
         try:
-            await session.initialize()
-        except BaseException:
-            try:
-                async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                    await context.close()
-            except Exception as cleanup_error:
-                msg = "Failed browser context initialization could not be cleaned up"
-                raise BrowserRuntimeError(
-                    msg, code=BrowserErrorCode.CLEANUP_FAILED
-                ) from cleanup_error
+            await self._await_future(future)
+        except asyncio.CancelledError:
+            _, create_error, _, ran = await self._reconcile_future(
+                future,
+                cancel_if_queued=True,
+            )
+            if create_error is None and ran:
+                try:
+                    close_future = worker.submit("close_session", session_id)
+                    _, close_error, _, close_ran = await self._reconcile_future(
+                        close_future,
+                        cancel_if_queued=False,
+                    )
+                except BaseException:  # noqa: BLE001  # preserve cancellation and ownership
+                    self._orphaned_session_ids.add(session_id)
+                else:
+                    if close_error is not None or not close_ran:
+                        self._orphaned_session_ids.add(session_id)
             raise
-        return session
+        except BrowserError:
+            raise
+        except Exception as exc:
+            msg = "Browser context initialization failed"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.STARTUP_FAILED) from exc
+        return BrowserSession(
+            _manager=self,
+            _session_id=session_id,
+            policy=self.network_policy,
+            limits=self.limits,
+        )
+
+    async def _finish_session_close(
+        self,
+        thread_id: str,
+        session: BrowserSession,
+    ) -> None:
+        """Reconcile an exact facade mapping after its worker close settles."""
+        try:
+            await self._close_worker_session(session)
+        except BaseException:
+            async with self._lease_condition:
+                if session._closed and self._sessions.get(thread_id) is session:  # noqa: SLF001
+                    self._sessions.pop(thread_id)
+                    self._leases.pop(thread_id, None)
+                self._closing_sessions.discard(thread_id)
+                self._lease_condition.notify_all()
+            raise
+        async with self._lease_condition:
+            if self._sessions.get(thread_id) is session:
+                self._sessions.pop(thread_id)
+                self._leases.pop(thread_id, None)
+            self._closing_sessions.discard(thread_id)
+            self._lease_condition.notify_all()
+
+    async def _aclose_facade(self, session: BrowserSession) -> None:
+        """Close one facade and remove only its exact manager mapping."""
+        async with self._capacity_lock:
+            async with self._lease_condition:
+                mapping = next(
+                    (
+                        thread_id
+                        for thread_id, candidate in self._sessions.items()
+                        if candidate is session
+                    ),
+                    None,
+                )
+                if mapping is not None:
+                    self._closing_sessions.add(mapping)
+            if mapping is None:
+                await self._close_worker_session(session)
+                return
+            await self._finish_session_close(mapping, session)
 
     async def _get_or_create_session(self, thread_id: str, *, leased: bool) -> BrowserSession:
         self._validate_thread_id(thread_id)
@@ -1087,18 +1528,7 @@ class BrowserRuntimeManager:
                     eviction_session = None
 
             if eviction_session is not None and eviction_key is not None:
-                try:
-                    await eviction_session.aclose()
-                except BaseException:
-                    async with self._lease_condition:
-                        self._closing_sessions.discard(eviction_key)
-                        self._lease_condition.notify_all()
-                    raise
-                async with self._lease_condition:
-                    if self._sessions.get(eviction_key) is eviction_session:
-                        self._sessions.pop(eviction_key)
-                        self._leases.pop(eviction_key, None)
-                    self._closing_sessions.discard(eviction_key)
+                await self._finish_session_close(eviction_key, eviction_session)
 
             session = await self._create_session()
             async with self._lease_condition:
@@ -1107,12 +1537,7 @@ class BrowserRuntimeManager:
                 return session
 
     async def get_session(self, thread_id: str) -> BrowserSession:
-        """Return an unleased session for advanced direct usage.
-
-        Unleased sessions remain eligible for LRU eviction immediately after this
-        method returns. Production callers that need retrieval and operation to be
-        atomic with respect to eviction must use `lease_session`.
-        """
+        """Return an unleased session eligible for immediate LRU eviction."""
         return await self._get_or_create_session(thread_id, leased=False)
 
     @asynccontextmanager
@@ -1140,19 +1565,7 @@ class BrowserRuntimeManager:
                 if self._leases.get(thread_id, 0) > 0:
                     raise self._context_limit_error()
                 self._closing_sessions.add(thread_id)
-            try:
-                await session.aclose()
-            except BaseException:
-                async with self._lease_condition:
-                    self._closing_sessions.discard(thread_id)
-                    self._lease_condition.notify_all()
-                raise
-            async with self._lease_condition:
-                if self._sessions.get(thread_id) is session:
-                    self._sessions.pop(thread_id)
-                    self._leases.pop(thread_id, None)
-                self._closing_sessions.discard(thread_id)
-                self._lease_condition.notify_all()
+            await self._finish_session_close(thread_id, session)
 
     async def _wait_for_leases(self) -> None:
         try:
@@ -1163,52 +1576,51 @@ class BrowserRuntimeManager:
             msg = "Browser shutdown timed out waiting for active operations"
             raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
 
+    async def _wait_for_retired_workers(self) -> None:
+        if not self._retired_workers:
+            return
+        stopped = [asyncio.wrap_future(worker.stopped) for worker in self._retired_workers]
+        try:
+            async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
+                await asyncio.shield(asyncio.gather(*stopped))
+        except TimeoutError as exc:
+            msg = "Browser cleanup timed out waiting for a retired worker"
+            raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED) from exc
+        self._retired_workers.clear()
+
     async def aclose(self) -> None:
-        """Close all resources after active leases finish, with retryable cleanup."""
+        """Deterministically close resources and stop the dedicated worker."""
         async with self._shutdown_lock:
             if self._shutdown_complete:
                 return
             async with self._capacity_lock, self._lease_condition:
                 self._closed = True
             await self._wait_for_leases()
-
             async with self._capacity_lock:
-                for thread_id, session in tuple(self._sessions.items()):
-                    async with self._lease_condition:
-                        self._closing_sessions.add(thread_id)
+                worker = self._worker
+                if worker is not None:
                     try:
-                        await session.aclose()
-                    except BaseException:
-                        async with self._lease_condition:
-                            self._closing_sessions.discard(thread_id)
-                            self._lease_condition.notify_all()
+                        await self._await_future(
+                            worker.submit("close_all"),
+                            wait_seconds=self.limits.action_timeout_ms / 1_000,
+                        )
+                    except BrowserError:
                         raise
-                    async with self._lease_condition:
-                        if self._sessions.get(thread_id) is session:
-                            self._sessions.pop(thread_id)
-                            self._leases.pop(thread_id, None)
-                        self._closing_sessions.discard(thread_id)
-                        self._lease_condition.notify_all()
-
-                async with self._startup_lock:
-                    if self._browser is not None:
-                        try:
-                            async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                                await self._browser.close()
-                        except Exception as exc:
-                            msg = "Browser cleanup failed"
-                            raise BrowserRuntimeError(
-                                msg, code=BrowserErrorCode.CLEANUP_FAILED
-                            ) from exc
-                        self._browser = None
-                    if self._playwright is not None:
-                        try:
-                            async with asyncio.timeout(self.limits.action_timeout_ms / 1_000):
-                                await self._playwright.stop()
-                        except Exception as exc:
-                            msg = "Playwright cleanup failed"
-                            raise BrowserRuntimeError(
-                                msg, code=BrowserErrorCode.CLEANUP_FAILED
-                            ) from exc
-                        self._playwright = None
+                    except Exception as exc:
+                        msg = "Browser cleanup failed"
+                        raise BrowserRuntimeError(
+                            msg,
+                            code=BrowserErrorCode.CLEANUP_FAILED,
+                        ) from exc
+                    worker.shutdown(wait=True, timeout=self.limits.action_timeout_ms / 1_000)
+                    if worker.is_alive:
+                        msg = "Browser worker shutdown timed out"
+                        raise BrowserRuntimeError(msg, code=BrowserErrorCode.CLEANUP_FAILED)
+                await self._wait_for_retired_workers()
+                self._sessions.clear()
+                self._leases.clear()
+                self._closing_sessions.clear()
+                self._orphaned_session_ids.clear()
                 self._shutdown_complete = True
+                self._atexit_complete = True
+                self._worker = None

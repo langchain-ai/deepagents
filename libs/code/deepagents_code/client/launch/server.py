@@ -163,7 +163,6 @@ def generate_langgraph_json(
     graph_ref: str = "deepagents_code.server_graph:make_graph",
     env_file: str | None = None,
     checkpointer_path: str | None = None,
-    http_app: str | None = None,
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
@@ -175,8 +174,6 @@ def generate_langgraph_json(
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
             to disk instead of in-memory.
-        http_app: Optional import path to a Starlette-compatible app whose
-            lifespan is mounted by the LangGraph server.
 
     Returns:
         Path to the generated config file.
@@ -191,8 +188,6 @@ def generate_langgraph_json(
         config["env"] = env_file
     if checkpointer_path:
         config["checkpointer"] = {"path": checkpointer_path}
-    if http_app:
-        config["http"] = {"app": http_app}
 
     output_path = Path(output_dir) / "langgraph.json"
     output_path.write_text(json.dumps(config, indent=2))

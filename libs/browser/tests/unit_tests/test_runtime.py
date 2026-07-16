@@ -1,6 +1,8 @@
 import asyncio
 import inspect
 import json
+import threading
+import time
 
 import pytest
 
@@ -65,13 +67,13 @@ class FakeElement:
         self.timeouts = []
         self.failures = {}
 
-    async def get_attribute(self, name):
+    def get_attribute(self, name):
         return self.attrs.get(name)
 
-    async def text_content(self):
+    def text_content(self):
         return self.text
 
-    async def evaluate(self, script):
+    def evaluate(self, script):
         assert "accessibleName" in script
         assert "aria-labelledby" in script
         assert "element.labels" in script
@@ -79,7 +81,7 @@ class FakeElement:
         if self.semantic_failure is not None:
             raise self.semantic_failure
         if self.semantic_wait is not None:
-            await self.semantic_wait.wait()
+            self.semantic_wait.wait()
         accessible_name = (
             self.attrs.get("aria-label")
             or self.labelledby_text
@@ -101,43 +103,43 @@ class FakeElement:
             "editable": self.editable,
         }
 
-    async def is_visible(self):
+    def is_visible(self):
         return self.visible and self.attached
 
-    async def element_handle(self):
+    def element_handle(self):
         return self if self.attached else None
 
-    async def count(self):
+    def count(self):
         return int(self.attached)
 
-    async def _record(self, kind, value, timeout_ms):
+    def _record(self, kind, value, timeout_ms):
         self.timeouts.append((kind, timeout_ms))
         failure = self.failures.get(kind)
         if failure is not None:
             raise failure
         self.actions.append((kind, value))
 
-    async def click(self, *, timeout):  # noqa: ASYNC109  # mirrors Playwright's API
-        await self._record("click", None, timeout)
+    def click(self, *, timeout):  # Mirrors Playwright's synchronous API.
+        self._record("click", None, timeout)
 
-    async def fill(self, text, *, timeout):  # noqa: ASYNC109  # mirrors Playwright's API
-        await self._record("fill", text, timeout)
+    def fill(self, text, *, timeout):  # Mirrors Playwright's synchronous API.
+        self._record("fill", text, timeout)
 
-    async def press(self, key, *, timeout):  # noqa: ASYNC109  # mirrors Playwright's API
-        await self._record("press", key, timeout)
+    def press(self, key, *, timeout):  # Mirrors Playwright's synchronous API.
+        self._record("press", key, timeout)
 
-    async def select_option(self, value, *, timeout):  # noqa: ASYNC109  # Playwright API
-        await self._record("select", value, timeout)
+    def select_option(self, value, *, timeout):  # Mirrors Playwright's synchronous API.
+        self._record("select", value, timeout)
 
-    async def scroll_into_view_if_needed(self, *, timeout):  # noqa: ASYNC109  # Playwright API
-        await self._record("scroll", None, timeout)
+    def scroll_into_view_if_needed(self, *, timeout):  # Mirrors Playwright's synchronous API.
+        self._record("scroll", None, timeout)
 
 
 class FakeLocator:
     def __init__(self, elements) -> None:
         self.elements = elements
 
-    async def count(self):
+    def count(self):
         return len(self.elements)
 
     def nth(self, index):
@@ -155,11 +157,15 @@ class FakePage:
         self.event_handlers = {}
         self.evaluate_calls = []
         self.evaluate_failure = None
+        self.evaluate_started = None
         self.evaluate_wait = None
         self.scroll_result = {"before": {"x": 0, "y": 0}, "after": {"x": 0, "y": 360}}
 
     def set_default_timeout(self, timeout):
         self.timeout = timeout
+
+    def set_default_navigation_timeout(self, timeout):
+        self.navigation_timeout = timeout
 
     def on(self, event, handler):
         self.event_handlers.setdefault(event, []).append(handler)
@@ -168,35 +174,62 @@ class FakePage:
         for handler in self.event_handlers.get("framenavigated", []):
             handler(frame)
 
-    async def goto(self, url, *, wait_until):
+    def goto(self, url, *, wait_until, timeout):
+        assert timeout == self.timeout
+        for _, handler in self.context.routes:
+            route = FakeRoute(url)
+            handler(route)
+            self.context.requests.append(route)
         self.url = url
         self.emit_frame_navigated(self.main_frame)
 
-    async def title(self):
+    def title(self):
         return "Fake title"
 
     def locator(self, selector):
         assert "button" in selector
         return FakeLocator(self.elements)
 
-    async def screenshot(self, *, type, full_page):
+    def screenshot(self, *, type, full_page, timeout):
         assert type == "png"
         assert full_page is False
+        assert timeout == self.timeout
         return self.screenshot_payload
 
-    async def evaluate(self, script, arg):
+    def evaluate(self, script, arg):
         assert "window.scrollBy" in script
         assert "window.innerWidth" in script
         assert "window.innerHeight" in script
         self.evaluate_calls.append((script, arg))
         if self.evaluate_failure is not None:
             raise self.evaluate_failure
+        if self.evaluate_started is not None:
+            self.evaluate_started.set()
         if self.evaluate_wait is not None:
-            await self.evaluate_wait.wait()
+            self.evaluate_wait.wait()
         return self.scroll_result
 
-    async def close(self):
+    def close(self):
         self.context.pages.remove(self)
+
+
+class FakeRequest:
+    def __init__(self, url) -> None:
+        self.url = url
+
+
+class FakeRoute:
+    def __init__(self, url) -> None:
+        self.request = FakeRequest(url)
+        self.continued = 0
+        self.aborted = 0
+
+    def continue_(self):
+        self.continued += 1
+
+    def abort(self, error_code="failed"):
+        assert error_code == "blockedbyclient"
+        self.aborted += 1
 
 
 class FakeContext:
@@ -205,34 +238,38 @@ class FakeContext:
         self.page_elements = page_elements
         self.screenshot = screenshot
         self.routes = []
+        self.requests = []
         self.closed = 0
         self.close_failure = None
+        self.close_started = None
         self.close_wait = None
 
-    async def route(self, pattern, handler):
+    def route(self, pattern, handler):
         self.routes.append((pattern, handler))
 
-    async def new_page(self):
+    def new_page(self):
         page = FakePage(self, self.page_elements, self.screenshot)
         self.pages.append(page)
         return page
 
-    async def close(self):
+    def close(self):
         self.closed += 1
+        if self.close_started is not None:
+            self.close_started.set()
         if self.close_wait is not None:
-            await self.close_wait.wait()
+            self.close_wait.wait()
         if self.close_failure is not None:
             raise self.close_failure
         self.pages.clear()
 
 
 class PlaywrightWrappingContext(FakeContext):
-    async def route(self, pattern, handler):
+    def route(self, pattern, handler):
         if inspect.ismethod(handler):
             setattr(handler.__self__, f"_pw_impl_instance_{handler.__name__}", handler)
         else:
             handler._pw_impl_instance = handler
-        await super().route(pattern, handler)
+        super().route(pattern, handler)
 
 
 class FakeBrowser:
@@ -242,13 +279,13 @@ class FakeBrowser:
         self.kwargs = []
         self.closed = 0
 
-    async def new_context(self, **kwargs):
+    def new_context(self, **kwargs):
         self.kwargs.append(kwargs)
         context = self.context_factory()
         self.contexts.append(context)
         return context
 
-    async def close(self):
+    def close(self):
         self.closed += 1
 
 
@@ -256,7 +293,7 @@ class FakePlaywright:
     def __init__(self) -> None:
         self.stopped = 0
 
-    async def stop(self):
+    def stop(self):
         self.stopped += 1
 
 
@@ -265,9 +302,8 @@ def make_manager(*, browser=None, limits=None):
     fake_browser = browser or FakeBrowser()
     starts = []
 
-    async def factory():
+    def factory():
         starts.append("start")
-        await asyncio.sleep(0)
         return playwright, fake_browser
 
     manager = BrowserRuntimeManager(
@@ -333,6 +369,68 @@ async def test_all_leased_capacity_fails_bounded_without_eviction():
     assert all(context.closed == 0 for context in browser.contexts)
 
 
+async def test_cancelled_create_is_closed_before_capacity_can_be_reused():
+    create_started = threading.Event()
+    allow_create = threading.Event()
+
+    class BlockingCreateBrowser(FakeBrowser):
+        def new_context(self, **kwargs):
+            create_started.set()
+            allow_create.wait()
+            return super().new_context(**kwargs)
+
+    browser = BlockingCreateBrowser()
+    manager, _, _, _ = make_manager(
+        browser=browser,
+        limits=BrowserLimits(max_contexts=1),
+    )
+
+    create_task = asyncio.create_task(manager.get_session("cancelled"))
+    while not create_started.is_set():  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    create_task.cancel()
+    await asyncio.sleep(0)
+    assert not create_task.done()
+
+    allow_create.set()
+    with pytest.raises(asyncio.CancelledError):
+        await create_task
+
+    assert len(browser.contexts) == 1
+    assert browser.contexts[0].closed == 1
+    replacement = await manager.get_session("replacement")
+    assert replacement is manager._sessions["replacement"]
+    assert list(manager._sessions) == ["replacement"]
+    assert len(browser.contexts) == 2
+    assert sum(context.closed == 0 for context in browser.contexts) == 1
+
+
+async def test_cancelled_eviction_reconciles_close_and_removes_exact_facade():
+    manager, _, browser, _ = make_manager(limits=BrowserLimits(max_contexts=1))
+    stale = await manager.get_session("stale")
+    context = browser.contexts[0]
+    context.close_started = threading.Event()
+    context.close_wait = threading.Event()
+
+    eviction_task = asyncio.create_task(manager.get_session("replacement"))
+    while not context.close_started.is_set():  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    eviction_task.cancel()
+    await asyncio.sleep(0)
+    assert not eviction_task.done()
+
+    context.close_wait.set()
+    with pytest.raises(asyncio.CancelledError):
+        await eviction_task
+
+    assert stale._closed is True
+    assert "stale" not in manager._sessions
+    replacement = await manager.get_session("replacement")
+    assert replacement is not stale
+    assert await manager.get_session("replacement") is replacement
+    assert list(manager._sessions) == ["replacement"]
+
+
 async def test_eviction_cleanup_failure_is_surfaced_and_ownership_is_retained():
     manager, _, browser, _ = make_manager(limits=BrowserLimits(max_contexts=1))
     first = await manager.get_session("one")
@@ -374,31 +472,14 @@ async def test_navigation_and_tabs_are_bounded():
         await session.tabs("new")
 
 
-async def test_request_budget_fails_closed():
+async def test_request_budget_fails_closed_on_the_worker():
     manager, _, browser, _ = make_manager(limits=BrowserLimits(max_requests_per_context=1))
-    await manager.get_session("thread")
-    handler = browser.contexts[0].routes[0][1]
+    session = await manager.get_session("thread")
 
-    class Request:
-        url = "https://example.com"
+    await session.navigate("https://example.com")
+    await session.navigate("https://example.com")
 
-    class Route:
-        request = Request()
-
-        def __init__(self) -> None:
-            self.continued = 0
-            self.aborted = 0
-
-        async def continue_(self):
-            self.continued += 1
-
-        async def abort(self, error_code="failed"):
-            assert error_code == "blockedbyclient"
-            self.aborted += 1
-
-    allowed, denied = Route(), Route()
-    await handler(allowed)
-    await handler(denied)
+    allowed, denied = browser.contexts[0].requests
     assert allowed.continued == 1
     assert denied.aborted == 1
 
@@ -516,13 +597,9 @@ async def test_accessible_name_sources_are_sensitive_in_snapshot_and_action_reva
     assert safe.actions == []
 
 
-@pytest.mark.parametrize("mode", ["timeout", "failure"])
-async def test_optional_snapshot_semantics_are_bounded_and_fall_back(mode):
+async def test_optional_snapshot_semantics_fail_closed_to_bounded_fallback():
     element = FakeElement(text="Fallback", attrs={"aria-label": None})
-    if mode == "timeout":
-        element.semantic_wait = asyncio.Event()
-    else:
-        element.semantic_failure = RuntimeError("raw semantic failure")
+    element.semantic_failure = RuntimeError("raw semantic failure")
     browser = FakeBrowser(context_factory=lambda: FakeContext(page_elements=[element]))
     manager, _, _, _ = make_manager(
         browser=browser,
@@ -768,16 +845,49 @@ async def test_page_scroll_rejects_unstructured_browser_diagnostics():
     assert exc_info.value.code == "scroll_failed"
 
 
-async def test_page_scroll_evaluate_is_bounded_by_operation_timeout():
-    manager, _, browser, _ = make_manager(limits=BrowserLimits(action_timeout_ms=1))
+async def test_caller_cancellation_does_not_preempt_running_sync_playwright_call():
+    manager, _, browser, _ = make_manager()
     session = await manager.get_session("thread")
     await session.tabs("new")
-    browser.contexts[0].pages[0].evaluate_wait = asyncio.Event()
+    page = browser.contexts[0].pages[0]
+    page.evaluate_started = threading.Event()
+    page.evaluate_wait = threading.Event()
+
+    task = asyncio.create_task(session.act(PageScrollAction(kind="scroll", direction="down")))
+    while not page.evaluate_started.is_set():  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    queued = asyncio.create_task(session.tabs("list"))
+    await asyncio.sleep(0)
+    assert not queued.done()
+    page.evaluate_wait.set()
+    await queued
+
+
+async def test_sync_evaluate_returns_stable_deadline_without_preempting_worker():
+    manager, _, browser, _ = make_manager(limits=BrowserLimits(action_timeout_ms=10))
+    session = await manager.get_session("thread")
+    await session.tabs("new")
+    page = browser.contexts[0].pages[0]
+    page.evaluate_started = threading.Event()
+    page.evaluate_wait = threading.Event()
 
     with pytest.raises(BrowserRuntimeError) as exc_info:
-        await session.act(PageScrollAction(kind="scroll", direction="down"))
+        await asyncio.wait_for(
+            session.act(PageScrollAction(kind="scroll", direction="down")),
+            timeout=0.2,
+        )
 
     assert exc_info.value.code == "action_timeout"
+    assert page.evaluate_started.is_set()
+    queued = asyncio.create_task(session.tabs("list"))
+    await asyncio.sleep(0)
+    assert not queued.done()
+    page.evaluate_wait.set()
+    await queued
 
 
 async def test_action_preconditions_and_failures_have_stable_codes_and_invalidate_refs():
@@ -870,12 +980,12 @@ async def test_snapshot_and_screenshot_outputs_are_bounded():
 
 async def test_screenshot_rejects_duplicated_response_before_base64_encoding(monkeypatch):
     payload = b"x" * 100
-    browser = FakeBrowser(context_factory=lambda: FakeContext(screenshot=payload))
-    manager, _, _, _ = make_manager(browser=browser)
-    session = await manager.get_session("thread")
-    page_ref = json.loads(await session.tabs("new"))["tabs"][0]["page_ref"]
-    result = ScreenshotResult(page_ref=page_ref, media_type="image/png", data=payload)
-    metadata = result.metadata()
+    projected = ScreenshotResult(
+        page_ref=f"p_{'x' * 24}",
+        media_type="image/png",
+        data=payload,
+    )
+    metadata = projected.metadata()
     empty_image = {"type": "image", "base64": "", "mime_type": "image/png"}
     empty_content = [
         {"type": "text", "text": json.dumps(metadata, separators=(",", ":"))},
@@ -887,11 +997,17 @@ async def test_screenshot_rejects_duplicated_response_before_base64_encoding(mon
     total_chars = (
         content_only_chars + len(json.dumps(empty_artifact, separators=(",", ":"))) + encoded_chars
     )
-    assert result.projected_output_chars() == total_chars
-    session.limits = BrowserLimits(
-        max_screenshot_bytes=len(payload),
-        max_screenshot_output_chars=content_only_chars,
+    assert projected.projected_output_chars() == total_chars
+    browser = FakeBrowser(context_factory=lambda: FakeContext(screenshot=payload))
+    manager, _, _, _ = make_manager(
+        browser=browser,
+        limits=BrowserLimits(
+            max_screenshot_bytes=len(payload),
+            max_screenshot_output_chars=content_only_chars,
+        ),
     )
+    session = await manager.get_session("thread")
+    page_ref = json.loads(await session.tabs("new"))["tabs"][0]["page_ref"]
     middleware = BrowserMiddleware(runtime_manager=manager)
     middleware._fallback_thread_id = "thread"
 
@@ -912,11 +1028,11 @@ async def test_screenshot_rejects_duplicated_response_before_base64_encoding(mon
 async def test_runtime_startup_is_bounded_retryable_and_coded():
     calls = 0
 
-    async def factory():
+    def factory():
         nonlocal calls
         calls += 1
         if calls == 1:
-            await asyncio.sleep(1)
+            time.sleep(1)
         return FakePlaywright(), FakeBrowser()
 
     manager = BrowserRuntimeManager(
@@ -936,7 +1052,7 @@ async def test_runtime_startup_is_bounded_retryable_and_coded():
 async def test_invalid_runtime_factory_result_is_rejected_and_cleaned_up():
     playwright = FakePlaywright()
 
-    async def factory():
+    def factory():
         return playwright, object()
 
     manager = BrowserRuntimeManager(
@@ -947,14 +1063,13 @@ async def test_invalid_runtime_factory_result_is_rejected_and_cleaned_up():
         await manager.get_session("thread")
     assert exc_info.value.code == "invalid_runtime_factory"
     assert playwright.stopped == 1
-    assert manager._playwright is None
-    assert manager._browser is None
+    assert manager._runtime_started is False
 
 
 async def test_runtime_factory_failure_preserves_cause_and_code():
     failure = OSError("launch failed")
 
-    async def factory():
+    def factory():
         raise failure
 
     manager = BrowserRuntimeManager(
@@ -980,6 +1095,31 @@ async def test_aclose_session_is_idempotent_and_allows_fresh_context():
     assert browser.contexts[1].closed == 0
 
 
+async def test_cancelled_explicit_close_reconciles_facade_and_manager_mapping():
+    manager, _, browser, _ = make_manager()
+    stale = await manager.get_session("thread")
+    context = browser.contexts[0]
+    context.close_started = threading.Event()
+    context.close_wait = threading.Event()
+
+    close_task = asyncio.create_task(stale.aclose())
+    while not context.close_started.is_set():  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert not close_task.done()
+
+    context.close_wait.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert stale._closed is True
+    assert "thread" not in manager._sessions
+    replacement = await manager.get_session("thread")
+    assert replacement is not stale
+    assert await manager.get_session("thread") is replacement
+
+
 async def test_browser_session_close_failure_remains_retryable():
     manager, _, browser, _ = make_manager()
     session = await manager.get_session("thread")
@@ -995,6 +1135,26 @@ async def test_browser_session_close_failure_remains_retryable():
     await session.aclose()
     assert session._closed is True
     assert context.closed == 2
+
+
+async def test_cancelled_manager_close_reconciles_mapping_before_reraising():
+    manager, _, browser, _ = make_manager()
+    stale = await manager.get_session("thread")
+    context = browser.contexts[0]
+    context.close_started = threading.Event()
+    context.close_wait = threading.Event()
+
+    close_task = asyncio.create_task(manager.aclose_session("thread"))
+    while not context.close_started.is_set():  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    close_task.cancel()
+    context.close_wait.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert stale._closed is True
+    assert "thread" not in manager._sessions
+    assert await manager.get_session("thread") is not stale
 
 
 async def test_aclose_session_rejects_active_lease_without_closing_it():
@@ -1034,6 +1194,24 @@ async def test_shutdown_waits_for_active_lease_and_concurrent_callers():
     assert playwright.stopped == 1
 
 
+async def test_failed_explicit_close_is_not_marked_complete_and_remains_retryable():
+    manager, _, browser, _ = make_manager()
+    await manager.get_session("thread")
+    context = browser.contexts[0]
+    context.close_failure = RuntimeError("raw cleanup failure")
+
+    with pytest.raises(BrowserRuntimeError) as exc_info:
+        await manager.aclose()
+
+    assert exc_info.value.code == "cleanup_failed"
+    assert manager._shutdown_complete is False
+    assert manager._atexit_complete is False
+    context.close_failure = None
+    await manager.aclose()
+    assert manager._shutdown_complete is True
+    assert manager._atexit_complete is True
+
+
 async def test_cleanup_is_idempotent():
     manager, playwright, browser, _ = make_manager()
     await manager.get_session("thread")
@@ -1043,3 +1221,214 @@ async def test_cleanup_is_idempotent():
     assert context.closed == 1
     assert browser.closed == 1
     assert playwright.stopped == 1
+
+
+class _AffinityProbe:
+    def __init__(self) -> None:
+        self.worker_thread_id = None
+        self.access_thread_ids = []
+
+    def establish_worker(self):
+        self.worker_thread_id = threading.get_ident()
+        self.access_thread_ids.append(self.worker_thread_id)
+
+    def check(self):
+        thread_id = threading.get_ident()
+        self.access_thread_ids.append(thread_id)
+        assert thread_id == self.worker_thread_id
+
+
+class _ThreadAffine:
+    probe: _AffinityProbe
+
+    def __getattribute__(self, name) -> object:
+        if not name.startswith("_") and name != "probe":
+            probe = object.__getattribute__(self, "probe")
+            if probe.worker_thread_id is not None:
+                probe.check()
+        return super().__getattribute__(name)
+
+
+async def test_every_raw_playwright_object_stays_on_one_dedicated_thread():
+    probe = _AffinityProbe()
+
+    class AffineElement(_ThreadAffine, FakeElement):
+        pass
+
+    class AffineLocator(_ThreadAffine, FakeLocator):
+        pass
+
+    class AffineRequest(_ThreadAffine, FakeRequest):
+        pass
+
+    class AffineRoute(_ThreadAffine, FakeRoute):
+        def __init__(self, url) -> None:
+            self.request = AffineRequest(url)
+            self.continued = 0
+            self.aborted = 0
+
+    class AffinePage(_ThreadAffine, FakePage):
+        def goto(self, url, *, wait_until, timeout):
+            assert wait_until == "domcontentloaded"
+            assert timeout == self.timeout
+            for _, handler in self.context.routes:
+                route = AffineRoute(url)
+                handler(route)
+                self.context.requests.append(route)
+            self.url = url
+            self.emit_frame_navigated(self.main_frame)
+
+        def locator(self, selector):
+            assert "button" in selector
+            return AffineLocator(self.elements)
+
+    class AffineContext(_ThreadAffine, FakeContext):
+        def new_page(self):
+            page = AffinePage(self, self.page_elements, self.screenshot)
+            self.pages.append(page)
+            return page
+
+    class AffineBrowser(_ThreadAffine, FakeBrowser):
+        pass
+
+    class AffinePlaywright(_ThreadAffine, FakePlaywright):
+        pass
+
+    for cls in (
+        AffineElement,
+        AffineLocator,
+        AffineRequest,
+        AffineRoute,
+        AffinePage,
+        AffineContext,
+        AffineBrowser,
+        AffinePlaywright,
+    ):
+        cls.probe = probe
+
+    element = AffineElement()
+    browser = AffineBrowser(context_factory=lambda: AffineContext(page_elements=[element]))
+    playwright = AffinePlaywright()
+
+    def factory():
+        probe.establish_worker()
+        return playwright, browser
+
+    manager = BrowserRuntimeManager(
+        network_policy=NetworkPolicy(resolver=_public_resolver),
+        runtime_factory=factory,
+    )
+    session = await manager.get_session("thread")
+    await session.navigate("https://example.com")
+    snapshot = json.loads(await session.snapshot())
+    await session.act(ClickAction(kind="click", ref=snapshot["nodes"][0]["ref"]))
+    await session.screenshot()
+    await session.tabs("list")
+    await manager.aclose()
+
+    assert probe.worker_thread_id != threading.get_ident()
+    assert set(probe.access_thread_ids) == {probe.worker_thread_id}
+
+
+async def test_close_before_start_creates_no_thread_or_atexit_registration(monkeypatch):
+    callbacks = []
+    monkeypatch.setattr("deepagents_browser.runtime.atexit.register", callbacks.append)
+    manager, _, _, starts = make_manager()
+
+    await manager.aclose()
+    await manager.aclose()
+
+    assert starts == []
+    assert callbacks == []
+    assert manager._worker is None
+
+
+async def test_runtime_thread_and_atexit_registration_are_lazy_and_single_flight(monkeypatch):
+    callbacks = []
+    monkeypatch.setattr("deepagents_browser.runtime.atexit.register", callbacks.append)
+    manager, _, _, starts = make_manager()
+
+    assert manager._worker is None
+    assert manager._atexit_registered is False
+    assert callbacks == []
+
+    session = await manager.get_session("thread")
+    await session.tabs("list")
+
+    assert starts == ["start"]
+    assert manager._worker is not None
+    assert len(callbacks) == 1
+
+    await manager.aclose()
+    callbacks[0]()
+
+    assert len(callbacks) == 1
+    assert manager._shutdown_complete is True
+    assert manager._atexit_complete is True
+
+
+async def test_atexit_fallback_closes_on_owner_worker_and_stops_it(monkeypatch):
+    callbacks = []
+    monkeypatch.setattr("deepagents_browser.runtime.atexit.register", callbacks.append)
+    manager, playwright, browser, _ = make_manager()
+    await manager.get_session("thread")
+    worker = manager._worker
+    assert worker is not None
+
+    callbacks[0]()
+
+    assert worker.stopped.done()
+    assert worker.is_alive is False
+    assert browser.contexts[0].closed == 1
+    assert browser.closed == 1
+    assert playwright.stopped == 1
+    assert manager._atexit_complete is True
+
+
+async def test_atexit_timeout_is_bounded_and_not_marked_complete(monkeypatch):
+    callbacks = []
+    monkeypatch.setattr("deepagents_browser.runtime.atexit.register", callbacks.append)
+    manager, _, browser, _ = make_manager(limits=BrowserLimits(action_timeout_ms=10))
+    await manager.get_session("thread")
+    worker = manager._worker
+    assert worker is not None
+    context = browser.contexts[0]
+    context.close_started = threading.Event()
+    context.close_wait = threading.Event()
+
+    started = time.monotonic()
+    callbacks[0]()
+    elapsed = time.monotonic() - started
+
+    assert context.close_started.is_set()
+    assert elapsed < 0.2
+    assert manager._atexit_complete is False
+    assert worker.is_alive is True
+    context.close_wait.set()
+    await asyncio.wrap_future(worker.stopped)
+
+
+async def test_route_policy_bridge_times_out_and_fails_closed():
+    calls = 0
+
+    async def resolver(host, port):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ["93.184.216.34"]
+        await asyncio.Event().wait()
+        return []
+
+    browser = FakeBrowser()
+    manager = BrowserRuntimeManager(
+        limits=BrowserLimits(action_timeout_ms=10),
+        network_policy=NetworkPolicy(resolver=resolver),
+        runtime_factory=lambda: (FakePlaywright(), browser),
+    )
+    session = await manager.get_session("thread")
+
+    await session.navigate("https://example.com")
+
+    assert browser.contexts[0].requests[0].aborted == 1
+    assert browser.contexts[0].requests[0].continued == 0
+    await manager.aclose()

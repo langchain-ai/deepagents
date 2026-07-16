@@ -4173,34 +4173,6 @@ class TestCreateCliAgentBrowserWiring:
             is _should_interrupt_browser_tabs
         )
 
-    def test_registers_browser_with_server_cleanup(self, tmp_path: Path) -> None:
-        module, browser_type = self._browser_module()
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-        registrar = Mock()
-        with (
-            patch.dict(sys.modules, {"deepagents_browser": module}),
-            patch("deepagents_code.agent.settings", self._settings(tmp_path)),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=_make_fake_chat_model(),
-            ),
-        ):
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=False,
-                enable_browser=True,
-                _register_cleanup=registrar,
-            )
-
-        registered = registrar.call_args.args[0]
-        assert registered.__self__.__class__ is browser_type
-        assert registered.__name__ == "aclose"
-
     def test_auto_approve_preserves_empty_interrupt_map(self, tmp_path: Path) -> None:
         module, _ = self._browser_module()
         mock_agent = Mock()

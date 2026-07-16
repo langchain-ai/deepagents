@@ -1,9 +1,6 @@
 import base64
 import json
-import sys
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
-from types import ModuleType
 from typing import Any, cast, get_type_hints
 
 import pytest
@@ -67,14 +64,6 @@ class _Manager:
 
     async def aclose(self):
         self.closed += 1
-
-
-def _install_fake_blockbuster(monkeypatch) -> ContextVar[bool]:
-    skip = ContextVar("blockbuster_skip", default=False)
-    module = ModuleType("blockbuster.blockbuster")
-    module.blockbuster_skip = skip
-    monkeypatch.setitem(sys.modules, "blockbuster.blockbuster", module)
-    return skip
 
 
 class _Named:
@@ -315,63 +304,6 @@ async def test_active_navigation_validates_before_session_access():
     assert events == ["validate", "session"]
 
 
-async def test_playwright_blockbuster_exemption_is_scoped_to_browser_calls(monkeypatch):
-    skip = _install_fake_blockbuster(monkeypatch)
-    events = []
-
-    class ScopedSession(_Session):
-        async def navigate(self, url, page_ref=None):
-            events.append(("navigate", skip.get()))
-            return await super().navigate(url, page_ref)
-
-    class ScopedManager(_Manager):
-        def __init__(self) -> None:
-            super().__init__()
-            self.session = ScopedSession()
-
-        async def validate_url(self, url):
-            events.append(("validate", skip.get()))
-
-        @asynccontextmanager
-        async def lease_session(self, thread_id):
-            events.append(("session", skip.get()))
-            yield self.session
-
-    middleware = BrowserMiddleware(runtime_manager=ScopedManager())
-    result = await middleware.tools[0].coroutine(
-        url="https://example.com",
-        page_ref=None,
-        runtime=_Runtime({"_browser_enabled": True}),
-    )
-
-    assert result == "visited:https://example.com:None"
-    assert events == [("validate", False), ("session", True), ("navigate", True)]
-    assert skip.get() is False
-
-
-async def test_playwright_blockbuster_exemption_resets_after_error(monkeypatch):
-    skip = _install_fake_blockbuster(monkeypatch)
-
-    class FailingSession(_Session):
-        async def navigate(self, url, page_ref=None):
-            assert skip.get() is True
-            msg = "navigation failed"
-            raise RuntimeError(msg)
-
-    manager = _Manager()
-    manager.session = FailingSession()
-    middleware = BrowserMiddleware(runtime_manager=manager)
-
-    with pytest.raises(RuntimeError, match="navigation failed"):
-        await middleware.tools[0].coroutine(
-            url="https://example.com",
-            page_ref=None,
-            runtime=_Runtime({"_browser_enabled": True}),
-        )
-
-    assert skip.get() is False
-
-
 async def test_snapshot_retries_once_after_navigation_race():
     class NavigatingSession(_Session):
         def __init__(self) -> None:
@@ -525,18 +457,10 @@ async def test_nonrecoverable_action_error_remains_fail_closed():
     assert exc_info.value.code == "sensitive_control_blocked"
 
 
-async def test_playwright_blockbuster_exemption_covers_cleanup_and_resets(monkeypatch):
-    skip = _install_fake_blockbuster(monkeypatch)
-
-    class ScopedManager(_Manager):
-        async def aclose(self):
-            assert skip.get() is True
-            await super().aclose()
-
-    manager = ScopedManager()
+async def test_middleware_cleanup_delegates_to_manager():
+    manager = _Manager()
     middleware = BrowserMiddleware(runtime_manager=manager)
 
     await middleware.aclose()
 
     assert manager.closed == 1
-    assert skip.get() is False

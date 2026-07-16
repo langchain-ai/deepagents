@@ -105,16 +105,36 @@ sandbox.
 
 ## Resource lifecycle
 
-The first activated operation lazily starts one Playwright driver and Chromium browser. Concurrent
-first calls are single-flight. A context is created per stable LangGraph `thread_id`. Middleware
-holds a manager lease for every complete tool operation, so an in-flight context cannot be evicted.
-When `max_contexts` is full, the least-recently-used zero-lease session is closed before a new
-isolated context is created; if all sessions are leased, the operation fails with
+The first activated operation lazily starts one dedicated worker thread, then creates the synchronous
+Playwright driver and Chromium browser on that thread. Construction alone does not start the worker
+or register process-exit cleanup. Every Playwright object—including contexts, pages, locators,
+element handles, requests, and routes—is created, used, and closed on the same owning worker. The
+public manager, session, and middleware interfaces remain async; their commands are serialized onto
+the worker and return only bounded data. Because Python cannot preempt a synchronous call that has
+already started, cancelling an awaiting caller does not stop that Playwright operation. Native
+Playwright operation timeouts remain the bound where the synchronous interface exposes one. Actions
+also retain the manager-level deadline and return the stable `action_timeout` code when it expires,
+but that deadline does not pretend to stop a running synchronous call: the worker finishes the
+current command before accepting the next. In particular, synchronous `evaluate` has no per-call
+Playwright timeout, so page scrolling and optional semantic evaluation can continue occupying the
+worker after caller cancellation or an action deadline; semantic collection remains best-effort and
+cannot enforce `semantic_timeout_ms` as a preemptive wall-clock bound in this worker model.
+
+Concurrent first calls are single-flight. A context is created per stable LangGraph `thread_id`.
+Middleware holds a manager lease for every complete tool operation, so an in-flight context cannot be
+evicted. When `max_contexts` is full, the least-recently-used zero-lease session is closed before a
+new isolated context is created; if all sessions are leased, the operation fails with
 `context_limit_reached`. `BrowserRuntimeManager.get_session()` remains available for advanced direct
 usage, but its return value is intentionally unleased and immediately eligible for eviction; hosts
 that span retrieval and operation must use `lease_session()`. Advanced hosts can call
-`aclose_session(thread_id)` for targeted idle cleanup, and middleware shutdown waits for bounded
-in-flight leases before closing all remaining resources.
+`aclose_session(thread_id)` for targeted idle cleanup.
+
+Always call `await middleware.aclose()` (or `await manager.aclose()`) during application shutdown.
+Explicit close waits for bounded in-flight leases, closes Playwright resources on their owning
+worker, stops that worker, and is deterministic and idempotent. The first actual runtime startup also
+registers one synchronous `atexit` cleanup callback as a bounded best-effort fallback for abnormal
+host lifecycle; it is not a replacement for explicit close, and becomes a no-op after explicit
+shutdown succeeds.
 
 ## Testing
 

@@ -13,7 +13,6 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-from deepagents_code._server_lifecycle import server_resources
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -204,7 +203,6 @@ class TestServerGraph:
             cwd=None,
             project_context=None,
             async_subagents=None,
-            _register_cleanup=server_resources.add_cleanup,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

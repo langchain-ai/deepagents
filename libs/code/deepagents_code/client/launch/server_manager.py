@@ -110,7 +110,6 @@ def _scaffold_workspace(work_dir: Path) -> None:
         work_dir,
         graph_ref="deepagents_code.server_graph:make_graph",
         checkpointer_path="./checkpointer.py:create_checkpointer",
-        http_app="deepagents_code._server_lifecycle:app",
     )
 
 

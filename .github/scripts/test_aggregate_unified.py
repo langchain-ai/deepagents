@@ -162,14 +162,19 @@ def test_load_leaves_env_rejects_invalid_json(
     with pytest.raises(SystemExit) as exc_info:
         au._load_leaves_env("EXPECTED_LEAVES")
 
-    assert (
-        str(exc_info.value)
-        == "EXPECTED_LEAVES must be a JSON list of {model, config, category} objects"
+    assert str(exc_info.value) == (
+        "EXPECTED_LEAVES must be a JSON list of "
+        "{model, branch, config, category} objects"
     )
 
 
 @pytest.mark.parametrize(
-    "value", [{"model": "opus"}, [{"model": "m", "config": "bare"}], ["m"]]
+    "value",
+    [
+        {"model": "opus"},
+        [{"model": "m", "branch": "main", "config": "bare"}],
+        ["m"],
+    ],
 )
 def test_load_leaves_env_rejects_invalid_decoded_shape(
     monkeypatch: pytest.MonkeyPatch, value: object
@@ -179,9 +184,9 @@ def test_load_leaves_env_rejects_invalid_decoded_shape(
     with pytest.raises(SystemExit) as exc_info:
         au._load_leaves_env("EXPECTED_LEAVES")
 
-    assert (
-        str(exc_info.value)
-        == "EXPECTED_LEAVES must be a JSON list of {model, config, category} objects"
+    assert str(exc_info.value) == (
+        "EXPECTED_LEAVES must be a JSON list of "
+        "{model, branch, config, category} objects"
     )
 
 
@@ -189,6 +194,7 @@ def test_combine_computes_macro_and_micro():
     leaves = [
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "autonomous",
             "pass_at_k": 1.0,
@@ -199,6 +205,7 @@ def test_combine_computes_macro_and_micro():
         },
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.0,
@@ -221,6 +228,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
     leaves = [
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "empty",
             "pass_at_k": None,
@@ -231,6 +239,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
         },
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "populated",
             "pass_at_k": 0.8,
@@ -253,6 +262,7 @@ def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
     leaves = [
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
@@ -263,6 +273,7 @@ def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
         },
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.7,
@@ -275,7 +286,10 @@ def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Duplicate leaf for model 'm', config 'bare', category 'context'",
+        match=(
+            "Duplicate leaf for model 'm', branch 'current', config 'bare', "
+            "category 'context'"
+        ),
     ):
         au.combine(leaves)
 
@@ -286,6 +300,7 @@ def test_render_markdown_sorts_by_macro_desc():
         "rows": [
             {
                 "model": "lo",
+                "branch": "current",
                 "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.1, "avg_at_k": 0.1},
@@ -297,6 +312,7 @@ def test_render_markdown_sorts_by_macro_desc():
             },
             {
                 "model": "hi",
+                "branch": "current",
                 "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.9, "avg_at_k": 0.9},
@@ -322,6 +338,7 @@ def test_render_markdown_ranks_none_macro_last():
         "rows": [
             {
                 "model": "ghost",
+                "branch": "current",
                 "config": "bare",
                 "categories": {},
                 "macro": {"pass_at_k": None, "avg_at_k": None},
@@ -330,6 +347,7 @@ def test_render_markdown_ranks_none_macro_last():
             },
             {
                 "model": "scored",
+                "branch": "current",
                 "config": "bare",
                 "categories": {"context": {"pass_at_k": 0.2, "avg_at_k": 0.2}},
                 "macro": {"pass_at_k": 0.2, "avg_at_k": 0.2},
@@ -346,13 +364,18 @@ def test_render_markdown_describes_expected_row_without_leaf_summaries() -> None
     combined = au.combine(
         [],
         expected_leaves=[
-            {"model": "ghost", "config": "bare", "category": "autonomous"}
+            {
+                "model": "ghost",
+                "branch": "current",
+                "config": "bare",
+                "category": "autonomous",
+            }
         ],
     )
 
     markdown = au.render_markdown(combined, k=3)
 
-    assert "`ghost / bare` — no leaf summaries found" in markdown
+    assert "`ghost / current / bare` — no leaf summaries found" in markdown
 
 
 def test_write_outputs_describes_expected_row_without_leaf_summaries(
@@ -361,7 +384,12 @@ def test_write_outputs_describes_expected_row_without_leaf_summaries(
     combined = au.combine(
         [],
         expected_leaves=[
-            {"model": "ghost", "config": "bare", "category": "autonomous"}
+            {
+                "model": "ghost",
+                "branch": "current",
+                "config": "bare",
+                "category": "autonomous",
+            }
         ],
     )
 
@@ -378,6 +406,7 @@ def test_radar_results_shape():
         "rows": [
             {
                 "model": "m",
+                "branch": "current",
                 "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.5},
@@ -391,7 +420,10 @@ def test_radar_results_shape():
     }
     rr = au.radar_results(combined)
     assert rr == [
-        {"model": "m / bare", "scores": {"autonomous": 0.5, "context": 0.7}}
+        {
+            "model": "m / current / bare",
+            "scores": {"autonomous": 0.5, "context": 0.7},
+        }
     ]
 
 
@@ -578,7 +610,8 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
 ) -> None:
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
-        '[{"model": "m", "config": "bare", "category": "context"}]',
+        '[{"model": "m", "branch": "current", "config": "bare", '
+        '"category": "context"}]',
     )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     out = tmp_path / "combined"
@@ -603,7 +636,8 @@ def test_main_fails_when_required_leaf_has_no_tasks(
 ) -> None:
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
-        '[{"model": "m", "config": "bare", "category": "context"}]',
+        '[{"model": "m", "branch": "current", "config": "bare", '
+        '"category": "context"}]',
     )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     _leaf_dir(
@@ -640,7 +674,8 @@ def test_main_passes_when_an_unexpected_row_is_complete(
     # the missing expected leaf is still surfaced as a warning.
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
-        '[{"model": "missing", "config": "bare", "category": "context"}]',
+        '[{"model": "missing", "branch": "current", "config": "bare", '
+        '"category": "context"}]',
     )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     _leaf_dir(tmp_path, "extra", "context")
@@ -683,7 +718,8 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
 ) -> None:
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
-        '[{"model": "m", "config": "bare", "category": "context"}]',
+        '[{"model": "m", "branch": "current", "config": "bare", '
+        '"category": "context"}]',
     )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     leaf_dir = _leaf_dir(tmp_path, "m", "context", k=2, pass_k=0.8, avg_k=0.5)
@@ -705,6 +741,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     leaves = [
         {
             "model": "a",
+            "branch": "current",
             "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.9,
@@ -715,6 +752,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
         },
         {
             "model": "a",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
@@ -725,6 +763,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
         },
         {
             "model": "b",
+            "branch": "current",
             "config": "bare",
             "category": "autonomous",
             "pass_at_k": 1.0,
@@ -737,10 +776,14 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     out = au.combine(
         leaves,
         expected_leaves=[
-            {"model": "a", "config": "bare", "category": "autonomous"},
-            {"model": "a", "config": "bare", "category": "context"},
-            {"model": "b", "config": "bare", "category": "autonomous"},
-            {"model": "b", "config": "bare", "category": "context"},
+            {"model": "a", "branch": "current", "config": "bare",
+             "category": "autonomous"},
+            {"model": "a", "branch": "current", "config": "bare",
+             "category": "context"},
+            {"model": "b", "branch": "current", "config": "bare",
+             "category": "autonomous"},
+            {"model": "b", "branch": "current", "config": "bare",
+             "category": "context"},
         ],
         expected_categories=["autonomous", "context"],
     )
@@ -755,6 +798,7 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
     leaves = [
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
@@ -765,6 +809,7 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
         },
         {
             "model": "extra",
+            "branch": "current",
             "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.7,
@@ -777,7 +822,10 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
 
     out = au.combine(
         leaves,
-        expected_leaves=[{"model": "m", "config": "bare", "category": "context"}],
+        expected_leaves=[
+            {"model": "m", "branch": "current", "config": "bare",
+             "category": "context"}
+        ],
         expected_categories=["context"],
     )
 
@@ -794,6 +842,7 @@ def test_combine_scores_only_expected_categories(
     leaves = [
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
@@ -804,6 +853,7 @@ def test_combine_scores_only_expected_categories(
         },
         {
             "model": "m",
+            "branch": "current",
             "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.0,
@@ -818,7 +868,10 @@ def test_combine_scores_only_expected_categories(
     # is scoped to "context" even though the "autonomous" leaf is present.
     (model,) = au.combine(
         leaves,
-        expected_leaves=[{"model": "m", "config": "bare", "category": "context"}],
+        expected_leaves=[
+            {"model": "m", "branch": "current", "config": "bare",
+             "category": "context"}
+        ],
         expected_categories=["context"],
     )["rows"]
 
@@ -832,14 +885,19 @@ def test_combine_includes_expected_row_with_no_leaves():
     out = au.combine(
         [],
         expected_leaves=[
-            {"model": "ghost", "config": "bare", "category": "autonomous"}
+            {
+                "model": "ghost",
+                "branch": "current",
+                "config": "bare",
+                "category": "autonomous",
+            }
         ],
         expected_categories=["autonomous"],
     )
-    rows = {(r["model"], r["config"]): r for r in out["rows"]}
-    assert ("ghost", "bare") in rows
-    assert rows[("ghost", "bare")]["incomplete"] is True
-    assert rows[("ghost", "bare")]["missing_categories"] == ["autonomous"]
+    rows = {(r["model"], r["branch"], r["config"]): r for r in out["rows"]}
+    assert ("ghost", "current", "bare") in rows
+    assert rows[("ghost", "current", "bare")]["incomplete"] is True
+    assert rows[("ghost", "current", "bare")]["missing_categories"] == ["autonomous"]
 
 
 # --- Task 2: (model, config, category) rows -----------------------------------
@@ -873,6 +931,7 @@ def test_read_leaf_includes_config(tmp_path):
 def _leaf(model, config, category, pass_at_k):
     return {
         "model": model,
+        "branch": "current",
         "config": config,
         "category": category,
         "pass_at_k": pass_at_k,
@@ -891,8 +950,10 @@ def test_combine_rows_are_model_config_pairs():
         _leaf("openai:gpt", "dcode", "autonomous", 0.0),
     ]
     expected_leaves = [
-        {"model": "openai:gpt", "config": "bare", "category": "autonomous"},
-        {"model": "openai:gpt", "config": "dcode", "category": "autonomous"},
+        {"model": "openai:gpt", "branch": "current", "config": "bare",
+         "category": "autonomous"},
+        {"model": "openai:gpt", "branch": "current", "config": "dcode",
+         "category": "autonomous"},
     ]
     combined = aggregate_unified.combine(
         leaves, expected_leaves=expected_leaves, expected_categories=["autonomous"]
@@ -924,3 +985,38 @@ def test_combine_raises_on_true_triple_duplicate():
     ]
     with pytest.raises(ValueError, match="Duplicate leaf"):
         aggregate_unified.combine(leaves)
+
+
+# --- Task 2: (model, branch, config, category) rows ---------------------------
+
+
+def _bleaf(model, branch, config, category, pass_at_k):
+    return {
+        "model": model, "branch": branch, "config": config, "category": category,
+        "pass_at_k": pass_at_k, "avg_at_k": pass_at_k,
+        "tasks": 1, "passed": int(pass_at_k), "incomplete": False,
+    }
+
+
+def test_combine_rows_split_by_branch():
+    import aggregate_unified
+    leaves = [
+        _bleaf("openai:gpt", "main", "bare", "autonomous", 1.0),
+        _bleaf("openai:gpt", "feature", "bare", "autonomous", 0.0),
+    ]
+    combined = aggregate_unified.combine(leaves)
+    keys = {(r["model"], r["branch"], r["config"]) for r in combined["rows"]}
+    assert keys == {
+        ("openai:gpt", "main", "bare"),
+        ("openai:gpt", "feature", "bare"),
+    }
+
+
+def test_combine_same_model_config_different_branch_no_collision():
+    import aggregate_unified
+    leaves = [
+        _bleaf("openai:gpt", "main", "bare", "autonomous", 1.0),
+        _bleaf("openai:gpt", "feature", "bare", "autonomous", 0.5),
+    ]
+    combined = aggregate_unified.combine(leaves)
+    assert len(combined["rows"]) == 2

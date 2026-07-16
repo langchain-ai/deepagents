@@ -1,15 +1,15 @@
-"""Combine per-(model x config x category) Harbor summary.json files into a
-cross-row comparison (macro + micro overalls), a leaderboard, combined JSON, and
-radar input, ranking flat (model, config) rows.
+"""Combine per-(model x branch x config x category) Harbor summary.json files into
+a cross-row comparison (macro + micro overalls), a leaderboard, combined JSON, and
+radar input, ranking flat (model, branch, config) rows.
 
-Each leaf directory (one per model x config x category) has a summary.json written
-by aggregate_shards.py, which records the model, config, and category
-authoritatively (via --model/--config/--category) plus dynamic pass@{K}/avg@{K}
-keys.
+Each leaf directory (one per model x branch x config x category) has a summary.json
+written by aggregate_shards.py, which records the model, branch, config, and
+category authoritatively (via --model/--config/--category plus the shard branch)
+plus dynamic pass@{K}/avg@{K} keys.
 
 The combiner is given the expected leaf grid (EXPECTED_LEAVES, a list of
-{model, config, category} triples / EXPECTED_CATEGORIES) so a leaf that failed to
-upload is still shown and flagged incomplete, rather than silently ranking on
+{model, branch, config, category} quads / EXPECTED_CATEGORIES) so a leaf that failed
+to upload is still shown and flagged incomplete, rather than silently ranking on
 fewer categories.
 """
 
@@ -105,6 +105,10 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if config is not None and not isinstance(config, str):
         msg = "config must be a string or null"
         raise _LeafSummaryError(msg)
+    branch = summary.get("branch")
+    if branch is not None and not isinstance(branch, str):
+        msg = "branch must be a string or null"
+        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -116,6 +120,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "model": model or "unknown",
         "category": category or "unknown",
         "config": config or "unknown",
+        "branch": branch or "current",
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "tasks": tasks,
@@ -141,27 +146,28 @@ def combine(
     else:
         categories = sorted(present_cats)
 
-    # Required (model, config) -> {category} grid from the expected triples, so a
-    # missing leaf is flagged without assuming which categories a config ran (tau3
-    # covers conversation only; code configs cover the code categories).
-    required_by_row: dict[tuple[str, str], set[str]] = {}
-    row_order: list[tuple[str, str]] = []
-    for triple in expected_leaves or []:
-        row = (triple["model"], triple["config"])
+    # Required (model, branch, config) -> {category} grid from the expected quads,
+    # so a missing leaf is flagged without assuming which categories a config ran
+    # (tau3 covers conversation only; code configs cover the code categories).
+    required_by_row: dict[tuple[str, str, str], set[str]] = {}
+    row_order: list[tuple[str, str, str]] = []
+    for quad in expected_leaves or []:
+        row = (quad["model"], quad["branch"], quad["config"])
         if row not in required_by_row:
             required_by_row[row] = set()
             row_order.append(row)
-        required_by_row[row].add(triple["category"])
+        required_by_row[row].add(quad["category"])
 
-    by_row: dict[tuple[str, str], list[dict]] = {}
-    seen: set[tuple[str, str, str]] = set()
+    by_row: dict[tuple[str, str, str], list[dict]] = {}
+    seen: set[tuple[str, str, str, str]] = set()
     for leaf in leaves:
-        row = (leaf["model"], leaf["config"])
-        identity = (leaf["model"], leaf["config"], leaf["category"])
+        row = (leaf["model"], leaf["branch"], leaf["config"])
+        identity = (leaf["model"], leaf["branch"], leaf["config"], leaf["category"])
         if identity in seen:
             msg = (
-                f"Duplicate leaf for model {leaf['model']!r}, config "
-                f"{leaf['config']!r}, category {leaf['category']!r}"
+                f"Duplicate leaf for model {leaf['model']!r}, branch "
+                f"{leaf['branch']!r}, config {leaf['config']!r}, category "
+                f"{leaf['category']!r}"
             )
             raise ValueError(msg)
         seen.add(identity)
@@ -172,7 +178,7 @@ def combine(
 
     rows_out: list[dict] = []
     for row in row_order:
-        model, config = row
+        model, branch, config = row
         row_leaves = by_row.get(row, [])
         required = required_by_row.get(row, set())
         scored = [
@@ -210,6 +216,7 @@ def combine(
         rows_out.append(
             {
                 "model": model,
+                "branch": branch,
                 "config": config,
                 "categories": cats,
                 "macro": macro,
@@ -242,7 +249,7 @@ def _incomplete_note(*, has_leaves: bool, missing_categories: list[str]) -> str:
 def render_markdown(combined: dict, k: int) -> str:
     cats = combined["categories"]
     header = (
-        ["Model / config"]
+        ["Model / branch / config"]
         + [f"{c} pass@{k}/avg@{k}" for c in cats]
         + [
             f"Overall macro pass@{k}",
@@ -260,7 +267,7 @@ def render_markdown(combined: dict, k: int) -> str:
     )
     rows = []
     for r in ranked:
-        label = f"{r['model']} / {r['config']}"
+        label = f"{r['model']} / {r['branch']} / {r['config']}"
         cells = [label + (" ⚠️" if r["incomplete"] else "")]
         for c in cats:
             cat = r["categories"].get(c)
@@ -289,7 +296,7 @@ def render_markdown(combined: dict, k: int) -> str:
             note = _incomplete_note(
                 has_leaves=bool(r["categories"]), missing_categories=miss
             )
-            md += f"> - `{r['model']} / {r['config']}` — {note}\n"
+            md += f"> - `{r['model']} / {r['branch']} / {r['config']}` — {note}\n"
     return md
 
 
@@ -301,7 +308,9 @@ def radar_results(combined: dict) -> list[dict]:
             for c, v in r["categories"].items()
             if v.get("pass_at_k") is not None
         }
-        out.append({"model": f"{r['model']} / {r['config']}", "scores": scores})
+        out.append(
+            {"model": f"{r['model']} / {r['branch']} / {r['config']}", "scores": scores}
+        )
     return out
 
 
@@ -378,14 +387,14 @@ def _load_leaves_env(name: str) -> list[dict] | None:
     raw = os.environ.get(name)
     if not raw:
         return None
-    msg = f"{name} must be a JSON list of {{model, config, category}} objects"
+    msg = f"{name} must be a JSON list of {{model, branch, config, category}} objects"
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise SystemExit(msg) from exc
     if not isinstance(value, list) or not all(
         isinstance(item, dict)
-        and {"model", "config", "category"} <= set(item)
+        and {"model", "branch", "config", "category"} <= set(item)
         for item in value
     ):
         raise SystemExit(msg)

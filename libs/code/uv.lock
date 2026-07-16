@@ -1335,7 +1335,7 @@ requires-dist = [
     { name = "langgraph-sdk", specifier = ">=0.4.2,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.9.3" },
     { name = "markdownify", specifier = ">=1.2.2,<2.0.0" },
-    { name = "mcp", specifier = ">=1.9.2,<2.0.0" },
+    { name = "mcp", specifier = ">=1.27.2,<2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.2.0,<13.0.0" },
     { name = "pillow", marker = "extra == 'media'", specifier = ">=12.2.0,<13.0.0" },

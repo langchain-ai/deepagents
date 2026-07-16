@@ -58,7 +58,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
-    "langchain-quickjs>=0.3.2,<0.4.0",
+    "langchain-quickjs>=0.3.3,<0.4.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -85,7 +85,7 @@ dependencies = [
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",
-    "mcp>=1.9.2,<2.0.0",
+    "mcp>=1.28.1,<2.0.0",
 ]
 
 [project.optional-dependencies]

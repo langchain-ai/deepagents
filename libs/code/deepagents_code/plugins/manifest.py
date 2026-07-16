@@ -12,6 +12,7 @@ from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
     PluginManifest,
+    UnsupportedComponent,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,11 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".codex-plugin") / "plugin.json",
 )
 _PATH_COMPONENT_FIELDS = {"skills", "mcpServers"}
+_UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
+    "agents",
+    "commands",
+    "hooks",
+)
 _NAME_RE = re.compile(r"^[^\s]+$")
 
 
@@ -209,11 +215,15 @@ def load_manifest(
 
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
+    display_name_value = raw.get("displayName")
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
+        display_name=(
+            display_name_value if isinstance(display_name_value, str) else None
+        ),
     )
     return manifest, manifest_path, tuple(warnings)
 
@@ -231,6 +241,21 @@ def _existing_component_path(path: Path, plugin_root: Path) -> tuple[Path, ...]:
         return ()
     else:
         return (resolved,)
+
+
+def _unsupported_component_dirs(
+    plugin_root: Path,
+) -> tuple[UnsupportedComponent, ...]:
+    """Return present component dirs that deepagents-code does not load."""
+    found: list[UnsupportedComponent] = []
+    for name in _UNSUPPORTED_COMPONENT_DIRS:
+        path = plugin_root / name
+        try:
+            if path.is_dir():
+                found.append(name)
+        except OSError:
+            logger.warning("Could not inspect plugin component path %s", path)
+    return tuple(found)
 
 
 def build_inventory(
@@ -265,8 +290,11 @@ def build_inventory(
         *metadata_paths.get("mcpServers", ()),
     )
 
+    unsupported = _unsupported_component_dirs(plugin_root)
+
     return ComponentInventory(
         skills=tuple(dict.fromkeys(skills)),
         mcp_files=tuple(dict.fromkeys(mcp_files)),
+        unsupported=unsupported,
         warnings=tuple(warnings),
     )

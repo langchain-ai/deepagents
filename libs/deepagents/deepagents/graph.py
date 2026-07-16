@@ -869,17 +869,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
         inline_subagents.insert(0, general_purpose_spec)
 
-    # Build main agent middleware stack
+    # Build main agent middleware stack.
+    # Ablation: the main agent runs with no authored system prompt. Each
+    # middleware keeps its tools, but its system-prompt fragment is suppressed
+    # (`system_prompt=None`, or `""` where the middleware always appends).
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
+        TodoListMiddleware(system_prompt=""),
     ]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, system_prompt=None))
     deepagent_middleware.append(
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
+            system_prompt="",
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
@@ -887,6 +891,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         sub_agent_middleware = SubAgentMiddleware(
             backend=backend,
             subagents=inline_subagents,
+            system_prompt=None,
             # Overrides the task tool description. Value should include
             # {available_agents} — a format placeholder replaced with the
             # subagent name/description list. Without it the model can't
@@ -906,7 +911,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, system_prompt=None))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.
@@ -924,6 +929,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 sources=memory,
                 add_cache_control=True,
+                system_prompt=None,
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(
@@ -966,23 +972,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    # Assemble the main-agent prompt: prefix -> base -> suffix -> profile suffix.
-    # The config's `base` (when the key is present) overrides the profile base;
-    # otherwise the profile base, then BASE_AGENT_PROMPT, is used.
+    # Assemble the main-agent prompt from caller-provided parts only:
+    # prefix -> base -> suffix. Ablation: the harness profile's base and suffix
+    # are dropped, and BASE_AGENT_PROMPT is empty, so with no caller parts the
+    # main agent receives no authored system prompt.
     cfg = _normalize_system_prompt(system_prompt)
     prompt_parts: list[str | SystemMessage] = []
     prefix = cfg.get("prefix")
     if prefix is not None:
         prompt_parts.append(prefix)
-    profile_base = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
-    base = cfg.get("base", profile_base)
+    base = cfg.get("base", BASE_AGENT_PROMPT)
     if base is not None:
         prompt_parts.append(base)
     suffix = cfg.get("suffix")
     if suffix is not None:
         prompt_parts.append(suffix)
-    if _profile.system_prompt_suffix is not None:
-        prompt_parts.append(_profile.system_prompt_suffix)
     final_system_prompt: str | SystemMessage = _assemble_prompt_parts(prompt_parts)
 
     return create_agent(

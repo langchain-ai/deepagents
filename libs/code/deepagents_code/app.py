@@ -2583,6 +2583,14 @@ class DeepAgentsApp(App):
         completion in the chat input.
         """
 
+        self._debug_console_cleared_upto = 0
+        """Absolute log-buffer index the Debug Console was last cleared up to.
+
+        Persists a `Ctrl+L` clear across close/reopen of the console for the
+        process lifetime; each newly opened `DebugConsoleScreen` is seeded from
+        it and reports a fresh clear back through its `on_clear` callback.
+        """
+
         self._lc_thread_id = thread_id
         """LangChain thread identifier.
 
@@ -17013,8 +17021,16 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        def persist_clear(cursor: int) -> None:
+            self._debug_console_cleared_upto = cursor
+
         self.push_screen(
-            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+            DebugConsoleScreen(
+                self._build_debug_snapshot(),
+                cleared_upto=self._debug_console_cleared_upto,
+                on_clear=persist_clear,
+            ),
+            handle_result,
         )
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:

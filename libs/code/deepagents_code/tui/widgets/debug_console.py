@@ -706,17 +706,30 @@ class DebugConsoleScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, snapshot: Sequence[SnapshotField]) -> None:
+    def __init__(
+        self,
+        snapshot: Sequence[SnapshotField],
+        *,
+        cleared_upto: int = 0,
+        on_clear: Callable[[int], None] | None = None,
+    ) -> None:
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
             snapshot: Ordered `SnapshotField` rows rendered in the header.
+            cleared_upto: Absolute buffer index a prior `Ctrl+L` cleared up to.
+                The console starts rendering from here so a clear persists across
+                close/reopen; records emitted after it still appear.
+            on_clear: Invoked with the new clear cursor whenever `Ctrl+L` clears
+                the view, letting the owner persist it for the next open.
         """
         super().__init__()
         self._snapshot = list(snapshot)
         self._records: list[InMemoryLogRecord] = []
-        # Absolute index of the next unrendered log record (incremental writes).
-        self._rendered_upto = 0
+        # Absolute index of the next unrendered log record (incremental writes),
+        # seeded from any persisted clear so reopening honors the last Ctrl+L.
+        self._rendered_upto = cleared_upto
+        self._on_clear = on_clear
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
@@ -1025,12 +1038,18 @@ class DebugConsoleScreen(ModalScreen[None]):
         )
 
     def action_clear_view(self) -> None:
-        """Clear the on-screen log view; the in-memory buffer keeps accruing."""
+        """Clear the on-screen log view; the in-memory buffer keeps accruing.
+
+        Advances the render cursor past everything emitted so far and reports it
+        via `on_clear` so the owner can persist the clear across close/reopen.
+        """
         self.query_one("#debug-log", _DebugLogView).clear_records()
         self._records.clear()
         buffer = get_log_buffer()
         if buffer is not None:
             self._rendered_upto = buffer.total_emitted
+        if self._on_clear is not None:
+            self._on_clear(self._rendered_upto)
 
     def action_copy(self) -> None:
         """Copy visible retained log records since the last clear to the clipboard."""

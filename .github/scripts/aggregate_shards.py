@@ -281,6 +281,7 @@ def make_summary(
     model: str | None,
     category: str | None,
     config: str | None,
+    branch: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -300,6 +301,7 @@ def make_summary(
         "model": model,
         "category": category,
         "config": config,
+        "branch": branch,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -439,6 +441,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Agent config (agent_impl) under test; recorded into summary.json.",
     )
     parser.add_argument(
+        "--branch",
+        default=None,
+        help="Git branch/ref the agent source came from; recorded into summary.json.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -484,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             category=args.category,
             config=args.config,
+            branch=args.branch,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
@@ -541,6 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model or (next(iter(agg.models)) if agg.models else None),
         category=args.category,
         config=args.config,
+        branch=args.branch,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,

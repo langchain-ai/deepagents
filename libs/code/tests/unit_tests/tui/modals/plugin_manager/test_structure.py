@@ -114,6 +114,42 @@ async def test_plugin_search_filters_and_clears() -> None:
         assert options.has_focus
 
 
+def test_focus_search_binding_enabled_only_on_searchable_list() -> None:
+    """`check_action` gates `/` so it stays typeable outside searchable lists."""
+    screen = PluginManagerScreen()
+
+    assert screen.check_action("focus_search", ()) is True
+
+    screen._tab = "marketplaces"
+    assert screen.check_action("focus_search", ()) is False
+
+    screen._tab = "discover"
+    screen._mode = "add_marketplace"
+    assert screen.check_action("focus_search", ()) is False
+
+    screen._mode = "list"
+    assert screen.check_action("cancel", ()) is True
+
+
+async def test_slash_remains_typeable_in_add_marketplace_source() -> None:
+    """`/` must reach the marketplace source field (owner/repo, urls, paths)."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._mode = "add_marketplace"
+        screen._refresh_view()
+        await pilot.pause()
+
+        source = screen.query_one("#plugin-marketplace-source", Input)
+        assert source.has_focus
+
+        await pilot.press("o", "w", "n", "e", "r", "/", "r", "e", "p", "o")
+        assert source.value == "owner/repo"
+
+
 def test_filtered_plugins_matches_display_label() -> None:
     screen = PluginManagerScreen()
     screen._search_query = "convex"

@@ -464,6 +464,26 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             )
         self._refresh_view()
 
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # required by Textual's DOMNode.check_action override signature
+    ) -> bool | None:
+        """Enable `/` search only on searchable list views.
+
+        The priority `/` binding would otherwise consume the key before the Add
+        Marketplace source input (and other non-list modes) can receive it, even
+        though `action_focus_search` no-ops there. Returning `False` disables the
+        binding for this dispatch so `/` falls through to the focused Input.
+
+        Returns:
+            `True` when `focus_search` should run (list mode on discover/installed);
+                `False` to step the binding aside; `True` for every other action.
+        """
+        if action == "focus_search":
+            return self._mode == "list" and self._tab in {"discover", "installed"}
+        return True
+
     def action_cancel(self) -> None:
         """Clear search, close, or leave the active prompt."""
         search_input = self.query_one("#plugin-manager-search", Input)

@@ -75,19 +75,50 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
 
 
 def _plugin_mcp_server_names(instance: PluginInstance) -> tuple[str, ...]:
-    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_names
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
 
-    return plugin_mcp_server_names(instance)
+    return tuple(
+        label for label, _scoped, _needs_login in plugin_mcp_server_entries(instance)
+    )
+
+
+def _plugin_mcp_login_servers(instance: PluginInstance) -> tuple[str, ...]:
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+    return tuple(
+        scoped
+        for _label, scoped, needs_login in plugin_mcp_server_entries(instance)
+        if needs_login
+    )
 
 
 def _plugin_mcp_connected(
     instance: PluginInstance, mcp_server_info: Sequence[MCPServerInfo]
 ) -> bool | None:
-    expected = frozenset(_plugin_mcp_server_names(instance))
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+    expected = frozenset(
+        scoped for _label, scoped, _needs_login in plugin_mcp_server_entries(instance)
+    )
     if not expected:
         return None
     connected = {info.name for info in mcp_server_info if info.status == "ok"}
     return expected <= connected
+
+
+def _plugin_display_name(
+    *,
+    marketplace_display_name: str | None,
+    instance: PluginInstance | None,
+    plugin_name: str,
+) -> str:
+    if marketplace_display_name:
+        return marketplace_display_name
+    if instance is not None and instance.manifest is not None:
+        manifest_name = instance.manifest.display_name
+        if manifest_name:
+            return manifest_name
+    return plugin_name
 
 
 def _instance_for_manager_row(
@@ -187,9 +218,11 @@ def _row_from_instance(
     mcp_server_info: Sequence[MCPServerInfo],
     loaded_plugin_ids: AbstractSet[str],
     load_error: str | None = None,
+    display_name: str = "",
 ) -> _PluginRow:
     skill_names = _list_plugin_skill_names(instance) if instance else ()
     mcp_names = _plugin_mcp_server_names(instance) if instance else ()
+    login_servers = _plugin_mcp_login_servers(instance) if instance else ()
     unsupported = instance.inventory.unsupported if instance else ()
     session_loaded = plugin_id in loaded_plugin_ids
     return _PluginRow(
@@ -198,12 +231,14 @@ def _row_from_instance(
         enabled=is_enabled,
         version=instance.version if instance else None,
         author=author,
+        display_name=display_name,
         skill_count=len(skill_names) if instance else None,
         skill_names=skill_names,
         mcp_connected=_plugin_mcp_connected(instance, mcp_server_info)
         if instance and session_loaded
         else None,
         mcp_server_names=mcp_names,
+        mcp_login_servers=login_servers,
         unsupported_components=unsupported,
         session_loaded=session_loaded,
         load_error=load_error,
@@ -292,6 +327,11 @@ def _load_manager_state(
                 mcp_server_info=mcp_server_info,
                 loaded_plugin_ids=loaded_plugin_ids,
                 load_error=load_error,
+                display_name=_plugin_display_name(
+                    marketplace_display_name=plugin.display_name,
+                    instance=instance,
+                    plugin_name=plugin.name,
+                ),
             )
             (installed_plugins if is_installed else available_plugins).append(row)
     return _ManagerState(

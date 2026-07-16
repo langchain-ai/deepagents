@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
@@ -51,8 +52,13 @@ from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 
-class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
-    """Arrow-key navigable plugin manager for `/plugins`."""
+class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
+    """Arrow-key navigable plugin manager for `/plugins`.
+
+    Dismisses with `(label, needs_mcp_login)` after an MCP-bearing plugin
+    install so the app can offer reconnect + login guidance, otherwise
+    `None`.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
@@ -65,6 +71,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     ]
 
     CSS_PATH = "plugin_manager.tcss"
+
+    # Divider width used before the options list has been laid out (e.g. in unit
+    # tests that build options off-screen). At render time the divider is sized to
+    # the measured options width instead so it never wraps on a narrower modal.
+    _DIVIDER_FALLBACK_WIDTH: ClassVar[int] = 72
 
     _tabs: ClassVar[tuple[PluginTab, ...]] = (
         "discover",
@@ -149,6 +160,20 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
 
+    def on_resize(self) -> None:
+        """Refit the width-sized marketplaces divider when the modal resizes.
+
+        The divider is the only content sized to the options width, so restrict the
+        rebuild to the marketplaces list view to avoid needless focus/highlight churn
+        on unrelated tabs and while the add-marketplace input is focused.
+        """
+        if (
+            self._mode == "list"
+            and self._tab == "marketplaces"
+            and self._state.marketplaces
+        ):
+            self._refresh_view()
+
     def _tabs_text(self) -> str:
         labels = {
             "discover": "Plugins",
@@ -168,9 +193,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             if not self._state.marketplaces:
                 return [
                     Option(
-                        "No plugins available. Add a marketplace first.",
+                        "No marketplaces installed. Add one to discover plugins.",
                         id="empty",
-                    )
+                        disabled=True,
+                    ),
+                    Option("+ Add marketplace", id="add-marketplace"),
                 ]
             if not self._state.available_plugins:
                 return [Option("All available plugins are installed.", id="empty")]
@@ -188,10 +215,20 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 status=None,
             )
         if self._tab == "marketplaces":
-            options = [Option("+ Add Marketplace", id="add-marketplace")]
+            options = [Option("+ Add marketplace", id="add-marketplace")]
+            if self._state.marketplaces:
+                options.append(
+                    Option(
+                        Content.styled(
+                            glyphs.box_horizontal * self._divider_width(), "dim"
+                        ),
+                        id="marketplace-divider",
+                        disabled=True,
+                    )
+                )
             options.extend(
                 Option(
-                    Content(_marketplace_label(row, glyphs.bullet)),
+                    _marketplace_label(row),
                     id=f"marketplace:{row.name}",
                 )
                 for row in self._state.marketplaces
@@ -200,6 +237,25 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
+
+    def _divider_width(self) -> int:
+        """Width for the marketplaces divider, sized to the options list.
+
+        The options list respects the modal's `max-width`, so a fixed width wraps on
+        terminals narrower than the full modal. Measure the laid-out content width when
+        available and fall back to a constant before the first layout (e.g. in tests).
+
+        Returns:
+            The measured options content width, or `_DIVIDER_FALLBACK_WIDTH` if the
+            options list is not mounted or has not been laid out yet.
+        """
+        try:
+            width = self.query_one(
+                "#plugin-manager-options", OptionList
+            ).content_size.width
+        except NoMatches:
+            return self._DIVIDER_FALLBACK_WIDTH
+        return width if width > 0 else self._DIVIDER_FALLBACK_WIDTH
 
     @staticmethod
     def _nearest_enabled_index(options: OptionList, candidate: int) -> int | None:
@@ -334,7 +390,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 f"Left/Right tabs {glyphs.bullet} Esc close"
             )
         elif self._tab in {"discover", "installed"}:
-            action = "view" if self._tab == "installed" else "install"
+            if self._tab == "installed":
+                action = "view"
+            elif not self._state.marketplaces:
+                action = "add marketplace"
+            else:
+                action = "install"
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
                 f"Enter {action} {glyphs.bullet} Left/Right tabs "
@@ -544,18 +605,31 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if row is None:
             return
         try:
-            await asyncio.to_thread(install_plugin, row.plugin_id)
+            # install_plugin returns the loaded instance; Discover rows do not
+            # carry MCP metadata until install, so inspect the result here.
+            instance = await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
             self._refresh_view()
             return
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+        label = row.label
+        entries = plugin_mcp_server_entries(instance)
+        has_mcp = bool(entries)
+        needs_login = any(needs for _label, _scoped, needs in entries)
+        self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = f"Installed {row.plugin_id}. Run /reload to activate."
+        self._status = f"Installed {label}."
         self._error = None
         await self._refresh_state()
+        if has_mcp:
+            # Close the manager so the reconnect prompt is not buried under it.
+            self.dismiss((label, needs_login))
+            return
 
     async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin
@@ -564,12 +638,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         try:
             if row.enabled:
                 set_installed_plugin_enabled(row.plugin_id, enabled=False)
-                self._status = f"Disabled {row.plugin_id}. Run /reload to unload."
+                self._status = f"Disabled {row.label}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
                 set_installed_plugin_enabled(row.plugin_id, enabled=True)
-                self._status = f"Enabled {row.plugin_id}. Run /reload to activate."
+                self._status = f"Enabled {row.label}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"
                 self._selected_plugin = None
@@ -595,7 +669,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._mode = "list"
         self._selected_plugin = None
         reload_hint = " Run /reload to unload." if row.enabled else ""
-        self._status = f"Uninstalled {row.plugin_id}.{reload_hint}"
+        self._status = f"Uninstalled {row.label}.{reload_hint}"
         self._error = None
         await self._refresh_state()
 

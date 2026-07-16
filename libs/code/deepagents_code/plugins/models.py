@@ -56,6 +56,7 @@ class PluginManifest:
 
     Attributes:
         name: Plugin name from the manifest, or `None` for manifest-less plugins.
+        display_name: Optional human-readable label from `displayName`.
         version: Version string from the plugin manifest.
         component_paths: Validated skill and MCP paths keyed by component name.
         inline_mcp: Inline MCP servers declared in the manifest.
@@ -65,6 +66,7 @@ class PluginManifest:
     version: str | None
     component_paths: dict[str, tuple[Path, ...]]
     inline_mcp: JsonObject
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -171,6 +173,7 @@ class MarketplacePluginEntry:
     source: PluginSource
     description: str | None = None
     author: str | JsonObject | None = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

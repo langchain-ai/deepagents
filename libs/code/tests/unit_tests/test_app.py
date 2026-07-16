@@ -80,7 +80,11 @@ from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
 )
-from deepagents_code.tui.widgets.message_store import ToolStatus
+from deepagents_code.tui.widgets.message_store import (
+    MessageData,
+    MessageType,
+    ToolStatus,
+)
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -504,8 +508,10 @@ class TestStartupSequence:
             *,
             thread_id: str | None = None,
             preloaded_payload: object | None = None,
+            resolve_pending_goal: bool = True,
         ) -> None:
             del thread_id, preloaded_payload
+            assert resolve_pending_goal is False
             nonlocal call_count
             call_count += 1
 
@@ -554,20 +560,26 @@ class TestStartupSequence:
             *,
             thread_id: str | None = None,
             preloaded_payload: object | None = None,
+            resolve_pending_goal: bool = True,
         ) -> None:
             del thread_id, preloaded_payload
+            assert resolve_pending_goal is False
             order.append("history")
 
         async def capture_startup(command: str) -> None:  # noqa: RUF029
             assert command == "echo hi"
             order.append("startup")
 
+        async def capture_goal_review() -> None:  # noqa: RUF029
+            order.append("goal")
+
         app._load_thread_history = capture_history  # ty: ignore
         app._run_startup_command = capture_startup  # ty: ignore
+        app._remount_pending_goal_rubric_review = capture_goal_review  # ty: ignore
 
         await app._run_session_start_sequence()
 
-        assert order == ["history", "startup"]
+        assert order == ["history", "startup", "goal"]
         assert app._startup_sequence_running is False
 
     @pytest.mark.parametrize(
@@ -829,8 +841,10 @@ class TestStartupSequence:
             *,
             thread_id: str | None = None,
             preloaded_payload: object | None = None,
+            resolve_pending_goal: bool = True,
         ) -> None:
             del thread_id, preloaded_payload
+            assert resolve_pending_goal is False
 
         app._run_startup_command = capture_startup  # ty: ignore
         app._load_thread_history = stub_history  # ty: ignore
@@ -5812,6 +5826,738 @@ class TestGoalCommand:
 
         return submit
 
+    async def test_yolo_goal_proposal_auto_accepts_without_review(self) -> None:
+        """Live YOLO mode should apply a new proposal through normal acceptance."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            handle = AsyncMock()
+
+            with (
+                patch.object(
+                    app,
+                    "_run_goal_criteria_request",
+                    side_effect=self._server_goal_result(
+                        app,
+                        "add refresh tokens exactly",
+                        "- tests pass\n- no unrelated files",
+                    ),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await app._handle_command("/goal add refresh tokens exactly")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._active_goal is not None:
+                        break
+
+            assert app._active_goal == "add refresh tokens exactly"
+            assert app._active_rubric == "- tests pass\n- no unrelated files"
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_review_widget is None
+            assert app._pending_goal_review_future is None
+            assert app._goal_review_task is None
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_awaited_once_with("add refresh tokens exactly")
+
+            await app._show_goal_state()
+            await pilot.pause()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                rendered.count(
+                    "Goal criteria automatically accepted because YOLO mode is enabled."
+                )
+                == 1
+            )
+            assert "Goal accepted. It will stay active for this thread" in rendered
+            assert "Goal:\nadd refresh tokens exactly" in rendered
+            assert "Criteria:\n- tests pass\n- no unrelated files" in rendered
+            assert (
+                "Goal update accepted; it will apply after the current turn."
+                not in (rendered)
+            )
+
+    async def test_yolo_goal_generation_reconciles_through_queued_application(
+        self,
+    ) -> None:
+        """A generated proposal should queue and continue at the turn boundary."""
+        request_id = "request-create"
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            handle = AsyncMock()
+            fetch = AsyncMock(
+                return_value={
+                    "_pending_goal_objective": "ship login",
+                    "_pending_goal_rubric": "- tests pass",
+                    "_pending_goal_kind": "create",
+                    "_pending_goal_request_id": request_id,
+                }
+            )
+
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "_clear_submitted_goal_criteria_request",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task(
+                    force_goal_sync=True,
+                    goal_criteria_request_id=request_id,
+                )
+
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._queued_goal_application is None
+            assert app._pending_goal_review_widget is None
+            assert app._pending_goal_review_future is None
+            assert app._goal_review_task is None
+            handle.assert_awaited_once_with("ship login")
+
+    async def test_failed_or_cancelled_yolo_generation_does_not_accept(self) -> None:
+        """A terminal unsuccessful criteria turn must discard its partial draft."""
+        request_id = "request-cancelled"
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            fetch = AsyncMock(
+                return_value={
+                    "_pending_goal_objective": "partial objective",
+                    "_pending_goal_rubric": "- partial criteria",
+                    "_pending_goal_kind": "create",
+                    "_pending_goal_request_id": request_id,
+                }
+            )
+            handle = AsyncMock()
+            persist = AsyncMock(return_value=True)
+
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "_clear_submitted_goal_criteria_request",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task(
+                    force_goal_sync=True,
+                    goal_criteria_request_id=request_id,
+                    goal_criteria_succeeded=False,
+                )
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._queued_goal_application is None
+            assert not any(app.query(GoalReviewMenu))
+            persist.assert_awaited_once()
+            handle.assert_not_awaited()
+
+    @pytest.mark.parametrize("failure", ["read", "write"])
+    async def test_failed_generation_keeps_request_marker_until_draft_is_cleared(
+        self,
+        failure: str,
+    ) -> None:
+        """Cleanup uncertainty must leave the request marker to fail closed."""
+        request_id = "request-failed"
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            state = {
+                "goal_criteria_request": {
+                    "request_id": request_id,
+                    "kind": "create",
+                    "objective": "partial objective",
+                },
+                "_pending_goal_objective": "partial objective",
+                "_pending_goal_rubric": "- partial criteria",
+                "_pending_goal_kind": "create",
+                "_pending_goal_request_id": request_id,
+            }
+            fetch = AsyncMock(
+                side_effect=RuntimeError("down") if failure == "read" else None,
+                return_value=state,
+            )
+            persist = AsyncMock(return_value=failure != "write")
+            clear_request = AsyncMock(return_value=True)
+
+            with (
+                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(
+                    app,
+                    "_clear_submitted_goal_criteria_request",
+                    clear_request,
+                ),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+                patch.object(app, "notify"),
+            ):
+                await app._cleanup_agent_task(
+                    force_goal_sync=True,
+                    goal_criteria_request_id=request_id,
+                    goal_criteria_succeeded=False,
+                )
+
+            clear_request.assert_not_awaited()
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert not any(app.query(GoalReviewMenu))
+
+    async def test_manual_goal_proposal_still_waits_for_review(self) -> None:
+        """Manual mode should keep the existing interactive review workflow."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-create"
+
+            await app._start_pending_goal_rubric_review()
+            for _ in range(20):
+                await pilot.pause()
+                if app._goal_review_task is not None:
+                    break
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_review_widget is app.query_one(GoalReviewMenu)
+            assert app._pending_goal_review_future is not None
+            assert not app._pending_goal_review_future.done()
+            assert app._goal_review_task is not None
+            assert not app._goal_review_task.done()
+            await app._cancel_pending_goal_review(context="test cleanup")
+
+    async def test_yolo_goal_amendment_preserves_continuation_context(self) -> None:
+        """Auto-accepted amendments should continue without replaying completed work."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- password login works\n- passkeys work"
+            app._pending_goal_kind = "amend"
+            app._pending_goal_request_id = "request-amend"
+            send = AsyncMock()
+
+            with patch.object(app, "_send_to_agent", send):
+                await app._start_pending_goal_rubric_review()
+
+            assert app._active_goal == "ship login with passkeys"
+            assert app._active_rubric == "- password login works\n- passkeys work"
+            assert app._pending_goal_review_widget is None
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            control_message = send.await_args.args[0]
+            assert control_message.startswith(SYSTEM_MESSAGE_PREFIX)
+            assert "Goal amended by the user" in control_message
+            assert "Do not repeat completed work" in control_message
+
+    async def test_regenerated_goal_auto_accepts_if_yolo_enabled_during_generation(
+        self,
+    ) -> None:
+        """A regeneration should consult live mode only after generation finishes."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        captured: dict[str, object] = {}
+
+        async def generate(request: dict[str, object]) -> None:
+            captured.update(request)
+            started.set()
+            await release.wait()
+            app._pending_goal_objective = str(request["objective"])
+            app._pending_goal_rubric = "- regenerated criteria"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = str(request["request_id"])
+            await app._start_pending_goal_rubric_review()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- old criteria"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-old"
+            await app._start_pending_goal_rubric_review()
+            for _ in range(20):
+                await pilot.pause()
+                if app._goal_review_task is not None:
+                    break
+
+            handle = AsyncMock()
+            with (
+                patch.object(app, "_run_goal_criteria_request", side_effect=generate),
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await pilot.press("r")
+                await pilot.pause()
+                review = app.query_one(GoalReviewMenu)
+                feedback = review.query_one(GoalReviewTextArea)
+                feedback.text = "include migration coverage"
+                feedback.focus()
+                await pilot.press("enter")
+                await started.wait()
+
+                assert app._pending_goal_objective is None
+                assert app._active_goal is None
+                await pilot.press("shift+tab")
+                assert app._session_state.auto_approve is True
+                assert app._active_goal is None
+
+                release.set()
+                for _ in range(30):
+                    await pilot.pause()
+                    if app._active_goal is not None:
+                        break
+
+            assert captured["feedback"] == "include migration coverage"
+            assert captured["previous_criteria"] == "- old criteria"
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- regenerated criteria"
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_awaited_once_with("add refresh tokens")
+
+    async def test_restored_pending_goal_auto_accepts_in_yolo_mode(self) -> None:
+        """Thread restoration should apply a complete persisted proposal in YOLO."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        history = MessageData(
+            MessageType.USER,
+            "earlier thread context",
+            id="history-before-restored-goal",
+        )
+        payload = _ThreadHistoryPayload(
+            [history],
+            0,
+            "",
+            pending_goal_objective="restore exact objective",
+            pending_goal_rubric="- restore exact criteria",
+            pending_goal_kind="create",
+            pending_goal_request_id="request-restored",
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+
+            def start_after_history(_objective: str) -> None:
+                assert (
+                    app._message_store.get_message("history-before-restored-goal")
+                    is history
+                )
+
+            handle = AsyncMock(side_effect=start_after_history)
+            with patch.object(app, "_handle_user_message", handle):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+
+            assert app._active_goal == "restore exact objective"
+            assert app._active_rubric == "- restore exact criteria"
+            assert app._pending_goal_review_widget is None
+            assert app._pending_goal_review_future is None
+            assert app._goal_review_task is None
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_awaited_once_with("restore exact objective")
+
+    async def test_restored_proposal_with_active_request_is_not_auto_accepted(
+        self,
+    ) -> None:
+        """Resume should fail closed when a saved proposal was superseded."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        payload = _ThreadHistoryPayload(
+            [],
+            0,
+            "",
+            pending_goal_objective="old objective",
+            pending_goal_rubric="- old criteria",
+            pending_goal_kind="create",
+            pending_goal_request_id="request-old",
+            goal_criteria_request_active=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            handle = AsyncMock()
+
+            with patch.object(app, "_handle_user_message", handle):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_not_awaited()
+
+    async def test_enabling_yolo_on_mounted_review_accepts_once_and_cleans_up(
+        self,
+    ) -> None:
+        """The live toggle should remove an existing review and resolve it once."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-create"
+            await app._start_pending_goal_rubric_review()
+            for _ in range(20):
+                await pilot.pause()
+                if app._goal_review_task is not None:
+                    break
+
+            menu = app.query_one(GoalReviewMenu)
+            future = app._pending_goal_review_future
+            review_task = app._goal_review_task
+            assert future is not None
+            assert review_task is not None
+            await pilot.press("e")
+            await pilot.pause()
+            assert menu.query_one(GoalReviewTextArea).display is True
+            handle = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await pilot.press("shift+tab")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._active_goal is not None:
+                        break
+
+                assert app._session_state.auto_approve is True
+                assert app._active_goal == "add refresh tokens"
+                assert app._pending_goal_review_widget is None
+                assert app._pending_goal_review_future is None
+                assert app._goal_review_task is None
+                assert menu not in app.query(GoalReviewMenu)
+                assert future.done()
+                assert review_task.done()
+                handle.assert_awaited_once_with("add refresh tokens")
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+
+            assert app._session_state.auto_approve is False
+            assert app._active_goal == "add refresh tokens"
+            handle.assert_awaited_once_with("add refresh tokens")
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                rendered.count(
+                    "Goal criteria automatically accepted because YOLO mode is enabled."
+                )
+                == 1
+            )
+            assert "Goal proposal cancelled." not in rendered
+
+    async def test_enabling_yolo_honors_already_submitted_cancel(self) -> None:
+        """A Cancel decision should win if it reaches the Future before YOLO."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-create"
+            await app._start_pending_goal_rubric_review()
+            for _ in range(20):
+                await pilot.pause()
+                if app._goal_review_task is not None:
+                    break
+
+            menu = app.query_one(GoalReviewMenu)
+            future = app._pending_goal_review_future
+            assert future is not None
+            menu.action_cancel()
+            assert future.done()
+            handle = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await app._on_auto_approve_enabled()
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._pending_goal_objective is None:
+                        break
+
+            assert app._session_state.auto_approve is True
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_review_widget is None
+            assert app._pending_goal_review_future is None
+            assert app._goal_review_task is None
+            assert future.done()
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_not_awaited()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal proposal cancelled." in rendered
+            assert "automatically accepted" not in rendered
+
+    async def test_yolo_does_not_overwrite_queued_manual_criteria_edit(self) -> None:
+        """A queued manual edit should remain authoritative after YOLO is enabled."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- model draft"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-create"
+            app._set_agent_running(True)
+
+            await app._accept_goal_rubric("- manually edited criteria")
+            queued = app._queued_goal_application
+            assert queued is not None
+            assert queued.rubric == "- manually edited criteria"
+
+            app._session_state.auto_approve = True
+            accepted = await app._auto_accept_pending_goal_rubric()
+
+            assert accepted is True
+            assert app._queued_goal_application is queued
+            assert app._queued_goal_application.rubric == "- manually edited criteria"
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "automatically accepted" not in rendered
+            app._set_agent_running(False)
+
+    async def test_disabling_yolo_before_generation_finishes_mounts_review(
+        self,
+    ) -> None:
+        """A proposal finishing after YOLO is disabled should wait for review."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def generate(request: dict[str, object]) -> None:
+            started.set()
+            await release.wait()
+            app._pending_goal_objective = str(request["objective"])
+            app._pending_goal_rubric = "- generated criteria"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = str(request["request_id"])
+            await app._start_pending_goal_rubric_review()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            handle = AsyncMock()
+            with (
+                patch.object(app, "_run_goal_criteria_request", side_effect=generate),
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                generation = asyncio.create_task(
+                    app._propose_goal_rubric("add refresh tokens")
+                )
+                await started.wait()
+                await pilot.press("shift+tab")
+                assert app._session_state.auto_approve is False
+                release.set()
+                await generation
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._goal_review_task is not None:
+                        break
+
+            assert app._active_goal is None
+            assert app._pending_goal_review_widget is app.query_one(GoalReviewMenu)
+            assert app._pending_goal_review_future is not None
+            assert not app._pending_goal_review_future.done()
+            assert app._goal_review_task is not None
+            handle.assert_not_awaited()
+            await app._cancel_pending_goal_review(context="test cleanup")
+
+    @pytest.mark.parametrize("live_value", [None, 1, "enabled"])
+    async def test_missing_or_malformed_live_yolo_state_fails_closed(
+        self,
+        live_value: object,
+    ) -> None:
+        """Only literal `True` in session state may bypass goal review."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if live_value is None:
+                app._session_state = None
+            else:
+                assert app._session_state is not None
+                # Wrong runtime types exercise the defensive fail-closed boundary.
+                cast("Any", app._session_state).auto_approve = live_value
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-create"
+
+            await app._start_pending_goal_rubric_review()
+            for _ in range(20):
+                await pilot.pause()
+                if app._goal_review_task is not None:
+                    break
+
+            assert app._active_goal is None
+            assert app._pending_goal_review_widget is app.query_one(GoalReviewMenu)
+            assert app._goal_review_task is not None
+            await app._cancel_pending_goal_review(context="test cleanup")
+
+    async def test_stale_goal_request_cannot_auto_accept_or_apply(self) -> None:
+        """Request correlation should prevent an old result activating a goal."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._pending_goal_objective = "new objective"
+            app._pending_goal_rubric = "- new criteria"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-new"
+            handle = AsyncMock()
+
+            with patch.object(app, "_handle_user_message", handle):
+                await app._remount_pending_goal_rubric_review(
+                    expected_request_id="request-old"
+                )
+                transition = await app._apply_goal_application(
+                    _GoalApplication(
+                        "old objective",
+                        "- old criteria",
+                        "create",
+                        "request-old",
+                    ),
+                    continue_work=False,
+                    at_boundary=True,
+                )
+
+                assert transition is None
+                assert app._active_goal is None
+                assert app._pending_goal_objective == "new objective"
+                assert app._pending_goal_rubric == "- new criteria"
+                assert not any(app.query(GoalReviewMenu))
+                handle.assert_not_awaited()
+
+                await app._remount_pending_goal_rubric_review(
+                    expected_request_id="request-new"
+                )
+
+            assert app._active_goal == "new objective"
+            assert app._active_rubric == "- new criteria"
+            handle.assert_awaited_once_with("new objective")
+
+    async def test_newer_inflight_request_supersedes_saved_yolo_proposal(
+        self,
+    ) -> None:
+        """A newer submitted request should make an older checkpoint draft stale."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "old objective"
+            app._pending_goal_rubric = "- old criteria"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-old"
+            fetch = AsyncMock(
+                return_value={
+                    "goal_criteria_request": {
+                        "request_id": "request-new",
+                        "kind": "create",
+                        "objective": "new objective",
+                    },
+                    "_pending_goal_objective": "old objective",
+                    "_pending_goal_rubric": "- old criteria",
+                    "_pending_goal_kind": "create",
+                    "_pending_goal_request_id": "request-old",
+                }
+            )
+            handle = AsyncMock()
+
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await app._sync_goal_rubric_state_from_thread(
+                    force=True,
+                    proposal_request_id="request-old",
+                )
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_request_id is None
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_not_awaited()
+
     @pytest.mark.parametrize(
         ("status", "label"),
         [
@@ -7090,8 +7836,41 @@ class TestGoalCommand:
             )
             assert app._active_goal is None
             assert app._active_rubric is None
-            assert app._pending_goal_objective == "add refresh tokens"
-            assert app._pending_goal_rubric == "- model draft"
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+
+    async def test_failed_rejection_persistence_does_not_start_regeneration(
+        self,
+    ) -> None:
+        """A rejected draft must not survive behind a replacement request."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- model draft"
+            app._pending_goal_kind = "create"
+            app._pending_goal_request_id = "request-rejected"
+            future = self._goal_review_future(
+                {"type": "rejected", "message": "include migration notes"}
+            )
+            propose = AsyncMock()
+
+            with (
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_propose_goal_rubric", propose),
+            ):
+                await app._finish_pending_goal_rubric_review(future)
+
+            propose.assert_not_awaited()
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert "request-rejected" in app._discarded_goal_proposal_request_ids
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "regeneration was not started" in rendered
 
     async def test_propose_goal_rubric_rejects_empty_objective(self) -> None:
         """A whitespace-only objective shows usage and never calls the model.

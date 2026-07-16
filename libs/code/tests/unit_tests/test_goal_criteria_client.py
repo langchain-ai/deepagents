@@ -234,6 +234,7 @@ async def test_failed_criteria_turn_shows_actionable_message() -> None:
         force_goal_sync=True,
         goal_criteria_request_id="request-fail",
         goal_grade=None,
+        goal_criteria_succeeded=False,
     )
 
 
@@ -268,7 +269,7 @@ async def test_matching_request_id_loads_generated_proposal() -> None:
     assert app._pending_goal_objective == "ship it"
     assert app._pending_goal_rubric == "- observable result"
     assert app._pending_goal_request_id == "request-match"
-    remount.assert_awaited_once_with()
+    remount.assert_awaited_once_with(expected_request_id="request-match")
 
 
 async def test_mismatched_request_id_does_not_display_stale_proposal() -> None:
@@ -405,6 +406,44 @@ async def test_cancelled_criteria_turn_still_runs_request_cleanup() -> None:
         force_goal_sync=True,
         goal_criteria_request_id="request-cancel",
         goal_grade=None,
+        goal_criteria_succeeded=False,
+    )
+
+
+async def test_late_cancelled_criteria_turn_is_not_marked_successful() -> None:
+    """Cancellation during final UI regrouping must still reject the proposal."""
+    app = _app()
+
+    with (
+        patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            app,
+            "_regroup_completed_tools",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock) as cleanup,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await app._run_agent_task(
+            "",
+            graph_input={
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-late-cancel",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+    cleanup.assert_awaited_once_with(
+        force_goal_sync=True,
+        goal_criteria_request_id="request-late-cancel",
+        goal_grade=None,
+        goal_criteria_succeeded=False,
     )
 
 

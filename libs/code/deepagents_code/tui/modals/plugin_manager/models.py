@@ -24,10 +24,12 @@ class _PluginRow:
     enabled: bool
     version: str | None
     author: str | None
+    display_name: str = ""
     skill_count: int | None = None
     skill_names: tuple[str, ...] = ()
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
+    mcp_login_servers: tuple[str, ...] = ()
     unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None
@@ -43,6 +45,13 @@ class _PluginRow:
             return "enabled"
         return "disabled"
 
+    @property
+    def label(self) -> str:
+        """Human-readable plugin name for UI copy."""
+        if self.display_name:
+            return self.display_name
+        return self.plugin_id.partition("@")[0]
+
 
 @dataclass(frozen=True, slots=True)
 class _MarketplaceRow:
@@ -51,6 +60,16 @@ class _MarketplaceRow:
     plugin_count: int | None
     installed_count: int
     error: str | None = None
+
+    @property
+    def has_error(self) -> bool:
+        """Whether the configured marketplace could not be loaded.
+
+        Marketplace loading failures set `error` and produce an error status. Warnings
+        from a marketplace that loaded successfully appear on the Errors tab without
+        marking the marketplace itself as errored.
+        """
+        return self.error is not None
 
 
 @dataclass(frozen=True, slots=True)

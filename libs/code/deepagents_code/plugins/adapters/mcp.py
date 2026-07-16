@@ -48,6 +48,53 @@ def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
     return f"plugin__{plugin_part}__{server_part}"
 
 
+def _mcp_server_needs_login(server: object) -> bool:
+    """Return whether an MCP server config typically requires interactive login."""
+    if not isinstance(server, dict):
+        return False
+    server_type = server.get("type")
+    if server_type in {"http", "sse"}:
+        return True
+    return isinstance(server.get("url"), str)
+
+
+def plugin_mcp_server_entries(
+    plugin: PluginInstance,
+) -> tuple[tuple[str, str, bool], ...]:
+    """List plugin MCP servers as `(label, scoped_name, needs_login)` tuples.
+
+    `label` is the unscoped name from the plugin config (for UI). `scoped_name`
+    is what dcode registers after namespacing.
+
+    Args:
+        plugin: Plugin whose MCP declarations should be listed.
+
+    Returns:
+        Deduplicated server entries in declaration order.
+    """
+    servers: dict[str, object] = {}
+    for path in plugin.inventory.mcp_files:
+        if path.suffix in {".mcpb", ".dxt"}:
+            continue
+        servers.update(_load_mcp_server_map(path))
+    if plugin.manifest and plugin.manifest.inline_mcp:
+        servers.update(_server_map(plugin.manifest.inline_mcp))
+    entries: list[tuple[str, str, bool]] = []
+    seen: set[str] = set()
+    for name, server in servers.items():
+        if not isinstance(name, str) or name in seen:
+            continue
+        seen.add(name)
+        entries.append(
+            (
+                name,
+                scoped_mcp_server_name(plugin.plugin_id, name),
+                _mcp_server_needs_login(server),
+            )
+        )
+    return tuple(entries)
+
+
 def _server_map(raw: object) -> JsonObject:
     """Extract the server-name to config map from a decoded MCP document.
 

@@ -114,6 +114,32 @@ async def test_plugin_search_filters_and_clears() -> None:
         assert options.has_focus
 
 
+def test_filtered_plugins_matches_display_label() -> None:
+    screen = PluginManagerScreen()
+    screen._search_query = "convex"
+    rows = (
+        _PluginRow(
+            plugin_id="cx-backend@tools",
+            description="Database backend",
+            enabled=False,
+            version=None,
+            author=None,
+            display_name="Convex",
+        ),
+        _PluginRow(
+            plugin_id="linear@tools",
+            description="Issue tracker",
+            enabled=False,
+            version=None,
+            author=None,
+        ),
+    )
+
+    assert [row.plugin_id for row in screen._filtered_plugins(rows)] == [
+        "cx-backend@tools"
+    ]
+
+
 def test_plugin_row_label_prefers_display_name() -> None:
     row = _PluginRow(
         plugin_id="convex@tools",

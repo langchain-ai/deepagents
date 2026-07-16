@@ -203,7 +203,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         return tuple(
             row
             for row in rows
-            if query in row.plugin_id.casefold() or query in row.description.casefold()
+            if query in row.plugin_id.casefold()
+            or query in row.label.casefold()
+            or query in row.description.casefold()
         )
 
     def _current_options(self) -> list[Option]:
@@ -498,8 +500,25 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if self._mode == "list" and self._tab in {"discover", "installed"}:
             self.query_one("#plugin-manager-search", Input).focus()
 
+    def _cycle_details_option(self, step: int) -> None:
+        options = self.query_one("#plugin-manager-options", OptionList)
+        enabled = [
+            index
+            for index in range(options.option_count)
+            if not options.get_option_at_index(index).disabled
+        ]
+        if not enabled:
+            return
+        current = options.highlighted
+        position = enabled.index(current) if current in enabled else 0
+        options.highlighted = enabled[(position + step) % len(enabled)]
+        options.focus()
+
     def action_next_tab(self) -> None:
-        """Switch to the next tab."""
+        """Switch tabs or focus the next details option."""
+        if self._details_mode_active():
+            self._cycle_details_option(1)
+            return
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)
@@ -508,7 +527,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self._refresh_view()
 
     def action_previous_tab(self) -> None:
-        """Switch to the previous tab."""
+        """Switch tabs or focus the previous details option."""
+        if self._details_mode_active():
+            self._cycle_details_option(-1)
+            return
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)

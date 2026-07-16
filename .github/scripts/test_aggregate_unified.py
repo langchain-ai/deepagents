@@ -621,7 +621,7 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
     assert rc == 1
     assert (out / "unified_summary.json").exists()
     assert (
-        "::error::Every expected (model, config) row is incomplete"
+        "::error::Every expected (model, branch, config) row is incomplete"
         in capsys.readouterr().out
     )
 
@@ -659,7 +659,7 @@ def test_main_fails_when_required_leaf_has_no_tasks(
     assert model["categories"]["context"]["incomplete"] is True
     assert model["incomplete"] is True
     assert (
-        "::error::Every expected (model, config) row is incomplete"
+        "::error::Every expected (model, branch, config) row is incomplete"
         in capsys.readouterr().out
     )
 
@@ -670,7 +670,8 @@ def test_main_passes_when_an_unexpected_row_is_complete(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # New contract: main fails only when EVERY row (expected or not) is incomplete.
-    # A complete unexpected (model, config) row therefore keeps the run green, while
+    # A complete unexpected (model, branch, config) row therefore keeps the run green,
+    # while
     # the missing expected leaf is still surfaced as a warning.
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
@@ -685,9 +686,10 @@ def test_main_passes_when_an_unexpected_row_is_complete(
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "::warning::missing / bare incomplete" in output
+    assert "::warning::missing / current / bare incomplete" in output
     assert (
-        "::error::Every expected (model, config) row is incomplete" not in output
+        "::error::Every expected (model, branch, config) row is incomplete"
+        not in output
     )
 
 
@@ -705,9 +707,10 @@ def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "::warning::m / bare incomplete" in output
+    assert "::warning::m / current / bare incomplete" in output
     assert (
-        "::error::Every expected (model, config) row is incomplete" not in output
+        "::error::Every expected (model, branch, config) row is incomplete"
+        not in output
     )
 
 

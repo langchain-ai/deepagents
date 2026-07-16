@@ -338,8 +338,8 @@ def write_outputs(
                 missing_categories=r.get("missing_categories") or [],
             )
             print(
-                f"::warning::{r['model']} / {r['config']} incomplete ({note}); "
-                "ranked on partial data."
+                f"::warning::{r['model']} / {r['branch']} / {r['config']} "
+                f"incomplete ({note}); ranked on partial data."
             )
 
 
@@ -424,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = combined["rows"]
     if expected_leaves and rows and all(r["incomplete"] for r in rows):
         print(
-            "::error::Every expected (model, config) row is incomplete; "
+            "::error::Every expected (model, branch, config) row is incomplete; "
             "no complete unified result is available."
         )
         return 1

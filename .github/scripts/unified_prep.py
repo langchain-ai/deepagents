@@ -2,13 +2,13 @@
 
 Parses a free-form comma-separated model CSV, validates it via models.py,
 maps each category to its Harbor dataset, and emits a per-model flat matrix
-(one entry per single-task shard, spanning every category) to GITHUB_OUTPUT.
+(one entry per shard, spanning every category) to GITHUB_OUTPUT.
 
 Pool sizing is derived by `derive_pool`, not clamped after the fact: given
-`concurrency` (trials in flight per task) and `rollouts` (trials per task),
-`per_shard = min(concurrency, rollouts)` is the peak concurrent trials a
-single 1-task shard ever runs. `max_parallel = MAX_TASKS_PER_MODEL //
-per_shard` saturates the per-model 40-trial budget, and `model_parallel =
+`concurrency` (trials in flight per shard job), `max_parallel =
+MAX_TASKS_PER_MODEL // concurrency` saturates the per-model 40-trial budget.
+Using the full concurrency is necessary because packed shards can contain
+multiple tasks. `model_parallel =
 MAX_RUNNERS // max_parallel` bounds how many models run at once so total
 runners stay within MAX_RUNNERS. Both invariants hold by construction:
   per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
@@ -150,16 +150,16 @@ def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
 def derive_pool(
     concurrency: int, rollouts: int, n_shards: int, n_models: int
 ) -> tuple[int, int]:
-    """Derive (max_parallel, model_parallel) from concurrency and rollouts.
+    """Derive (max_parallel, model_parallel) from the requested run limits.
 
-    per_shard is the peak concurrent trials in one 1-task shard, which a shard
-    can never exceed: min(concurrency, rollouts). max_parallel saturates the
-    per-model 40-trial budget; model_parallel bounds how many models run at once
-    so total runners stay within MAX_RUNNERS. Both hold the invariants by
-    construction, so no separate clamp/assert is needed.
+    A packed shard can run multiple tasks and therefore use its full
+    `concurrency` even when `rollouts` is lower. `max_parallel` saturates the
+    per-model 40-trial budget; `model_parallel` bounds how many models run at
+    once so total runners stay within `MAX_RUNNERS`. `rollouts` remains in the
+    signature for compatibility with callers that supply all run limits.
     """
-    per_shard = max(1, min(concurrency, rollouts))
-    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // per_shard, n_shards))
+    del rollouts
+    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // max(1, concurrency), n_shards))
     model_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
     return max_parallel, model_parallel
 
@@ -311,7 +311,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
         if not tasks_json:
-            raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
+            raise SystemExit(
+                "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
+            )
         with open(tasks_json) as f:
             tasks_by_cat = json.load(f)
 
@@ -333,7 +335,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
     n_shards = est_tasks
-    max_parallel, model_parallel = derive_pool(concurrency, rollouts, n_shards, n_models)
+    max_parallel, model_parallel = derive_pool(
+        concurrency, rollouts, n_shards, n_models
+    )
 
     outputs: dict[str, object] = {
         # The expected grid, so the combiner can flag missing/incomplete leaves

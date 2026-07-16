@@ -184,7 +184,7 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). May be set as high as the task count (one task per shard) for dynamic dispatch — shards drain through a derived pool (shard_parallel), not all at once. Capped at 200 (shard_matrix.MAX_SHARDS); the pool is bounded so shard_parallel * min(concurrency, rollouts_per_task) <= 40 concurrent sandboxes."
+        description: "Split the dataset's tasks across N shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). May be set as high as the task count (one task per shard) for dynamic dispatch — shards drain through a derived pool (shard_parallel), not all at once. Capped at 200 (shard_matrix.MAX_SHARDS); the pool is bounded so shard_parallel * concurrency <= 40 concurrent sandboxes."
         required: false
         default: "10"
         type: string
@@ -281,7 +281,7 @@ jobs:
         # concurrency <= 4). n_shards may be set high for dynamic dispatch (one
         # task per shard); shards drain through a derived shard_parallel pool
         # instead of all running at once, bounded so shard_parallel *
-        # min(concurrency, rollouts) <= 40 concurrent sandboxes. Inputs are read
+        # concurrency <= 40 concurrent sandboxes. Inputs are read
         # via env (no shell interpolation) and int-parsed in the script.
         # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
         id: limits

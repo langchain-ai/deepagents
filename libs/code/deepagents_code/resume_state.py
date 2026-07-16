@@ -21,8 +21,8 @@ write sites are called out below:
     the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
     are client-only, but `_goal_status`/`_goal_status_note` are *also* written
     from inside the graph by the agent's `update_goal` tool.
-- `_pending_goal_completion_note` — an agent-requested completion awaiting the
-    post-turn rubric result and, when needed, user approval.
+- `_pending_goal_completion_note` — optional agent-provided completion evidence
+    awaiting the post-turn rubric result.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
@@ -57,6 +57,7 @@ from typing import (
     get_args,
 )
 
+from deepagents.middleware.rubric import RubricResult
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -82,6 +83,36 @@ GoalProposalKind = Literal["create", "amend"]
 
 _GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
 _GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
+
+
+def _flatten_literal_values(tp: object) -> frozenset[str]:
+    """Collect every string value from a (possibly unioned) `Literal` type.
+
+    Args:
+        tp: A `Literal` type, or a union of `Literal`s, to inspect.
+
+    Returns:
+        Every string member across the (possibly nested) `Literal` args.
+    """
+    values: set[str] = set()
+    for arg in get_args(tp):
+        if isinstance(arg, str):
+            values.add(arg)
+        else:
+            values |= _flatten_literal_values(arg)
+    return frozenset(values)
+
+
+RUBRIC_RESULT_VALUES: frozenset[str] = _flatten_literal_values(RubricResult)
+"""Every verdict `RubricMiddleware` can emit for a completed grading run.
+
+Derived from the SDK's `RubricResult` `Literal` so it cannot drift out of sync
+with the grader vocabulary: if the SDK renames or adds a verdict, this set
+follows automatically. Consumers that branch on a rubric result (goal
+auto-completion in `app.py`, the rubric-event formatters in `textual_adapter`)
+treat any value outside this set as an unrecognized grade rather than silently
+mishandling it.
+"""
 
 
 def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:
@@ -143,10 +174,10 @@ class GoalRubricChannels(AgentState):
     """Accepted rubric associated with `_goal_objective`."""
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Evidence or blocker note recorded by `update_goal`."""
+    """Persisted completion evidence or blocker note for the goal."""
 
     _pending_goal_completion_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Completion evidence awaiting rubric and user approval."""
+    """Optional agent-provided completion evidence awaiting final grading."""
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""

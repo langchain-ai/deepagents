@@ -209,11 +209,15 @@ def load_manifest(
 
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
+    display_name_value = raw.get("displayName")
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
+        display_name=(
+            display_name_value if isinstance(display_name_value, str) else None
+        ),
     )
     return manifest, manifest_path, tuple(warnings)
 

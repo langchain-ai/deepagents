@@ -70,24 +70,50 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
 
 
 def _plugin_mcp_server_names(instance: PluginInstance) -> tuple[str, ...]:
-    from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
 
-    names: list[str] = []
-    for config in plugin_mcp_configs((instance,)):
-        servers = config.get("mcpServers")
-        if isinstance(servers, dict):
-            names.extend(key for key in servers if isinstance(key, str))
-    return tuple(dict.fromkeys(names))
+    return tuple(
+        label for label, _scoped, _needs_login in plugin_mcp_server_entries(instance)
+    )
+
+
+def _plugin_mcp_login_servers(instance: PluginInstance) -> tuple[str, ...]:
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+    return tuple(
+        scoped
+        for _label, scoped, needs_login in plugin_mcp_server_entries(instance)
+        if needs_login
+    )
 
 
 def _plugin_mcp_connected(
     instance: PluginInstance, mcp_server_info: Sequence[MCPServerInfo]
 ) -> bool | None:
-    expected = frozenset(_plugin_mcp_server_names(instance))
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+    expected = frozenset(
+        scoped for _label, scoped, _needs_login in plugin_mcp_server_entries(instance)
+    )
     if not expected:
         return None
     connected = {info.name for info in mcp_server_info if info.status == "ok"}
     return expected <= connected
+
+
+def _plugin_display_name(
+    *,
+    marketplace_display_name: str | None,
+    instance: PluginInstance | None,
+    plugin_name: str,
+) -> str:
+    if marketplace_display_name:
+        return marketplace_display_name
+    if instance is not None and instance.manifest is not None:
+        manifest_name = instance.manifest.display_name
+        if manifest_name:
+            return manifest_name
+    return plugin_name
 
 
 def _instance_for_manager_row(
@@ -188,18 +214,25 @@ def _load_manager_state(mcp_server_info: Sequence[MCPServerInfo] = ()) -> _Manag
             )
             skill_names = _list_plugin_skill_names(instance) if instance else ()
             mcp_names = _plugin_mcp_server_names(instance) if instance else ()
+            login_servers = _plugin_mcp_login_servers(instance) if instance else ()
             row = _PluginRow(
                 plugin_id,
                 plugin.description or "",
                 is_enabled,
                 instance.version if instance else None,
                 _extract_name(plugin.author),
+                _plugin_display_name(
+                    marketplace_display_name=plugin.display_name,
+                    instance=instance,
+                    plugin_name=plugin.name,
+                ),
                 len(skill_names) if instance else None,
                 skill_names,
                 _plugin_mcp_connected(instance, mcp_server_info)
                 if instance and is_enabled
                 else None,
                 mcp_names,
+                login_servers,
             )
             (installed_plugins if is_installed else available_plugins).append(row)
     return _ManagerState(

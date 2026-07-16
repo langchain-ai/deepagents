@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from textual.events import (
-    Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
-)
 from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
+    from textual.events import Click
+
     from deepagents_code.tui.modals.plugin_manager.models import PluginTab
 
 TAB_LABELS: dict[PluginTab, str] = {

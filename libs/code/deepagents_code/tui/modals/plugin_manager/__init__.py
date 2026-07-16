@@ -9,9 +9,6 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
-from textual.events import (
-    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
-)
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
@@ -20,6 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
+    from textual.events import MouseMove
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.tui.modals.plugin_manager.models import (
@@ -218,6 +216,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             self._mode = "list"
             self._selected_plugin = None
             self._selected_marketplace = None
+        if tab != self._tab:
+            # A query typed on one tab should not silently filter another.
+            self._search_query = ""
         self._tab = tab
         self._error = None
         self._refresh_view()
@@ -496,6 +497,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         return [Option("Back to plugin list", id="details-back")]
 
     async def _refresh_state(self) -> None:
+        # A mutating action (install/toggle/uninstall/marketplace change) reloads
+        # state and shows a fresh list, so a leftover query would hide results.
+        # Details round-trips use `_refresh_view` instead and keep the query.
+        self._search_query = ""
         self._state = await asyncio.to_thread(
             _load_manager_state,
             self._mcp_server_info,

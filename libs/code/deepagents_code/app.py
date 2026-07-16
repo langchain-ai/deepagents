@@ -2721,6 +2721,14 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._restart_respawn_task: asyncio.Task[None] | None = None
+        """Strong reference to the detached `/restart` respawn task.
+
+        `_handle_restart_command` runs the multi-second server respawn off the
+        Textual message pump via `asyncio.create_task` so the chat input stays
+        responsive; holding the reference keeps the task from being GC'd
+        mid-flight and lets tests await it deterministically."""
+
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
         restart. Cleared by the next reconnect or restart so multiple deferred
@@ -19026,6 +19034,31 @@ class DeepAgentsApp(App):
                 )
             return
 
+        # Run the respawn as a detached task, NOT awaited on the message pump.
+        # `_respawn_server`'s multi-second `server_proc.restart()` would
+        # otherwise stall the pump — key events stop being forwarded and the
+        # chat input freezes ("blocked") for the whole restart. Mirrors the
+        # MCP viewer/force-reconnect paths: `asyncio.create_task` keeps the
+        # pump free, so keystrokes stay live and any message the user submits
+        # while `_connecting` is queued and drained once `ServerReady` fires.
+        # `_run_restart_respawn` owns the transient status and completion
+        # banner; `_log_task_exception` surfaces anything unexpected. The
+        # pre-respawn guards above (remote/starting/failed/deferred) already
+        # ran synchronously, so the user got immediate feedback before this.
+        task = asyncio.create_task(self._run_restart_respawn())
+        self._restart_respawn_task = task
+        task.add_done_callback(_log_task_exception)
+
+    async def _run_restart_respawn(self) -> None:
+        """Respawn the server for `/restart`, detached from the message pump.
+
+        Scheduled via `asyncio.create_task` from `_handle_restart_command` so
+        the multi-second `server_proc.restart()` runs off the Textual message
+        pump, keeping the chat input responsive. Shows a transient
+        "Restarting server..." status for the duration, removes it whether the
+        respawn succeeds, returns `False`, or raises, and mounts the
+        completion banner only on success.
+        """
         restarting = await self._mount_transient_app_message("Restarting server...")
         restarted = False
         try:

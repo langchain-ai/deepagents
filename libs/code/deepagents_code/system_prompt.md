@@ -87,6 +87,8 @@ read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
 
 Execute shell commands. Always quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, use quiet flags or redirect to a temp file and inspect with `head`/`tail`/`grep`.
 
+Do NOT pipe test or build commands through `head`/`tail`/`grep` when you need the true exit status — a pipe can mask an upstream failure and make a failed run look like it succeeded. Run the command on its own (redirect to a file if the output is large, then inspect the file), and only claim "tests pass" or "build succeeded" after confirming a zero exit code.
+
 <good-example>
 pytest /foo/bar/tests
 </good-example>

@@ -49,6 +49,27 @@ def test_local_shell_backend_execute_with_error() -> None:
         assert "Exit code:" in result.output
 
 
+def test_local_shell_backend_execute_piped_failure_propagates() -> None:
+    """Test that a failure upstream in a pipeline surfaces a non-zero exit code."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("false | cat")
+
+        assert result.exit_code != 0
+        assert "Exit code:" in result.output
+
+
+def test_local_shell_backend_execute_piped_import_error_propagates() -> None:
+    """Test that a failing python import piped to head reports failure, not success."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute('python -c "import nonexistent_module" 2>&1 | head -1')
+
+        assert result.exit_code != 0
+
+
 def test_local_shell_backend_execute_in_working_directory() -> None:
     """Test that commands execute in the specified working directory."""
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -259,9 +259,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             **Always use Human-in-the-Loop (HITL) middleware when using this method.**
 
-        The command is executed using the system shell (`/bin/sh` or equivalent)
-        with the working directory set to the backend's `root_dir`.
-        Stdout and stderr are combined into a single output stream.
+        The command is executed using bash with `pipefail` enabled and the
+        working directory set to the backend's `root_dir`, so a failure in any
+        stage of a pipeline is reflected in `exit_code`. Stdout and stderr are
+        combined into a single output stream.
 
         Args:
             command: Shell command string to execute.
@@ -322,11 +323,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
 
+        # Run under bash with pipefail so a failure anywhere in a pipeline
+        # (e.g. `python ... 2>&1 | head`) propagates to returncode instead of
+        # being masked by the exit code of the last pipeline stage.
+        wrapped_command = f"set -o pipefail; {command}"
+
         try:
             result = subprocess.run(  # noqa: S602
-                command,
+                wrapped_command,
                 check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
+                executable="/bin/bash",
                 capture_output=True,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,

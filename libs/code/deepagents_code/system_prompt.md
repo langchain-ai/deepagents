@@ -218,4 +218,13 @@ When you use the web_search tool:
 
 The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
 
+### Browser & Fetch (MCP) Tool Usage
+
+Browser (`browser_navigate`/`browser_snapshot`) and fetch (`fetch_url`) tools are external MCP integrations whose results can be stale or incomplete. Never trust their output blindly — verify before acting on it:
+
+1. After `browser_navigate`, confirm the following `browser_snapshot` actually reflects the target page: check that the snapshot's URL or title matches where you navigated. A snapshot may capture the previous page if navigation has not settled. If it does not match, re-snapshot (allow the page to load) and re-check before using the content; if it still does not match, report the failure rather than acting on the wrong page.
+2. Treat a `fetch_url` (or snapshot) body that is only loading/reading/writing placeholder text as a FAILED fetch, not as page content. Retry the fetch; if it still returns placeholder content, report the failure to the user instead of presenting the placeholder as the page.
+
+Web-navigation tasks must either succeed with content that matches the requested page or fail loudly. Never silently present the wrong page or a placeholder body as the answer.
+
 {todo_list_section}

@@ -472,7 +472,12 @@ def test_harbor_overlays_branch_source() -> None:
     harbor = HARBOR_WORKFLOW.read_text()
     assert "Overlay branch agent source" in harbor
     assert "git checkout FETCH_HEAD --" in harbor
-    assert "libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py" in harbor
+    # Only the agent-under-test libraries are overlaid; the harness graph factory
+    # (langgraph_agent.py) stays at the eval ref.
+    assert "libs/deepagents" in harbor
+    assert "libs/code" in harbor
+    assert "libs/partners/quickjs" in harbor
+    assert "deepagents_harbor/langgraph_project/langgraph_agent.py" not in harbor
 
 
 def test_shard_artifact_name_includes_branch() -> None:

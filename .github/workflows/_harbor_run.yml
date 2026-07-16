@@ -474,11 +474,14 @@ jobs:
             echo "::error::Invalid branch ref: $BRANCH"; exit 1
           fi
           git fetch origin "$BRANCH" --depth=1
+          # Overlay ONLY the agent-under-test libraries. The harness (harbor +
+          # deepagents_harbor/langgraph_project, including langgraph_agent.py) must
+          # stay at the eval ref: it carries eval-infra fixes the pinned harbor
+          # build expects, and a compared branch's harness could diverge from them.
           git checkout FETCH_HEAD -- \
             libs/deepagents \
             libs/code \
-            libs/partners/quickjs \
-            libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+            libs/partners/quickjs
           echo "Overlaid agent source from branch: $BRANCH"
 
       - name: "⚓ Run Harbor"

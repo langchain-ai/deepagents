@@ -319,6 +319,23 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     assert all({"model", "branch", "config", "category"} <= set(l) for l in leaves)
 
 
+def test_main_rejects_over_256_outer_matrix(tmp_path, monkeypatch):
+    # n_models * n_branches is the OUTER eval_matrix; GitHub caps a matrix at
+    # shard_matrix.GITHUB_MATRIX_MAX (256) entries. 129 models x 2 branches = 258
+    # must fail fast on that cap (not silently emit an over-cap matrix).
+    import pytest
+
+    assert up.shard_matrix.GITHUB_MATRIX_MAX == 256
+    specs = ", ".join(f"openai:m{i}" for i in range(129))
+    monkeypatch.setenv("UNIFIED_MODELS", specs)
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    with pytest.raises(SystemExit, match=r"256-entry matrix cap"):
+        up.main([])
+
+
 def test_main_default_branch_is_current(tmp_path, monkeypatch):
     import json as _j
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")

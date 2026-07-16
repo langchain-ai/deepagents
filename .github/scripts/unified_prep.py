@@ -348,6 +348,13 @@ def main(argv: list[str] | None = None) -> int:
         m: build_flat_matrix(m, categories, tasks_by_cat, code_impls)
         for m in model_specs
     }
+    outer_entries = len(model_specs) * len(branches)
+    if outer_entries > shard_matrix.GITHUB_MATRIX_MAX:
+        raise SystemExit(
+            f"eval matrix would have {outer_entries} (model, branch) entries, over "
+            f"GitHub's {shard_matrix.GITHUB_MATRIX_MAX}-entry matrix cap "
+            f"({len(model_specs)} models x {len(branches)} branches). Reduce models or branches."
+        )
     total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(branches)
     total_job_guard(total_jobs)
 

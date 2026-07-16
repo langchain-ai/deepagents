@@ -24,13 +24,13 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
 
 def test_derive_pool_from_concurrency_and_rollouts():
     # concurrency 4, rollouts 3 -> per_shard=3 -> 40//3=13 ; 80//13=6
-    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (13, 1)
+    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_groups=1) == (13, 1)
     # concurrency 1 -> per_shard=1 -> 40 ; 80//40=2
-    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_models=5) == (40, 2)
+    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_groups=5) == (40, 2)
     # rollouts < concurrency clamps per_shard to rollouts (the utilization win)
-    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_models=1)[0] == 20
-    # clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_models
-    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_models=1) == (8, 1)
+    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_groups=1)[0] == 20
+    # clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_groups
+    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_groups=1) == (8, 1)
 
 
 def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
@@ -236,10 +236,11 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert lines["max_parallel"] == "13"      # conc4,roll3 -> 40//3
     assert lines["model_parallel"] == "2"     # 80//13=6 -> min(6, 2 models)
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
-    assert len(eval_matrix) == 2  # one entry per model
+    assert len(eval_matrix) == 2  # one entry per (model, branch); default branch=current
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
+    assert {e["branch"] for e in eval_matrix} == {"current"}
     for entry in eval_matrix:
-        assert set(entry) == {"model", "slug", "flat_matrix"}
+        assert set(entry) == {"model", "branch", "slug", "flat_matrix"}
         flat = _j.loads(entry["flat_matrix"])["include"]
         # lite totals 15+11+8 = 34 single-task shards per model
         assert len(flat) == 34
@@ -265,6 +266,72 @@ def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
     with pytest.raises(SystemExit):
         up.main()
+
+
+def test_derive_pool_divides_inner_by_branches():
+    # per_shard=3 -> M=40//3=13; two branches -> inner=13//2=6; outer bounded by groups.
+    inner, outer = up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=100, n_groups=2, n_branches=2
+    )
+    assert inner == 6
+    assert outer == 2
+
+
+def test_derive_pool_single_branch_matches_legacy():
+    inner, outer = up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=100, n_groups=5, n_branches=1
+    )
+    assert (inner, outer) == (13, 5)
+
+
+def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "40")  # per_shard=min(40,3)=3 -> M=13
+    monkeypatch.setenv("UNIFIED_BRANCHES", ",".join(f"b{i}" for i in range(14)))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    with pytest.raises(SystemExit):
+        up.main()
+
+
+def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
+    import json as _j
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    up.main()
+    text = out.read_text()
+    matrix = _j.loads(
+        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+    )
+    pairs = {(e["model"], e["branch"]) for e in matrix["include"]}
+    assert pairs == {("openai:gpt-5.6-luna", "main"), ("openai:gpt-5.6-luna", "feature")}
+    leaves = _j.loads(
+        next(l for l in text.splitlines() if l.startswith("expected_leaves=")).split("=", 1)[1]
+    )
+    assert {l["branch"] for l in leaves} == {"main", "feature"}
+    assert all({"model", "branch", "config", "category"} <= set(l) for l in leaves)
+
+
+def test_main_default_branch_is_current(tmp_path, monkeypatch):
+    import json as _j
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    up.main()
+    text = out.read_text()
+    matrix = _j.loads(
+        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+    )
+    assert {e["branch"] for e in matrix["include"]} == {"current"}
 
 
 def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):

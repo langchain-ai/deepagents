@@ -147,20 +147,26 @@ def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
 
 
 def derive_pool(
-    concurrency: int, rollouts: int, n_shards: int, n_models: int
+    concurrency: int,
+    rollouts: int,
+    n_shards: int,
+    n_groups: int,
+    n_branches: int = 1,
 ) -> tuple[int, int]:
-    """Derive (max_parallel, model_parallel) from concurrency and rollouts.
+    """Derive (inner_max_parallel, outer_parallel).
 
-    per_shard is the peak concurrent trials in one 1-task shard, which a shard
-    can never exceed: min(concurrency, rollouts). max_parallel saturates the
-    per-model 40-trial budget; model_parallel bounds how many models run at once
-    so total runners stay within MAX_RUNNERS. Both hold the invariants by
-    construction, so no separate clamp/assert is needed.
+    per_shard is the peak concurrent trials in one 1-task shard. `M` is the
+    per-model concurrent-shard budget. Dividing by `n_branches` keeps a model's
+    concurrently-running branch jobs summed within that budget, so per-model
+    provider load is unchanged by the branch axis. outer_parallel bounds how many
+    (model, branch) jobs run at once so total runners stay within MAX_RUNNERS.
+    With n_branches == 1 and n_groups == n_models this is the pre-branch behavior.
     """
     per_shard = max(1, min(concurrency, rollouts))
-    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // per_shard, n_shards))
-    model_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
-    return max_parallel, model_parallel
+    per_model = max(1, MAX_TASKS_PER_MODEL // per_shard)
+    inner = max(1, min(per_model // n_branches, n_shards))
+    outer = max(1, min(MAX_RUNNERS // inner, n_groups))
+    return inner, outer
 
 
 def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
@@ -297,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
             f"got unknown {unknown_impls}"
         )
 
+    # Comma list of git refs to pull agent source from; empty means the current
+    # checkout only (the sentinel "current" runs no overlay in the leaf).
+    raw_branches = os.environ.get("UNIFIED_BRANCHES", "").strip()
+    branches = list(
+        dict.fromkeys(b.strip() for b in raw_branches.split(",") if b.strip())
+    ) or ["current"]
+
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
     if profile not in PROFILES:
         raise SystemExit(
@@ -335,32 +348,49 @@ def main(argv: list[str] | None = None) -> int:
         m: build_flat_matrix(m, categories, tasks_by_cat, code_impls)
         for m in model_specs
     }
-    total_jobs = sum(len(entries) for entries in per_model_matrices.values())
+    total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(branches)
     total_job_guard(total_jobs)
 
     # Pool sizing stays per-model. n_shards is the largest per-model entry count
     # (what one model's shared pool drains); derive_pool caps max_parallel so
     # per-model concurrency is unchanged by the config axis.
     n_shards = max((len(v) for v in per_model_matrices.values()), default=1)
+    n_branches = len(branches)
+    per_shard = max(1, min(concurrency, rollouts))
+    budget_shards = max(1, MAX_TASKS_PER_MODEL // per_shard)
+    if n_branches > budget_shards:
+        raise SystemExit(
+            f"branches_to_compare has {n_branches} branches but the per-model "
+            f"concurrent-shard budget is {budget_shards} (at concurrency="
+            f"{concurrency}, rollouts={rollouts}). Reduce branches or lower "
+            "concurrency/rollouts so branches can share the per-model budget."
+        )
     max_parallel, model_parallel = derive_pool(
-        concurrency, rollouts, n_shards, n_models
+        concurrency, rollouts, n_shards, n_models * n_branches, n_branches
     )
 
     expected_leaves: list[dict] = []
-    seen_leaves: set[tuple[str, str, str]] = set()
+    seen_leaves: set[tuple[str, str, str, str]] = set()
     for m, entries in per_model_matrices.items():
-        for e in entries:
-            key = (m, e["agent_impl"], e["category"])
-            if key not in seen_leaves:
-                seen_leaves.add(key)
-                expected_leaves.append(
-                    {"model": m, "config": e["agent_impl"], "category": e["category"]}
-                )
+        for b in branches:
+            for e in entries:
+                key = (m, b, e["agent_impl"], e["category"])
+                if key not in seen_leaves:
+                    seen_leaves.add(key)
+                    expected_leaves.append(
+                        {
+                            "model": m,
+                            "branch": b,
+                            "config": e["agent_impl"],
+                            "category": e["category"],
+                        }
+                    )
 
     outputs: dict[str, object] = {
         "models": model_specs,
         "categories": categories,
         "configs": code_impls,
+        "branches": branches,
         "expected_leaves": expected_leaves,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
@@ -368,12 +398,14 @@ def main(argv: list[str] | None = None) -> int:
     eval_include = [
         {
             "model": m,
-            "slug": _slug(m),
+            "branch": b,
+            "slug": _slug(f"{m}-{b}"),
             "flat_matrix": json.dumps(
                 {"include": per_model_matrices[m]}, separators=(",", ":")
             ),
         }
         for m in model_specs
+        for b in branches
     ]
     outputs["eval_matrix"] = {"include": eval_include}
     _emit(os.environ.get("GITHUB_OUTPUT"), outputs)

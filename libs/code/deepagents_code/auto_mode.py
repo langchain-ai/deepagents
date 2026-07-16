@@ -69,7 +69,6 @@ _CONSECUTIVE_UNAVAILABLE_FALLBACK = 2
 _MIN_SECRET_LENGTH = 8
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
-_THREE_COMMAND_PARTS = 3
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -811,39 +810,6 @@ def _command_paths_stay_in_worktree(parts: Sequence[str], root: Path) -> bool:
     return True
 
 
-def _uv_run_target(parts: Sequence[str]) -> str | None:
-    index = 2
-    options_with_values = {
-        "--extra",
-        "--group",
-        "--no-group",
-        "--only-group",
-        "--project",
-        "--python",
-    }
-    options_without_values = {
-        "--all-groups",
-        "--frozen",
-        "--isolated",
-        "--locked",
-        "--no-default-groups",
-        "--no-sync",
-    }
-    while index < len(parts) and parts[index].startswith("-"):
-        option = parts[index].split("=", 1)[0]
-        if option in {"--with", "--with-requirements"}:
-            return None
-        if option in options_with_values:
-            if "=" not in parts[index]:
-                index += 1
-                if index >= len(parts):
-                    return None
-        elif option not in options_without_values:
-            return None
-        index += 1
-    return parts[index] if index < len(parts) else None
-
-
 def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     if (
         not isinstance(command, str)
@@ -857,8 +823,11 @@ def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
         return False
     if not parts or not _command_paths_stay_in_worktree(parts, root):
         return False
-    if parts[0] == "git":
-        return len(parts) >= _MIN_COMMAND_PARTS and parts[1] in {
+    return (
+        len(parts) >= _MIN_COMMAND_PARTS
+        and parts[0] == "git"
+        and parts[1]
+        in {
             "diff",
             "log",
             "ls-files",
@@ -866,57 +835,7 @@ def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
             "show",
             "status",
         }
-    fixed_commands = {
-        "black",
-        "eslint",
-        "gofmt",
-        "mypy",
-        "prettier",
-        "pytest",
-        "ruff",
-        "tsc",
-        "ty",
-    }
-    if parts[0] in fixed_commands:
-        return True
-    if parts[:2] == ["python", "-m"] and len(parts) >= _THREE_COMMAND_PARTS:
-        return parts[2] in {"black", "mypy", "pytest", "ruff"}
-    if len(parts) >= _THREE_COMMAND_PARTS and parts[:2] == ["uv", "run"]:
-        return _uv_run_target(parts) in fixed_commands
-    if parts[0] == "make":
-        targets = [part for part in parts[1:] if not part.startswith("-")]
-        if "-C" in parts:
-            index = parts.index("-C")
-            targets = [
-                part
-                for offset, part in enumerate(parts[1:])
-                if offset + 1 not in {index, index + 1} and not part.startswith("-")
-            ]
-        return bool(targets) and all(
-            target in {"build", "check", "format", "lint", "test", "type"}
-            for target in targets
-        )
-    if parts[0] in {"npm", "pnpm", "yarn"}:
-        if len(parts) == _MIN_COMMAND_PARTS and parts[1] == "test":
-            return True
-        return (
-            len(parts) == _THREE_COMMAND_PARTS
-            and parts[1] == "run"
-            and parts[2]
-            in {
-                "build",
-                "check",
-                "format",
-                "lint",
-                "test",
-                "typecheck",
-            }
-        )
-    if parts[0] == "cargo" and len(parts) >= _MIN_COMMAND_PARTS:
-        return parts[1] in {"build", "check", "clippy", "fmt", "test"}
-    if parts[0] == "go" and len(parts) >= _MIN_COMMAND_PARTS:
-        return parts[1] in {"build", "fmt", "test", "vet"}
-    return False
+    )
 
 
 def _narrow_configured_command_allowed(

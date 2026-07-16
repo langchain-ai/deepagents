@@ -270,16 +270,73 @@ def test_mcp_read_only_hint_must_be_coherent() -> None:
     }
 
 
-def test_fixed_repo_commands_reject_compound_and_outside_targets(
+@pytest.mark.parametrize(
+    "command",
+    [
+        "black .",
+        "eslint .",
+        "gofmt -w main.go",
+        "mypy src",
+        "prettier --write .",
+        "pytest tests",
+        "ruff check .",
+        "tsc --noEmit",
+        "ty check",
+        "python -m pytest tests",
+        "uv run --group test pytest tests",
+        "make test",
+        "npm test",
+        "pnpm run lint",
+        "yarn run build",
+        "cargo test",
+        "go test ./...",
+    ],
+)
+def test_project_commands_are_not_deterministically_allowed(
+    tmp_path: Path, command: str
+) -> None:
+    assert not _fixed_repo_command_allowed(command, tmp_path)
+
+
+def test_fixed_repo_commands_allow_only_read_only_git_operations(
     tmp_path: Path,
 ) -> None:
-    assert _fixed_repo_command_allowed("pytest tests", tmp_path)
-    assert _fixed_repo_command_allowed("uv run --group test pytest tests", tmp_path)
     assert _fixed_repo_command_allowed("git status", tmp_path)
-    assert not _fixed_repo_command_allowed("pytest ../other/tests", tmp_path)
-    assert not _fixed_repo_command_allowed("pytest && rm -rf .", tmp_path)
-    assert not _fixed_repo_command_allowed("pytest & rm -rf .", tmp_path)
-    assert not _fixed_repo_command_allowed("uv run --with package pytest", tmp_path)
+    assert _fixed_repo_command_allowed("git diff -- src/module.py", tmp_path)
+    assert not _fixed_repo_command_allowed("git commit -m change", tmp_path)
+    assert not _fixed_repo_command_allowed("git diff ../other", tmp_path)
+    assert not _fixed_repo_command_allowed("git status && rm -rf .", tmp_path)
+    assert not _fixed_repo_command_allowed("git status & rm -rf .", tmp_path)
+
+
+async def test_project_command_requires_classifier(tmp_path: Path) -> None:
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+            )
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={"command": "pytest tests"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "pytest tests"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 1
 
 
 async def test_routine_in_worktree_write_is_deterministically_allowed(

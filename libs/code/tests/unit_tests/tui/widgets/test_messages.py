@@ -4088,6 +4088,50 @@ class TestLiveToolGroupSummary:
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
 
+    async def test_pending_member_is_revealed_for_approval(self) -> None:
+        """Only unfinished calls leave the collapsed group before approval."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("done")
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert completed.display is False
+            assert completed.has_class("-grouped")
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._tools == [completed]
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
+    async def test_suppressed_pending_member_stays_hidden(self) -> None:
+        """A command mirrored in the approval menu is detached without duplication."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            pending = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(pending)
+            pending.set_awaiting_approval()
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert pending.display is False
+            assert not pending.has_class("-grouped")
+            assert not summary.is_attached
+
+            pending.clear_awaiting_approval()
+            assert pending.display is True
+
     async def test_failed_member_is_evicted_on_close(self) -> None:
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 

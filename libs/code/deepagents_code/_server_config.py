@@ -195,6 +195,9 @@ class ServerConfig:
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
 
+    profile_overrides: dict[str, Any] | None = None
+    """Model profile metadata overrides resolved by the client."""
+
     assistant_id: str = DEFAULT_ASSISTANT_ID
     """Identifier of the agent graph to invoke on the server."""
 
@@ -339,6 +342,11 @@ class ServerConfig:
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
             ),
+            "PROFILE_OVERRIDES": (
+                json.dumps(self.profile_overrides)
+                if self.profile_overrides is not None
+                else None
+            ),
             "ASSISTANT_ID": self.assistant_id,
             "SYSTEM_PROMPT": self.system_prompt,
             "AUTO_APPROVE": str(self.auto_approve).lower(),
@@ -396,6 +404,7 @@ class ServerConfig:
         return cls(
             model=_read_env_str("MODEL"),
             model_params=_read_env_json("MODEL_PARAMS"),
+            profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
             assistant_id=_read_env_str("ASSISTANT_ID") or DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
@@ -440,6 +449,7 @@ class ServerConfig:
         project_context: ProjectContext | None,
         model_name: str | None,
         model_params: dict[str, Any] | None,
+        profile_overrides: dict[str, Any] | None = None,
         assistant_id: str,
         auto_approve: bool,
         interrupt_shell_only: bool = False,
@@ -470,6 +480,7 @@ class ServerConfig:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
             model_params: Extra model kwargs.
+            profile_overrides: Model profile metadata overrides.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
             interrupt_shell_only: Validate shell commands via middleware instead
@@ -508,6 +519,7 @@ class ServerConfig:
         return cls(
             model=model_name,
             model_params=model_params,
+            profile_overrides=profile_overrides,
             assistant_id=assistant_id,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,

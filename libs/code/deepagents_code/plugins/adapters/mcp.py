@@ -129,6 +129,43 @@ def _load_mcp_server_map(path: Path) -> JsonObject:
     return _server_map(raw)
 
 
+def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
+    """Load a plugin's declared MCP servers without creating runtime state.
+
+    Returns:
+        The unscoped server configuration keyed by declared server name.
+    """
+    servers: JsonObject = {}
+    for path in plugin.inventory.mcp_files:
+        if path.suffix in {".mcpb", ".dxt"}:
+            logger.warning(
+                "Skipping unsupported MCP bundle for plugin %s: %s",
+                plugin.plugin_id,
+                path,
+            )
+            continue
+        servers.update(_load_mcp_server_map(path))
+    if plugin.manifest and plugin.manifest.inline_mcp:
+        servers.update(_server_map(plugin.manifest.inline_mcp))
+    return servers
+
+
+def plugin_mcp_server_names(plugin: PluginInstance) -> tuple[str, ...]:
+    """Return scoped MCP server names without preparing plugin runtime state.
+
+    Args:
+        plugin: Plugin instance whose declarations should be inspected.
+
+    Returns:
+        Scoped MCP server names in declaration order.
+    """
+    return tuple(
+        scoped_mcp_server_name(plugin.plugin_id, name)
+        for name in _plugin_mcp_server_map(plugin)
+        if isinstance(name, str)
+    )
+
+
 def _normalize_server(
     server: object, *, plugin: PluginInstance, project_dir: Path | None
 ) -> JsonValue:
@@ -214,18 +251,7 @@ def plugin_mcp_configs(
                 plugin.data_dir,
                 exc_info=True,
             )
-        servers: JsonObject = {}
-        for path in plugin.inventory.mcp_files:
-            if path.suffix in {".mcpb", ".dxt"}:
-                logger.warning(
-                    "Skipping unsupported MCP bundle for plugin %s: %s",
-                    plugin.plugin_id,
-                    path,
-                )
-                continue
-            servers.update(_load_mcp_server_map(path))
-        if plugin.manifest and plugin.manifest.inline_mcp:
-            servers.update(_server_map(plugin.manifest.inline_mcp))
+        servers = _plugin_mcp_server_map(plugin)
         scoped: JsonObject = {}
         for name, server in servers.items():
             if not isinstance(name, str):

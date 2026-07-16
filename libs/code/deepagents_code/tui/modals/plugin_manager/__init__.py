@@ -14,7 +14,7 @@ from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
 
@@ -88,6 +88,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
+        loaded_plugin_ids: AbstractSet[str] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
@@ -95,11 +96,16 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
                 servers.
+            loaded_plugin_ids: Plugin ids loaded into the current session.
+                Plugins whose enabled state differs from this set (enabled but
+                not loaded, or disabled but still loaded) are shown as pending
+                reload.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
+        self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -417,7 +423,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
     async def _refresh_state(self) -> None:
         self._state = await asyncio.to_thread(
-            _load_manager_state, self._mcp_server_info
+            _load_manager_state,
+            self._mcp_server_info,
+            loaded_plugin_ids=self._loaded_plugin_ids,
         )
         if self._selected_plugin is not None:
             refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)

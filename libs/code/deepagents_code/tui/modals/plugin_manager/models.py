@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from deepagents_code.plugins.models import UnsupportedComponent
+
 PluginTab = Literal["discover", "installed", "marketplaces", "errors"]
 PluginManagerView = Literal[
     "list",
@@ -12,9 +14,10 @@ PluginManagerView = Literal[
     "marketplace_details",
     "confirm_remove_marketplace",
 ]
+PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _PluginRow:
     plugin_id: str
     description: str
@@ -27,6 +30,20 @@ class _PluginRow:
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
     mcp_login_servers: tuple[str, ...] = ()
+    unsupported_components: tuple[UnsupportedComponent, ...] = ()
+    session_loaded: bool = False
+    load_error: str | None = None
+
+    @property
+    def load_state(self) -> PluginLoadState:
+        """Session-aware plugin status for list and detail copy."""
+        if self.load_error:
+            return "error"
+        if self.enabled != self.session_loaded:
+            return "pending_reload"
+        if self.enabled:
+            return "enabled"
+        return "disabled"
 
     @property
     def label(self) -> str:

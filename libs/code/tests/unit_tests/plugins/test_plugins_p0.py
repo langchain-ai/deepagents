@@ -61,6 +61,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
+    plugin_data_dir,
     sanitize_plugin_id,
     save_marketplace_record,
     set_plugin_enabled,
@@ -145,6 +146,78 @@ def _add_docs_helper_plugin(root: Path) -> None:
         {"name": "docs-helper", "version": "1.0.0"},
     )
     _write_skill(plugin / "skills" / "lookup" / "SKILL.md", name="lookup")
+
+
+async def test_plugin_manager_installed_selection_opens_details_not_disable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    install_plugin("quality-review-plugin@company-tools")
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen = PluginManagerScreen(
+            loaded_plugin_ids=frozenset({"quality-review-plugin@company-tools"})
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        detail = str(screen.query_one("#plugin-manager-status").render())
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert "quality-review-plugin @ company-tools" in detail
+        assert "Installed components:" in detail
+        assert "Status:" in detail
+        assert "Enabled" in detail
+        assert "pending /reload" not in detail
+        assert "Disable plugin" in str(options.get_option_at_index(0).prompt)
+        assert "quality-review-plugin@company-tools" in load_enabled_plugin_ids()
+
+
+async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen = PluginManagerScreen(loaded_plugin_ids=frozenset({plugin_id}))
+        app.push_screen(screen)
+        await pilot.pause()
+
+        await pilot.press("right")
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        prompt = str(options.get_option_at_index(0).prompt)
+        assert "restart to connect" in prompt
+        assert "connected" not in prompt.replace("restart to connect", "")
 
 
 def test_plugin_manager_uses_recursive_skill_inventory(
@@ -1239,3 +1312,180 @@ async def test_plugin_manager_renders_bracketed_errors_as_plain_text(
 
         options = screen.query_one("#plugin-manager-options", OptionList)
         assert "failure [plugin]" in str(options.get_option_at_index(0).prompt)
+
+
+def _make_agents_only_plugin(root: Path) -> None:
+    """Marketplace plugin shaped like Claude's `pr-review-toolkit`."""
+    _write_json(
+        root / ".claude-plugin" / "marketplace.json",
+        {
+            "name": "claude-plugins-official",
+            "owner": {"name": "Anthropic"},
+            "plugins": [
+                {
+                    "name": "pr-review-toolkit",
+                    "source": "./plugins/pr-review-toolkit",
+                    "description": "PR review agents",
+                }
+            ],
+        },
+    )
+    plugin = root / "plugins" / "pr-review-toolkit"
+    _write_json(
+        plugin / ".claude-plugin" / "plugin.json",
+        {
+            "name": "pr-review-toolkit",
+            "version": "1.0.0",
+            "description": "PR review agents",
+        },
+    )
+    (plugin / "agents").mkdir(parents=True)
+    (plugin / "agents" / "reviewer.md").write_text("# Reviewer\n", encoding="utf-8")
+    (plugin / "commands").mkdir(parents=True)
+    (plugin / "commands" / "review-pr.md").write_text("# Review\n", encoding="utf-8")
+
+
+def test_inventory_reports_unsupported_agents_and_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_agents_only_plugin(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    instance = install_plugin("pr-review-toolkit@claude-plugins-official")
+
+    assert instance.inventory.skills == ()
+    assert instance.inventory.mcp_files == ()
+    assert instance.inventory.unsupported == ("agents", "commands")
+
+
+def test_manager_state_surfaces_unsupported_components_for_agents_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_agents_only_plugin(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "pr-review-toolkit@claude-plugins-official"
+    install_plugin(plugin_id)
+
+    state = _load_manager_state(loaded_plugin_ids=frozenset())
+    row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
+
+    assert row.unsupported_components == ("agents", "commands")
+    assert row.skill_names == ()
+    assert row.mcp_server_names == ()
+    assert row.load_state == "pending_reload"
+
+
+def test_manager_state_keeps_pending_reload_after_disable_while_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    set_installed_plugin_enabled(plugin_id, enabled=False)
+
+    state = _load_manager_state(loaded_plugin_ids=frozenset({plugin_id}))
+    row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
+
+    assert row.enabled is False
+    assert row.session_loaded is True
+    assert row.load_state == "pending_reload"
+
+
+def test_manager_state_previews_local_discover_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+
+    state = _load_manager_state()
+    row = next(
+        r
+        for r in state.available_plugins
+        if r.plugin_id == "quality-review-plugin@company-tools"
+    )
+
+    assert row.skill_count == 1
+    assert any(name.endswith(":review") for name in row.skill_names)
+    assert any(
+        name.endswith("__docs") or name == "docs" for name in row.mcp_server_names
+    )
+
+
+def test_manager_preview_does_not_create_plugin_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    data_dir = plugin_data_dir(plugin_id)
+
+    assert not data_dir.exists()
+
+    state = _load_manager_state()
+
+    assert any(row.plugin_id == plugin_id for row in state.available_plugins)
+    assert not data_dir.exists()
+
+
+def test_manager_state_marks_installed_plugin_with_missing_cache_as_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+
+    entry = get_primary_install_entry(plugin_id)
+    assert entry is not None
+    shutil.rmtree(entry.install_path)
+
+    state = _load_manager_state(loaded_plugin_ids=frozenset())
+    row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
+
+    assert row.load_state == "error"
+    assert row.load_error is not None
+    assert "re-run install" in row.load_error
+    # The actionable reason also reaches the Errors tab, not just the row.
+    assert any("re-run install" in err for err in state.errors)

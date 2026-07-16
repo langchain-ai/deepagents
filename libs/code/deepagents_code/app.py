@@ -2665,6 +2665,12 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._session_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids loaded into the current session (startup or last `/reload`)."""
+
+        self._discovered_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids found by the latest background skill discovery."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -3795,7 +3801,7 @@ class DeepAgentsApp(App):
         # Discover skills first so /skill: autocomplete is ready as early
         # as possible. The heavy filesystem scan runs in a thread.
         self.run_worker(
-            self._discover_skills(),
+            self._discover_startup_skills(),
             exclusive=True,
             group="startup-skill-discovery",
         )
@@ -4145,6 +4151,17 @@ class DeepAgentsApp(App):
                 )
         return True
 
+    async def _discover_startup_skills(self) -> bool:
+        """Discover skills and record plugins loaded by initial startup.
+
+        Returns:
+            Whether skill and plugin discovery succeeded.
+        """
+        discovered = await self._discover_skills()
+        if discovered:
+            self._session_plugin_ids = self._discovered_plugin_ids
+        return discovered
+
     def _discover_skills_and_roots(
         self,
     ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
@@ -4157,14 +4174,12 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_code.plugins.adapters.skills import (
-            discover_plugin_skill_sources_and_roots,
-        )
+        from deepagents_code.plugins.adapters.skills import discover_plugin_skill_state
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots = (
-            discover_plugin_skill_sources_and_roots()
+        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
+            discover_plugin_skill_state()
         )
         return discover_skills_and_roots(
             assistant_id,
@@ -11695,6 +11710,9 @@ class DeepAgentsApp(App):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
                 plugin_result = discover_plugins()
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugin_result.plugins
+                )
                 plugin_count = len(plugin_result.plugins)
                 mcp_configs = plugin_mcp_configs(plugin_result.plugins)
                 mcp_count = sum(
@@ -11726,6 +11744,7 @@ class DeepAgentsApp(App):
                         self._discard_queue()
                     restarted = await self._restart_server_manual()
                     if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                     else:
                         report += (
@@ -17695,6 +17714,7 @@ class DeepAgentsApp(App):
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
+                loaded_plugin_ids=self._session_plugin_ids,
             ),
             on_close,
         )

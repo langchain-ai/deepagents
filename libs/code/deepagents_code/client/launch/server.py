@@ -180,9 +180,7 @@ def generate_langgraph_json(
     """
     config: dict[str, Any] = {
         "dependencies": ["."],
-        "graphs": {
-            "agent": graph_ref,
-        },
+        "graphs": {"agent": graph_ref},
     }
     if env_file:
         config["env"] = env_file

@@ -358,7 +358,9 @@ Use `get_rubric` to inspect active acceptance criteria before deciding whether w
 complete.
 When a goal is active, use `get_goal` to inspect the objective and current status.
 A paused goal is persisted for later but must not drive work until the user resumes it.
-Use `update_goal` only when you have evidence that the goal is complete or blocked.
+A goal is marked complete automatically when its current grading turn satisfies the
+accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains
+available for optional completion evidence but is not required.
 
 ## `ask_user`
 

@@ -2691,6 +2691,12 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._session_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids loaded into the current session (startup or last `/reload`)."""
+
+        self._discovered_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids found by the latest background skill discovery."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -3846,7 +3852,7 @@ class DeepAgentsApp(App):
         # Discover skills first so /skill: autocomplete is ready as early
         # as possible. The heavy filesystem scan runs in a thread.
         self.run_worker(
-            self._discover_skills(),
+            self._discover_startup_skills(),
             exclusive=True,
             group="startup-skill-discovery",
         )
@@ -4196,6 +4202,17 @@ class DeepAgentsApp(App):
                 )
         return True
 
+    async def _discover_startup_skills(self) -> bool:
+        """Discover skills and record plugins loaded by initial startup.
+
+        Returns:
+            Whether skill and plugin discovery succeeded.
+        """
+        discovered = await self._discover_skills()
+        if discovered:
+            self._session_plugin_ids = self._discovered_plugin_ids
+        return discovered
+
     def _discover_skills_and_roots(
         self,
     ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
@@ -4208,14 +4225,12 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_code.plugins.adapters.skills import (
-            discover_plugin_skill_sources_and_roots,
-        )
+        from deepagents_code.plugins.adapters.skills import discover_plugin_skill_state
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots = (
-            discover_plugin_skill_sources_and_roots()
+        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
+            discover_plugin_skill_state()
         )
         return discover_skills_and_roots(
             assistant_id,
@@ -7740,6 +7755,10 @@ class DeepAgentsApp(App):
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        # These startup paths (`-m`, `--skill`, `--goal`) submit outside
+        # `_submit_input`, so dismiss the startup tip here to match the
+        # interactive submission behavior.
+        await self._dismiss_startup_tip()
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(
@@ -8383,9 +8402,12 @@ class DeepAgentsApp(App):
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 
-        Called from `_submit_input`, so every submission path (interactive
-        and external) dismisses the tip. Subsequent calls are no-ops: the
-        widget is already gone and `query_one` raises `NoMatches`.
+        Called from both submission entry points: `_submit_input` (the shared
+        interactive/external path) and `_submit_initial_submission` (the
+        `-m`/`--skill`/`--goal` startup path, which submits without going
+        through `_submit_input`). Every submission path therefore dismisses
+        the tip. Subsequent calls are no-ops: the widget is already gone and
+        `query_one` raises `NoMatches`.
         """
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()
@@ -11804,6 +11826,9 @@ class DeepAgentsApp(App):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
                 plugin_result = discover_plugins()
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugin_result.plugins
+                )
                 plugin_count = len(plugin_result.plugins)
                 mcp_configs = plugin_mcp_configs(plugin_result.plugins)
                 mcp_count = sum(
@@ -11835,6 +11860,7 @@ class DeepAgentsApp(App):
                         self._discard_queue()
                     restarted = await self._restart_server_manual()
                     if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                     else:
                         report += (
@@ -17149,7 +17175,7 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` fields for the console header.
+            Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -17181,6 +17207,24 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _thread_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable/link metadata can
+            # ride along with the value; still degrades defensively because a
+            # diagnostic overlay must open even when a subsystem misbehaves.
+            try:
+                thread_id = self._lc_thread_id
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Thread' failed", exc_info=True)
+                return SnapshotField(
+                    label="Thread", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Thread",
+                value=thread_id or "(none)",
+                copyable=bool(thread_id),
+                thread_id=thread_id,
+            )
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -17196,7 +17240,7 @@ class DeepAgentsApp(App):
         return [
             _safe("Version", lambda: __version__),
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
-            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _thread_field(),
             _safe("CWD", lambda: self._cwd),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
@@ -17828,11 +17872,45 @@ class DeepAgentsApp(App):
         """Open the interactive plugin manager."""
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
+        def on_close(result: tuple[str, bool] | None) -> None:
+            if result is None:
+                return
+            label, needs_login = result
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    self._offer_reconnect_after_plugin_install(
+                        label, needs_login=needs_login
+                    ),
+                    exclusive=True,
+                    group="plugin-install-reconnect",
+                )
+            )
+
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
-            )
+                loaded_plugin_ids=self._session_plugin_ids,
+            ),
+            on_close,
         )
+
+    async def _offer_reconnect_after_plugin_install(
+        self, label: str, *, needs_login: bool
+    ) -> None:
+        """Offer reconnect after installing a plugin that declares MCP servers.
+
+        Reuses the `/mcp login` reconnect-now / defer modal. When the plugin's
+        MCP servers typically need auth, surface a follow-up toast pointing
+        users at `/mcp`.
+        """
+        await self._prompt_mcp_reconnect(label)
+        if needs_login:
+            self.notify(
+                f"Sign in to {label} via `/mcp` after reconnect.",
+                severity="information",
+                timeout=10,
+                markup=False,
+            )
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

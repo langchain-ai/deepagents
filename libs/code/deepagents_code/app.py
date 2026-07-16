@@ -17025,7 +17025,7 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` fields for the console header.
+            Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -17057,6 +17057,24 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _thread_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable/link metadata can
+            # ride along with the value; still degrades defensively because a
+            # diagnostic overlay must open even when a subsystem misbehaves.
+            try:
+                thread_id = self._lc_thread_id
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Thread' failed", exc_info=True)
+                return SnapshotField(
+                    label="Thread", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Thread",
+                value=thread_id or "(none)",
+                copyable=bool(thread_id),
+                thread_id=thread_id,
+            )
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -17072,7 +17090,7 @@ class DeepAgentsApp(App):
         return [
             _safe("Version", lambda: __version__),
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
-            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _thread_field(),
             _safe("CWD", lambda: self._cwd),
             _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),

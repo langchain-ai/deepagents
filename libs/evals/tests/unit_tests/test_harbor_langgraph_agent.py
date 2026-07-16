@@ -225,8 +225,9 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
-    assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    # The bare path must not inject a harness system prompt; the overlaid
+    # branch's own BASE_AGENT_PROMPT is the variable this benchmark tests.
+    assert "system_prompt" not in captured_create[0]
 
 
 def test_mcp_connections_maps_streamable_http_server() -> None:

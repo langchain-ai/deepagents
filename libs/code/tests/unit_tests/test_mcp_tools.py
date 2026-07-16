@@ -667,6 +667,7 @@ class TestDiscoverMcpConfigs:
             "deepagents_code.project_utils.find_project_root",
             lambda: None,
         )
+        monkeypatch.chdir(tmp_path)
         assert discover_mcp_configs() == []
 
     def test_explicit_project_context_overrides_cwd(

@@ -1090,7 +1090,10 @@ async def _run_agent_loop(
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    stream_input: dict[str, Any] | Command = {
+        "messages": [user_msg],
+        "goal_criteria_request": None,
+    }
     if rubric is not None:
         stream_input["rubric"] = rubric
 
@@ -1622,6 +1625,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,
             shell_allow_list=restrictive_allow_list,

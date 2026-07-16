@@ -232,6 +232,85 @@ def test_fallback_artifacts_root_keeps_archive_path_resolvable(
     assert (first_results / "call-1").read_text() == "payload"
 
 
+def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> None:
+    """Enabling goal criteria wires a fallback agent and a None repo backend."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock(return_value="criteria-agent")
+    make_fallback = Mock(return_value="fallback-agent")
+    make_middleware = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric.create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+        patch("deepagents_code.goal_rubric.GoalCriteriaMiddleware", make_middleware),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            goal_criteria_tools=[],
+        )
+
+    make_criteria.assert_called_once()
+    assert make_criteria.call_args.kwargs["repository_backend"] is None
+    make_fallback.assert_called_once()
+    # Primary and fallback agents share one model, and the middleware receives
+    # both so graph-level failures can degrade to goal-only generation.
+    assert (
+        make_fallback.call_args.kwargs["model"]
+        is make_criteria.call_args.kwargs["model"]
+    )
+    make_middleware.assert_called_once_with("criteria-agent", "fallback-agent")
+
+
+def test_goal_criteria_disabled_skips_middleware(tmp_path: Path) -> None:
+    """`goal_criteria_tools=None` builds no criteria agents or middleware."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock()
+    make_fallback = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric.create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    make_criteria.assert_not_called()
+    make_fallback.assert_not_called()
+
+
 def _request_with_context(
     context: object,
     *,

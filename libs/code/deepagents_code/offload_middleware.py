@@ -414,7 +414,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         # invocation, so forced mode is selected from the trusted runtime
         # context after `_offload_rejection` validates the raw tool call.
         def sync_compact(
-            runtime: ToolRuntime,
+            runtime: ToolRuntime[Any, Any],
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
             del force
@@ -423,7 +423,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return middleware._run_forced_compact(runtime)
 
         async def async_compact(
-            runtime: ToolRuntime,
+            runtime: ToolRuntime[Any, Any],
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
             del force

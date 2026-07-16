@@ -1676,6 +1676,19 @@ class _ThreadHistoryPayload:
     pending_goal_request_id: str | None = None
     """Request that produced the pending proposal."""
 
+    goal_criteria_request_active: bool = False
+    """Whether a newer or unfinished criteria request remains in the checkpoint."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingGoalProposal:
+    """Complete pending proposal captured for review or automatic acceptance."""
+
+    objective: str
+    rubric: str
+    kind: GoalProposalKind
+    request_id: str | None
+
 
 @dataclass(frozen=True, slots=True)
 class _GoalApplication:
@@ -1684,6 +1697,7 @@ class _GoalApplication:
     objective: str
     rubric: str
     kind: GoalProposalKind
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         """Reject empty objective or rubric at construction.
@@ -2875,6 +2889,9 @@ class DeepAgentsApp(App):
         self._pending_goal_request_id: str | None = None
         """Request that produced the pending proposal."""
 
+        self._discarded_goal_proposal_request_ids: set[str] = set()
+        """Rejected or cancelled proposals blocked from later local restoration."""
+
         self._queued_goal_application: _GoalApplication | None = None
         """Accepted proposal deferred until the active graph run is quiescent."""
 
@@ -2923,11 +2940,17 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget: GoalReviewMenu | None = None
         """Currently-mounted goal criteria review prompt awaiting a decision."""
 
+        self._pending_goal_review_future: asyncio.Future[GoalReviewResult] | None = None
+        """Decision future owned by the currently mounted goal review prompt."""
+
         self._goal_proposal_worker: Worker[None] | None = None
         """Active worker drafting or mounting a goal criteria proposal."""
 
         self._goal_review_task: asyncio.Task[None] | None = None
         """Active task awaiting a mounted goal criteria review decision."""
+
+        self._goal_review_resolution_lock = asyncio.Lock()
+        """Serializes review mounting and live auto-acceptance transitions."""
 
         # Agent & shell run state
         self._agent_worker: Worker[None] | None = None
@@ -3872,6 +3895,8 @@ class DeepAgentsApp(App):
                 severity="error",
                 timeout=10,
             )
+            return
+        await self._auto_accept_pending_goal_rubric()
 
     async def _ensure_managed_ripgrep(self) -> bool:
         """Install the managed `rg` and prepend it to `PATH`, exactly once.
@@ -7029,6 +7054,7 @@ class DeepAgentsApp(App):
                     "Auto-approve could not sync to the running agent; "
                     "approval prompts may continue."
                 )
+        await self._auto_accept_pending_goal_rubric()
 
     async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
@@ -7177,12 +7203,18 @@ class DeepAgentsApp(App):
         """Handle ask_user menu cancellation - remove widget and refocus input."""
         await self._finish_ask_user_prompt(context="cancelled")
 
-    def _cancel_goal_review_task(self) -> None:
-        """Cancel any pending goal review continuation task."""
+    def _cancel_goal_review_task(self) -> asyncio.Task[None] | None:
+        """Cancel any pending goal review continuation task.
+
+        Returns:
+            The task whose cancellation should be awaited, if one was active.
+        """
         task = self._goal_review_task
         self._goal_review_task = None
         if task is not None and not task.done():
             task.cancel()
+            return task
+        return None
 
     def _cancel_goal_proposal_worker(self) -> None:
         """Cancel any pending goal proposal worker."""
@@ -7193,11 +7225,19 @@ class DeepAgentsApp(App):
 
     async def _cancel_pending_goal_review(self, *, context: str) -> None:
         """Cancel and remove any mounted pending goal review prompt."""
-        self._cancel_goal_review_task()
+        task = self._cancel_goal_review_task()
         widget = self._pending_goal_review_widget
+        future = self._pending_goal_review_future
         self._pending_goal_review_widget = None
+        self._pending_goal_review_future = None
         if widget is not None:
             widget.action_cancel()
+        if future is not None and not future.done():
+            future.cancel()
+        if task is not None and task is not asyncio.current_task():
+            with suppress(asyncio.CancelledError):
+                await task
+        if widget is not None:
             await self._remove_inline_prompt_widget(
                 widget,
                 prompt_name="goal review",
@@ -7268,6 +7308,7 @@ class DeepAgentsApp(App):
         )
         menu.set_future(result_future)
         self._pending_goal_review_widget = menu
+        self._pending_goal_review_future = result_future
 
         try:
             await self._mount_inline_prompt(menu, focus=menu.focus_active)
@@ -7277,6 +7318,8 @@ class DeepAgentsApp(App):
                 unique_id,
             )
             self._pending_goal_review_widget = None
+            if self._pending_goal_review_future is result_future:
+                self._pending_goal_review_future = None
             if not result_future.done():
                 result_future.set_exception(e)
 
@@ -7437,7 +7480,7 @@ class DeepAgentsApp(App):
                 or not self._has_initial_submission()
             )
             if should_load_history:
-                await self._load_thread_history()
+                await self._load_thread_history(resolve_pending_goal=False)
             elif self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
@@ -7462,6 +7505,9 @@ class DeepAgentsApp(App):
                 # One-shot: clear to avoid re-running on any subsequent server swap.
                 self._startup_cmd = None
                 await self._run_startup_command(cmd)
+
+            if should_load_history:
+                await self._remount_pending_goal_rubric_review()
 
             if self._has_initial_submission():
                 await self._submit_initial_submission()
@@ -9244,6 +9290,59 @@ class DeepAgentsApp(App):
         self._pending_goal_kind = None
         self._pending_goal_request_id = None
 
+    def _live_goal_auto_approve_enabled(self) -> bool:
+        """Return whether the authoritative live mode is literal `True`."""
+        return (
+            self._session_state is not None
+            and getattr(self._session_state, "auto_approve", None) is True
+        )
+
+    def _pending_goal_proposal(self) -> _PendingGoalProposal | None:
+        """Return a complete, well-formed pending proposal if one exists."""
+        objective = self._pending_goal_objective
+        rubric = self._pending_goal_rubric
+        if (
+            not isinstance(objective, str)
+            or not objective.strip()
+            or not isinstance(rubric, str)
+            or not rubric.strip()
+        ):
+            return None
+
+        kind = self._pending_goal_kind
+        if kind in {None, "create"}:
+            normalized_kind: GoalProposalKind = "create"
+        elif kind == "amend":
+            normalized_kind = "amend"
+        else:
+            return None
+
+        request_id = self._pending_goal_request_id
+        if request_id is not None and (
+            not isinstance(request_id, str) or not request_id.strip()
+        ):
+            return None
+        if request_id in self._discarded_goal_proposal_request_ids:
+            return None
+        return _PendingGoalProposal(
+            objective,
+            rubric,
+            normalized_kind,
+            request_id,
+        )
+
+    @staticmethod
+    def _goal_application_matches_proposal(
+        application: _GoalApplication,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Return whether an application already accepted this proposal request."""
+        return (
+            application.objective == proposal.objective
+            and application.kind == proposal.kind
+            and application.request_id == proposal.request_id
+        )
+
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
@@ -9323,6 +9422,9 @@ class DeepAgentsApp(App):
             pending_goal_request_id=_as_nonblank_str(
                 state_values.get("_pending_goal_request_id")
             ),
+            goal_criteria_request_active=(
+                state_values.get("goal_criteria_request") is not None
+            ),
         )
 
     def _restore_goal_rubric_state(
@@ -9354,10 +9456,17 @@ class DeepAgentsApp(App):
             self._active_rubric = payload.sticky_rubric
         else:
             self._active_rubric = payload.rubric
-        self._pending_goal_objective = payload.pending_goal_objective
-        self._pending_goal_rubric = payload.pending_goal_rubric
-        self._pending_goal_kind = payload.pending_goal_kind
-        self._pending_goal_request_id = payload.pending_goal_request_id
+        if (
+            payload.goal_criteria_request_active
+            or payload.pending_goal_request_id
+            in self._discarded_goal_proposal_request_ids
+        ):
+            self._clear_pending_goal_rubric()
+        else:
+            self._pending_goal_objective = payload.pending_goal_objective
+            self._pending_goal_rubric = payload.pending_goal_rubric
+            self._pending_goal_kind = payload.pending_goal_kind
+            self._pending_goal_request_id = payload.pending_goal_request_id
         if not preserve_queued_application:
             self._queued_goal_application = None
         if self._pending_goal_objective and self._pending_goal_kind is None:
@@ -9524,7 +9633,8 @@ class DeepAgentsApp(App):
         force: bool = False,
         proposal_request_id: str | None = None,
         goal_grade: _GoalGradeObservation | None = None,
-    ) -> None:
+        allow_pending_proposal: bool = True,
+    ) -> bool:
         """Refresh goal/rubric metadata from the active checkpoint.
 
         Args:
@@ -9535,11 +9645,16 @@ class DeepAgentsApp(App):
             goal_grade: Grade observed during the current goal-backed work turn.
                 Omit outside that exact turn; only a correlated grade completes
                 the goal.
+            allow_pending_proposal: Whether a proposal from this turn may be
+                restored. Failed and cancelled criteria turns set this to `False`.
+
+        Returns:
+            Whether failed/cancelled proposal state was safely reconciled.
         """
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
-            return
+            return True
         # The fetched checkpoint reflects agent-side goal updates, generated
         # proposals, and the current turn's rubric result. When no goal/rubric state
         # is engaged locally (and no one-shot rubric reconcile is pending), none of
@@ -9559,7 +9674,7 @@ class DeepAgentsApp(App):
             or self._last_consumed_next_rubric is not None
             or self._last_consumed_next_previous_rubric is not None
         ):
-            return
+            return True
         # A forced sync follows a criteria turn whose proposal lives only in the
         # checkpoint, so retry a transient read failure before giving up rather
         # than stranding a freshly generated proposal. Normal (unforced) syncs
@@ -9590,21 +9705,30 @@ class DeepAgentsApp(App):
                     severity="warning",
                 )
             if force:
+                pending_matches = (
+                    proposal_request_id is None
+                    or self._pending_goal_request_id == proposal_request_id
+                )
+                if not allow_pending_proposal:
+                    if pending_matches:
+                        self._clear_pending_goal_rubric()
+                    return False
                 # On an amend/regeneration the prior proposal is still in local
                 # pending state, so remounting the review restores an actionable
                 # widget. On a first create there is no local pending state, so a
                 # remount is a no-op — tell the user the proposal was generated
                 # but could not be loaded, and how to recover.
-                pending_matches = (
-                    proposal_request_id is None
-                    or self._pending_goal_request_id == proposal_request_id
-                )
                 if (
                     pending_matches
                     and self._pending_goal_objective
                     and self._pending_goal_rubric
                 ):
-                    await self._remount_pending_goal_rubric_review()
+                    if proposal_request_id is None:
+                        await self._remount_pending_goal_rubric_review()
+                    else:
+                        await self._remount_pending_goal_rubric_review(
+                            expected_request_id=proposal_request_id,
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(
@@ -9612,7 +9736,7 @@ class DeepAgentsApp(App):
                             "loaded from the thread. Run `/goal` again to retry."
                         )
                     )
-            return
+            return False
         self._goal_rubric_sync_warned = False
         if _warn_discarded_goal_channels(state_values):
             self.notify(
@@ -9625,9 +9749,24 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
+        active_request = state_values.get("goal_criteria_request")
+        pending_request_is_active = active_request is not None
+        discard_failed_proposal = (
+            not allow_pending_proposal
+            and payload.pending_goal_objective is not None
+            and (
+                proposal_request_id is None
+                or payload.pending_goal_request_id == proposal_request_id
+            )
+        )
+        proposal_cleanup_succeeded = True
         if (
-            proposal_request_id is not None
-            and payload.pending_goal_request_id != proposal_request_id
+            (
+                proposal_request_id is not None
+                and payload.pending_goal_request_id != proposal_request_id
+            )
+            or pending_request_is_active
+            or not allow_pending_proposal
         ):
             payload = replace(
                 payload,
@@ -9637,6 +9776,8 @@ class DeepAgentsApp(App):
                 pending_goal_request_id=None,
             )
             self._clear_pending_goal_rubric()
+            if discard_failed_proposal:
+                proposal_cleanup_succeeded = await self._persist_goal_rubric_state()
         if not any(
             (
                 payload.rubric,
@@ -9654,7 +9795,7 @@ class DeepAgentsApp(App):
         ):
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
-            return
+            return proposal_cleanup_succeeded
         one_shot_rubric_consumed = (
             self._last_consumed_next_rubric is not None
             and payload.rubric == self._last_consumed_next_rubric
@@ -9679,9 +9820,15 @@ class DeepAgentsApp(App):
             await self._announce_goal_status_transition(previous_status)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
-        await self._remount_pending_goal_rubric_review()
+        if proposal_request_id is None:
+            await self._remount_pending_goal_rubric_review()
+        else:
+            await self._remount_pending_goal_rubric_review(
+                expected_request_id=proposal_request_id,
+            )
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
+        return proposal_cleanup_succeeded
 
     @staticmethod
     def _is_grader_alias_arg(arg: str) -> bool:
@@ -10028,50 +10175,183 @@ class DeepAgentsApp(App):
             request["previous_criteria"] = previous_criteria
         await self._run_goal_criteria_request(request)
 
-    async def _start_pending_goal_rubric_review(self) -> None:
-        """Mount the pending goal review prompt and schedule its continuation."""
-        objective = self._pending_goal_objective
-        rubric = self._pending_goal_rubric
-        if not objective or not rubric:
-            return
-
-        self._cancel_goal_review_task()
-        if self._pending_goal_kind == "amend":
+    async def _mount_goal_rubric_review(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> None:
+        """Mount one proposal's manual review prompt."""
+        if proposal.kind == "amend":
             result_future = await self._request_goal_review(
-                objective,
-                rubric,
+                proposal.objective,
+                proposal.rubric,
                 amendment=True,
             )
         else:
-            result_future = await self._request_goal_review(objective, rubric)
-        self.call_after_refresh(self._schedule_goal_review_task, result_future)
+            result_future = await self._request_goal_review(
+                proposal.objective,
+                proposal.rubric,
+            )
+        self._pending_goal_review_future = result_future
+        self.call_after_refresh(
+            self._schedule_goal_review_task,
+            result_future,
+            proposal,
+        )
 
-    async def _remount_pending_goal_rubric_review(self) -> None:
-        """Restore an actionable review prompt for a persisted pending goal."""
-        if not self._pending_goal_objective or not self._pending_goal_rubric:
-            return
-        task = self._goal_review_task
-        if self._pending_goal_review_widget is not None:
-            return
-        if task is not None and not task.done():
-            return
-        if task is not None:
-            self._goal_review_task = None
-        await self._start_pending_goal_rubric_review()
+    def _settle_decided_goal_review(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Keep a submitted review decision ahead of a live YOLO toggle.
+
+        Returns:
+            Whether a terminal review decision was already waiting.
+        """
+        future = self._pending_goal_review_future
+        if future is None or not future.done():
+            return False
+        if self._goal_review_task is None and not future.cancelled():
+            self._schedule_goal_review_task(future, proposal)
+        return True
+
+    async def _auto_accept_pending_goal_rubric_locked(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Accept a current proposal while the review-resolution lock is held.
+
+        Returns:
+            Whether this proposal was already or is now accepted.
+        """
+        if self._settle_decided_goal_review(proposal):
+            return False
+        application = self._queued_goal_application
+        if application is not None and self._goal_application_matches_proposal(
+            application,
+            proposal,
+        ):
+            await self._cancel_pending_goal_review(
+                context="automatic goal acceptance cleanup"
+            )
+            self._focus_chat_input_after_refresh()
+            return True
+
+        await self._cancel_pending_goal_review(
+            context="automatic goal acceptance cleanup"
+        )
+        if self._pending_goal_proposal() != proposal:
+            return False
+        if not self._live_goal_auto_approve_enabled():
+            await self._mount_goal_rubric_review(proposal)
+            return False
+
+        accepted = await self._accept_goal_rubric(
+            proposal.rubric,
+            expected_proposal=proposal,
+            automatic=True,
+        )
+        if accepted:
+            self._focus_chat_input_after_refresh()
+        return accepted
+
+    async def _auto_accept_pending_goal_rubric(
+        self,
+        *,
+        expected_request_id: str | None = None,
+    ) -> bool:
+        """Accept the complete pending proposal when live YOLO mode allows it.
+
+        Args:
+            expected_request_id: Correlation ID required for a freshly generated
+                proposal. Restored legacy proposals may omit it.
+
+        Returns:
+            Whether this proposal was already or is now accepted.
+        """
+        if self._startup_sequence_running:
+            return False
+        async with self._goal_review_resolution_lock:
+            if not self._live_goal_auto_approve_enabled():
+                return False
+            proposal = self._pending_goal_proposal()
+            if proposal is None:
+                return False
+            if (
+                expected_request_id is not None
+                and proposal.request_id != expected_request_id
+            ):
+                return False
+            return await self._auto_accept_pending_goal_rubric_locked(proposal)
+
+    async def _resolve_pending_goal_rubric_review(
+        self,
+        *,
+        replace_existing: bool,
+        expected_request_id: str | None = None,
+    ) -> None:
+        """Auto-accept or mount manual review for the current proposal."""
+        async with self._goal_review_resolution_lock:
+            proposal = self._pending_goal_proposal()
+            if proposal is None:
+                return
+            if (
+                expected_request_id is not None
+                and proposal.request_id != expected_request_id
+            ):
+                return
+            if self._live_goal_auto_approve_enabled():
+                await self._auto_accept_pending_goal_rubric_locked(proposal)
+                return
+
+            task = self._goal_review_task
+            if not replace_existing and (
+                self._pending_goal_review_widget is not None
+                or self._pending_goal_review_future is not None
+                or (task is not None and not task.done())
+            ):
+                return
+            if task is not None and task.done():
+                self._goal_review_task = None
+            await self._mount_goal_rubric_review(proposal)
+
+    async def _start_pending_goal_rubric_review(self) -> None:
+        """Resolve a newly generated pending goal proposal."""
+        await self._resolve_pending_goal_rubric_review(replace_existing=True)
+
+    async def _remount_pending_goal_rubric_review(
+        self,
+        *,
+        expected_request_id: str | None = None,
+    ) -> None:
+        """Restore or auto-accept a persisted pending goal proposal."""
+        await self._resolve_pending_goal_rubric_review(
+            replace_existing=False,
+            expected_request_id=expected_request_id,
+        )
 
     def _schedule_goal_review_task(
         self,
         result_future: asyncio.Future[GoalReviewResult],
+        proposal: _PendingGoalProposal,
     ) -> None:
         """Start the task that handles a mounted goal review decision."""
+        if self._pending_goal_review_future is not result_future:
+            if not result_future.done():
+                result_future.cancel()
+            return
         self._cancel_goal_review_task()
         self._goal_review_task = asyncio.create_task(
-            self._finish_pending_goal_rubric_review(result_future)
+            self._finish_pending_goal_rubric_review(
+                result_future,
+                expected_proposal=proposal,
+            )
         )
 
     async def _finish_pending_goal_rubric_review(
         self,
         result_future: asyncio.Future[GoalReviewResult],
+        *,
+        expected_proposal: _PendingGoalProposal | None = None,
     ) -> None:
         """Apply the user's pending goal review decision.
 
@@ -10081,20 +10361,36 @@ class DeepAgentsApp(App):
         task = asyncio.current_task()
         try:
             result = await result_future
+            if (
+                expected_proposal is not None
+                and self._pending_goal_proposal() != expected_proposal
+            ):
+                return
             if result["type"] == "accepted":
-                await self._accept_goal_rubric(self._pending_goal_rubric or "")
+                await self._accept_goal_rubric(
+                    self._pending_goal_rubric or "",
+                    expected_proposal=expected_proposal,
+                )
                 return
             if result["type"] == "edited":
-                await self._accept_goal_rubric(result["criteria"])
+                await self._accept_goal_rubric(
+                    result["criteria"],
+                    expected_proposal=expected_proposal,
+                )
                 return
             if result["type"] == "rejected":
                 if self._pending_goal_kind == "amend":
-                    self._regenerate_goal_amendment_from_feedback(result["message"])
+                    await self._regenerate_goal_amendment_from_feedback(
+                        result["message"]
+                    )
                 else:
-                    self._regenerate_goal_rubric_from_feedback(result["message"])
+                    await self._regenerate_goal_rubric_from_feedback(result["message"])
                 return
             if result["type"] == "cancelled":
                 was_amendment = self._pending_goal_kind == "amend"
+                request_id = self._pending_goal_request_id
+                if request_id is not None:
+                    self._discarded_goal_proposal_request_ids.add(request_id)
                 async with self._goal_state_mutation_boundary():
                     self._clear_pending_goal_rubric()
                     await self._persist_goal_rubric_state()
@@ -10120,6 +10416,8 @@ class DeepAgentsApp(App):
         finally:
             if self._goal_review_task is task:
                 self._goal_review_task = None
+            if self._pending_goal_review_future is result_future:
+                self._pending_goal_review_future = None
 
     async def _review_pending_goal_rubric(self) -> None:
         """Mount the goal-review widget for the pending proposal (test entry point).
@@ -10130,7 +10428,29 @@ class DeepAgentsApp(App):
         """
         await self._start_pending_goal_rubric_review()
 
-    def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
+    async def _clear_rejected_goal_proposal(self) -> bool:
+        """Persist rejection before starting replacement criteria generation.
+
+        Returns:
+            Whether the rejected proposal was cleared from the thread.
+        """
+        request_id = self._pending_goal_request_id
+        if request_id is not None:
+            self._discarded_goal_proposal_request_ids.add(request_id)
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            persisted = await self._persist_goal_rubric_state()
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "The rejected goal proposal could not be cleared from the "
+                    "thread, so regeneration was not started. Run `/goal` again "
+                    "after the connection recovers."
+                )
+            )
+        return persisted
+
+    async def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
         """Start a new goal criteria proposal from rejection feedback."""
         objective = self._pending_goal_objective
         previous_criteria = self._pending_goal_rubric
@@ -10138,6 +10458,8 @@ class DeepAgentsApp(App):
         if not objective or not previous_criteria or not feedback:
             return
         self._cancel_goal_proposal_worker()
+        if not await self._clear_rejected_goal_proposal():
+            return
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_rubric(
                 objective,
@@ -10147,7 +10469,7 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
+    async def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
         """Revise a pending amendment from review feedback."""
         objective = self._pending_goal_objective
         criteria = self._pending_goal_rubric
@@ -10155,6 +10477,8 @@ class DeepAgentsApp(App):
         if not objective or not criteria or not feedback:
             return
         self._cancel_goal_proposal_worker()
+        if not await self._clear_rejected_goal_proposal():
+            return
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_amendment(
                 feedback,
@@ -10164,16 +10488,31 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _accept_goal_rubric(self, rubric: str) -> None:
-        """Apply accepted criteria immediately or at the next safe boundary."""
+    async def _accept_goal_rubric(
+        self,
+        rubric: str,
+        *,
+        expected_proposal: _PendingGoalProposal | None = None,
+        automatic: bool = False,
+    ) -> bool:
+        """Apply accepted criteria immediately or at the next safe boundary.
+
+        Returns:
+            Whether the pending proposal was accepted or was already queued.
+        """
+        if (
+            expected_proposal is not None
+            and self._pending_goal_proposal() != expected_proposal
+        ):
+            return False
         objective = self._pending_goal_objective
         if not objective:
             await self._mount_message(AppMessage("No pending goal to accept."))
-            return
+            return False
         rubric = rubric.strip()
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
-            return
+            return False
         kind = self._pending_goal_kind or "create"
         if kind == "amend" and (
             not self._active_goal or self._goal_status == "complete"
@@ -10184,17 +10523,32 @@ class DeepAgentsApp(App):
                     "`/goal <objective>`."
                 )
             )
-            return
-        application = _GoalApplication(objective, rubric, kind)
-        if self._agent_running or self._agent_reconciling:
-            self._queued_goal_application = application
+            return False
+        application = _GoalApplication(
+            objective,
+            rubric,
+            kind,
+            self._pending_goal_request_id,
+        )
+        if self._queued_goal_application == application:
+            return True
+        if automatic:
             await self._mount_message(
                 AppMessage(
-                    "Goal update accepted; it will apply after the current turn."
+                    "Goal criteria automatically accepted because YOLO mode is enabled."
                 )
             )
-            return
+        if self._agent_running or self._agent_reconciling:
+            self._queued_goal_application = application
+            if not automatic:
+                await self._mount_message(
+                    AppMessage(
+                        "Goal update accepted; it will apply after the current turn."
+                    )
+                )
+            return True
         await self._apply_goal_application(application)
+        return True
 
     async def _write_goal_application(
         self,
@@ -10237,6 +10591,15 @@ class DeepAgentsApp(App):
             Continuation kind when the accepted goal should keep running,
             otherwise `None`.
         """
+        if (
+            application.request_id is not None
+            and self._pending_goal_request_id != application.request_id
+        ):
+            logger.info(
+                "Discarding superseded accepted goal proposal %s",
+                application.request_id,
+            )
+            return None
         is_amendment = application.kind == "amend"
         if is_amendment and (not self._active_goal or self._goal_status == "complete"):
             self._clear_pending_goal_rubric()
@@ -12786,6 +13149,7 @@ class DeepAgentsApp(App):
                     event.result,
                 )
 
+        task_succeeded = False
         try:
             await execute_task_textual(
                 user_input=message,
@@ -12826,6 +13190,7 @@ class DeepAgentsApp(App):
                 await self._regroup_completed_tools()
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
+            task_succeeded = True
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
@@ -12919,6 +13284,7 @@ class DeepAgentsApp(App):
                 force_goal_sync=graph_input is not None,
                 goal_criteria_request_id=criteria_request_id,
                 goal_grade=goal_grade,
+                goal_criteria_succeeded=(criteria_request_id is None or task_succeeded),
             )
 
     async def _process_next_from_queue(self) -> None:
@@ -12976,6 +13342,7 @@ class DeepAgentsApp(App):
         force_goal_sync: bool = False,
         goal_criteria_request_id: str | None = None,
         goal_grade: _GoalGradeObservation | None = None,
+        goal_criteria_succeeded: bool = True,
     ) -> None:
         """Tear down after a turn completes or is cancelled.
 
@@ -12992,6 +13359,8 @@ class DeepAgentsApp(App):
                 when correlating a newly generated proposal.
             goal_grade: Grade observed during the completed goal-backed work
                 turn, or `None` for every other cleanup path.
+            goal_criteria_succeeded: Whether criteria generation completed without
+                failure or cancellation.
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
@@ -13008,15 +13377,29 @@ class DeepAgentsApp(App):
                     self._chat_input.set_cursor_active(active=True)
                 self._show_tokens(approximate=self._tokens_approximate)
                 self._schedule_git_branch_refresh()
-                if goal_criteria_request_id is not None:
-                    await self._clear_submitted_goal_criteria_request(
-                        goal_criteria_request_id
+                if goal_criteria_request_id is not None and not goal_criteria_succeeded:
+                    proposal_was_cleared = (
+                        await self._sync_goal_rubric_state_from_thread(
+                            force=force_goal_sync,
+                            proposal_request_id=goal_criteria_request_id,
+                            goal_grade=goal_grade,
+                            allow_pending_proposal=False,
+                        )
                     )
-                await self._sync_goal_rubric_state_from_thread(
-                    force=force_goal_sync,
-                    proposal_request_id=goal_criteria_request_id,
-                    goal_grade=goal_grade,
-                )
+                    if proposal_was_cleared:
+                        await self._clear_submitted_goal_criteria_request(
+                            goal_criteria_request_id
+                        )
+                else:
+                    if goal_criteria_request_id is not None:
+                        await self._clear_submitted_goal_criteria_request(
+                            goal_criteria_request_id
+                        )
+                    await self._sync_goal_rubric_state_from_thread(
+                        force=force_goal_sync,
+                        proposal_request_id=goal_criteria_request_id,
+                        goal_grade=goal_grade,
+                    )
 
                 try:
                     await self._maybe_drain_deferred()
@@ -13399,6 +13782,7 @@ class DeepAgentsApp(App):
         *,
         thread_id: str | None = None,
         preloaded_payload: _ThreadHistoryPayload | None = None,
+        resolve_pending_goal: bool = True,
     ) -> None:
         """Load and render message history when resuming a thread.
 
@@ -13415,6 +13799,8 @@ class DeepAgentsApp(App):
                 Defaults to current.
             preloaded_payload: Optional pre-fetched history payload for the
                 thread.
+            resolve_pending_goal: Whether to review or auto-accept a restored
+                proposal before returning.
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
@@ -13448,7 +13834,6 @@ class DeepAgentsApp(App):
                 model_spec=payload.model_spec,
                 model_params=payload.model_params,
             )
-            await self._remount_pending_goal_rubric_review()
 
             if not payload.messages:
                 return
@@ -13579,6 +13964,12 @@ class DeepAgentsApp(App):
                 history_thread_id,
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
+        finally:
+            if resolve_pending_goal:
+                try:
+                    await self._remount_pending_goal_rubric_review()
+                except Exception:
+                    logger.exception("Failed to restore pending goal review")
 
     @staticmethod
     def _build_message_timestamp_footer(
@@ -15075,6 +15466,9 @@ class DeepAgentsApp(App):
                         "Manual approval could not sync to the running agent; "
                         "start a new run before continuing."
                     )
+
+        if self._live_goal_auto_approve_enabled():
+            await self._auto_accept_pending_goal_rubric()
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""

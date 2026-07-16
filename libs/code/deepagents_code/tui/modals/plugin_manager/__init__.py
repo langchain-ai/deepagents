@@ -222,6 +222,20 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self._error = None
         self._refresh_view()
 
+    def _search_available(self) -> bool:
+        """Whether the plugin filter should be shown and focusable.
+
+        Returns:
+            `True` when list mode has plugins that can be filtered.
+        """
+        if self._mode != "list":
+            return False
+        if self._tab == "discover":
+            return bool(self._state.marketplaces and self._state.available_plugins)
+        if self._tab == "installed":
+            return bool(self._state.installed_plugins)
+        return False
+
     def _filtered_plugins(self, rows: Sequence[_PluginRow]) -> tuple[_PluginRow, ...]:
         query = self._search_query.strip().casefold()
         if not query:
@@ -428,10 +442,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
         source_input.display = False
         options.display = True
-        search_input.display = (
-            self._tab == "discover"
-            and bool(self._state.marketplaces and self._state.available_plugins)
-        ) or (self._tab == "installed" and bool(self._state.installed_plugins))
+        search_input.display = self._search_available()
         if search_input.display and search_input.value != self._search_query:
             search_input.value = self._search_query
         highlighted = options.highlighted
@@ -508,8 +519,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
     ) -> bool | None:
         """Gate priority bindings that would otherwise steal Input keystrokes.
 
-        `/` is enabled only on searchable list views whose filter is not focused,
-        so it remains typeable in the filter and Add Marketplace source field.
+        `/` is enabled only when the plugin filter is visible and not focused,
+        so it remains typeable in the filter and Add Marketplace source field,
+        and cannot steal focus while the filter is hidden.
         Left/right release to a focused Input once it has at least one character,
         so caret movement works while empty-field arrows keep switching tabs.
 
@@ -525,7 +537,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             focused = self.focused
             return not (isinstance(focused, Input) and bool(focused.value))
         if action == "focus_search":
-            if self._mode != "list" or self._tab not in {"discover", "installed"}:
+            if not self._search_available():
                 return False
             try:
                 return not self.query_one("#plugin-manager-search", Input).has_focus
@@ -587,8 +599,8 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self.dismiss(None)
 
     def action_focus_search(self) -> None:
-        """Focus the plugin filter on searchable tabs."""
-        if self._mode == "list" and self._tab in {"discover", "installed"}:
+        """Focus the plugin filter when it is visible."""
+        if self._search_available():
             self.query_one("#plugin-manager-search", Input).focus()
 
     def _cycle_details_option(self, step: int) -> None:

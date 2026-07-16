@@ -320,10 +320,26 @@ async def test_search_hidden_without_filterable_plugins() -> None:
         assert search.display is False
 
 
-def test_focus_search_binding_enabled_only_on_searchable_list() -> None:
-    """`check_action` gates `/` so it stays typeable outside searchable lists."""
+def test_focus_search_binding_enabled_only_when_filter_visible() -> None:
+    """`check_action` enables `/` only when the search filter is shown."""
     screen = PluginManagerScreen()
 
+    assert screen.check_action("focus_search", ()) is False
+
+    screen._state = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 1, 0),),
+        errors=(),
+    )
     assert screen.check_action("focus_search", ()) is True
 
     screen._tab = "marketplaces"
@@ -334,7 +350,33 @@ def test_focus_search_binding_enabled_only_on_searchable_list() -> None:
     assert screen.check_action("focus_search", ()) is False
 
     screen._mode = "list"
+    screen._state = _ManagerState((), (), (), ())
+    assert screen.check_action("focus_search", ()) is False
     assert screen.check_action("cancel", ()) is True
+
+
+async def test_slash_does_not_focus_hidden_search() -> None:
+    """`/` must not steal focus when the filter is hidden (empty discover)."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = _ManagerState((), (), (), ())
+        screen._refresh_view()
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert search.display is False
+        assert options.has_focus
+
+        await pilot.press("/")
+        assert options.has_focus
+        assert not search.has_focus
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._mode == "add_marketplace"
 
 
 async def test_slash_remains_typeable_in_add_marketplace_source() -> None:

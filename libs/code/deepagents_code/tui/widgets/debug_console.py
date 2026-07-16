@@ -720,9 +720,29 @@ class DebugConsoleScreen(ModalScreen[None]):
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
-        # Resolved LangSmith thread URLs keyed by thread id, filled in by a
-        # background worker after mount (network I/O must not block open).
-        self._langsmith_urls: dict[str, str] = {}
+        # Seed links resolved elsewhere in this process (normally the welcome
+        # banner) so reopening the console does not briefly render without one.
+        self._langsmith_urls = self._cached_langsmith_urls()
+
+    def _cached_langsmith_urls(self) -> dict[str, str]:
+        """Return immediately available LangSmith URLs for snapshot threads."""
+        from deepagents_code.config import get_cached_langsmith_thread_url
+
+        urls: dict[str, str] = {}
+        thread_ids = {field.thread_id for field in self._snapshot if field.thread_id}
+        for thread_id in thread_ids:
+            try:
+                url = get_cached_langsmith_thread_url(thread_id)
+            except Exception:  # a diagnostic overlay must always be able to open
+                logger.warning(
+                    "Cached LangSmith thread URL lookup errored for %r",
+                    thread_id,
+                    exc_info=True,
+                )
+                continue
+            if url:
+                urls[thread_id] = url
+        return urls
 
     def compose(self) -> ComposeResult:
         """Lay out the title, snapshot, filter, log tail, and key-hint footer.
@@ -762,7 +782,11 @@ class DebugConsoleScreen(ModalScreen[None]):
 
     def _resolve_langsmith_links(self) -> None:
         """Kick off background resolution of `(langsmith)` links for the snapshot."""
-        thread_ids = {field.thread_id for field in self._snapshot if field.thread_id}
+        thread_ids = {
+            field.thread_id
+            for field in self._snapshot
+            if field.thread_id and field.thread_id not in self._langsmith_urls
+        }
         for thread_id in thread_ids:
             self.run_worker(
                 self._fetch_langsmith_link(thread_id),

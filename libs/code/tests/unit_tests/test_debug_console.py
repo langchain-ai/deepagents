@@ -802,6 +802,31 @@ class TestDebugConsoleScreen:
 
             assert "(langsmith)" in _widget_text(snapshot_widget)
 
+    async def test_cached_langsmith_link_renders_on_first_frame_without_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        monkeypatch.setattr(
+            config_mod, "get_cached_langsmith_thread_url", lambda _thread_id: url
+        )
+        lookup = MagicMock()
+        monkeypatch.setattr(config_mod, "build_langsmith_thread_url", lookup)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            assert "(langsmith)" in _widget_text(snapshot_widget)
+
+        lookup.assert_not_called()
+
     async def test_clicking_thread_value_copies_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

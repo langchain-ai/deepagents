@@ -195,6 +195,22 @@ class TestGoalReviewMenu:
                 "message": "include docs and migration notes",
             }
 
+    async def test_text_editor_help_advertises_external_editor(self) -> None:
+        """Both goal-review text modes should advertise the Ctrl+X editor."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            help_widget = menu.query_one(".goal-review-help", Static)
+
+            menu.action_edit()
+            assert "Ctrl+X external editor" in str(help_widget.content)
+
+            menu.action_cancel()
+            menu.action_reject_with_message()
+            assert "Ctrl+X external editor" in str(help_widget.content)
+
     async def test_edit_expands_collapsed_paste_on_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

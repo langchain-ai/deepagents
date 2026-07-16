@@ -6,7 +6,10 @@ PluginManagerScreen {
 PluginManagerScreen > Vertical {
     width: 88;
     max-width: 94%;
-    height: 80%;
+    /* The bordered search field adds four rows to list views. */
+    height: 90%;
+    min-height: 24;
+    max-height: 100%;
     background: $surface;
     border: solid $primary;
     padding: 1 2;
@@ -31,6 +34,11 @@ PluginManagerScreen .plugin-manager-tab {
     color: $text-muted;
     text-align: center;
     margin-right: 1;
+    pointer: pointer;
+}
+
+PluginManagerScreen .plugin-manager-tab:last-of-type {
+    margin-right: 0;
 }
 
 PluginManagerScreen .plugin-manager-tab.active {

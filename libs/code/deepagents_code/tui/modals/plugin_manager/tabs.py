@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from textual.message import Message
 from textual.widgets import Static
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.tui.modals.plugin_manager.models import PluginTab
 
-TAB_LABELS: dict[PluginTab, str] = {
+TAB_LABELS: Final[dict[PluginTab, str]] = {
     "discover": "Plugins",
     "installed": "Installed",
     "marketplaces": "Marketplaces",
@@ -51,7 +51,6 @@ class PluginTabLabel(Static):
         )
         self._tab = tab
         self._label = label
-        self.can_focus = False
 
     def set_active(self, active: bool) -> None:
         """Update the active marker and style.

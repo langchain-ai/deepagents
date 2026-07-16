@@ -7,6 +7,7 @@ from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from textual.containers import Vertical
 from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.app import DeepAgentsApp
@@ -118,6 +119,46 @@ async def test_plugin_search_filters_and_clears() -> None:
         assert options.option_count == 3
         await pilot.press("escape")
         assert options.has_focus
+
+
+async def test_plugin_search_and_footer_fit_standard_terminal() -> None:
+    """Search must not push the plugin list or footer outside an 80x24 modal."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 1, 0),),
+        errors=(),
+    )
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        await pilot.pause()
+
+        container = screen.query_one(Vertical)
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        help_text = screen.query_one("#plugin-manager-help", Static)
+
+        assert container.region.y >= 0
+        assert container.region.bottom <= app.size.height
+        assert search.display is True
+        assert options.region.height >= 5
+        assert options.region.bottom <= container.content_region.bottom
+        assert help_text.region.height >= 1
+        assert help_text.region.bottom <= container.content_region.bottom
 
 
 async def test_search_arrows_move_cursor_only_when_nonempty() -> None:
@@ -498,6 +539,86 @@ def test_tab_labels_cover_every_plugin_tab() -> None:
     assert set(TAB_LABELS) == set(get_args(PluginTab))
 
 
+def test_rendered_tabs_cover_every_plugin_tab() -> None:
+    """`_tabs` must stay in sync with the PluginTab literal.
+
+    The tab set is duplicated across PluginTab, TAB_LABELS, and `_tabs`. A tab
+    missing from `_tabs` would silently never render (compose iterates `_tabs`),
+    and one absent from TAB_LABELS would KeyError at compose time.
+    """
+    assert set(PluginManagerScreen._tabs) == set(get_args(PluginTab))
+
+
+async def test_refresh_state_clears_search_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mutating reload drops the query so reloaded results are not filtered."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    fresh = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Read/write documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
+        errors=(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+        lambda _info, **_kwargs: fresh,
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        search = screen.query_one("#plugin-manager-search", Input)
+
+        await pilot.press("/", "d", "o", "c", "s")
+        await pilot.pause()
+        assert screen._search_query == "docs"
+        assert options.option_count == 1
+
+        await screen._refresh_state()
+        await pilot.pause()
+
+        assert screen._search_query == ""
+        assert search.value == ""
+        # The cleared query restores every plugin, not just the "docs" match.
+        ids = {options.get_option_at_index(i).id for i in range(options.option_count)}
+        assert {"detail:docs@official", "detail:tests@official"} <= ids
+
+
+async def test_tab_switch_ignored_during_add_marketplace() -> None:
+    """Switching tabs must not discard an in-progress marketplace source entry."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._mode = "add_marketplace"
+        screen._refresh_view()
+        await pilot.pause()
+
+        screen._select_tab("installed")
+        assert screen._mode == "add_marketplace"
+        assert screen._tab == "discover"
+
+
 async def test_search_hidden_without_filterable_plugins() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()
@@ -520,6 +641,23 @@ async def test_search_hidden_without_filterable_plugins() -> None:
         screen._tab = "installed"
         screen._refresh_view()
         assert search.display is False
+
+        # Marketplaces and errors tabs never filter, even when populated.
+        screen._state = _ManagerState(
+            available_plugins=(),
+            installed_plugins=(),
+            marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
+            errors=("boom",),
+        )
+        screen._tab = "marketplaces"
+        screen._refresh_view()
+        assert search.display is False
+        assert screen.check_action("focus_search", ()) is False
+
+        screen._tab = "errors"
+        screen._refresh_view()
+        assert search.display is False
+        assert screen.check_action("focus_search", ()) is False
 
 
 def test_focus_search_binding_enabled_only_when_filter_visible() -> None:

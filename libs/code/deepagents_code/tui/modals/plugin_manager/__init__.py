@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
-    from textual.events import MouseMove
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.tui.modals.plugin_manager.models import (
@@ -471,9 +470,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 action = "add marketplace"
             else:
                 action = "install"
+            search_hint = (
+                f"/ search {glyphs.bullet} " if self._search_available() else ""
+            )
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
-                f"Enter {action} {glyphs.bullet} Left/Right tabs "
+                f"Enter {action} {glyphs.bullet} {search_hint}Left/Right tabs "
                 f"{glyphs.bullet} Esc close"
             )
         else:
@@ -557,20 +559,6 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             event: Tab selection message from `PluginTabLabel`.
         """
         self._select_tab(event.tab)
-
-    def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over clickable tab labels.
-
-        Args:
-            event: Mouse move event.
-        """
-        self.styles.pointer = (
-            "pointer" if isinstance(event.widget, PluginTabLabel) else "default"
-        )
-
-    def on_leave(self) -> None:
-        """Reset the pointer shape when the mouse leaves the manager."""
-        self.styles.pointer = "default"
 
     def action_cancel(self) -> None:
         """Clear a query, return an empty search to the list, close, or go back."""

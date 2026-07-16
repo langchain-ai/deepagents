@@ -52,15 +52,11 @@ from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 
-class PluginManagerScreen(  # noqa: RUF067
-    ModalScreen[tuple[bool, tuple[str, bool] | None] | None]
-):
+class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    Dismisses with `(changed, mcp_reconnect)` where `changed` is whether
-    plugins/marketplaces were mutated (so the app can remind about
-    `/reload`), and `mcp_reconnect` is `(label, needs_mcp_login)` after an
-    MCP-bearing install so the app can offer reconnect + login guidance.
+    Plugin changes are applied by the reload prompt shown after this screen
+    closes.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -114,7 +110,6 @@ class PluginManagerScreen(  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
-        self._plugins_changed = False
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -461,7 +456,7 @@ class PluginManagerScreen(  # noqa: RUF067
             self._error = None
             self._refresh_view()
             return
-        self.dismiss((self._plugins_changed, None))
+        self.dismiss(None)
 
     def _cycle_details_option(self, step: int) -> None:
         options = self.query_one("#plugin-manager-options", OptionList)
@@ -629,32 +624,20 @@ class PluginManagerScreen(  # noqa: RUF067
         if row is None:
             return
         try:
-            # install_plugin returns the loaded instance; Discover rows do not
-            # carry MCP metadata until install, so inspect the result here.
-            instance = await asyncio.to_thread(install_plugin, row.plugin_id)
+            await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
             self._refresh_view()
             return
-        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
-
         label = row.label
-        entries = plugin_mcp_server_entries(instance)
-        has_mcp = bool(entries)
-        needs_login = any(needs for _label, _scoped, needs in entries)
         self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._plugins_changed = True
         self._status = f"Installed {label}. Run /reload to activate."
         self._error = None
         await self._refresh_state()
-        if has_mcp:
-            # Close the manager so the reconnect prompt is not buried under it.
-            self.dismiss((True, (label, needs_login)))
-            return
 
     async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin
@@ -677,7 +660,6 @@ class PluginManagerScreen(  # noqa: RUF067
             self._status = None
             self._refresh_view()
             return
-        self._plugins_changed = True
         self._error = None
         await self._refresh_state()
 
@@ -694,7 +676,6 @@ class PluginManagerScreen(  # noqa: RUF067
             return
         self._mode = "list"
         self._selected_plugin = None
-        self._plugins_changed = self._plugins_changed or row.enabled
         reload_hint = " Run /reload to unload." if row.enabled else ""
         self._status = f"Uninstalled {row.label}.{reload_hint}"
         self._error = None
@@ -719,7 +700,6 @@ class PluginManagerScreen(  # noqa: RUF067
             await self._refresh_state()
             return
         plugin_label = "plugin" if row.installed_count == 1 else "plugins"
-        self._plugins_changed = self._plugins_changed or row.installed_count > 0
         self._mode = "list"
         self._tab = "marketplaces"
         self._selected_marketplace = None

@@ -63,17 +63,12 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
     assert options[1].disabled
 
 
-def test_plugin_manager_reports_only_relevant_changes_on_close() -> None:
+def test_plugin_manager_closes_without_mcp_reconnect() -> None:
     screen = PluginManagerScreen()
     screen.dismiss = MagicMock()
 
     screen.action_cancel()
-    screen.dismiss.assert_called_once_with((False, None))
-
-    screen.dismiss.reset_mock()
-    screen._plugins_changed = True
-    screen.action_cancel()
-    screen.dismiss.assert_called_once_with((True, None))
+    screen.dismiss.assert_called_once_with(None)
 
 
 def test_plugin_row_label_prefers_display_name() -> None:
@@ -338,10 +333,9 @@ def test_plugin_prompt_pending_reload_keeps_connected_when_still_loaded() -> Non
     assert f"{checkmark} connected" in prompt
 
 
-async def test_install_dismisses_reconnect_from_installed_instance(
+async def test_install_keeps_manager_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Discover rows lack MCP metadata; install must inspect the returned instance."""
     screen = PluginManagerScreen()
     screen._selected_plugin = _PluginRow(
         plugin_id="linear@tools",
@@ -351,46 +345,9 @@ async def test_install_dismisses_reconnect_from_installed_instance(
         author=None,
         display_name="Linear",
     )
-    assert screen._selected_plugin.mcp_server_names == ()
-
     monkeypatch.setattr(
         "deepagents_code.tui.modals.plugin_manager.install_plugin",
         lambda _plugin_id: object(),
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
-        lambda _instance: (("linear", "linear__linear@tools", True),),
-    )
-    monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
-    monkeypatch.setattr(screen, "notify", MagicMock())
-    dismiss = MagicMock()
-    monkeypatch.setattr(screen, "dismiss", dismiss)
-
-    await screen._install_selected_plugin()
-
-    dismiss.assert_called_once_with((True, ("Linear", True)))
-
-
-async def test_install_keeps_manager_open_without_mcp(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    screen = PluginManagerScreen()
-    screen._selected_plugin = _PluginRow(
-        plugin_id="skills@tools",
-        description="Skills only",
-        enabled=False,
-        version=None,
-        author=None,
-        display_name="Skills",
-    )
-
-    monkeypatch.setattr(
-        "deepagents_code.tui.modals.plugin_manager.install_plugin",
-        lambda _plugin_id: object(),
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
-        lambda _instance: (),
     )
     monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
     monkeypatch.setattr(screen, "notify", MagicMock())

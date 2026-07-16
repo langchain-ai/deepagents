@@ -3,7 +3,7 @@
 import logging
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import dotenv as _dotenv_module
 import pytest
@@ -1072,6 +1072,93 @@ class TestReloadPluginsViaReload:
         after = DeepAgentsApp._fingerprint_plugins((plugin,))
 
         assert before != after
+
+    @pytest.mark.parametrize("change", ["none", "fingerprint", "enabled"])
+    async def test_plugin_manager_reminder_compares_actual_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        change: str,
+    ) -> None:
+        """Closing compares persisted state even when the modal reports no result."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        before = {"demo@tools": ("before",)} if change == "fingerprint" else {}
+        after = {"demo@tools": ("after",)} if change == "fingerprint" else {}
+        fingerprints = iter((before, after))
+        enabled_before = frozenset[str]()
+        enabled_after = (
+            frozenset({"demo@tools"}) if change == "enabled" else enabled_before
+        )
+        enabled_ids = iter((enabled_before, enabled_after))
+        app = DeepAgentsApp()
+        call_after_refresh = MagicMock()
+
+        monkeypatch.setattr(
+            "deepagents_code.plugins.discover_plugins",
+            lambda: PluginDiscoveryResult(plugins=()),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.plugins.store.load_enabled_plugin_ids",
+            lambda: next(enabled_ids),
+        )
+        monkeypatch.setattr(
+            app,
+            "_fingerprint_plugins",
+            lambda _plugins: next(fingerprints),
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callback(None),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", call_after_refresh)
+
+        await app._show_plugin_manager()
+
+        assert app._plugin_fingerprints == before
+        if change != "none":
+            call_after_refresh.assert_called_once()
+            assert callable(call_after_refresh.call_args.args[0])
+        else:
+            call_after_refresh.assert_not_called()
+
+    @pytest.mark.parametrize("choice", ["reload", "later"])
+    async def test_plugin_reload_prompt_choice(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        choice: str,
+    ) -> None:
+        """Reload runs the command; deferral leaves one transcript reminder."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        submit = AsyncMock()
+        mount = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=choice),
+        )
+        monkeypatch.setattr(app, "_submit_input", submit)
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._offer_plugin_reload()
+
+        if choice == "reload":
+            submit.assert_awaited_once_with("/reload", "command")
+            mount.assert_not_awaited()
+        else:
+            submit.assert_not_awaited()
+            mount.assert_awaited_once()
+            mount_call = mount.await_args
+            assert mount_call is not None
+            message = mount_call.args[0]
+            assert isinstance(message, AppMessage)
+            assert "/reload" in str(message._content)
 
     async def test_reports_plugin_summary_when_experimental(
         self, monkeypatch: pytest.MonkeyPatch

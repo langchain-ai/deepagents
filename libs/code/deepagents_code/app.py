@@ -17783,32 +17783,25 @@ class DeepAgentsApp(App):
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
         from deepagents_code.plugins import discover_plugins
+        from deepagents_code.plugins.store import load_enabled_plugin_ids
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
+        enabled_plugin_ids = load_enabled_plugin_ids()
         self._plugin_fingerprints = self._fingerprint_plugins(
             discover_plugins().plugins
         )
 
-        def on_close(
-            result: tuple[bool, tuple[str, bool] | None] | None,
-        ) -> None:
-            if result is None:
-                return
-            changed, mcp_reconnect = result
-            if changed:
-                self.call_after_refresh(
-                    self._mount_message,
-                    AppMessage("Plugin changes require /reload to take effect."),
-                )
-            if mcp_reconnect is not None:
-                label, needs_login = mcp_reconnect
+        def on_close(_result: None) -> None:
+            current_fingerprints = self._fingerprint_plugins(discover_plugins().plugins)
+            if (
+                load_enabled_plugin_ids() != enabled_plugin_ids
+                or current_fingerprints != self._plugin_fingerprints
+            ):
                 self.call_after_refresh(
                     lambda: self.run_worker(
-                        self._offer_reconnect_after_plugin_install(
-                            label, needs_login=needs_login
-                        ),
+                        self._offer_plugin_reload(),
                         exclusive=True,
-                        group="plugin-install-reconnect",
+                        group="plugin-reload-prompt",
                     )
                 )
 
@@ -17820,22 +17813,35 @@ class DeepAgentsApp(App):
             on_close,
         )
 
-    async def _offer_reconnect_after_plugin_install(
-        self, label: str, *, needs_login: bool
-    ) -> None:
-        """Offer reconnect after installing a plugin that declares MCP servers.
+    async def _offer_plugin_reload(self) -> None:
+        """Offer to apply plugin changes after the manager closes."""
+        from deepagents_code.tui.widgets.plugin_reload import (
+            PluginReloadPromptScreen,
+        )
 
-        Reuses the `/mcp login` reconnect-now / defer modal. When the plugin's
-        MCP servers typically need auth, surface a follow-up toast pointing
-        users at `/mcp`.
-        """
-        await self._prompt_mcp_reconnect(label)
-        if needs_login:
-            self.notify(
-                f"Sign in to {label} via `/mcp` after reconnect.",
-                severity="information",
-                timeout=10,
-                markup=False,
+        try:
+            choice = await asyncio.wait_for(
+                self._push_screen_wait(PluginReloadPromptScreen()),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Plugin reload prompt timed out")
+            await self._mount_message(
+                AppMessage("Plugin changes are pending. Run /reload when ready.")
+            )
+            return
+        except Exception:
+            logger.exception("Failed to mount plugin reload prompt")
+            await self._mount_message(
+                AppMessage("Plugin changes are pending. Run /reload when ready.")
+            )
+            return
+
+        if choice == "reload":
+            await self._submit_input("/reload", "command")
+        elif choice == "later":
+            await self._mount_message(
+                AppMessage("Plugin changes are pending. Run /reload when ready.")
             )
 
     async def _handle_mcp_subcommand(self, args: str) -> None:

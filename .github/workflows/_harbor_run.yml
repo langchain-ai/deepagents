@@ -447,6 +447,27 @@ jobs:
           fi
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
 
+      - name: "🐳 Wait for the Docker daemon"
+        # GH-hosted runners intermittently have the Docker daemon not-yet-ready at
+        # job start; harbor's docker sandbox then hard-fails with "Docker daemon is
+        # not running", losing an otherwise-good shard. Wait it out (docker-sandbox
+        # only). No sudo/start: the codebase disallows privilege escalation in
+        # workflows, and this targets the startup race, not a dead daemon (which
+        # still fails the shard, but the aggregator no longer voids the scorecard
+        # for a single missing shard).
+        if: ${{ inputs.sandbox_env == 'docker' }}
+        run: |
+          for i in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready (after ${i} check(s))."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Docker daemon not ready after ~120s."
+          docker info || true
+          exit 1
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}

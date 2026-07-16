@@ -20,8 +20,20 @@ PluginManagerScreen .plugin-manager-title {
 }
 
 PluginManagerScreen .plugin-manager-tabs {
-    color: $text-muted;
+    height: 1;
+    width: auto;
     margin-bottom: 0;
+}
+
+PluginManagerScreen .plugin-manager-tab {
+    width: auto;
+    height: 1;
+    color: $text-muted;
+    margin-right: 1;
+}
+
+PluginManagerScreen .plugin-manager-tab.active {
+    color: $text;
 }
 
 PluginManagerScreen .plugin-manager-divider {

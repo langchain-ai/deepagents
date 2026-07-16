@@ -6,9 +6,11 @@ import asyncio
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.events import Click, MouseMove
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
@@ -21,7 +23,6 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.tui.modals.plugin_manager.models import (
         PluginManagerView,
-        PluginTab,
         _MarketplaceRow,
         _PluginRow,
     )
@@ -48,8 +49,70 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_details_content,
     _plugin_options,
 )
-from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
+from deepagents_code.tui.modals.plugin_manager.models import (
+    PluginTab,
+    _ManagerState,
+)
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
+
+_TAB_LABELS: dict[PluginTab, str] = {
+    "discover": "Plugins",
+    "installed": "Installed",
+    "marketplaces": "Marketplaces",
+    "errors": "Errors",
+}
+
+
+class PluginTabSelected(Message):
+    """Posted when a plugin manager tab label is clicked."""
+
+    def __init__(self, tab: PluginTab) -> None:
+        """Initialize with the selected tab id.
+
+        Args:
+            tab: Tab to activate.
+        """
+        super().__init__()
+        self.tab = tab
+
+
+class PluginTabLabel(Static):
+    """Mouse-clickable tab label in the plugin manager header."""
+
+    def __init__(self, tab: PluginTab, label: str) -> None:
+        """Create a tab label.
+
+        Args:
+            tab: Tab id this label activates.
+            label: Display text for the tab.
+        """
+        super().__init__(
+            f"  {label}  ",
+            id=f"plugin-tab-{tab}",
+            classes="plugin-manager-tab",
+            markup=False,
+        )
+        self._tab = tab
+        self._label = label
+        self.can_focus = False
+
+    def set_active(self, active: bool) -> None:
+        """Update the active marker and style.
+
+        Args:
+            active: Whether this tab is the current tab.
+        """
+        self.update(f"> {self._label} <" if active else f"  {self._label}  ")
+        self.set_class(active, "active")
+
+    def on_click(self, event: Click) -> None:
+        """Select this tab on click.
+
+        Args:
+            event: The click event.
+        """
+        event.stop()
+        self.post_message(PluginTabSelected(self._tab))
 
 
 class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
@@ -62,8 +125,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
-        Binding("left", "previous_tab", "Previous tab", show=False, priority=True),
-        Binding("right", "next_tab", "Next tab", show=False, priority=True),
+        # Separate from tab/shift+tab so check_action can release arrows to a
+        # non-empty Input for caret movement while keeping Tab as tab cycling.
+        Binding(
+            "left", "arrow_previous_tab", "Previous tab", show=False, priority=True
+        ),
+        Binding("right", "arrow_next_tab", "Next tab", show=False, priority=True),
         Binding("tab", "next_tab", "Next tab", show=False, priority=True),
         Binding("shift+tab", "previous_tab", "Previous tab", show=False, priority=True),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
@@ -127,7 +194,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             yield Static(
                 "Plugins", id="plugin-manager-title", classes="plugin-manager-title"
             )
-            yield Static(self._tabs_text(), id="plugin-manager-tabs")
+            with Horizontal(id="plugin-manager-tabs", classes="plugin-manager-tabs"):
+                for tab in self._tabs:
+                    yield PluginTabLabel(tab, _TAB_LABELS[tab])
             yield Rule(
                 line_style="heavy" if not is_ascii_mode() else "ascii",
                 id="plugin-manager-divider",
@@ -183,18 +252,28 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         ):
             self._refresh_view()
 
-    def _tabs_text(self) -> str:
-        labels = {
-            "discover": "Plugins",
-            "installed": "Installed",
-            "marketplaces": "Marketplaces",
-            "errors": "Errors",
-        }
-        parts = []
+    def _update_tab_labels(self) -> None:
+        """Refresh active styling on each clickable tab label."""
         for tab in self._tabs:
-            label = labels[tab]
-            parts.append(f"> {label} <" if tab == self._tab else f"  {label}  ")
-        return " ".join(parts)
+            self.query_one(f"#plugin-tab-{tab}", PluginTabLabel).set_active(
+                tab == self._tab
+            )
+
+    def _select_tab(self, tab: PluginTab) -> None:
+        """Activate `tab`, exiting details into list mode when needed.
+
+        Args:
+            tab: Tab to show.
+        """
+        if self._mode == "add_marketplace":
+            return
+        if self._details_mode_active():
+            self._mode = "list"
+            self._selected_plugin = None
+            self._selected_marketplace = None
+        self._tab = tab
+        self._error = None
+        self._refresh_view()
 
     def _filtered_plugins(self, rows: Sequence[_PluginRow]) -> tuple[_PluginRow, ...]:
         query = self._search_query.strip().casefold()
@@ -315,9 +394,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
     def _refresh_view(self) -> None:
         title = self.query_one("#plugin-manager-title", Static)
-        tabs = self.query_one("#plugin-manager-tabs", Static)
+        tabs = self.query_one("#plugin-manager-tabs", Horizontal)
         divider = self.query_one("#plugin-manager-divider", Rule)
-        tabs.update(self._tabs_text())
+        self._update_tab_labels()
         status_widget = self.query_one("#plugin-manager-status", Static)
         if self._mode == "plugin_details" and self._selected_plugin is not None:
             status_widget.update(_plugin_details_content(self._selected_plugin))
@@ -469,20 +548,45 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         action: str,
         parameters: tuple[object, ...],  # noqa: ARG002  # required by Textual's DOMNode.check_action override signature
     ) -> bool | None:
-        """Enable `/` search only on searchable list views.
+        """Gate priority bindings that would otherwise steal Input keystrokes.
 
-        The priority `/` binding would otherwise consume the key before the Add
-        Marketplace source input (and other non-list modes) can receive it, even
-        though `action_focus_search` no-ops there. Returning `False` disables the
-        binding for this dispatch so `/` falls through to the focused Input.
+        `/` is only enabled on searchable list views so it stays typeable in the
+        Add Marketplace source field. Left/right release to a focused Input once
+        it has at least one character, so caret movement works while empty-field
+        arrows keep switching tabs.
 
         Returns:
-            `True` when `focus_search` should run (list mode on discover/installed);
-                `False` to step the binding aside; `True` for every other action.
+            `False` to step a binding aside so the focused widget receives the
+                key; `True` to allow the action.
         """
+        if action in {"arrow_previous_tab", "arrow_next_tab"}:
+            focused = self.focused
+            return not (isinstance(focused, Input) and bool(focused.value))
         if action == "focus_search":
             return self._mode == "list" and self._tab in {"discover", "installed"}
         return True
+
+    def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
+        """Switch tabs from a mouse click on a tab label.
+
+        Args:
+            event: Tab selection message from `PluginTabLabel`.
+        """
+        self._select_tab(event.tab)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over clickable tab labels.
+
+        Args:
+            event: Mouse move event.
+        """
+        self.styles.pointer = (
+            "pointer" if isinstance(event.widget, PluginTabLabel) else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the manager."""
+        self.styles.pointer = "default"
 
     def action_cancel(self) -> None:
         """Clear search, close, or leave the active prompt."""
@@ -534,6 +638,14 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         options.highlighted = enabled[(position + step) % len(enabled)]
         options.focus()
 
+    def action_arrow_next_tab(self) -> None:
+        """Switch tabs via right arrow when the caret is not editing text."""
+        self.action_next_tab()
+
+    def action_arrow_previous_tab(self) -> None:
+        """Switch tabs via left arrow when the caret is not editing text."""
+        self.action_previous_tab()
+
     def action_next_tab(self) -> None:
         """Switch tabs or focus the next details option."""
         if self._details_mode_active():
@@ -542,9 +654,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)
-        self._tab = self._tabs[(index + 1) % len(self._tabs)]
-        self._error = None
-        self._refresh_view()
+        self._select_tab(self._tabs[(index + 1) % len(self._tabs)])
 
     def action_previous_tab(self) -> None:
         """Switch tabs or focus the previous details option."""
@@ -554,9 +664,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)
-        self._tab = self._tabs[(index - 1) % len(self._tabs)]
-        self._error = None
-        self._refresh_view()
+        self._select_tab(self._tabs[(index - 1) % len(self._tabs)])
 
     def action_cursor_down(self) -> None:
         """Move the option-list cursor down."""

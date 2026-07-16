@@ -114,6 +114,96 @@ async def test_plugin_search_filters_and_clears() -> None:
         assert options.has_focus
 
 
+async def test_search_arrows_move_cursor_only_when_nonempty() -> None:
+    """Left/right move the caret only once the search box has text."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(),
+        errors=(),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+
+        await pilot.press("/")
+        assert search.has_focus
+        assert search.value == ""
+        await pilot.press("right")
+        assert screen._tab == "installed"
+        assert search.display is True
+
+        screen._select_tab("discover")
+        await pilot.press("/")
+        assert search.has_focus
+        await pilot.press("d", "o", "c", "s")
+        assert search.value == "docs"
+        assert search.cursor_position == 4
+        assert screen._tab == "discover"
+
+        await pilot.press("left")
+        assert screen._tab == "discover"
+        assert search.cursor_position == 3
+        assert search.has_focus
+
+        await pilot.press("right")
+        assert screen._tab == "discover"
+        assert search.cursor_position == 4
+
+        await pilot.press("escape", "escape")
+        assert options.has_focus
+        await pilot.press("right")
+        assert screen._tab == "installed"
+
+
+async def test_plugin_tabs_are_mouse_clickable() -> None:
+    """Clicking a tab label switches to that tab."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=True,
+                version=None,
+                author=None,
+            ),
+        ),
+        marketplaces=(),
+        errors=(),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        assert screen._tab == "discover"
+
+        await pilot.click("#plugin-tab-installed")
+        await pilot.pause()
+        assert screen._tab == "installed"
+        assert screen.query_one("#plugin-tab-installed", Static).has_class("active")
+        assert not screen.query_one("#plugin-tab-discover", Static).has_class("active")
+
+
 def test_focus_search_binding_enabled_only_on_searchable_list() -> None:
     """`check_action` gates `/` so it stays typeable outside searchable lists."""
     screen = PluginManagerScreen()

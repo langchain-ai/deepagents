@@ -79,7 +79,7 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 _SECRET_KEY_RE = re.compile(
     r"(?i)(?:key|token|secret|password|credential|authorization)"
 )
-_SHELL_CONTROL_RE = re.compile(r"(?:\n|\r|&&|\|\||[;|`<>]|\$\(|\$\{)")
+_SHELL_CONTROL_RE = re.compile(r"(?:\n|\r|&&|\|\||[;&|`<>]|\$\(|\$\{)")
 _MCP_MARKER_KEY = "_deepagents_code_mcp"
 
 

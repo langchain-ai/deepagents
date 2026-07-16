@@ -278,6 +278,7 @@ def test_fixed_repo_commands_reject_compound_and_outside_targets(
     assert _fixed_repo_command_allowed("git status", tmp_path)
     assert not _fixed_repo_command_allowed("pytest ../other/tests", tmp_path)
     assert not _fixed_repo_command_allowed("pytest && rm -rf .", tmp_path)
+    assert not _fixed_repo_command_allowed("pytest & rm -rf .", tmp_path)
     assert not _fixed_repo_command_allowed("uv run --with package pytest", tmp_path)
 
 

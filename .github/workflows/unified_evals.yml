@@ -15,6 +15,10 @@ on:
         description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
         type: string
         default: "bare"
+      branches_to_compare:
+        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs + the harness graph factory) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
+        type: string
+        default: ""
       profile:
         description: "Task scope: 'full' (every task) or 'lite' (frozen high-signal subset from lite_tasks.py — fewer tasks, full rollouts)."
         type: choice
@@ -63,6 +67,7 @@ jobs:
       categories: ${{ steps.p.outputs.categories }}
       configs: ${{ steps.p.outputs.configs }}
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
+      branches: ${{ steps.p.outputs.branches }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -168,6 +173,7 @@ jobs:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
           UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
@@ -189,6 +195,7 @@ jobs:
           IN_CATEGORIES: ${{ inputs.categories }}
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
           IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          IN_BRANCHES: ${{ inputs.branches_to_compare }}
           RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
@@ -229,6 +236,7 @@ jobs:
             echo "| models (resolved) | \`${resolved_models}\` |"
             echo "| categories | \`${IN_CATEGORIES}\` |"
             echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
+            echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
@@ -239,7 +247,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   eval:
-    name: "🚀 Evaluate (${{ matrix.model }})"
+    name: "🚀 Evaluate (${{ matrix.model }} / ${{ matrix.branch }})"
     needs: prep
     strategy:
       fail-fast: false
@@ -252,6 +260,7 @@ jobs:
     secrets: inherit
     with:
       model: ${{ matrix.model }}
+      branch: ${{ matrix.branch }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.

@@ -161,6 +161,18 @@ def test_eval_job_uses_single_flat_pool_matrix() -> None:
     assert "include_tasks:" not in eval_with
 
 
+def test_branches_input_present() -> None:
+    dispatch = UNIFIED_WORKFLOW.read_text()
+    assert "branches_to_compare:" in dispatch
+    assert "UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}" in dispatch
+
+
+def test_eval_job_passes_branch() -> None:
+    reusable = UNIFIED_WORKFLOW.read_text()
+    assert "branch: ${{ matrix.branch }}" in reusable
+    assert "branches: ${{ steps.p.outputs.branches }}" in reusable
+
+
 def test_enumerate_step_gated_on_full_profile() -> None:
     """The task-enumeration step only runs for the full profile; lite skips it."""
     workflow = UNIFIED_WORKFLOW.read_text()

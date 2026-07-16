@@ -2,6 +2,28 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.40](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.39...deepagents-code==0.1.40) (2026-07-16)
+
+### Features
+
+- Added plugin marketplace support ([#4554](https://github.com/langchain-ai/deepagents/issues/4554)).
+- Added an “always allow” option to the project MCP approval prompt ([#4562](https://github.com/langchain-ai/deepagents/issues/4562)).
+- Improved `/goal` workflows: criteria generation now runs server-side, YOLO mode auto-accepts criteria, goals complete after satisfied grading, and goal review editing now supports `Ctrl+X` ([#4754](https://github.com/langchain-ai/deepagents/issues/4754), [#4784](https://github.com/langchain-ai/deepagents/issues/4784), [#4781](https://github.com/langchain-ai/deepagents/issues/4781), [#4780](https://github.com/langchain-ai/deepagents/issues/4780)).
+- Reasoning effort now persists across restarts ([#4728](https://github.com/langchain-ai/deepagents/issues/4728)).
+- Added a toast prompting you to re-paste when a chat paste collapses ([#4742](https://github.com/langchain-ai/deepagents/issues/4742)).
+
+### Bug Fixes
+
+- Tool calls awaiting approval are now surfaced correctly ([#4739](https://github.com/langchain-ai/deepagents/issues/4739)).
+- Fixed transcript tail hydration when scrolled to the bottom edge ([#4733](https://github.com/langchain-ai/deepagents/issues/4733)).
+- Kept chat input responsive during MCP viewer `Ctrl+R` reconnects ([#4753](https://github.com/langchain-ai/deepagents/issues/4753)).
+- Improved inline free-text prompts by sharing paste handling and matching primary-input `Ctrl+D` behavior ([#4736](https://github.com/langchain-ai/deepagents/issues/4736), [#4729](https://github.com/langchain-ai/deepagents/issues/4729)).
+- Fixed local offloaded tool results to use the real filesystem ([#4740](https://github.com/langchain-ai/deepagents/issues/4740)).
+- Cleaned offloaded history when deleting a thread ([#4751](https://github.com/langchain-ai/deepagents/issues/4751)).
+- Removed duplicated content from the system prompt by overwriting the base prompt ([#4516](https://github.com/langchain-ai/deepagents/issues/4516)).
+- Closed subprocess transport during install teardown ([#4735](https://github.com/langchain-ai/deepagents/issues/4735)).
+- Added targeted `uv` constraints for prerelease dependencies ([#4744](https://github.com/langchain-ai/deepagents/issues/4744)).
+
 ## [0.1.39](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.38...deepagents-code==0.1.39) (2026-07-14)
 
 ### Bug fixes

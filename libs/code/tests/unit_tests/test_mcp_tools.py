@@ -1562,7 +1562,7 @@ class TestLoadToolsFromConfigOAuth:
             raise ExceptionGroup(msg, [MCPReauthRequiredError("notion")])
             yield
 
-        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
@@ -1580,14 +1580,18 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
         assert "re-authentication" in (server_infos[0].error or "")
-        warning_records = [
+        mcp_records = [
             record
             for record in caplog.records
             if record.name == "deepagents_code.mcp_tools"
-            and record.levelno == logging.WARNING
+        ]
+        warning_records = [
+            record for record in mcp_records if record.levelno == logging.WARNING
         ]
         assert warning_records
-        assert all(record.exc_info is None for record in warning_records)
+        # A recognized re-auth skip must not dump a traceback at any level —
+        # the actionable WARNING already says everything useful.
+        assert all(record.exc_info is None for record in mcp_records)
         assert "Exception Group Traceback" not in caplog.text
         await manager.cleanup()
 
@@ -1676,7 +1680,10 @@ class TestLoadToolsFromConfigOAuth:
         assert "auth" not in recorded[0]
         await manager.cleanup()
 
-    async def test_discovery_401_challenge_marks_unauthenticated(self) -> None:
+    async def test_discovery_401_challenge_marks_unauthenticated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         """A 401 OAuth challenge during discovery is surfaced as unauthenticated."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")
         response = httpx.Response(
@@ -1701,6 +1708,8 @@ class TestLoadToolsFromConfigOAuth:
             raise challenge
             yield
 
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
                 "mcpServers": {
@@ -1716,6 +1725,19 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
         assert "mcp login notion" in (server_infos[0].error or "")
+        # A recognized 401 challenge is expected: no branch should dump the full
+        # challenge traceback (at DEBUG or WARNING), only concise lines.
+        mcp_records = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+        ]
+        assert any(
+            "401 OAuth challenge detected" in record.getMessage()
+            for record in mcp_records
+        )
+        assert all(record.exc_info is None for record in mcp_records)
+        assert "Traceback (most recent call last)" not in caplog.text
         await manager.cleanup()
 
     async def test_discovery_401_without_challenge_stays_error(self) -> None:

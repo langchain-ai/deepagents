@@ -731,11 +731,21 @@ class DebugConsoleScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, snapshot: Sequence[SnapshotField]) -> None:
+    def __init__(
+        self,
+        snapshot: Sequence[SnapshotField],
+        *,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
+        on_click_to_copy_change: Callable[[bool], None] | None = None,
+    ) -> None:
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
             snapshot: Ordered `SnapshotField` rows rendered in the header.
+            click_to_copy: Initial state of the "Click to copy" checkbox,
+                restored from the persisted preference.
+            on_click_to_copy_change: Called with the new value whenever the
+                checkbox is toggled, so the host can persist the preference.
         """
         super().__init__()
         self._snapshot = list(snapshot)
@@ -745,7 +755,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
-        self._click_to_copy = _CLICK_TO_COPY_DEFAULT
+        self._click_to_copy = click_to_copy
+        self._on_click_to_copy_change = on_click_to_copy_change
         # Seed links resolved elsewhere in this process (normally the welcome
         # banner) so reopening the console does not briefly render without one.
         self._langsmith_urls = self._cached_langsmith_urls()
@@ -923,6 +934,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         self.query_one(
             ".debug-console-snapshot", _SnapshotView
         ).click_to_copy = event.value
+        if self._on_click_to_copy_change is not None:
+            self._on_click_to_copy_change(event.value)
 
     def _render_snapshot(self) -> Content:
         """Build the right-aligned `label: value` snapshot block.

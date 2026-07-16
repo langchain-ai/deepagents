@@ -918,6 +918,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_scrollbar"),
     ),
     ConfigOption(
+        key="display.debug_console_click_to_copy",
+        group="Display",
+        summary="Copy on click in the Ctrl+\\ Debug Console (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_CONSOLE_CLICK_TO_COPY,
+        toml_keys=("ui", "debug_console_click_to_copy"),
+    ),
+    ConfigOption(
         key="display.collapse_pastes",
         group="Display",
         summary="Collapse large chat-input pastes into compact placeholders.",

@@ -950,6 +950,33 @@ class TestDebugConsoleScreen:
             assert log.click_to_copy is False
             assert snapshot_view.click_to_copy is False
 
+    async def test_initial_click_to_copy_restores_checkbox_and_children(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot(), click_to_copy=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen.query_one("#debug-click-to-copy", Checkbox).value is True
+            assert screen.query_one("#debug-log", _DebugLogView).click_to_copy is True
+
+    async def test_toggling_checkbox_invokes_persist_callback(self) -> None:
+        changes: list[bool] = []
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                _snapshot(), on_click_to_copy_change=changes.append
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.query_one("#debug-click-to-copy", Checkbox).value = True
+            await pilot.pause()
+            screen.query_one("#debug-click-to-copy", Checkbox).value = False
+            await pilot.pause()
+
+        assert changes == [True, False]
+
     async def test_copyable_value_carries_copy_meta_span(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:

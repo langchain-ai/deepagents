@@ -70,7 +70,7 @@ async def test_plugin_search_filters_and_clears() -> None:
         available_plugins=(
             _PluginRow(
                 plugin_id="docs@official",
-                description="Search documentation",
+                description="Read/write documentation",
                 enabled=False,
                 version=None,
                 author=None,
@@ -98,13 +98,16 @@ async def test_plugin_search_filters_and_clears() -> None:
 
         await pilot.press("/")
         assert search.has_focus
-        await pilot.press("d", "o", "c", "s")
+        await pilot.press("r", "e", "a", "d", "/", "w", "r", "i", "t", "e")
+        assert search.value == "read/write"
         assert options.option_count == 1
         assert options.get_option_at_index(0).id == "detail:docs@official"
 
         await pilot.press("ctrl+a", "x")
         assert options.option_count == 1
         assert options.get_option_at_index(0).prompt == "No plugins match your search."
+        assert options.get_option_at_index(0).disabled
+        assert options.highlighted is None
 
         await pilot.press("escape")
         assert search.value == ""
@@ -128,8 +131,16 @@ async def test_search_arrows_move_cursor_only_when_nonempty() -> None:
                 author=None,
             ),
         ),
-        installed_plugins=(),
-        marketplaces=(),
+        installed_plugins=(
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=True,
+                version="1.0.0",
+                author=None,
+            ),
+        ),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 1),),
         errors=(),
     )
 
@@ -149,7 +160,6 @@ async def test_search_arrows_move_cursor_only_when_nonempty() -> None:
         assert search.display is True
 
         screen._select_tab("discover")
-        await pilot.press("/")
         assert search.has_focus
         await pilot.press("d", "o", "c", "s")
         assert search.value == "docs"
@@ -202,6 +212,112 @@ async def test_plugin_tabs_are_mouse_clickable() -> None:
         assert screen._tab == "installed"
         assert screen.query_one("#plugin-tab-installed", Static).has_class("active")
         assert not screen.query_one("#plugin-tab-discover", Static).has_class("active")
+
+
+async def test_installed_plugin_search_filters_and_handles_no_match() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    screen._tab = "installed"
+    state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=True,
+                version="1.0.0",
+                author=None,
+            ),
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=True,
+                version="1.0.0",
+                author=None,
+            ),
+        ),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 2),),
+        errors=(),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+
+        await pilot.press("/")
+        assert search.has_focus
+        await pilot.press("d", "o", "c", "s")
+        assert options.option_count == 1
+        assert options.get_option_at_index(0).id == "installed:docs@official"
+
+        await pilot.press("ctrl+a", "x")
+        assert options.option_count == 1
+        placeholder = options.get_option_at_index(0)
+        assert placeholder.prompt == "No installed plugins match your search."
+        assert placeholder.disabled
+        assert options.highlighted is None
+
+        await pilot.press("enter")
+        assert screen._mode == "list"
+        assert search.has_focus
+
+
+async def test_enter_from_search_opens_highlighted_plugin_details() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Search documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 1, 0),),
+        errors=(),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+
+        await pilot.press("/", "d", "o", "c", "s", "enter")
+        await pilot.pause()
+
+        assert screen._mode == "plugin_details"
+
+
+async def test_search_hidden_without_filterable_plugins() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        search = screen.query_one("#plugin-manager-search", Input)
+
+        screen._state = _ManagerState((), (), (), ())
+        screen._refresh_view()
+        assert search.display is False
+
+        screen._state = _ManagerState(
+            (), (), (_MarketplaceRow("official", "owner/official", 0, 0),), ()
+        )
+        screen._refresh_view()
+        assert search.display is False
+
+        screen._tab = "installed"
+        screen._refresh_view()
+        assert search.display is False
 
 
 def test_focus_search_binding_enabled_only_on_searchable_list() -> None:
@@ -263,6 +379,32 @@ def test_filtered_plugins_matches_display_label() -> None:
 
     assert [row.plugin_id for row in screen._filtered_plugins(rows)] == [
         "cx-backend@tools"
+    ]
+
+
+def test_filtered_plugins_matches_description_case_insensitively() -> None:
+    screen = PluginManagerScreen()
+    screen._search_query = "DATA WAREHOUSE"
+    rows = (
+        _PluginRow(
+            plugin_id="analytics@tools",
+            description="Query the data warehouse",
+            enabled=False,
+            version=None,
+            author=None,
+            display_name="Analytics",
+        ),
+        _PluginRow(
+            plugin_id="linear@tools",
+            description="Issue tracker",
+            enabled=False,
+            version=None,
+            author=None,
+        ),
+    )
+
+    assert [row.plugin_id for row in screen._filtered_plugins(rows)] == [
+        "analytics@tools"
     ]
 
 

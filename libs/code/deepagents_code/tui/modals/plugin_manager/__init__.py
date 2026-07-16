@@ -250,14 +250,22 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 return [Option("All available plugins are installed.", id="empty")]
             rows = self._filtered_plugins(self._state.available_plugins)
             if not rows:
-                return [Option("No plugins match your search.", id="empty")]
+                return [
+                    Option("No plugins match your search.", id="empty", disabled=True)
+                ]
             return _plugin_options(rows, action="detail", status=None)
         if self._tab == "installed":
             if not self._state.installed_plugins:
                 return [Option("No plugins installed.", id="empty")]
             rows = self._filtered_plugins(self._state.installed_plugins)
             if not rows:
-                return [Option("No installed plugins match your search.", id="empty")]
+                return [
+                    Option(
+                        "No installed plugins match your search.",
+                        id="empty",
+                        disabled=True,
+                    )
+                ]
             return _plugin_options(rows, action="installed", status=None)
         if self._tab == "marketplaces":
             options = [Option("+ Add marketplace", id="add-marketplace")]
@@ -420,7 +428,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
         source_input.display = False
         options.display = True
-        search_input.display = self._tab in {"discover", "installed"}
+        search_input.display = (
+            self._tab == "discover"
+            and bool(self._state.marketplaces and self._state.available_plugins)
+        ) or (self._tab == "installed" and bool(self._state.installed_plugins))
         if search_input.display and search_input.value != self._search_query:
             search_input.value = self._search_query
         highlighted = options.highlighted
@@ -497,10 +508,14 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
     ) -> bool | None:
         """Gate priority bindings that would otherwise steal Input keystrokes.
 
-        `/` is only enabled on searchable list views so it stays typeable in the
-        Add Marketplace source field. Left/right release to a focused Input once
-        it has at least one character, so caret movement works while empty-field
-        arrows keep switching tabs.
+        `/` is enabled only on searchable list views whose filter is not focused,
+        so it remains typeable in the filter and Add Marketplace source field.
+        Left/right release to a focused Input once it has at least one character,
+        so caret movement works while empty-field arrows keep switching tabs.
+
+        Args:
+            action: Textual action name being considered for dispatch.
+            parameters: Parameters associated with the action.
 
         Returns:
             `False` to step a binding aside so the focused widget receives the
@@ -510,7 +525,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             focused = self.focused
             return not (isinstance(focused, Input) and bool(focused.value))
         if action == "focus_search":
-            return self._mode == "list" and self._tab in {"discover", "installed"}
+            if self._mode != "list" or self._tab not in {"discover", "installed"}:
+                return False
+            try:
+                return not self.query_one("#plugin-manager-search", Input).has_focus
+            except NoMatches:
+                return True
         return True
 
     def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
@@ -536,7 +556,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self.styles.pointer = "default"
 
     def action_cancel(self) -> None:
-        """Clear search, close, or leave the active prompt."""
+        """Clear a query, return an empty search to the list, close, or go back."""
         search_input = self.query_one("#plugin-manager-search", Input)
         if search_input.has_focus:
             if self._search_query:
@@ -850,6 +870,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if event.input.id == "plugin-manager-search":
             event.stop()
             options = self.query_one("#plugin-manager-options", OptionList)
+            highlighted = options.highlighted
+            if highlighted is None:
+                return
+            option_id = options.get_option_at_index(highlighted).id
+            if option_id is None or not option_id.startswith(("detail:", "installed:")):
+                return
             options.focus()
             options.action_select()
             return

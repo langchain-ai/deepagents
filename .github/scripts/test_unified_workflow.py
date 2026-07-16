@@ -103,12 +103,38 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     include_tasks = _indented_block(dispatch, "      include_tasks:")
     assert "every compared branch receives the same tasks" in include_tasks
 
+    agent_timeout = _indented_block(dispatch, "      agent_timeout_multiplier:")
+    assert "type: string" in agent_timeout
+    assert 'default: "1.0"' in agent_timeout
+    assert "20-minute timeout to 40 minutes" in agent_timeout
+
+    retries = _indented_block(dispatch, "      n_retries:")
+    assert "type: string" in retries
+    assert 'default: "0"' in retries
+    assert "retry_agent_timeouts" in retries
+
+    retry_timeouts = _indented_block(dispatch, "      retry_agent_timeouts:")
+    assert "type: boolean" in retry_timeouts
+    assert "default: false" in retry_timeouts
+    assert "model cost" in retry_timeouts
+
     # Exactly one reusable-workflow call: the flat-pool `eval` job (see
     # test_eval_job_uses_single_flat_pool_matrix below for its shape).
     reusable_call = "uses: ./.github/workflows/_harbor_run.yml"
     assert workflow.count(reusable_call) == 1
     eval_job = _indented_block(workflow, "  eval:")
     assert eval_job.count("force_build: ${{ inputs.force_build }}") == 1
+    assert (
+        eval_job.count(
+            "agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}"
+        )
+        == 1
+    )
+    assert eval_job.count("n_retries: ${{ inputs.n_retries }}") == 1
+    assert (
+        eval_job.count("retry_agent_timeouts: ${{ inputs.retry_agent_timeouts }}")
+        == 1
+    )
     assert (
         eval_job.count("harbor_package_override: ${{ inputs.harbor_package_override }}")
         == 1
@@ -124,6 +150,15 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert "if: ${{ always() }}" in prep_job
     assert 'echo "## Unified evals — run configuration"' in prep_job
     assert '} >> "$GITHUB_STEP_SUMMARY"' in prep_job
+    assert (
+        "IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}"
+        in prep_job
+    )
+    assert "IN_N_RETRIES: ${{ inputs.n_retries }}" in prep_job
+    assert "IN_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}" in prep_job
+    assert 'echo "| agent_timeout_multiplier |' in prep_job
+    assert 'echo "| n_retries |' in prep_job
+    assert 'echo "| retry_agent_timeouts |' in prep_job
 
     prep_source = PREP_SCRIPT.read_text()
     conversation = _indented_block(prep_source, '    "conversation": {')
@@ -717,6 +752,44 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     )
     assert "HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}" in job_env
     assert "HARBOR_SHARD_INDEX: ${{ matrix.shard }}" in job_env
+
+
+def test_harbor_run_can_retry_agent_timeouts_explicitly() -> None:
+    """Keep costly timeout retries opt-in while preserving Harbor exclusions."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    call_inputs = _indented_block(workflow, "    inputs:")
+    retry_timeouts = _indented_block(call_inputs, "      retry_agent_timeouts:")
+    assert "type: boolean" in retry_timeouts
+    assert "default: false" in retry_timeouts
+
+    harbor_job = _indented_block(workflow, "  harbor:")
+    job_env = _indented_block(harbor_job, "    env:")
+    assert (
+        "HARBOR_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}"
+        in job_env
+    )
+
+    run_step = _indented_block(harbor_job, '      - name: "⚓ Run Harbor"')
+    assert 'case "$HARBOR_RETRY_AGENT_TIMEOUTS" in' in run_step
+    assert 'retry_args=(--max-retries "$HARBOR_N_RETRIES")' in run_step
+    assert "--retry-exclude AgentTimeoutError" not in run_step
+    for exception in (
+        "VerifierTimeoutError",
+        "RewardFileNotFoundError",
+        "RewardFileEmptyError",
+        "VerifierOutputParseError",
+        "ApiUsageLimitError",
+    ):
+        assert f"--retry-exclude {exception}" in run_step
+    assert '"${retry_args[@]}"' in run_step
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=_step_script(run_step),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
 
 
 def test_evals_ci_filter_includes_unified_workflows() -> None:

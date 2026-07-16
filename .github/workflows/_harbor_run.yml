@@ -56,6 +56,10 @@ on:
       n_retries:
         type: string
         default: "0"
+      retry_agent_timeouts:
+        description: "Allow retries for AgentTimeoutError; inert when n_retries is 0."
+        type: boolean
+        default: false
       n_tasks:
         type: string
         default: "0"
@@ -332,6 +336,7 @@ jobs:
       HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
+      HARBOR_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
@@ -594,6 +599,10 @@ jobs:
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
+          case "$HARBOR_RETRY_AGENT_TIMEOUTS" in
+            true|false) ;;
+            *) echo "::error::Invalid retry_agent_timeouts (true|false): $HARBOR_RETRY_AGENT_TIMEOUTS"; exit 1 ;;
+          esac
           if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
             exit 1
@@ -623,6 +632,20 @@ jobs:
             false) ;;
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
+
+          retry_args=(--max-retries "$HARBOR_N_RETRIES")
+          if [ "$HARBOR_RETRY_AGENT_TIMEOUTS" = "true" ]; then
+            # Passing any --retry-exclude replaces Harbor's default set. Preserve
+            # every default exclusion except AgentTimeoutError, which makes agent
+            # timeouts eligible for the configured number of retries.
+            retry_args+=(
+              --retry-exclude VerifierTimeoutError
+              --retry-exclude RewardFileNotFoundError
+              --retry-exclude RewardFileEmptyError
+              --retry-exclude VerifierOutputParseError
+              --retry-exclude ApiUsageLimitError
+            )
+          fi
 
           # Allowlist the boolean; only literal true/false accepted.
           force_build_flag=()
@@ -882,7 +905,7 @@ jobs:
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
-            --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_args[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \

@@ -36,6 +36,18 @@ on:
       concurrency:
         type: string
         default: "4"
+      agent_timeout_multiplier:
+        description: "Multiplier for each task's agent execution timeout. For example, 2.0 doubles a 20-minute timeout to 40 minutes; setup, environment-build, and verifier timeouts are unchanged."
+        type: string
+        default: "1.0"
+      n_retries:
+        description: "Maximum additional attempts for retryable trial failures. Agent timeouts are retried only when retry_agent_timeouts is enabled."
+        type: string
+        default: "0"
+      retry_agent_timeouts:
+        description: "Allow n_retries to retry AgentTimeoutError rollouts. Disabled by default because retries can materially increase model cost."
+        type: boolean
+        default: false
       sandbox_env:
         type: string
         default: "langsmith"
@@ -272,6 +284,9 @@ jobs:
           IN_PROFILE: ${{ inputs.profile }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
+          IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          IN_N_RETRIES: ${{ inputs.n_retries }}
+          IN_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
           MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
           TOTAL_JOBS: ${{ steps.p.outputs.total_jobs }}
@@ -314,6 +329,9 @@ jobs:
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
+            echo "| agent_timeout_multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
+            echo "| n_retries | \`${IN_N_RETRIES}\` |"
+            echo "| retry_agent_timeouts | \`${IN_RETRY_AGENT_TIMEOUTS}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
             echo "| total planned shard jobs | \`${TOTAL_JOBS:-?}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
@@ -403,6 +421,9 @@ jobs:
       agent_impl: ""
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
+      agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      n_retries: ${{ inputs.n_retries }}
+      retry_agent_timeouts: ${{ inputs.retry_agent_timeouts }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}

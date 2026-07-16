@@ -11,11 +11,11 @@ fast when:
   be set as high as the task count (one task per shard) for dynamic dispatch.
   Instead, the derived `shard_parallel` (the pool the shards drain through) is
   what's bounded, alongside the per-shard concurrent-trial count: `shard_parallel
-  * min(concurrency, rollouts) <= 40`.
+  * concurrency <= 40`.
 
 This module owns the derivation of `shard_parallel` for the single-model case:
-`shard_parallel = min(MAX_TASKS_PER_MODEL // min(concurrency, rollouts),
-n_shards)`, mirroring `unified_prep.derive_pool` (pinned together by
+`shard_parallel = min(MAX_TASKS_PER_MODEL // concurrency, n_shards)`, mirroring
+`unified_prep.derive_pool` (pinned together by
 `test_validate_harbor_limits.py`'s drift-guard test). `main()` emits it as
 `shard_parallel=<value>` to `$GITHUB_OUTPUT` for `harbor.yml` to pass straight
 through to the leaf workflow's `shard_parallel` input.
@@ -61,13 +61,12 @@ def derive_shard_parallel(concurrency: int, rollouts: int, n_shards: int) -> int
     """Derive the shard pool size the run job's shards drain through.
 
     Mirrors `unified_prep.derive_pool`'s `max_parallel` for a single model:
-    `per_shard = min(concurrency, rollouts)` is the peak concurrent trials one
-    1-task shard ever runs; the pool saturates the per-model
-    `MAX_TASKS_PER_MODEL` (40) budget without exceeding `n_shards` itself (no
-    point pooling more than there are shards to drain).
+    each shard job can use its full `concurrency` when it contains multiple
+    tasks, even when `rollouts` is lower. The pool saturates the per-model
+    `MAX_TASKS_PER_MODEL` (40) budget without exceeding `n_shards` itself.
     """
-    per_shard = max(1, min(concurrency, rollouts))
-    return max(1, min(MAX_TASKS_PER_MODEL // per_shard, n_shards))
+    del rollouts
+    return max(1, min(MAX_TASKS_PER_MODEL // max(1, concurrency), n_shards))
 
 
 def validate_limits(
@@ -83,25 +82,23 @@ def validate_limits(
             "(all/set0/frontier/...) and comma-separated overrides are not accepted."
         )
     if n_shards > shard_matrix.MAX_SHARDS:
-        errors.append(f"n_shards={n_shards} exceeds the cap of {shard_matrix.MAX_SHARDS}")
+        errors.append(
+            f"n_shards={n_shards} exceeds the cap of {shard_matrix.MAX_SHARDS}"
+        )
     if concurrency > MAX_CONCURRENCY:
         errors.append(f"concurrency={concurrency} exceeds the cap of {MAX_CONCURRENCY}")
 
     # Defensive, not user-facing: derive_shard_parallel's floor division makes
-    # this true by construction (never trips). Uses per_shard — the peak
-    # concurrent trials one 1-task shard actually runs, min(concurrency,
-    # rollouts) — rather than raw concurrency, since a shard with fewer
-    # rollouts than its concurrency setting can't use the extra slots (same
-    # per_shard substitution unified_prep.derive_pool's docstring describes
-    # loosely as "concurrency"). An explicit raise (never a bare `assert`,
-    # which `python -O` strips) so a formula regression fails loudly instead
-    # of silently over-provisioning sandboxes.
+    # this true by construction (never trips). A shard may contain multiple
+    # tasks, so its peak is the full concurrency even when each individual task
+    # has fewer rollouts. An explicit raise (never a bare `assert`, which
+    # `python -O` strips) makes a formula regression fail loudly instead of
+    # silently over-provisioning sandboxes.
     shard_parallel = derive_shard_parallel(concurrency, rollouts, n_shards)
-    per_shard = max(1, min(concurrency, rollouts))
-    if shard_parallel * per_shard > MAX_TASKS_PER_MODEL:
+    if shard_parallel * concurrency > MAX_TASKS_PER_MODEL:
         msg = (
             f"internal error: derived shard_parallel={shard_parallel} * "
-            f"per_shard={per_shard} exceeds {MAX_TASKS_PER_MODEL}"
+            f"concurrency={concurrency} exceeds {MAX_TASKS_PER_MODEL}"
         )
         raise AssertionError(msg)
     return errors

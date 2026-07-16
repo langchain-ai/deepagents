@@ -5,12 +5,12 @@ maps each category to its Harbor dataset, and emits a per-model flat matrix
 (one entry per single-task shard, spanning every category) to GITHUB_OUTPUT.
 
 Pool sizing is derived by `derive_pool`, not clamped after the fact: given
-`concurrency` (trials in flight per task) and `rollouts` (trials per task),
-`per_shard = min(concurrency, rollouts)` is the peak concurrent trials a
-single 1-task shard ever runs. `max_parallel = MAX_TASKS_PER_MODEL //
-per_shard` saturates the per-model 40-trial budget, and `model_parallel =
-MAX_RUNNERS // max_parallel` bounds how many models run at once so total
-runners stay within MAX_RUNNERS. Both invariants hold by construction:
+`concurrency` (trials in flight per shard job), `max_parallel =
+MAX_TASKS_PER_MODEL // concurrency` saturates the per-model 40-trial budget.
+Using full concurrency is necessary because packed shards can contain multiple
+tasks. `model_parallel = MAX_RUNNERS // max_parallel` bounds how many models
+run at once so total runners stay within MAX_RUNNERS. Both invariants hold by
+construction:
   per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
   global:     model_parallel * max_parallel <= MAX_RUNNERS (80)
 `total_job_guard` separately caps the total job count (n_models * shards
@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
@@ -150,18 +151,36 @@ def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
 def derive_pool(
     concurrency: int, rollouts: int, n_shards: int, n_models: int
 ) -> tuple[int, int]:
-    """Derive (max_parallel, model_parallel) from concurrency and rollouts.
+    """Derive (max_parallel, model_parallel) from the requested run limits.
 
-    per_shard is the peak concurrent trials in one 1-task shard, which a shard
-    can never exceed: min(concurrency, rollouts). max_parallel saturates the
-    per-model 40-trial budget; model_parallel bounds how many models run at once
-    so total runners stay within MAX_RUNNERS. Both hold the invariants by
-    construction, so no separate clamp/assert is needed.
+    A packed shard can run multiple tasks and therefore use its full
+    `concurrency` even when `rollouts` is lower. `max_parallel` saturates the
+    per-model 40-trial budget; `model_parallel` bounds how many models run at
+    once so total runners stay within `MAX_RUNNERS`. `rollouts` remains in the
+    signature for compatibility with callers that supply all run limits.
     """
-    per_shard = max(1, min(concurrency, rollouts))
-    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // per_shard, n_shards))
+    del rollouts
+    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // max(1, concurrency), n_shards))
     model_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
     return max_parallel, model_parallel
+
+
+def _load_tasks_json(path: str) -> dict[str, list[str]]:
+    """Load the full-profile task mapping from an enumerated JSON file."""
+    msg = "UNIFIED_TASKS_JSON must be a JSON object mapping category names to lists of task strings"
+    try:
+        with open(path) as f:
+            raw: object = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(msg) from exc
+    if not isinstance(raw, dict) or not all(
+        isinstance(category, str)
+        and isinstance(tasks, list)
+        and all(isinstance(task, str) for task in tasks)
+        for category, tasks in raw.items()
+    ):
+        raise SystemExit(msg)
+    return cast(dict[str, list[str]], raw)
 
 
 def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
@@ -311,12 +330,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
         if not tasks_json:
-            raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
-        with open(tasks_json) as f:
-            tasks_by_cat = json.load(f)
+            raise SystemExit(
+                "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
+            )
+        tasks_by_cat = _load_tasks_json(tasks_json)
+
+    empty_categories = [
+        category for category in categories if not tasks_by_cat.get(category)
+    ]
+    if empty_categories:
+        raise SystemExit(
+            f"No tasks resolved for requested categor(y/ies): {empty_categories}"
+        )
 
     n_models = len(model_specs)
-    est_tasks = max(sum(len(tasks_by_cat.get(c, [])) for c in categories), 1)
+    est_tasks = sum(len(tasks_by_cat[category]) for category in categories)
     # Jobs launched per model = the packed flat-matrix entry count, not the raw
     # task count: build_flat_matrix groups tasks into at most MAX_SHARDS shards,
     # and ceil-division packing usually yields fewer (e.g. 120+120+40 tasks pack
@@ -324,16 +352,29 @@ def main(argv: list[str] | None = None) -> int:
     # once on the first model and guard on the real emitted job total. Guarding
     # on the raw task count would reject valid multi-model full runs whose packed
     # total is within budget (e.g. 3 models x 260 tasks -> 3 x 130 = 390 <= 400).
-    packed_per_model = (
-        len(build_flat_matrix(model_specs[0], categories, tasks_by_cat, code_impl))
-        if model_specs
-        else 0
+    first_matrix = build_flat_matrix(
+        model_specs[0], categories, tasks_by_cat, code_impl
     )
+    missing_matrix_categories = [
+        category
+        for category in categories
+        if not any(entry["category"] == category for entry in first_matrix)
+    ]
+    if missing_matrix_categories:
+        raise SystemExit(
+            "No matrix entries resolved for requested categor(y/ies): "
+            f"{missing_matrix_categories}"
+        )
+    if not first_matrix:
+        raise SystemExit("Unified eval matrix is empty.")
+    packed_per_model = len(first_matrix)
     total_job_guard(n_models, packed_per_model)
 
     # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
     n_shards = est_tasks
-    max_parallel, model_parallel = derive_pool(concurrency, rollouts, n_shards, n_models)
+    max_parallel, model_parallel = derive_pool(
+        concurrency, rollouts, n_shards, n_models
+    )
 
     outputs: dict[str, object] = {
         # The expected grid, so the combiner can flag missing/incomplete leaves

@@ -373,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(
         combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
     )
+    if not leaves:
+        print("::error::No usable eval leaf summaries were found; failing the run.")
+        return 1
     # Incompleteness is surfaced per model in write_outputs (a ::warning:: plus the
     # ⚠️ markers in the table) and never fails the job: a partial scorecard the
     # reader can inspect beats a voided run with no output. A single errored shard

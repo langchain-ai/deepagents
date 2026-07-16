@@ -15532,6 +15532,11 @@ class DeepAgentsApp(App):
                 # hint rendered beside it. The output stays reachable by clicking
                 # its own region (see `ToolCallMessage.on_click`); rows without an
                 # expandable command/code block fall through to the output.
+                # A `task` row's truncated description takes the same role,
+                # owning Ctrl+O while its output stays reachable by click.
+                if child.has_expandable_task_desc:
+                    child.toggle_task_desc()
+                    return
                 if child.has_expandable_args:
                     child.toggle_args()
                     return

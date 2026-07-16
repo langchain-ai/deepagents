@@ -138,7 +138,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/plugins",
-        description="Manage plugins (experimental)",
+        description="Manage plugins",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),
@@ -401,29 +401,13 @@ class CommandEntry(NamedTuple):
         return self.display_name or self.name
 
 
-_EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset({"/plugins"})
-"""Slash commands gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`."""
-
-
 def get_slash_commands() -> list[CommandEntry]:
-    """Return autocomplete entries for currently enabled slash commands.
-
-    This function is the public autocomplete API. It derives entries directly
-    from `COMMANDS` so callers always observe the current experimental-feature
-    environment instead of a stale import-time snapshot.
+    """Return autocomplete entries for slash commands.
 
     Returns:
-        Autocomplete entries derived from `COMMANDS`, excluding experimental
-        plugin commands unless `DEEPAGENTS_CODE_EXPERIMENTAL` is set.
+        Autocomplete entries derived from `COMMANDS`.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-    include_experimental = is_env_truthy(EXPERIMENTAL)
-    return [
-        command.to_entry()
-        for command in COMMANDS
-        if include_experimental or command.name not in _EXPERIMENTAL_PLUGIN_COMMANDS
-    ]
+    return [command.to_entry() for command in COMMANDS]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

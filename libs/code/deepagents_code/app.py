@@ -8293,9 +8293,12 @@ class DeepAgentsApp(App):
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 
-        Called from `_submit_input`, so every submission path (interactive
-        and external) dismisses the tip. Subsequent calls are no-ops: the
-        widget is already gone and `query_one` raises `NoMatches`.
+        Called from both submission entry points: `_submit_input` (the shared
+        interactive/external path) and `_submit_initial_submission` (the
+        `-m`/`--skill`/`--goal` startup path, which submits without going
+        through `_submit_input`). Every submission path therefore dismisses
+        the tip. Subsequent calls are no-ops: the widget is already gone and
+        `query_one` raises `NoMatches`.
         """
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()

@@ -93,17 +93,18 @@ def plugin_skill_roots(plugins: tuple[PluginInstance, ...]) -> list[Path]:
     return roots
 
 
-def discover_plugin_skill_sources_and_roots() -> tuple[
-    tuple[tuple[Path, str], ...], tuple[Path, ...]
+def discover_plugin_skill_state() -> tuple[
+    tuple[tuple[Path, str], ...], tuple[Path, ...], frozenset[str]
 ]:
-    """Discover plugin skill sources and containment roots.
+    """Discover plugin skill sources, containment roots, and loaded ids.
 
     Returns:
-        Plugin skill sources and roots, or empty tuples when plugins are disabled
-        or discovery fails.
+        Plugin skill sources, roots, and ids, or empty values when plugins are
+        disabled or discovery fails.
     """
     plugin_sources: tuple[tuple[Path, str], ...] = ()
     plugin_roots: tuple[Path, ...] = ()
+    plugin_ids: frozenset[str] = frozenset()
     try:
         if is_env_truthy(EXPERIMENTAL):
             from deepagents_code.plugins import discover_plugins
@@ -114,8 +115,23 @@ def discover_plugin_skill_sources_and_roots() -> tuple[
                 for path, _label, namespace in plugin_skill_sources(plugins)
             )
             plugin_roots = tuple(plugin_skill_roots(plugins))
+            plugin_ids = frozenset(plugin.plugin_id for plugin in plugins)
     except (OSError, RuntimeError):
         logger.warning("Could not discover plugin skills", exc_info=True)
-        return (), ()
+        return (), (), frozenset()
+
+    return plugin_sources, plugin_roots, plugin_ids
+
+
+def discover_plugin_skill_sources_and_roots() -> tuple[
+    tuple[tuple[Path, str], ...], tuple[Path, ...]
+]:
+    """Discover plugin skill sources and containment roots.
+
+    Returns:
+        Plugin skill sources and roots, or empty tuples when plugins are disabled
+        or discovery fails.
+    """
+    plugin_sources, plugin_roots, _plugin_ids = discover_plugin_skill_state()
 
     return plugin_sources, plugin_roots

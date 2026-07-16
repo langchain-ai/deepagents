@@ -96,6 +96,13 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert "type: string" in agent_impls
     assert 'default: "bare"' in agent_impls
 
+    branches = _indented_block(dispatch, "      branches_to_compare:")
+    assert "two or more branches enable N-way comparison" in branches
+    assert 'default: ""' in branches
+
+    include_tasks = _indented_block(dispatch, "      include_tasks:")
+    assert "every compared branch receives the same tasks" in include_tasks
+
     # Exactly one reusable-workflow call: the flat-pool `eval` job (see
     # test_eval_job_uses_single_flat_pool_matrix below for its shape).
     reusable_call = "uses: ./.github/workflows/_harbor_run.yml"
@@ -140,11 +147,12 @@ def test_eval_job_uses_single_flat_pool_matrix() -> None:
     assert "_has_models" not in workflow
 
     eval_job = _indented_block(workflow, "  eval:")
-    assert "needs: prep" in eval_job
+    assert "needs: [prep, build-products]" in eval_job
     strategy = _indented_block(eval_job, "    strategy:")
     assert "fail-fast: false" in strategy
     assert (
-        "max-parallel: ${{ fromJson(needs.prep.outputs.model_parallel) }}" in strategy
+        "max-parallel: ${{ fromJson(needs.prep.outputs.version_model_parallel) }}"
+        in strategy
     )
     assert "matrix: ${{ fromJson(needs.prep.outputs.eval_matrix) }}" in strategy
     assert "max-parallel: 1" not in workflow
@@ -159,6 +167,53 @@ def test_eval_job_uses_single_flat_pool_matrix() -> None:
     assert "shard_parallel:" not in eval_with
     assert "langsmith_dataset:" not in eval_with
     assert "include_tasks:" not in eval_with
+
+
+def test_comparison_builds_branch_wheels_and_forwards_immutable_source() -> None:
+    """Evaluate branch products while keeping the controller workflow fixed."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    build = _indented_block(workflow, "  build-products:")
+    assert "ref: ${{ matrix.sha }}" in build
+    assert "libs/deepagents" in build
+    assert "libs/code" in build
+    assert "eval_product_packages.py build" in build
+    assert "name: ${{ matrix.product_artifact }}" in build
+
+    eval_job = _indented_block(workflow, "  eval:")
+    eval_with = _indented_block(eval_job, "    with:")
+    assert "version_id: ${{ matrix.version_id }}" in eval_with
+    assert "source_branch: ${{ matrix.branch }}" in eval_with
+    assert "source_sha: ${{ matrix.sha }}" in eval_with
+    assert "product_artifact: ${{ matrix.product_artifact }}" in eval_with
+
+    harbor = HARBOR_WORKFLOW.read_text()
+    run = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
+    assert 'eval_product_packages.py" overrides' in run
+    assert '"${dependency_override_args[@]}"' in run
+    assert run.index('"${dependency_override_args[@]}"') < run.index(
+        '"${dataset_args[@]}"'
+    )
+    assert "eval_agent_configs.py" in run
+    assert "deepagents-compare-${VERSION_ID}-${branch_slug}" in run
+    assert "UnifiedComparisonLangSmithPlugin" in run
+    assert '--plugin-kwarg "source_sha=$SOURCE_SHA"' in run
+
+
+def test_comparison_emits_one_safe_archive_per_branch_model_config() -> None:
+    workflow = HARBOR_WORKFLOW.read_text()
+    bundle = _indented_block(workflow, "  bundle:")
+    assert "matrix: ${{ fromJson(needs.prep.outputs.bundle_matrix) }}" in bundle
+    assert "bundle_unified_run.py" in bundle
+    assert "tar --zstd -cf _bundle/run.tar.zst" in bundle
+    assert "name: ${{ steps.slug.outputs.artifact }}" in bundle
+    assert "path: _bundle/run.tar.zst" in bundle
+
+    unified_workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(unified_workflow, "  combine:")
+    assert "pattern='unified-run-*'" in combine
+    assert "aggregate_unified_compare.py" in combine
+    assert "--sources-json" in combine
+    assert "radar_by_config" in combine
 
 
 def test_enumerate_step_gated_on_full_profile() -> None:
@@ -214,12 +269,13 @@ def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None
     combine = _indented_block(workflow, "  combine:")
     download = _indented_block(combine, '      - name: "⬇️ Download leaf summaries"')
 
-    assert "mkdir -p _leaves" in download
+    assert "destination='_leaves'" in download
+    assert 'mkdir -p "$destination"' in download
     assert "attempt=1" in download
     assert "while :; do" in download
     command = (
         'gh run download "$RUN_ID" --repo "$REPO" '
-        "--pattern 'harbor-*' --dir \"$attempt_dir\" >dl.log 2>&1"
+        '--pattern "$pattern" --dir "$attempt_dir" >dl.log 2>&1'
     )
     assert download.count(f"if {command}; then") == 1
 
@@ -362,11 +418,9 @@ def test_combined_diagnostics_upload_after_aggregation_failure() -> None:
     workflow = UNIFIED_WORKFLOW.read_text()
     combine = _indented_block(workflow, "  combine:")
     upload = _indented_block(combine, '      - name: "📤 Upload combined results"')
-    condition = (
-        "        if: ${{ always() && "
-        "hashFiles('_combined/unified_summary.json') != '' }}"
-    )
-    assert upload.count(condition) == 1
+    assert "hashFiles('_combined/unified_summary.json') != ''" in upload
+    assert "hashFiles('_combined/comparison_summary.json') != ''" in upload
+    assert "if: ${{ always()" in upload
     assert "continue-on-error" not in upload
 
 
@@ -389,13 +443,27 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     # from prep's own shard-matrix output on the single-dataset path), not a
     # single job-level env var on the aggregate job.
     assert (
-        "SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}"
-        in prep_job
+        "SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}" in prep_job
     )
     assert "EXPECTED_SHARDS: ${{ matrix.expected_shards }}" in aggregate
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
     assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
     assert '"${expected_shards_args[@]}"' in compute
+
+
+def test_harbor_artifacts_are_archived_and_extracted_for_aggregation() -> None:
+    """Keep sandbox-native paths inside an archive until after download."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    package = _indented_block(workflow, '      - name: "📦 Package Harbor artifacts"')
+    upload = _indented_block(workflow, '      - name: "📤 Upload Harbor artifacts"')
+    extract = _indented_block(workflow, '      - name: "📦 Extract shard results"')
+    compute = _indented_block(workflow, '      - name: "📊 Compute pass@k / avg@k"')
+
+    assert "tar --zstd -cf harbor-shard.tar.zst" in package
+    assert "path: libs/evals/harbor-shard.tar.zst" in upload
+    assert "compression-level: 0" in upload
+    assert "tar --zstd -xf" in extract
+    assert "aggregate_shards.py _results" in compute
 
 
 def test_aggregate_runs_per_category() -> None:
@@ -410,7 +478,9 @@ def test_aggregate_runs_per_category() -> None:
     prep_job = _indented_block(workflow, "  prep:")
     aggregate_job = _indented_block(workflow, "  aggregate:")
 
-    assert "aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}" in prep_job
+    assert (
+        "aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}" in prep_job
+    )
     derive_step = _indented_block(prep_job, '      - name: "🗂️ Derive aggregate matrix"')
     assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in derive_step
     assert "expected_shards" in derive_step
@@ -428,7 +498,9 @@ def test_aggregate_runs_per_category() -> None:
     assert "CATEGORY: ${{ matrix.category }}" in compute
     assert "--category" in compute
 
-    upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
+    upload = _indented_block(
+        aggregate_job, '      - name: "📤 Upload combined results"'
+    )
     assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
     assert (
         "format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, "
@@ -442,7 +514,8 @@ def test_shard_artifact_name_includes_agent() -> None:
     # two configs of the same model+category do not collide.
     assert "HARBOR_AGENT_SAFE=" in harbor
     assert (
-        "shard-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-"
+        "shard-${{ env.HARBOR_VERSION_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-"
+        "${{ env.HARBOR_CATEGORY_SAFE }}-"
         "${{ env.LEAF_SLUG }}-${{ strategy.job-index }}" in harbor
     )
 
@@ -584,17 +657,15 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     """Wire a flat per-model matrix through prep without losing the single-dataset path."""
     workflow = HARBOR_WORKFLOW.read_text()
     call_inputs = _indented_block(workflow, "    inputs:")
-    assert 'flat_matrix:' in call_inputs
-    assert 'max_parallel:' in call_inputs
+    assert "flat_matrix:" in call_inputs
+    assert "max_parallel:" in call_inputs
     flat_matrix_input = _indented_block(call_inputs, "      flat_matrix:")
     assert 'default: ""' in flat_matrix_input
     max_parallel_input = _indented_block(call_inputs, "      max_parallel:")
     assert 'default: "0"' in max_parallel_input
 
     prep_job = _indented_block(workflow, "  prep:")
-    assert (
-        "matrix: ${{ steps.resolve-matrix.outputs.matrix }}" in prep_job
-    )
+    assert "matrix: ${{ steps.resolve-matrix.outputs.matrix }}" in prep_job
     assert (
         "effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}"
         in prep_job
@@ -602,10 +673,12 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     expand_step = _indented_block(prep_job, '      - name: "🔀 Expand matrix by shard"')
     assert "if: ${{ inputs.flat_matrix == '' }}" in expand_step
 
-    resolve_step = _indented_block(prep_job, '      - name: "🧮 Resolve matrix + parallel pool"')
-    assert 'FLAT_MATRIX: ${{ inputs.flat_matrix }}' in resolve_step
-    assert 'MAX_PARALLEL: ${{ inputs.max_parallel }}' in resolve_step
-    assert 'SHARD_PARALLEL: ${{ inputs.shard_parallel }}' in resolve_step
+    resolve_step = _indented_block(
+        prep_job, '      - name: "🧮 Resolve matrix + parallel pool"'
+    )
+    assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in resolve_step
+    assert "MAX_PARALLEL: ${{ inputs.max_parallel }}" in resolve_step
+    assert "SHARD_PARALLEL: ${{ inputs.shard_parallel }}" in resolve_step
     assert 'if [ -n "$FLAT_MATRIX" ]; then' in resolve_step
     assert 'matrix="$FLAT_MATRIX"' in resolve_step
     assert 'echo "matrix=$matrix"' in resolve_step
@@ -633,9 +706,7 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
         "HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}"
         in job_env
     )
-    assert (
-        "HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}" in job_env
-    )
+    assert "HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}" in job_env
     assert (
         "HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}"
         in job_env

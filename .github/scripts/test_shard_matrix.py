@@ -40,7 +40,9 @@ def shard() -> ModuleType:
 
 def _models(n: int) -> dict:
     """A model matrix with `n` entries, shaped like `models.py harbor` output."""
-    return {"include": [{"model": f"p:m{i}", "artifact_key": f"p-m{i}"} for i in range(n)]}
+    return {
+        "include": [{"model": f"p:m{i}", "artifact_key": f"p-m{i}"} for i in range(n)]
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -97,13 +99,13 @@ def test_expand_matrix_accepts_max_shards_boundary(shard: ModuleType) -> None:
 def test_expand_matrix_rejects_over_max_shards(shard: ModuleType) -> None:
     """n_shards == MAX_SHARDS + 1 is rejected (out of range)."""
     m = {"include": [{"model": "x"}]}
-    with pytest.raises(shard.ShardConfigError, match=r"1\.\.200"):
+    with pytest.raises(shard.ShardConfigError, match=r"1\.\.256"):
         shard.expand_matrix(m, shard.MAX_SHARDS + 1)
 
 
-@pytest.mark.parametrize("bad", [0, 201, -1])
+@pytest.mark.parametrize("bad", [0, 257, -1])
 def test_expand_matrix_rejects_out_of_range_shards(shard: ModuleType, bad: int) -> None:
-    """n_shards must be an integer in 1..200."""
+    """n_shards must be an integer in 1..256."""
     with pytest.raises(shard.ShardConfigError, match="Invalid n_shards"):
         shard.expand_matrix(_models(2), bad)
 
@@ -146,7 +148,9 @@ def test_effective_shards_then_expand_emits_only_useful_jobs(shard: ModuleType) 
 # --------------------------------------------------------------------------- #
 
 
-def test_partition_is_disjoint_and_covers_the_whole_selection(shard: ModuleType) -> None:
+def test_partition_is_disjoint_and_covers_the_whole_selection(
+    shard: ModuleType,
+) -> None:
     """Across all shards, every task runs exactly once (no gaps, no overlap)."""
     names = [f"org/t{i}" for i in range(10)]
     n_shards = 3
@@ -219,7 +223,9 @@ def test_include_and_n_tasks_compose(shard: ModuleType) -> None:
     selected = [
         name
         for i in range(n_shards)
-        for name in shard.select_shard_tasks(names, ["org/keep-*"], n_tasks, n_shards, i)
+        for name in shard.select_shard_tasks(
+            names, ["org/keep-*"], n_tasks, n_shards, i
+        )
     ]
 
     assert len(selected) == 3
@@ -232,7 +238,9 @@ def test_n_shards_one_returns_full_selection(shard: ModuleType) -> None:
     assert shard.select_shard_tasks(names, [], 0, 1, 0) == names
 
 
-def test_fewer_tasks_than_shards_yields_empty_trailing_shards(shard: ModuleType) -> None:
+def test_fewer_tasks_than_shards_yields_empty_trailing_shards(
+    shard: ModuleType,
+) -> None:
     """n_tasks < n_shards: early shards get the work, later shards are empty.
 
     The workflow relies on this to no-op (not fail) empty shard jobs. e.g.
@@ -242,7 +250,8 @@ def test_fewer_tasks_than_shards_yields_empty_trailing_shards(shard: ModuleType)
     n_tasks, n_shards = 1, 4
 
     slices = [
-        shard.select_shard_tasks(names, [], n_tasks, n_shards, i) for i in range(n_shards)
+        shard.select_shard_tasks(names, [], n_tasks, n_shards, i)
+        for i in range(n_shards)
     ]
 
     assert slices[0] == ["org/t0"]
@@ -451,7 +460,13 @@ def test_main_rejects_matrix_overflow_as_exit(
 def test_pack_tasks_one_per_shard_under_cap(shard: ModuleType) -> None:
     """When len(names) <= max_shards, one task per group (1-task shards)."""
     names = [f"t{i}" for i in range(5)]
-    assert shard.pack_tasks(names, max_shards=200) == [["t0"], ["t1"], ["t2"], ["t3"], ["t4"]]
+    assert shard.pack_tasks(names, max_shards=200) == [
+        ["t0"],
+        ["t1"],
+        ["t2"],
+        ["t3"],
+        ["t4"],
+    ]
 
 
 def test_pack_tasks_packs_above_cap_contiguously(shard: ModuleType) -> None:

@@ -37,7 +37,7 @@ GITHUB_MATRIX_MAX = 256
 # GitHub's hard GITHUB_MATRIX_MAX so an oversized pool trips this clear error
 # rather than GitHub's opaque one; pools larger than this pack multiple tasks
 # per shard (see pack_tasks) instead of failing.
-MAX_SHARDS = 200
+MAX_SHARDS = 256
 
 
 class ShardConfigError(Exception):

@@ -91,6 +91,30 @@ on:
         # not the model under test, to avoid self-grading bias.
         type: string
         default: "gpt-5.6-luna"
+      version_id:
+        description: "Optional comparison version (`v1`..`vN`); empty preserves ordinary behavior."
+        type: string
+        default: ""
+      source_branch:
+        description: "Human-readable branch paired with the immutable product SHA."
+        type: string
+        default: ""
+      source_sha:
+        description: "Immutable commit used to build the evaluated product wheels."
+        type: string
+        default: ""
+      product_artifact:
+        description: "Artifact containing branch-built product wheels and manifest."
+        type: string
+        default: ""
+      suite_configs:
+        description: "JSON list of selected code configs used for comparison bundles."
+        type: string
+        default: "[]"
+      conversation_sources:
+        description: "JSON mapping from code config to its conversation runtime."
+        type: string
+        default: "{}"
 
 permissions:
   contents: read
@@ -114,6 +138,8 @@ jobs:
       # distinct category present in flat_matrix. The `aggregate` job matrixes
       # over this.
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
+      bundle_matrix: ${{ steps.bundle-matrix.outputs.bundle_matrix }}
+      bundle_categories: ${{ steps.bundle-matrix.outputs.categories }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -240,6 +266,46 @@ jobs:
               print(line)
           PY
 
+      - name: "📦 Derive config bundle matrix"
+        id: bundle-matrix
+        env:
+          AGGREGATE_MATRIX: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
+          SUITE_CONFIGS: ${{ inputs.suite_configs }}
+          CONVERSATION_SOURCES: ${{ inputs.conversation_sources }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          configs = json.loads(os.environ.get("SUITE_CONFIGS") or "[]")
+          conversations = json.loads(os.environ.get("CONVERSATION_SOURCES") or "{}")
+          aggregate = json.loads(os.environ["AGGREGATE_MATRIX"])
+          if not isinstance(configs, list) or not all(
+              isinstance(config, str) and config for config in configs
+          ):
+              raise SystemExit("::error::suite_configs must be a JSON string list")
+          if not isinstance(conversations, dict):
+              raise SystemExit("::error::conversation_sources must be a JSON object")
+          categories = list(dict.fromkeys(
+              entry["category"] for entry in aggregate.get("include", [])
+          ))
+          include = []
+          for config in configs:
+              runtime = conversations.get(config)
+              if not isinstance(runtime, str) or not runtime:
+                  raise SystemExit(
+                      f"::error::No conversation runtime registered for {config!r}"
+                  )
+              include.append({"config": config, "conversation_runtime": runtime})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("bundle_matrix=" + json.dumps(
+                  {"include": include}, separators=(",", ":")
+              ) + "\n")
+              output.write("categories=" + json.dumps(
+                  categories, separators=(",", ":")
+              ) + "\n")
+          PY
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
@@ -355,6 +421,13 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: "⬇️ Download branch product wheels"
+        if: ${{ inputs.product_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.product_artifact }}
+          path: libs/evals/deepagents_harbor/langgraph_project/.branch_wheels
+
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
@@ -468,38 +541,46 @@ jobs:
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          PRODUCT_ARTIFACT: ${{ inputs.product_artifact }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION_ID: ${{ inputs.version_id }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
-          # Stage current checkout packages for LangGraph's sandbox install.
-          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          # partners/ must pre-exist: rsync only creates the final path component.
-          mkdir -p "$local_deps_dir/partners"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          dependency_override_args=()
+          if [ -n "$PRODUCT_ARTIFACT" ]; then
+            if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Branch product source_sha must be a full commit SHA"
+              exit 1
+            fi
+            if [ -n "$VERSION_ID" ] && ! [[ "$VERSION_ID" =~ ^v[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid comparison version: $VERSION_ID"
+              exit 1
+            fi
+            overrides=$(python3 "$GITHUB_WORKSPACE/.github/scripts/eval_product_packages.py" overrides \
+              --project-dir "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project" \
+              --manifest "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/.branch_wheels/package-manifest.json" \
+              --runtime "$HARBOR_AGENT_IMPL" \
+              --source-sha "$SOURCE_SHA")
+            dependency_override_args=(--agent-kwarg "dependency_overrides=$overrides")
+          else
+            # Preserve non-Unified callers: stage current checkout packages for
+            # Harbor's editable local-source installation path.
+            local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
+            mkdir -p "$local_deps_dir/partners"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../deepagents/ "$local_deps_dir/deepagents/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../code/ "$local_deps_dir/deepagents-code/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          fi
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -695,29 +776,16 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
+          mapfile -t runtime_metadata < <(
+            python3 "$GITHUB_WORKSPACE/.github/scripts/eval_agent_configs.py" \
+              "$HARBOR_AGENT_IMPL"
+          )
+          if [ "${#runtime_metadata[@]}" -ne 2 ]; then
+            echo "::error::Could not resolve agent runtime: $HARBOR_AGENT_IMPL"
+            exit 1
+          fi
+          HARBOR_AGENT_GRAPH="${runtime_metadata[0]}"
+          HARBOR_AGENT_LABEL="${runtime_metadata[1]}"
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
@@ -733,7 +801,13 @@ jobs:
           # plugin reuses one session per category and converges them; the run id +
           # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
           # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -n "$VERSION_ID" ]; then
+            branch_slug=$(printf '%s' "$SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+            branch_slug="${branch_slug:0:48}-$(printf '%s' "$SOURCE_BRANCH" | sha256sum | cut -c1-8)"
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-compare-${VERSION_ID}-${branch_slug}-${experiment_model}-${experiment_agent}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          else
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -760,6 +834,21 @@ jobs:
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )
+          plugin="langsmith"
+          comparison_plugin_args=()
+          if [ -n "$VERSION_ID" ]; then
+            plugin="deepagents_harbor.unified_langsmith_plugin:UnifiedComparisonLangSmithPlugin"
+            comparison_plugin_args=(
+              --plugin-kwarg "version_id=$VERSION_ID"
+              --plugin-kwarg "source_branch=$SOURCE_BRANCH"
+              --plugin-kwarg "source_sha=$SOURCE_SHA"
+              --plugin-kwarg "agent_config=$HARBOR_AGENT_IMPL"
+              --plugin-kwarg "model=$HARBOR_MODEL"
+              --plugin-kwarg "category=$HARBOR_CATEGORY"
+              --plugin-kwarg "workflow_run_id=$GITHUB_RUN_ID"
+              --plugin-kwarg "workflow_run_attempt=$GITHUB_RUN_ATTEMPT"
+            )
+          fi
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
@@ -789,6 +878,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${dependency_override_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
@@ -805,9 +895,10 @@ jobs:
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --plugin langsmith \
+            --plugin "$plugin" \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT" \
+            "${comparison_plugin_args[@]}"
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -876,7 +967,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          raw=$(printf '%s|%s|%s' "${{ inputs.version_id }}" "$MODEL" "$CATEGORY")
           slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
           # Short hash keeps the name unique when two specs sanitize alike.
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
@@ -904,16 +995,29 @@ jobs:
           agent_safe="${agent_safe}-$(printf '%s' "$HARBOR_AGENT_IMPL" | sha256sum | cut -c1-8)"
           echo "HARBOR_AGENT_SAFE=$agent_safe" >> "$GITHUB_ENV"
 
+          version_safe="${{ inputs.version_id }}"
+          [ -z "$version_safe" ] && version_safe="current"
+          echo "HARBOR_VERSION_SAFE=$version_safe" >> "$GITHUB_ENV"
+
+      - name: "📦 Package Harbor artifacts"
+        if: always()
+        # Linux-valid task output may contain paths such as `memory:` that
+        # upload-artifact rejects. GitHub sees only this portable filename; the
+        # original tree remains byte-for-byte intact inside the archive.
+        run: |
+          mkdir -p harbor-jobs/terminal-bench
+          tar --zstd -cf harbor-shard.tar.zst -C harbor-jobs terminal-bench
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           # Agent-, category- and slug-scoped so the aggregate job globs only
           # this run's own shards, grouped per (agent config, category).
-          name: shard-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
-          path: |
-            libs/evals/harbor-jobs/terminal-bench
-          if-no-files-found: warn
+          name: shard-${{ env.HARBOR_VERSION_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          path: libs/evals/harbor-shard.tar.zst
+          compression-level: 0
+          if-no-files-found: error
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
@@ -953,7 +1057,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          raw=$(printf '%s|%s|%s' "${{ inputs.version_id }}" "$MODEL" "$CATEGORY")
           slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
           # Short hash keeps the name unique when two specs sanitize alike.
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
@@ -1001,7 +1105,7 @@ jobs:
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: shard-${{ inputs.version_id || 'current' }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -1027,6 +1131,22 @@ jobs:
           echo "Contents of _shards:"
           ls -1 _shards || true
 
+      - name: "📦 Extract shard results"
+        # Keep the raw archives in _shards for the downloadable run bundle while
+        # scoring extracted copies with the existing aggregator.
+        run: |
+          mkdir -p _results
+          found=0
+          while IFS= read -r -d '' archive; do
+            found=1
+            shard=$(basename "$(dirname "$archive")")
+            mkdir -p "_results/$shard"
+            tar --zstd -xf "$archive" -C "_results/$shard"
+          done < <(find _shards -type f -name 'harbor-shard.tar.zst' -print0)
+          if [ "$found" -eq 0 ]; then
+            echo "::warning::No packaged shard results found; aggregating an empty set."
+          fi
+
       - name: "📊 Compute pass@k / avg@k"
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
         # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
@@ -1051,7 +1171,7 @@ jobs:
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
-          python3 .github/scripts/aggregate_shards.py _shards \
+          python3 .github/scripts/aggregate_shards.py _results \
             --rollouts "$ROLLOUTS" \
             "${expected_shards_args[@]}" \
             --dataset "$DATASET" \
@@ -1070,7 +1190,7 @@ jobs:
         # ran earlier in this job; don't reorder past it.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}
+          name: ${{ inputs.version_id != '' && format('harbor-combined-{0}-{1}-{2}-{3}', inputs.version_id, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) || (inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, steps.slug.outputs.slug)) }}
           path: _shards
           if-no-files-found: warn
 
@@ -1083,7 +1203,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: shard-${{ inputs.version_id || 'current' }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")
@@ -1091,3 +1211,101 @@ jobs:
             gh api -X DELETE "repos/$REPO/actions/artifacts/$id" \
               && echo "deleted shard artifact $id" || echo "could not delete $id"
           done
+
+  bundle:
+    name: "📦 Bundle ${{ inputs.version_id || 'current' }} / ${{ matrix.config }}"
+    needs: [prep, aggregate]
+    if: ${{ always() && inputs.version_id != '' && inputs.product_artifact != '' && needs.aggregate.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.bundle_matrix) }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🔖 Compute bundle slug"
+        id: slug
+        env:
+          BRANCH: ${{ inputs.source_branch }}
+          CONFIG: ${{ matrix.config }}
+          MODEL: ${{ inputs.model }}
+          VERSION: ${{ inputs.version_id }}
+        run: |
+          slug() {
+            local value="$1"
+            local safe
+            safe=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+            printf '%s-%s' "${safe:0:48}" "$(printf '%s' "$value" | sha256sum | cut -c1-8)"
+          }
+          version="${VERSION:-current}"
+          artifact="unified-run-${version}-$(slug "$BRANCH")-$(slug "$MODEL")-$(slug "$CONFIG")"
+          leaf_raw=$(printf '%s|%s|' "$VERSION" "$MODEL")
+          leaf_safe=$(printf '%s' "$leaf_raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          leaf_safe="${leaf_safe}-$(printf '%s' "$leaf_raw" | sha256sum | cut -c1-8)"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "leaf_slug=$leaf_safe" >> "$GITHUB_OUTPUT"
+
+      - name: "⬇️ Download category summaries"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATTERN: harbor-combined-${{ inputs.version_id }}-*-${{ steps.slug.outputs.leaf_slug }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern "$PATTERN" --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No complete category artifacts matched $PATTERN; the bundle will record missing categories."
+              break
+            fi
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Category download failed after ${attempt} attempts."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+
+      - name: "⬇️ Download branch product manifest"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.product_artifact }}
+          path: _product
+
+      - name: "📦 Assemble self-contained run"
+        env:
+          CATEGORIES: ${{ needs.prep.outputs.bundle_categories }}
+          CONFIG: ${{ matrix.config }}
+          CONVERSATION_RUNTIME: ${{ matrix.conversation_runtime }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          python3 .github/scripts/bundle_unified_run.py \
+            --leaves-root _leaves \
+            --product-manifest _product/package-manifest.json \
+            --out-dir _bundle/run \
+            --model "$MODEL" \
+            --config "$CONFIG" \
+            --conversation-runtime "$CONVERSATION_RUNTIME" \
+            --categories-json "$CATEGORIES"
+          tar --zstd -cf _bundle/run.tar.zst -C _bundle run
+
+      - name: "📤 Upload self-contained run"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.slug.outputs.artifact }}
+          path: _bundle/run.tar.zst
+          compression-level: 0
+          if-no-files-found: error

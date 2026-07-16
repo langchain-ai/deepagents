@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from deepagents_code.agent import create_cli_agent
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -148,6 +147,10 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         TypeError: If configurable values have unexpected types.
         ValueError: If no model name is provided.
     """
+    # Keep dcode optional: bare/tau3 wheel environments intentionally install only
+    # the SDK package, so importing this module must not require deepagents-code.
+    from deepagents_code.agent import create_cli_agent  # noqa: I001, PLC0415  # optional dcode runtime
+
     configurable = _configurable(config)
     model = _build_model(configurable)
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"

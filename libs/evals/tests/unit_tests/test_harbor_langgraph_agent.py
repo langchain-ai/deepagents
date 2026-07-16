@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from deepagents_code import agent as dcode_agent
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -44,7 +45,7 @@ def test_make_graph_scrubs_credentials_from_shell_backend_env(
         return graph, object()
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", fake_create_cli_agent)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     monkeypatch.setenv("LANGSMITH_API_KEY", "secret")
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
@@ -79,7 +80,7 @@ def test_make_graph_builds_headless_local_deepagent(
         return graph, object()
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", fake_create_cli_agent)
     monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
 
     result = langgraph_agent.make_graph(
@@ -119,7 +120,7 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        langgraph_agent,
+        dcode_agent,
         "create_cli_agent",
         lambda **kwargs: (captured_create.append(kwargs) or object(), object()),
     )
@@ -150,7 +151,7 @@ def test_make_graph_openai_defaults_to_responses_api(
         return "chat-model"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
 
     langgraph_agent.make_graph(
         {"configurable": {"model": "openai:gpt-5.6-luna", "cwd": str(tmp_path)}}

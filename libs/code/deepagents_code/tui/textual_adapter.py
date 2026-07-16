@@ -632,6 +632,7 @@ async def execute_task_textual(
     from pydantic import ValidationError
 
     from deepagents_code.approval_mode import awrite_approval_mode
+    from deepagents_code.config import settings
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
@@ -658,8 +659,6 @@ async def execute_task_textual(
             final_input = "\n".join(context_parts)
         else:
             final_input = prompt_text
-
-        from deepagents_code.config import settings
 
         images_to_send = []
         videos_to_send = []

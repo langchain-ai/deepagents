@@ -2073,6 +2073,43 @@ class TestExecuteTaskTextualUsageStats:
         assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
         assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
 
+    async def test_graph_input_records_usage_from_settings(self) -> None:
+        """Usage accounting also works for non-conversation graph input."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        turn_stats = SessionStats()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-1",
+                "kind": "create",
+                "objective": "ship it",
+            },
+        }
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="",
+                agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                graph_input=request,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
+        assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+
 
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""

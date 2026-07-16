@@ -177,6 +177,10 @@ def _pairwise(
         for model, config in subjects:
             a = by_subject[(first["version_id"], model, config)]
             b = by_subject[(second["version_id"], model, config)]
+            # Trial errors are infrastructure/runtime failures, not scores. Do not
+            # manufacture a delta or win/loss result from an invalid subject.
+            if a.get("invalid") or b.get("invalid"):
+                continue
             deltas: dict[str, float | None] = {}
             for key in _metric_keys(categories):
                 av = _metric(a, key)
@@ -268,6 +272,8 @@ def render_markdown(result: dict[str, object]) -> str:
     keys = _metric_keys(categories)
     maxima: dict[tuple[str, str, str], float] = {}
     for row in rows:
+        if row.get("invalid"):
+            continue
         group = (cast(str, row["model"]), cast(str, row["config"]))
         for key in keys:
             value = _metric(row, key)
@@ -310,11 +316,14 @@ def render_markdown(result: dict[str, object]) -> str:
         )
 
     for row in rows:
+        status = (
+            " ❌ invalid" if row.get("invalid") else " ⚠️" if row["incomplete"] else ""
+        )
         cells = [
             _md(row["version_id"]),
             _md(row["branch"]),
             _md(row["model"]),
-            _md(row["config"]) + (" ⚠️" if row["incomplete"] else ""),
+            _md(row["config"]) + status,
         ]
         cells.extend(
             f"{highlighted(row, f'{category}.pass_at_k')}/{highlighted(row, f'{category}.avg_at_k')}"
@@ -327,6 +336,20 @@ def render_markdown(result: dict[str, object]) -> str:
             ]
         )
         lines.append("| " + " | ".join(cells) + " |")
+
+    invalids = [row for row in rows if row.get("invalid")]
+    if invalids:
+        lines.extend(
+            [
+                "",
+                "> ❌ **Invalid results were excluded from highlights, deltas, and charts because one or more trials errored:**",
+            ]
+        )
+        for row in invalids:
+            lines.append(
+                f"> - {_md(row['version_id'])} / `{_md(row['branch'])}` / "
+                f"`{_md(row['model'])}` / `{_md(row['config'])}`"
+            )
 
     pairwise = cast(list[dict[str, object]], result["pairwise"])
     if pairwise:
@@ -417,33 +440,34 @@ def write_outputs(result: dict[str, object], out_dir: Path) -> None:
     if len(categories) < 3:
         return
     rows = cast(list[dict[str, object]], result["rows"])
-    radar = [
-        {
-            "model": f"{row['version_id']} {row['branch']} / {row['model']} / {row['config']}",
-            "scores": {
-                category: cast(dict[str, object], row["categories"])
-                .get(category, {})
-                .get("pass_at_k")
-                for category in categories
-                if cast(dict[str, object], row["categories"])
-                .get(category, {})
-                .get("pass_at_k")
-                is not None
+    radar_pairs = [
+        (
+            row,
+            {
+                "model": f"{row['version_id']} {row['branch']} / {row['model']} / {row['config']}",
+                "scores": {
+                    category: cast(dict[str, object], row["categories"])
+                    .get(category, {})
+                    .get("pass_at_k")
+                    for category in categories
+                    if cast(dict[str, object], row["categories"])
+                    .get(category, {})
+                    .get("pass_at_k")
+                    is not None
+                },
             },
-        }
+        )
         for row in rows
+        if not row.get("invalid")
     ]
+    radar = [item for _row, item in radar_pairs]
     (out_dir / "radar_results.json").write_text(
         json.dumps(radar, indent=2) + "\n", encoding="utf-8"
     )
     by_config = out_dir / "radar_by_config"
     by_config.mkdir()
     for config in cast(list[str], result["configs"]):
-        selected = [
-            item
-            for item, row in zip(radar, rows, strict=True)
-            if row["config"] == config
-        ]
+        selected = [item for row, item in radar_pairs if row["config"] == config]
         (by_config / f"{_slug(config)}.json").write_text(
             json.dumps(selected, indent=2) + "\n", encoding="utf-8"
         )

@@ -17,6 +17,7 @@ def _summary(
     tasks,
     passed,
     incomplete=False,
+    invalid=False,
     category="context",
     config="bare",
 ):
@@ -28,6 +29,7 @@ def _summary(
         "dataset": "d",
         "rollouts_per_task": k,
         "incomplete": incomplete,
+        "invalid": invalid,
         "totals": {
             "tasks": tasks,
             "trials": tasks * k,
@@ -390,9 +392,7 @@ def test_radar_results_shape():
         ],
     }
     rr = au.radar_results(combined)
-    assert rr == [
-        {"model": "m / bare", "scores": {"autonomous": 0.5, "context": 0.7}}
-    ]
+    assert rr == [{"model": "m / bare", "scores": {"autonomous": 0.5, "context": 0.7}}]
 
 
 def _leaf_dir(
@@ -651,9 +651,7 @@ def test_main_passes_when_an_unexpected_row_is_complete(
     output = capsys.readouterr().out
     assert rc == 0
     assert "::warning::missing / bare incomplete" in output
-    assert (
-        "::error::Every expected (model, config) row is incomplete" not in output
-    )
+    assert "::error::Every expected (model, config) row is incomplete" not in output
 
 
 def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
@@ -671,9 +669,7 @@ def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
     output = capsys.readouterr().out
     assert rc == 0
     assert "::warning::m / bare incomplete" in output
-    assert (
-        "::error::Every expected (model, config) row is incomplete" not in output
-    )
+    assert "::error::Every expected (model, config) row is incomplete" not in output
 
 
 def test_main_warns_and_skips_leaf_with_mismatched_rollouts(

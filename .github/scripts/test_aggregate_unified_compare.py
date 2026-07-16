@@ -16,6 +16,7 @@ def _bundle(
     model: str,
     config: str,
     scores: dict[str, tuple[float, float, dict[str, float]]],
+    invalid: bool = False,
 ) -> None:
     bundle = root / f"{version}-{config}"
     records = {}
@@ -29,7 +30,8 @@ def _bundle(
                     "config": "tau3" if category == "conversation" else config,
                     "category": category,
                     "rollouts_per_task": 2,
-                    "incomplete": False,
+                    "invalid": invalid,
+                    "incomplete": invalid,
                     "totals": {
                         "tasks": len(tasks),
                         "passed": sum(round(value * 2) for value in tasks.values()),
@@ -142,6 +144,54 @@ def test_compare_materializes_missing_expected_bundle(tmp_path: Path) -> None:
     assert len(result["rows"]) == 4
     assert all(row["incomplete"] for row in result["rows"])
     assert all(row["missing_categories"] == ["autonomous"] for row in result["rows"])
+
+
+def test_compare_excludes_invalid_trials_from_deltas_highlights_and_radar(
+    tmp_path: Path,
+) -> None:
+    categories = ["autonomous", "conversation", "context"]
+    sources = [
+        {"version_id": "v1", "branch": "a", "sha": "a" * 40},
+        {"version_id": "v2", "branch": "b", "sha": "b" * 40},
+    ]
+    _bundle(
+        tmp_path,
+        version="v1",
+        branch="a",
+        sha="a" * 40,
+        model="model",
+        config="dcode",
+        scores={category: (0.5, 0.5, {"task": 1.0}) for category in categories},
+    )
+    _bundle(
+        tmp_path,
+        version="v2",
+        branch="b",
+        sha="b" * 40,
+        model="model",
+        config="dcode",
+        scores={category: (0.0, 0.0, {"task": 0.0}) for category in categories},
+        invalid=True,
+    )
+
+    result = compare.compare(
+        tmp_path,
+        sources=sources,
+        models=["model"],
+        configs=["dcode"],
+        categories=categories,
+        rollouts=2,
+    )
+
+    assert result["rows"][1]["invalid"] is True
+    assert result["pairwise"] == []
+    markdown = compare.render_markdown(result)
+    assert "dcode ❌ invalid" in markdown
+    assert "Invalid results were excluded" in markdown
+    out = tmp_path / "out"
+    compare.write_outputs(result, out)
+    radar = json.loads((out / "radar_results.json").read_text())
+    assert [item["model"] for item in radar] == ["v1 a / model / dcode"]
 
 
 def test_compare_rejects_bundle_with_wrong_source_sha(tmp_path: Path) -> None:

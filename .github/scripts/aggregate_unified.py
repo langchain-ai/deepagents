@@ -112,6 +112,10 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if not isinstance(incomplete, bool):
         msg = "incomplete must be a boolean"
         raise _LeafSummaryError(msg)
+    invalid = summary.get("invalid", False)
+    if not isinstance(invalid, bool):
+        msg = "invalid must be a boolean"
+        raise _LeafSummaryError(msg)
     return {
         "model": model or "unknown",
         "category": category or "unknown",
@@ -120,6 +124,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "tasks": tasks,
         "passed": passed,
+        "invalid": invalid,
         "incomplete": incomplete,
     }
 
@@ -176,15 +181,14 @@ def combine(
         row_leaves = by_row.get(row, [])
         required = required_by_row.get(row, set())
         scored = [
-            leaf
-            for leaf in row_leaves
-            if not required or leaf["category"] in required
+            leaf for leaf in row_leaves if not required or leaf["category"] in required
         ]
         cats = {
             leaf["category"]: {
                 "pass_at_k": leaf["pass_at_k"],
                 "avg_at_k": leaf["avg_at_k"],
                 "tasks": leaf["tasks"],
+                "invalid": leaf.get("invalid", False),
                 "incomplete": leaf["incomplete"] or leaf["tasks"] == 0,
             }
             for leaf in row_leaves
@@ -215,12 +219,11 @@ def combine(
                 "macro": macro,
                 "micro": {"pass_at_k": micro_pass, "avg_at_k": micro_avg},
                 "missing_categories": missing,
+                "invalid": any(leaf.get("invalid", False) for leaf in scored),
                 "incomplete": (
                     not row_leaves
                     or bool(missing)
-                    or any(
-                        leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored
-                    )
+                    or any(leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored)
                 ),
             }
         )
@@ -261,7 +264,8 @@ def render_markdown(combined: dict, k: int) -> str:
     rows = []
     for r in ranked:
         label = f"{r['model']} / {r['config']}"
-        cells = [label + (" ⚠️" if r["incomplete"] else "")]
+        status = " ❌" if r.get("invalid") else " ⚠️" if r["incomplete"] else ""
+        cells = [label + status]
         for c in cats:
             cat = r["categories"].get(c)
             cells.append(
@@ -281,7 +285,14 @@ def render_markdown(combined: dict, k: int) -> str:
     lines += ["| " + " | ".join(r) + " |" for r in rows]
     md = "\n".join(lines) + "\n"
 
-    incompletes = [r for r in combined["rows"] if r["incomplete"]]
+    invalids = [r for r in combined["rows"] if r.get("invalid")]
+    if invalids:
+        md += "\n> ❌ **Invalid results** — one or more trials errored:\n"
+        for r in invalids:
+            md += f"> - `{r['model']} / {r['config']}`\n"
+    incompletes = [
+        r for r in combined["rows"] if r["incomplete"] and not r.get("invalid")
+    ]
     if incompletes:
         md += "\n> ⚠️ **Ranked on partial data** — treat these rows with caution:\n"
         for r in incompletes:
@@ -296,6 +307,8 @@ def render_markdown(combined: dict, k: int) -> str:
 def radar_results(combined: dict) -> list[dict]:
     out = []
     for r in combined["rows"]:
+        if r.get("invalid"):
+            continue
         scores = {
             c: v["pass_at_k"]
             for c, v in r["categories"].items()
@@ -384,8 +397,7 @@ def _load_leaves_env(name: str) -> list[dict] | None:
     except json.JSONDecodeError as exc:
         raise SystemExit(msg) from exc
     if not isinstance(value, list) or not all(
-        isinstance(item, dict)
-        and {"model", "config", "category"} <= set(item)
+        isinstance(item, dict) and {"model", "config", "category"} <= set(item)
         for item in value
     ):
         raise SystemExit(msg)

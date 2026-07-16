@@ -7,8 +7,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import zipfile
+from email.message import Message
 from email.parser import Parser
 from pathlib import Path
 from typing import TypedDict, cast
@@ -40,14 +43,20 @@ PACKAGE_PATHS = {
     "deepagents-code": Path("libs/code"),
 }
 REMOTE_PROJECT_DIR = Path("/installed-agent/langgraph-project")
+SDK_DISTRIBUTION = "deepagents"
+CODE_DISTRIBUTION = "deepagents-code"
+SDK_DEPENDENCY = re.compile(
+    r'^(?P<indent>\s*)"deepagents==(?P<version>[^"\s]+)"(?P<suffix>\s*,.*)$',
+    re.MULTILINE,
+)
 
 
 def _normalized_distribution(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
-def _wheel_metadata(path: Path) -> tuple[str, str]:
-    """Read distribution name and version from a wheel's core metadata."""
+def _wheel_core_metadata(path: Path) -> Message:
+    """Read and validate a wheel's core metadata."""
     if path.name != Path(path.name).name or path.suffix != ".whl":
         raise ValueError(f"unsafe wheel filename: {path.name!r}")
     with zipfile.ZipFile(path) as archive:
@@ -56,12 +65,83 @@ def _wheel_metadata(path: Path) -> tuple[str, str]:
         ]
         if len(metadata_names) != 1:
             raise ValueError(f"wheel must contain exactly one METADATA file: {path}")
-        metadata = Parser().parsestr(archive.read(metadata_names[0]).decode())
+        return Parser().parsestr(archive.read(metadata_names[0]).decode())
+
+
+def _wheel_metadata(path: Path) -> tuple[str, str]:
+    """Read distribution name and version from a wheel's core metadata."""
+    metadata = _wheel_core_metadata(path)
     name = metadata.get("Name")
     version = metadata.get("Version")
     if not name or not version:
         raise ValueError(f"wheel metadata is missing Name or Version: {path}")
     return _normalized_distribution(name), version
+
+
+def _built_wheel(wheel_dir: Path, distribution: str) -> Path:
+    """Return the one built wheel for `distribution`."""
+    normalized = _normalized_distribution(distribution)
+    matches = [
+        path
+        for path in wheel_dir.glob("*.whl")
+        if _wheel_metadata(path)[0] == normalized
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one built wheel for {normalized!r}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _rebind_code_sdk_dependency(pyproject: Path, sdk_version: str) -> str:
+    """Bind dcode's release SDK pin to the evaluated branch's SDK version.
+
+    The monorepo packages are developed together, while `deepagents-code` keeps an
+    exact pin suitable for its next independent release. Comparison builds must
+    instead install the SDK code from the same branch. This function operates only
+    on a temporary package copy created by `build_packages`.
+
+    Args:
+        pyproject: Temporary dcode `pyproject.toml` to update.
+        sdk_version: Version recorded by the branch-built SDK wheel.
+
+    Returns:
+        The original exact SDK version pin.
+
+    Raises:
+        ValueError: If the manifest does not contain exactly one exact SDK pin.
+    """
+    text = pyproject.read_text()
+    matches = list(SDK_DEPENDENCY.finditer(text))
+    if len(matches) != 1:
+        raise ValueError(
+            "deepagents-code must contain exactly one quoted "
+            f"deepagents==<version> dependency, found {len(matches)}"
+        )
+    original = matches[0].group("version")
+    rebound = SDK_DEPENDENCY.sub(
+        rf'\g<indent>"deepagents=={sdk_version}"\g<suffix>', text, count=1
+    )
+    pyproject.write_text(rebound)
+    return original
+
+
+def _validate_workspace_pair(wheel_dir: Path) -> None:
+    """Ensure the dcode wheel requires the SDK wheel built from the same branch."""
+    sdk = _built_wheel(wheel_dir, SDK_DISTRIBUTION)
+    code = _built_wheel(wheel_dir, CODE_DISTRIBUTION)
+    _, sdk_version = _wheel_metadata(sdk)
+    requirements = _wheel_core_metadata(code).get_all("Requires-Dist", [])
+    pins = [
+        match.group(1)
+        for requirement in requirements
+        if (match := re.fullmatch(r"deepagents\s*==\s*([^\s;]+)", requirement))
+    ]
+    if pins != [sdk_version]:
+        raise ValueError(
+            "branch-built deepagents-code wheel must require its sibling SDK "
+            f"version {sdk_version!r}, found exact pins {pins!r}"
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -129,25 +209,49 @@ def build_packages(
     unknown = [package for package in normalized if package not in PACKAGE_PATHS]
     if unknown:
         raise ValueError(f"unsupported product packages: {unknown}")
-    for package in normalized:
+    if CODE_DISTRIBUTION in normalized and SDK_DISTRIBUTION not in normalized:
+        raise ValueError("deepagents-code comparison builds require the sibling SDK")
+
+    # Build the SDK first so dcode's temporary workspace pin can be bound to the
+    # exact version carried by the branch-built SDK wheel.
+    build_order = [
+        package
+        for package in (SDK_DISTRIBUTION, CODE_DISTRIBUTION)
+        if package in normalized
+    ]
+    for package in build_order:
         package_dir = source_root / PACKAGE_PATHS[package]
         if not (package_dir / "pyproject.toml").is_file():
             raise FileNotFoundError(f"missing product package: {package_dir}")
         env = os.environ.copy()
-        if package == "deepagents-code":
+        build_dir = package_dir
+        temporary: tempfile.TemporaryDirectory[str] | None = None
+        if package == CODE_DISTRIBUTION:
+            _, sdk_version = _wheel_metadata(_built_wheel(out_dir, SDK_DISTRIBUTION))
+            temporary = tempfile.TemporaryDirectory(prefix="deepagents-eval-code-")
+            build_dir = Path(temporary.name) / "code"
+            shutil.copytree(package_dir, build_dir)
+            _rebind_code_sdk_dependency(build_dir / "pyproject.toml", sdk_version)
             env["DEEPAGENTS_CODE_BUILD_COMMIT"] = source_sha
-        subprocess.run(
-            [
-                "uv",
-                "build",
-                "--wheel",
-                "--out-dir",
-                str(out_dir),
-                str(package_dir),
-            ],
-            check=True,
-            env=env,
-        )
+        try:
+            subprocess.run(
+                [
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--no-sources",
+                    "--out-dir",
+                    str(out_dir),
+                    str(build_dir),
+                ],
+                check=True,
+                env=env,
+            )
+        finally:
+            if temporary is not None:
+                temporary.cleanup()
+    if CODE_DISTRIBUTION in normalized:
+        _validate_workspace_pair(out_dir)
     return create_manifest(
         out_dir,
         normalized,
@@ -187,11 +291,11 @@ def dependency_overrides(
     }
     wheels: list[str] = []
     local_package_dir = manifest_path.parent / "packages"
-    # Harbor installs overrides one at a time. Install dependents first and the
-    # branch-built SDK last so a product wheel's published SDK pin cannot replace
-    # the branch wheel that this comparison is meant to evaluate.
+    # Harbor installs overrides one at a time. The comparison builder binds the
+    # dcode wheel to this SDK version, so installing the SDK first guarantees the
+    # dependent resolves against branch code rather than PyPI.
     runtime_packages = agent_configs.runtime_config(runtime)["packages"]
-    for distribution in reversed(runtime_packages):
+    for distribution in runtime_packages:
         normalized = _normalized_distribution(distribution)
         record = by_distribution.get(normalized)
         if record is None:

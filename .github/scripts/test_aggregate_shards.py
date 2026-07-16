@@ -102,6 +102,21 @@ def test_errored_and_missing_count_as_fail(tmp_path: Path):
     assert by_task["taskX"] == {"trials": 3, "passed": 1, "errored": 2}
 
 
+def test_errored_trials_mark_summary_invalid(tmp_path: Path):
+    _write_trial(tmp_path / "t__0", "taskX", errored=True)
+    _write_trial(tmp_path / "t__1", "taskX", errored=True)
+    out = tmp_path / "out"
+
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["totals"]["errored"] == 2
+    assert summary["invalid"] is True
+    assert summary["incomplete"] is True
+    assert "❌ **Invalid run**" in agg.render_step_summary(summary)
+
+
 def test_partial_reward_is_not_a_pass(tmp_path: Path):
     _write_trial(tmp_path / "t__0", "taskY", reward=0.5)
     by_task = agg.aggregate(tmp_path).by_task
@@ -496,6 +511,7 @@ def test_make_summary_records_config():
         expected_shards=1,
         skipped_files=0,
         harbor_result="success",
+        invalid=False,
         incomplete=False,
         totals={
             "tasks": 1,

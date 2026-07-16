@@ -359,26 +359,6 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: "🌿 Overlay branch agent source"
-        if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
-        working-directory: .
-        env:
-          BRANCH: ${{ inputs.branch }}
-        run: |
-          # Reject a leading dash (argument injection into git), path traversal,
-          # and anything outside the ref charset. BRANCH arrives via env, never
-          # interpolated into the shell body.
-          if ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BRANCH" == -* ]] || [[ "$BRANCH" == *".."* ]]; then
-            echo "::error::Invalid branch ref: $BRANCH"; exit 1
-          fi
-          git fetch origin "$BRANCH" --depth=1
-          git checkout FETCH_HEAD -- \
-            libs/deepagents \
-            libs/code \
-            libs/partners/quickjs \
-            libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
-          echo "Overlaid agent source from branch: $BRANCH"
-
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
@@ -477,6 +457,29 @@ jobs:
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
           fi
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+
+      - name: "🌿 Overlay branch agent source"
+        if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
+        working-directory: .
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          # Overlay the compared branch's agent source AFTER the harness's locked
+          # install (so `uv sync --locked` matched the workflow-ref lockfile) and
+          # just before the rsync into .local_deps stages it for the sandbox. The
+          # harness runs at the workflow ref; only the agent under test is the
+          # branch's source. BRANCH arrives via env, never interpolated into the
+          # shell body; reject a leading dash (git arg injection) and traversal.
+          if ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BRANCH" == -* ]] || [[ "$BRANCH" == *".."* ]]; then
+            echo "::error::Invalid branch ref: $BRANCH"; exit 1
+          fi
+          git fetch origin "$BRANCH" --depth=1
+          git checkout FETCH_HEAD -- \
+            libs/deepagents \
+            libs/code \
+            libs/partners/quickjs \
+            libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+          echo "Overlaid agent source from branch: $BRANCH"
 
       - name: "⚓ Run Harbor"
         env:

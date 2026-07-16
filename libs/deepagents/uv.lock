@@ -944,7 +944,7 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.3.14"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=cc%2Fprofiling-test-1#f158b6c9a69c61129cd5dec1c100afba068512ce" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=cc%2Fprofiling-test-1#e9905a6dd84fc4d63048bad8d071b7cb69bba453" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -983,7 +983,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.4.9"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=cc%2Fprofiling-test-1#f158b6c9a69c61129cd5dec1c100afba068512ce" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=cc%2Fprofiling-test-1#e9905a6dd84fc4d63048bad8d071b7cb69bba453" }
 dependencies = [
     { name = "jsonpatch" },
     { name = "langchain-protocol" },

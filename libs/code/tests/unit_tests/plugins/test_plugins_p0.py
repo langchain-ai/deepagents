@@ -722,6 +722,47 @@ async def test_plugin_manager_confirms_marketplace_removal(
     assert marketplace_root.is_dir()
 
 
+async def test_plugin_manager_marketplace_details_keyboard_navigation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("right", "right", "down", "enter")
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert screen._mode == "marketplace_details"
+        assert options.has_focus
+        assert options.highlighted == 0
+
+        await pilot.press("tab")
+        assert options.highlighted == 1
+        await pilot.press("tab")
+        assert options.highlighted == 0
+        await pilot.press("shift+tab")
+        assert options.highlighted == 1
+        await pilot.press("shift+tab")
+        assert options.highlighted == 0
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert screen._mode == "list"
+        assert screen._tab == "marketplaces"
+
+
 async def test_plugin_manager_opens_add_marketplace_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

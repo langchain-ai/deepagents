@@ -1647,7 +1647,7 @@ class _ThreadHistoryPayload:
     """Persisted accepted goal criteria, if any."""
 
     goal_status_note: str | None = None
-    """Persisted evidence or blocker note, if any."""
+    """Persisted completion evidence or blocker note for the goal, if any."""
 
     pending_goal_completion_note: str | None = None
     """Persisted agent-provided completion evidence awaiting final grading."""
@@ -1656,7 +1656,13 @@ class _ThreadHistoryPayload:
     """Latest rubric grading status from `RubricMiddleware`, if any."""
 
     rubric_grading_run_id: str | None = None
-    """Persisted identifier for the rubric grading run, if any."""
+    """Persisted `_current_grading_run_id` for the latest rubric grade, if any.
+
+    Correlation only, never authority: the resolve path compares it against the
+    *current* turn's observed grading run so that only a grade produced this turn
+    can complete the goal. It is intentionally not consumed on restore (see
+    `_restore_goal_rubric_state`), where a persisted status is display data.
+    """
 
     pending_goal_objective: str | None = None
     """Persisted pending goal objective, if any."""
@@ -2243,7 +2249,25 @@ class _MainScreen(Screen[None]):
 # failure would otherwise strand it. Retry the read a few times before giving up.
 _GOAL_SYNC_READ_ATTEMPTS = 3
 _GOAL_SYNC_READ_RETRY_SECONDS = 0.4
+
+# Recorded as the completion note when a goal auto-completes on a satisfied
+# grade without the agent having staged any `update_goal(complete)` evidence.
 _DEFAULT_GOAL_COMPLETION_NOTE = "Acceptance criteria satisfied."
+
+
+@dataclass(frozen=True)
+class _GoalGradeObservation:
+    """A goal-backed grading run observed on a work turn that completed.
+
+    Threaded (as `| None`) from the turn to `_resolve_pending_goal_completion`,
+    where its `grading_run_id` is compared against the persisted
+    `rubric_grading_run_id`. Its *presence* encodes the whole precondition — a
+    goal-backed grade was observed on a turn that did not abort — so callers no
+    longer juggle a bare run-id plus a separate "did the turn finish" flag.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for the observed grade."""
 
 
 class DeepAgentsApp(App):
@@ -9314,6 +9338,12 @@ class DeepAgentsApp(App):
             preserve_queued_application: Keep an accepted in-flight goal update
                 that must be applied after turn-end reconciliation.
         """
+        # `payload.rubric_status`/`rubric_grading_run_id` are intentionally NOT
+        # consumed here. Restore treats a persisted grade as display data, never
+        # as authority to complete a goal: completion is resolved only for the
+        # *current* turn's grading run in `_resolve_pending_goal_completion`.
+        # Wiring a persisted "satisfied" status into restore would reintroduce
+        # stale auto-completion on resume/thread-switch.
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -9423,17 +9453,25 @@ class DeepAgentsApp(App):
         *,
         rubric_status: str | None,
         rubric_grading_run_id: str | None,
-        goal_grading_run_id: str | None,
+        goal_grade: _GoalGradeObservation | None,
         previous_status: str | None,
     ) -> bool:
         """Resolve completion from a correlated goal-backed grading turn.
+
+        Args:
+            rubric_status: Persisted verdict read from the checkpoint.
+            rubric_grading_run_id: Persisted grading-run ID for that verdict.
+            goal_grade: Grade observed live on the current goal-backed turn, or
+                `None` when this cleanup is not that turn. Completion requires it
+                to correlate with `rubric_grading_run_id`.
+            previous_status: Goal status before this resolution, for messaging.
 
         Returns:
             `True` when the current grading turn completed the goal.
         """
         if (
-            goal_grading_run_id is None
-            or rubric_grading_run_id != goal_grading_run_id
+            goal_grade is None
+            or rubric_grading_run_id != goal_grade.grading_run_id
             or not self._active_goal
             or self._goal_status != "active"
             or self._queued_goal_application is not None
@@ -9485,7 +9523,7 @@ class DeepAgentsApp(App):
         *,
         force: bool = False,
         proposal_request_id: str | None = None,
-        goal_grading_run_id: str | None = None,
+        goal_grade: _GoalGradeObservation | None = None,
     ) -> None:
         """Refresh goal/rubric metadata from the active checkpoint.
 
@@ -9494,8 +9532,9 @@ class DeepAgentsApp(App):
             proposal_request_id: When set, restore a pending proposal only if it
                 originated from this criteria request. Resume callers omit it so
                 persisted proposals remain reviewable across clients.
-            goal_grading_run_id: Grading run observed during the current
-                goal-backed work turn. Omit outside that exact turn.
+            goal_grade: Grade observed during the current goal-backed work turn.
+                Omit outside that exact turn; only a correlated grade completes
+                the goal.
         """
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
@@ -9633,7 +9672,7 @@ class DeepAgentsApp(App):
         completion_committed = await self._resolve_pending_goal_completion(
             rubric_status=payload.rubric_status,
             rubric_grading_run_id=payload.rubric_grading_run_id,
-            goal_grading_run_id=goal_grading_run_id,
+            goal_grade=goal_grade,
             previous_status=previous_status,
         )
         if not completion_committed:
@@ -12677,7 +12716,11 @@ class DeepAgentsApp(App):
         if self._ui_adapter is None:
             return
         from deepagents_code.config import settings
-        from deepagents_code.tui.textual_adapter import execute_task_textual
+        from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
+        from deepagents_code.tui.textual_adapter import (
+            RubricEvaluationEnd,
+            execute_task_textual,
+        )
 
         criteria_request_id: str | None = None
         if graph_input is not None:
@@ -12725,19 +12768,23 @@ class DeepAgentsApp(App):
                 self._next_rubric = None
                 self._sync_status_rubric()
 
-        goal_grading_run_id: str | None = None
+        latest_goal_grade: RubricEvaluationEnd | None = None
         turn_completed = False
 
-        def _record_goal_grading_run(grading_run_id: str, result: str) -> None:
-            nonlocal goal_grading_run_id
-            if result in {
-                "satisfied",
-                "needs_revision",
-                "max_iterations_reached",
-                "failed",
-                "grader_error",
-            }:
-                goal_grading_run_id = grading_run_id
+        def _record_goal_grading_run(event: RubricEvaluationEnd) -> None:
+            nonlocal latest_goal_grade
+            if event.result in RUBRIC_RESULT_VALUES:
+                latest_goal_grade = event
+            else:
+                # A verdict outside the SDK's `RubricResult` vocabulary means the
+                # grader contract drifted. Auto-completion keys on `satisfied`, so
+                # a renamed/added verdict would silently disable it — make it loud
+                # rather than mute.
+                logger.warning(
+                    "Unrecognized rubric result %r; goal auto-completion skipped "
+                    "for this grade",
+                    event.result,
+                )
 
         try:
             await execute_task_textual(
@@ -12820,6 +12867,27 @@ class DeepAgentsApp(App):
                     "Could not mount error message (app closing?)",
                     exc_info=True,
                 )
+            # A satisfied grade may have arrived just before the turn aborted.
+            # That completion is deliberately dropped (the checkpoint write may
+            # be incomplete, so `turn_completed` gates it off below), but the
+            # rendered "satisfied" verdict and a still-active goal would then
+            # diverge with nothing to reconcile them — say so explicitly.
+            if latest_goal_grade is not None and latest_goal_grade.result == (
+                "satisfied"
+            ):
+                try:
+                    await self._mount_message(
+                        AppMessage(
+                            "The turn ended before the goal could be marked "
+                            "complete. The goal remains active and will be "
+                            "re-checked on your next turn."
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not mount goal reconciliation message",
+                        exc_info=True,
+                    )
         finally:
             # Merge turn stats before cleanup — _cleanup_agent_task may raise
             # during teardown (widget removal on a torn-down DOM), and stats
@@ -12839,10 +12907,18 @@ class DeepAgentsApp(App):
             # Collapse the open tool group so an interrupted turn doesn't leave a
             # summary spinning "Running…" forever (synchronous, cancel-safe).
             self._close_active_tool_group()
+            # Only a turn that finished streaming can authorize completion: an
+            # abort may have left the checkpoint's grade write incomplete, so a
+            # grade observed on such a turn is dropped by yielding `None` here.
+            goal_grade = (
+                _GoalGradeObservation(latest_goal_grade.grading_run_id)
+                if turn_completed and latest_goal_grade is not None
+                else None
+            )
             await self._cleanup_agent_task(
                 force_goal_sync=graph_input is not None,
                 goal_criteria_request_id=criteria_request_id,
-                goal_grading_run_id=(goal_grading_run_id if turn_completed else None),
+                goal_grade=goal_grade,
             )
 
     async def _process_next_from_queue(self) -> None:
@@ -12899,7 +12975,7 @@ class DeepAgentsApp(App):
         *,
         force_goal_sync: bool = False,
         goal_criteria_request_id: str | None = None,
-        goal_grading_run_id: str | None = None,
+        goal_grade: _GoalGradeObservation | None = None,
     ) -> None:
         """Tear down after a turn completes or is cancelled.
 
@@ -12914,8 +12990,8 @@ class DeepAgentsApp(App):
             force_goal_sync: Read goal state even when no local goal fields are set.
             goal_criteria_request_id: Terminal criteria request to clear and use
                 when correlating a newly generated proposal.
-            goal_grading_run_id: Grading run observed during the completed
-                goal-backed work turn, or `None` for every other cleanup path.
+            goal_grade: Grade observed during the completed goal-backed work
+                turn, or `None` for every other cleanup path.
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
@@ -12939,7 +13015,7 @@ class DeepAgentsApp(App):
                 await self._sync_goal_rubric_state_from_thread(
                     force=force_goal_sync,
                     proposal_request_id=goal_criteria_request_id,
-                    goal_grading_run_id=goal_grading_run_id,
+                    goal_grade=goal_grade,
                 )
 
                 try:

@@ -30,6 +30,7 @@ from deepagents_code.client.non_interactive import (
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.tui.textual_adapter import (
+    RubricEvaluationEnd,
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
@@ -7124,8 +7125,8 @@ class TestExecuteTaskTextualRubricEvents:
             assistant_id="assistant",
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
             adapter=adapter,
-            on_rubric_evaluation_end=lambda run_id, result: evaluations.append(
-                (run_id, result)
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
             ),
         )
 
@@ -7171,8 +7172,8 @@ class TestExecuteTaskTextualRubricEvents:
             assistant_id="assistant",
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
             adapter=adapter,
-            on_rubric_evaluation_end=lambda run_id, result: evaluations.append(
-                (run_id, result)
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
             ),
         )
 
@@ -7200,6 +7201,38 @@ class TestExecuteTaskTextualRubricEvents:
                         (),
                         "custom",
                         {"type": "rubric_evaluation_end", "result": "satisfied"},
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_not_called()
+
+    async def test_rubric_event_with_blank_run_id_is_not_forwarded(self) -> None:
+        """A whitespace-only run ID is treated as missing correlation metadata."""
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "rubric_evaluation_end",
+                            "result": "satisfied",
+                            "grading_run_id": "   ",
+                        },
                     )
                 ]
             ),
@@ -7241,4 +7274,6 @@ class TestExecuteTaskTextualRubricEvents:
             on_rubric_evaluation_end=callback,
         )
 
-        callback.assert_called_once_with("grade-current", "satisfied")
+        callback.assert_called_once_with(
+            RubricEvaluationEnd("grade-current", "satisfied")
+        )

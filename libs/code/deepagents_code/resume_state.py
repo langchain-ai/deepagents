@@ -57,6 +57,7 @@ from typing import (
     get_args,
 )
 
+from deepagents.middleware.rubric import RubricResult
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -82,6 +83,36 @@ GoalProposalKind = Literal["create", "amend"]
 
 _GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
 _GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
+
+
+def _flatten_literal_values(tp: object) -> frozenset[str]:
+    """Collect every string value from a (possibly unioned) `Literal` type.
+
+    Args:
+        tp: A `Literal` type, or a union of `Literal`s, to inspect.
+
+    Returns:
+        Every string member across the (possibly nested) `Literal` args.
+    """
+    values: set[str] = set()
+    for arg in get_args(tp):
+        if isinstance(arg, str):
+            values.add(arg)
+        else:
+            values |= _flatten_literal_values(arg)
+    return frozenset(values)
+
+
+RUBRIC_RESULT_VALUES: frozenset[str] = _flatten_literal_values(RubricResult)
+"""Every verdict `RubricMiddleware` can emit for a completed grading run.
+
+Derived from the SDK's `RubricResult` `Literal` so it cannot drift out of sync
+with the grader vocabulary: if the SDK renames or adds a verdict, this set
+follows automatically. Consumers that branch on a rubric result (goal
+auto-completion in `app.py`, the rubric-event formatters in `textual_adapter`)
+treat any value outside this set as an unrecognized grade rather than silently
+mishandling it.
+"""
 
 
 def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:

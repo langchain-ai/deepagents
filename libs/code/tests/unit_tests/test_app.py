@@ -5931,6 +5931,61 @@ class TestGoalCommand:
             assert app._goal_review_task is None
             handle.assert_awaited_once_with("ship login")
 
+    async def test_successful_generation_keeps_proposal_when_clear_fails(
+        self,
+    ) -> None:
+        """A stale marker for the completed request must not drop the proposal."""
+        request_id = "request-create"
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            handle = AsyncMock()
+            # The post-run clear failed to persist, so the checkpoint still names
+            # the completed request; the fresh proposal shares that request id.
+            fetch = AsyncMock(
+                return_value={
+                    "goal_criteria_request": {
+                        "request_id": request_id,
+                        "kind": "create",
+                        "objective": "ship login",
+                    },
+                    "_pending_goal_objective": "ship login",
+                    "_pending_goal_rubric": "- tests pass",
+                    "_pending_goal_kind": "create",
+                    "_pending_goal_request_id": request_id,
+                }
+            )
+
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "_clear_submitted_goal_criteria_request",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task(
+                    force_goal_sync=True,
+                    goal_criteria_request_id=request_id,
+                )
+
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._queued_goal_application is None
+            handle.assert_awaited_once_with("ship login")
+
     async def test_failed_or_cancelled_yolo_generation_does_not_accept(self) -> None:
         """A terminal unsuccessful criteria turn must discard its partial draft."""
         request_id = "request-cancelled"
@@ -6239,6 +6294,36 @@ class TestGoalCommand:
             assert app._pending_goal_rubric is None
             assert not any(app.query(GoalReviewMenu))
             handle.assert_not_awaited()
+
+    def test_criteria_marker_active_only_for_a_different_request(self) -> None:
+        """The marker supersedes a proposal only when it names another request."""
+        same_request = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "goal_criteria_request": {"request_id": "request-1"},
+                "_pending_goal_objective": "ship login",
+                "_pending_goal_rubric": "- tests pass",
+                "_pending_goal_kind": "create",
+                "_pending_goal_request_id": "request-1",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        assert same_request.goal_criteria_request_active is False
+
+        newer_request = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "goal_criteria_request": {"request_id": "request-2"},
+                "_pending_goal_objective": "ship login",
+                "_pending_goal_rubric": "- tests pass",
+                "_pending_goal_kind": "create",
+                "_pending_goal_request_id": "request-1",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        assert newer_request.goal_criteria_request_active is True
 
     async def test_enabling_yolo_on_mounted_review_accepts_once_and_cleans_up(
         self,

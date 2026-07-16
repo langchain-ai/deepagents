@@ -17734,6 +17734,9 @@ class DeepAgentsApp(App):
         Directory components (e.g. `skills/`) are walked recursively so edits to
         nested files like `SKILL.md` change the fingerprint even when the
         directory's own mtime/size stay the same.
+
+        Returns:
+            Sorted fingerprint entries of `(path, mtime_ns, size)`.
         """
         entries: list[tuple[str, int, int]] = []
         for path in paths:

@@ -252,8 +252,19 @@ ToolCallMessage.-ascii:hover {
     background: $surface;
 }
 
-/* Goal review widget */
-.goal-review-menu {
+/* Persistent goal status */
+.goal-status-panel {
+    height: auto;
+    max-height: 5;
+    margin: 0 1;
+    padding: 0 1;
+    color: $text;
+    background: $surface-darken-1;
+    border-left: thick $primary;
+}
+
+/* Shared inline prompt shell */
+.inline-prompt {
     height: auto;
     margin: 1 0;
     padding: 0 1;
@@ -261,12 +272,30 @@ ToolCallMessage.-ascii:hover {
     border: solid $success;
 }
 
-.goal-review-menu .goal-review-title {
+.inline-prompt .inline-prompt-title {
     text-style: bold;
     color: $success;
     margin-bottom: 0;
 }
 
+.inline-prompt .inline-prompt-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.inline-prompt .inline-prompt-input {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
+/* Goal review widget */
 .goal-review-menu .goal-review-content {
     height: auto;
     max-height: 12;
@@ -307,45 +336,7 @@ ToolCallMessage.-ascii:hover {
     background: transparent;
 }
 
-.goal-review-menu .goal-review-help {
-    color: $text-muted;
-    text-style: italic;
-    margin-top: 0;
-    margin-bottom: 0;
-}
-
-.goal-review-menu AskUserTextArea {
-    & .text-area--cursor-line {
-        background: transparent;
-    }
-
-    & .text-area--cursor-gutter {
-        background: transparent;
-    }
-}
-
 /* Ask user widget */
-.ask-user-menu {
-    height: auto;
-    margin: 1 0;
-    padding: 0 1;
-    background: $surface;
-    border: solid $success;
-}
-
-.ask-user-menu .ask-user-title {
-    text-style: bold;
-    color: $success;
-    margin-bottom: 0;
-}
-
-.ask-user-menu .ask-user-help {
-    color: $text-muted;
-    text-style: italic;
-    margin-top: 0;
-    margin-bottom: 0;
-}
-
 .ask-user-menu .ask-user-questions {
     height: auto;
     padding: 0 1;
@@ -390,16 +381,6 @@ ToolCallMessage.-ascii:hover {
     min-height: 3;
     max-height: 10;
     background: transparent;
-}
-
-.ask-user-menu AskUserTextArea {
-    & .text-area--cursor-line {
-        background: transparent;
-    }
-
-    & .text-area--cursor-gutter {
-        background: transparent;
-    }
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

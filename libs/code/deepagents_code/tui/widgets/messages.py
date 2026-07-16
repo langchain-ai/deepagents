@@ -13,10 +13,11 @@ from time import time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual import on
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.events import Click
 from textual.geometry import Offset
+from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
@@ -3094,6 +3095,32 @@ class ToolGroupSummary(Static):
             # Every tool failed and was ejected — nothing left to summarize.
             self.remove()
 
+    def reveal_pending(self) -> None:
+        """Remove unfinished tool calls from the collapsed group."""
+        pending = [tool for tool in self._tools if tool.is_pending]
+        if not pending:
+            return
+        for tool in pending:
+            self._tools.remove(tool)
+            if tool in self._collapsible:
+                self._collapsible.remove(tool)
+            tool.remove_class("-grouped")
+            if tool.is_attached and not tool._awaiting_approval:
+                tool.display = True
+        self._present_text = self._past_text = None
+        if self._tools:
+            self._render_line()
+            self._sync_timer()
+            return
+        self._stop_timer()
+        for widget in self._collapsible:
+            widget.remove_class("-grouped")
+            if widget.is_attached:
+                widget.display = True
+        self._collapsible.clear()
+        if self.is_attached:
+            self.remove()
+
     @property
     def has_attached_members(self) -> bool:
         """Whether any collapsed widget is still attached to the DOM."""
@@ -3378,6 +3405,159 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+
+class _RubricResultToggle(Static):
+    """Clickable summary or hint for a rubric result."""
+
+
+class RubricResultMessage(Vertical):
+    """Compact grader result with complete, scrollable details on demand."""
+
+    class ExpansionChanged(Message):
+        """Posted when the grader-details expansion state changes."""
+
+        def __init__(self, widget: RubricResultMessage, expanded: bool) -> None:
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The rubric result whose expansion state changed.
+                expanded: Whether the grader details are now expanded.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    RubricResultMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+        border-left: wide $warning;
+    }
+
+    RubricResultMessage .rubric-result-summary {
+        height: auto;
+    }
+
+    RubricResultMessage .rubric-result-details-scroll {
+        display: none;
+        height: auto;
+        max-height: 16;
+        margin: 1 0 0 2;
+        overflow-y: auto;
+        scrollbar-size-vertical: 1;
+    }
+
+    RubricResultMessage .rubric-result-details {
+        height: auto;
+        padding: 0;
+    }
+
+    RubricResultMessage .rubric-result-hint {
+        height: auto;
+        margin-left: 2;
+        color: $text-muted;
+    }
+
+    RubricResultMessage.-expanded .rubric-result-details-scroll {
+        display: block;
+    }
+    """
+
+    _expanded: var[bool] = var(False, toggle_class="-expanded")
+
+    def __init__(
+        self,
+        summary: str,
+        details: str,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a grader result.
+
+        Args:
+            summary: Concise default transcript line.
+            details: Complete user-facing grader explanation and criteria gaps.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._summary = summary
+        self._details = details
+        self._hint_widget: _RubricResultToggle | None = None
+        self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against it
+        # keeps the reactive's initialization watcher and the deferred restore from
+        # re-emitting a value the store already holds.
+        self._published_expanded = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the compact summary, details viewport, and expansion hint.
+
+        Yields:
+            Summary, scrollable details, and toggle hint widgets.
+        """
+        yield _RubricResultToggle(
+            Content.styled(self._summary, "dim italic"),
+            classes="rubric-result-summary",
+        )
+        with VerticalScroll(classes="rubric-result-details-scroll"):
+            yield Static(
+                Content(self._details),
+                classes="rubric-result-details",
+            )
+        yield _RubricResultToggle("", classes="rubric-result-hint")
+
+    def on_mount(self) -> None:
+        """Initialize the expansion hint and restore deferred state."""
+        self._hint_widget = self.query_one(
+            ".rubric-result-hint",
+            _RubricResultToggle,
+        )
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.warning)
+        if not self._details:
+            self._hint_widget.display = False
+            return
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
+        self._update_hint()
+
+    def toggle_details(self) -> None:
+        """Toggle the complete grader details."""
+        if self._details:
+            self._expanded = not self._expanded
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Refresh the hint and publish user-driven expansion for virtualization."""
+        self._update_hint()
+        # Publish only genuine changes: dedupe against the store's known value to
+        # drop the reactive's initialization watcher and the deferred restore, and
+        # require `is_attached` so `_expanded` set in pre-mount test setup does not
+        # `post_message` on a detached widget (NoActiveAppError).
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    def _update_hint(self) -> None:
+        """Render the current expansion hint."""
+        if self._hint_widget is None or not self._details:
+            return
+        action = "hide" if self._expanded else "show"
+        self._hint_widget.update(
+            Content.styled(f"click or Ctrl+O to {action} details", "dim italic")
+        )
+
+    @on(Click, "_RubricResultToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        """Toggle details from the summary or hint."""
+        event.stop()
+        self.toggle_details()
 
 
 class _MutedRichMarkdown:

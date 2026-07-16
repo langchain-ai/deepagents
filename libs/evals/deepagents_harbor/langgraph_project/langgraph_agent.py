@@ -22,6 +22,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain_core.language_models import BaseChatModel
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKDIR = Path("/app")
@@ -118,7 +120,14 @@ def _model_name(configurable: dict[str, object]) -> str:
 
 
 def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, Any]) -> None:
-    """Default reasoning for the GLM-5.2 eval profiles when not configured."""
+    """Default GLM-5.2's reasoning effort to ``"high"`` for the eval when unset.
+
+    Experiment (for now). Fireworks GLM takes this as a nested
+    ``model_kwargs={"reasoning_effort": ...}`` on the model constructor (see
+    dcode ``reasoning_effort._fireworks_model_params``). Gated to the three
+    GLM-5.2 profile specs so the shared harness is unaffected for other models;
+    an explicit provider-native ``reasoning``/``reasoning_effort`` still wins.
+    """
     if model_spec.lower() not in _GLM_5_2_MODEL_SPECS:
         return
     if "reasoning_effort" in model_kwargs or "reasoning" in model_kwargs:
@@ -133,6 +142,27 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
     if "reasoning_effort" in nested or "reasoning" in nested:
         return
     nested["reasoning_effort"] = "high"
+
+
+def _build_model(configurable: dict[str, object]) -> BaseChatModel:
+    """Build the chat model, applying provider-specific eval defaults.
+
+    OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for
+    gpt-5.x, and its model profile defaults ``reasoning_effort``. The model is
+    built here directly via ``init_chat_model``, which bypasses the Deep Agents
+    OpenAI provider profile that would set ``use_responses_api=True``, so set it
+    explicitly for ``openai:`` models.
+
+    The GLM-5.2 eval profiles additionally default ``reasoning_effort`` to
+    ``"high"`` via ``_apply_glm_5_2_reasoning_default``. A caller-supplied
+    ``model_kwargs`` value still wins in both cases.
+    """
+    name = _model_name(configurable)
+    kwargs = _model_kwargs(configurable)
+    if name.startswith("openai:") and "use_responses_api" not in kwargs:
+        kwargs["use_responses_api"] = True
+    _apply_glm_5_2_reasoning_default(name, kwargs)
+    return init_chat_model(name, **kwargs)
 
 
 def _workdir(configurable: dict[str, object]) -> Path:
@@ -244,18 +274,10 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model_spec = _model_name(configurable)
-    model_kwargs = _model_kwargs(configurable)
-    # Experiment (for now): default GLM-5.2's reasoning effort to "high" for the eval.
-    # Fireworks GLM takes this as a nested `model_kwargs={"reasoning_effort": ...}`
-    # on the model constructor (see dcode `reasoning_effort._fireworks_model_params`).
-    # Gated to the three GLM-5.2 profile specs so the shared harness is
-    # unaffected for other models; explicit provider-native reasoning wins.
-    _apply_glm_5_2_reasoning_default(model_spec, model_kwargs)
-    model = init_chat_model(model_spec, **model_kwargs)
+    model = _build_model(configurable)
     # Feed the selected model into dcode's system-prompt `### Model Identity`
     # section (create_cli_agent -> get_system_prompt reads it from `settings`).
-    _apply_model_identity(model_spec, model)
+    _apply_model_identity(_model_name(configurable), model)
     assistant_id = _harbor_assistant_id(os.environ.get("HARBOR_SESSION_ID"))
     with _scrub_shell_env():
         # Do not pass `system_prompt`: leaving it unset makes `create_cli_agent`
@@ -306,7 +328,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
     return create_deep_agent(
         model=model,
@@ -427,7 +449,7 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name or MCP servers are provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     client = MultiServerMCPClient(_mcp_connections(configurable))
     tools = await client.get_tools()
     return create_deep_agent(

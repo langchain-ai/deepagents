@@ -12,8 +12,9 @@ from deepagents.backends.utils import (
 )
 from rich.style import Style
 from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
 from textual.content import Content
-from textual.widgets import Markdown
+from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
 from deepagents_code.formatting import format_duration
@@ -29,6 +30,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -4086,6 +4088,50 @@ class TestLiveToolGroupSummary:
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
 
+    async def test_pending_member_is_revealed_for_approval(self) -> None:
+        """Only unfinished calls leave the collapsed group before approval."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("done")
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert completed.display is False
+            assert completed.has_class("-grouped")
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._tools == [completed]
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
+    async def test_suppressed_pending_member_stays_hidden(self) -> None:
+        """A command mirrored in the approval menu is detached without duplication."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            pending = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(pending)
+            pending.set_awaiting_approval()
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert pending.display is False
+            assert not pending.has_class("-grouped")
+            assert not summary.is_attached
+
+            pending.clear_awaiting_approval()
+            assert pending.display is True
+
     async def test_failed_member_is_evicted_on_close(self) -> None:
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
@@ -4320,3 +4366,111 @@ class TestUserMessageTruncation:
             text, _ending = result
             assert text == big
             assert "…" not in text
+
+
+class _RubricResultApp(App[None]):
+    """Minimal app mounting a rubric result."""
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\n" + "complete detail " * 200,
+            id="rubric-result",
+        )
+
+
+class _DeferredExpandedRubricApp(App[None]):
+    """Mounts a rubric result whose expansion was restored from virtualization."""
+
+    def compose(self) -> ComposeResult:
+        widget = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-deferred",
+        )
+        widget._deferred_expanded = True
+        yield widget
+
+
+class _RecordingRubricApp(App[None]):
+    """Records `ExpansionChanged` messages posted by a mounted rubric result."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expansions: list[bool] = []
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-events",
+        )
+
+    def on_rubric_result_message_expansion_changed(
+        self,
+        event: RubricResultMessage.ExpansionChanged,
+    ) -> None:
+        self.expansions.append(event.expanded)
+
+
+class TestRubricResultMessage:
+    """Grader details stay complete, collapsed, and scrollable."""
+
+    async def test_details_expand_without_truncation(self) -> None:
+        """The compact default should reveal the full plain-text result on demand."""
+        app = _RubricResultApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-result", RubricResultMessage)
+            details_scroll = message.query_one(
+                ".rubric-result-details-scroll",
+                VerticalScroll,
+            )
+            details = message.query_one(".rubric-result-details", Static)
+
+            assert message._expanded is False
+            assert details_scroll.display is False
+            assert str(details.content) == message._details
+            assert "complete detail " * 200 in str(details.content)
+            assert details_scroll.styles.max_height is not None
+            assert details_scroll.styles.max_height.cells == 16
+
+            await pilot.click(".rubric-result-hint")
+            await pilot.pause()
+
+            assert message._expanded is True
+            assert details_scroll.display is True
+            assert str(details.content) == message._details
+
+    async def test_deferred_expansion_is_restored_on_mount(self) -> None:
+        """A rehydrated widget must reopen its details, not just remember the flag."""
+        app = _DeferredExpandedRubricApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-deferred", RubricResultMessage)
+            details_scroll = message.query_one(
+                ".rubric-result-details-scroll",
+                VerticalScroll,
+            )
+
+            assert message._expanded is True
+            assert details_scroll.display is True
+
+    async def test_toggle_posts_expansion_changed(self) -> None:
+        """Toggling an attached widget must publish state for virtualization."""
+        app = _RecordingRubricApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-events", RubricResultMessage)
+            # Mounting collapsed (deferred False) must not emit a spurious event.
+            assert app.expansions == []
+
+            message.toggle_details()
+            await pilot.pause()
+            message.toggle_details()
+            await pilot.pause()
+
+            assert app.expansions == [True, False]

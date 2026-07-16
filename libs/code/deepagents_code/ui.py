@@ -382,6 +382,30 @@ def show_skills_help() -> None:
     console.print()
 
 
+def show_plugins_help() -> None:
+    """Show help information for the `plugin` / `plugins` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls                      List available plugins")
+    console.print("  install <id>                 Install a marketplace plugin")
+    console.print("  uninstall <id>               Uninstall a plugin")
+    console.print("  enable <id>                  Enable an installed plugin")
+    console.print("  disable <id>                 Disable a plugin")
+    console.print("  marketplace list|ls          List configured marketplaces")
+    console.print("  marketplace add <source>     Add a marketplace source")
+    console.print("  marketplace remove <name>    Remove a marketplace and its plugins")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin list")
+    console.print("  dcode plugin marketplace add ./marketplace")
+    console.print("  dcode plugin install quality-review-plugin@company-tools")
+    console.print("  dcode plugin enable quality-review-plugin@company-tools")
+    console.print()
+
+
 def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()

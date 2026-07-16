@@ -277,6 +277,26 @@ class TestModelSwap:
         assert captured[0].model is override
         assert request.model is original  # original unchanged
 
+    def test_profile_overrides_forwarded_to_swapped_model(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        profile_overrides = {"max_input_tokens": 180_000}
+        request = _make_request(
+            original,
+            context=CLIContext(
+                model="openai:gpt-5.5",
+                profile_overrides=profile_overrides,
+            ),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            _mw.wrap_model_call(request, lambda _: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            profile_overrides=profile_overrides,
+        )
+
     async def test_async_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
         override = _make_model("gpt-5.5")
@@ -308,6 +328,29 @@ class TestModelSwap:
 
         assert captured[0].model is override
         assert offloaded == [(create, ("openai:gpt-5.5",), {})]
+
+    async def test_async_profile_overrides_forwarded_to_swapped_model(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        profile_overrides = {"max_input_tokens": 180_000}
+        request = _make_request(
+            original,
+            context=CLIContext(
+                model="openai:gpt-5.5",
+                profile_overrides=profile_overrides,
+            ),
+        )
+
+        async def handler(_: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            return _make_response()
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            await _mw.awrap_model_call(request, handler)
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            profile_overrides=profile_overrides,
+        )
 
     def test_class_path_provider_swapped(self) -> None:
         """Config-defined class_path provider resolves through create_model."""

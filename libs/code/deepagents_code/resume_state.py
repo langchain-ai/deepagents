@@ -13,21 +13,23 @@ Written from inside the graph on successful model turns:
     successful model call. Lets `dcode -r` restore the model the resumed thread
     was actually using instead of falling back to the user's global default.
 
-Written primarily by the TUI client, via `aupdate_state` (see
-`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Most
-have no model-node write site; the two exceptions are called out below:
+Written through the main graph or by the TUI client via `aupdate_state` (see
+`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Their
+write sites are called out below:
 
 - `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
     the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
     are client-only, but `_goal_status`/`_goal_status_note` are *also* written
     from inside the graph by the agent's `update_goal` tool.
-- `_pending_goal_completion_note` — an agent-requested completion awaiting the
-    post-turn rubric result and, when needed, user approval.
+- `_pending_goal_completion_note` — optional agent-provided completion evidence
+    awaiting the post-turn rubric result.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
-- `_pending_goal_objective` / `_pending_goal_rubric` — a proposed goal awaiting
-    user acceptance of its criteria.
+- `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` /
+    `_pending_goal_request_id` — a proposed goal or amendment and its originating
+    request, written by `GoalCriteriaMiddleware` inside the main graph, then
+    cleared by the TUI when the user accepts or rejects it.
 
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
@@ -37,10 +39,10 @@ separate client-side `aupdate_state` call) so the write rides the same checkpoin
 as the model response and avoids creating a standalone `UpdateState` run in
 LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
-aggregate. The goal/rubric channels are client-written because the user sets
-them outside any model turn (except `_goal_status`/`_goal_status_note`, which the
-`update_goal` tool also writes from inside the graph). Both paths work
-identically against local and remote (HTTP) graphs.
+aggregate. Accepted goal/rubric state is client-written because the user sets it
+outside any model turn; pending criteria proposals and agent-driven status
+updates are graph-written. Both paths work identically against local and remote
+(HTTP) graphs.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from typing import (
     get_args,
 )
 
+from deepagents.middleware.rubric import RubricResult
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -66,14 +69,64 @@ from langchain_core.messages import AIMessage
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
-GoalStatus = Literal["active", "blocked", "complete"]
+GoalStatus = Literal["active", "paused", "blocked", "complete"]
 """Lifecycle status of a TUI-owned goal.
 
-`active` and `blocked` are unfinished states; `complete` is terminal. A blocked
-goal is still considered active (unfinished) by `get_goal`.
+`active` and `blocked` are unfinished working states, `paused` preserves the goal
+without driving work, and `complete` is terminal. A blocked goal is still
+considered actionable (`active=True`) by `get_goal`, whereas a paused goal is
+unfinished but reports `active=False`.
 """
 
+GoalProposalKind = Literal["create", "amend"]
+"""Whether a pending review creates a goal or amends the current one."""
+
 _GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
+_GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
+
+
+def _flatten_literal_values(tp: object) -> frozenset[str]:
+    """Collect every string value from a (possibly unioned) `Literal` type.
+
+    Args:
+        tp: A `Literal` type, or a union of `Literal`s, to inspect.
+
+    Returns:
+        Every string member across the (possibly nested) `Literal` args.
+    """
+    values: set[str] = set()
+    for arg in get_args(tp):
+        if isinstance(arg, str):
+            values.add(arg)
+        else:
+            values |= _flatten_literal_values(arg)
+    return frozenset(values)
+
+
+RUBRIC_RESULT_VALUES: frozenset[str] = _flatten_literal_values(RubricResult)
+"""Every verdict `RubricMiddleware` can emit for a completed grading run.
+
+Derived from the SDK's `RubricResult` `Literal` so it cannot drift out of sync
+with the grader vocabulary: if the SDK renames or adds a verdict, this set
+follows automatically. Consumers that branch on a rubric result (goal
+auto-completion in `app.py`, the rubric-event formatters in `textual_adapter`)
+treat any value outside this set as an unrecognized grade rather than silently
+mishandling it.
+"""
+
+
+def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:
+    """Narrow a persisted proposal kind to a known value.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The recognized proposal kind, otherwise `None`.
+    """
+    if isinstance(value, str) and value in _GOAL_PROPOSAL_KIND_VALUES:
+        return cast("GoalProposalKind", value)
+    return None
 
 
 def coerce_goal_status(value: object) -> GoalStatus | None:
@@ -115,16 +168,16 @@ class GoalRubricChannels(AgentState):
     """Accepted goal objective restored by the TUI on resume."""
 
     _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
-    """Goal lifecycle status (`active`, `blocked`, `complete`, or `None`)."""
+    """Goal lifecycle status (`active`, `paused`, `blocked`, `complete`, or `None`)."""
 
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted rubric associated with `_goal_objective`."""
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Evidence or blocker note recorded by `update_goal`."""
+    """Persisted completion evidence or blocker note for the goal."""
 
     _pending_goal_completion_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Completion evidence awaiting rubric and user approval."""
+    """Optional agent-provided completion evidence awaiting final grading."""
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
@@ -152,6 +205,14 @@ class ResumeState(GoalRubricChannels):
 
     _pending_goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Proposed criteria awaiting user acceptance."""
+
+    _pending_goal_kind: Annotated[
+        NotRequired[GoalProposalKind | None], PrivateStateAttr
+    ]
+    """Whether the pending review creates or amends a goal."""
+
+    _pending_goal_request_id: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Request that produced the pending proposal."""
 
 
 def _extract_context_tokens(message: AIMessage) -> int | None:

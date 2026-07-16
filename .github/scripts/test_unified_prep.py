@@ -16,13 +16,6 @@ def test_parse_int_input_enforces_inclusive_range():
             up.parse_int_input("UNIFIED_CONCURRENCY", raw, minimum=1, maximum=40)
 
 
-def test_slugify_replaces_colons_and_slashes():
-    assert up.slugify("anthropic:claude-opus-4-7") == "anthropic-claude-opus-4-7"
-    assert up.slugify("fireworks:accounts/fireworks/models/glm-5p2") == (
-        "fireworks-accounts-fireworks-models-glm-5p2"
-    )
-
-
 def test_provider_of_uses_prefix_and_falls_back_to_other():
     known = {"anthropic", "openai"}
     assert up.provider_of("anthropic:claude-opus-4-7", known) == "anthropic"
@@ -64,24 +57,129 @@ def test_build_provider_matrices_cross_products_models_and_categories():
         if e["model"] == "anthropic:opus" and e["category"] == "context"
     )
     assert entry["dataset_path"] == "datasets/context-retrieval-evals"
-    assert entry["agent_impl"] == "dcode"
-    # readable slug + short hash suffix for collision resistance
-    assert entry["langsmith_dataset"].startswith(
-        "context-retrieval-evals__anthropic-opus-"
-    )
+    assert entry["agent_impl"] == "bare"
+    # Shared dataset: empty so the leaf derives the canonical per-category name.
+    assert entry["langsmith_dataset"] == ""
     assert entry["n_shards"] == 3
 
 
-def test_langsmith_dataset_is_collision_resistant():
-    # slugify is lossy: these two distinct specs slugify to the same string, so
-    # the hash suffix must keep their langsmith_dataset names distinct.
-    a, b = "openrouter:foo/bar", "openrouter:foo-bar"
-    assert up.slugify(a) == up.slugify(b)
+def test_agent_impl_override_applies_only_to_deepagent_categories():
+    models = ["anthropic:opus"]
+    cats = ["autonomous", "conversation", "context"]
+    n = {"autonomous": 10, "conversation": 3, "context": 3}
+
+    # No override -> each category's CATEGORY_MAP default. autonomous/context are
+    # the bare deep-agents harness; conversation is pinned to tau3.
+    default_impls = {
+        e["category"]: e["agent_impl"]
+        for e in up.build_provider_matrices(models, cats, 10, n)["anthropic"]
+    }
+    assert default_impls == {
+        "autonomous": "bare",
+        "conversation": "tau3",
+        "context": "bare",
+    }
+
+    # dcode override -> only the deep-agents categories switch; tau3 is untouched.
+    overridden = {
+        e["category"]: e["agent_impl"]
+        for e in up.build_provider_matrices(models, cats, 10, n, agent_impl="dcode")[
+            "anthropic"
+        ]
+    }
+    assert overridden == {
+        "autonomous": "dcode",
+        "conversation": "tau3",
+        "context": "dcode",
+    }
+
+
+def test_agent_impl_override_applies_across_providers():
+    # The override is resolved per entry, independent of provider bucket, so it
+    # must reach every provider's matrix identically.
+    models = ["anthropic:opus", "openai:gpt"]
     mats = up.build_provider_matrices(
-        [a, b], ["context"], shard_parallel=10, n_shards_by_cat={"context": 3}
+        models,
+        ["autonomous", "context"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10, "context": 3},
+        agent_impl="dcode",
     )
-    names = {e["langsmith_dataset"] for e in mats["openrouter"]}
-    assert len(names) == 2  # distinct despite identical slugs
+    assert set(mats) == {"anthropic", "openai"}
+    for prov in ("anthropic", "openai"):
+        assert {e["agent_impl"] for e in mats[prov]} == {"dcode"}
+
+
+def test_build_provider_matrices_rejects_unknown_agent_impl():
+    # Defense in depth: a truthy-but-unknown harness must not flow silently into
+    # a matrix entry, even for a caller that bypasses main()'s validation.
+    import pytest
+
+    with pytest.raises(ValueError, match="agent_impl"):
+        up.build_provider_matrices(
+            ["anthropic:opus"],
+            ["autonomous"],
+            shard_parallel=10,
+            n_shards_by_cat={"autonomous": 10},
+            agent_impl="garbage",
+        )
+
+
+def test_full_profile_has_empty_include_tasks():
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10},
+    )
+    assert mats["openai"][0]["include_tasks"] == ""
+
+
+def test_lite_profile_sets_include_tasks_and_shards_one_task_each():
+    import lite_tasks
+
+    defaults = {"autonomous": 10, "conversation": 3, "context": 3}
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous", "conversation", "context"],
+        shard_parallel=10,
+        n_shards_by_cat=defaults,
+        agent_impl="bare",
+        profile="lite",
+    )
+    by_cat = {e["category"]: e for e in mats["openai"]}
+    for cat in ("autonomous", "conversation", "context"):
+        n = len(lite_tasks.LITE_TASKS[cat])
+        assert by_cat[cat]["include_tasks"] == " ".join(lite_tasks.LITE_TASKS[cat])
+        # One task per shard: max-parallel drains the queue, GH pulls the next
+        # single-task shard as each finishes (dynamic load-balancing).
+        assert by_cat[cat]["n_shards"] == n
+    assert by_cat["autonomous"]["n_shards"] == 15
+
+
+def test_lite_shards_independent_of_shard_parallel():
+    # n_shards is the queue depth (one task each), NOT capped at shard_parallel:
+    # a small max-parallel just means GH drains the queue in more waves.
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous"],
+        shard_parallel=2,
+        n_shards_by_cat={"autonomous": 10},
+        profile="lite",
+    )
+    assert mats["openai"][0]["n_shards"] == 15
+
+
+def test_langsmith_dataset_is_empty_for_shared_dataset():
+    # No per-model dataset name: the leaf derives the canonical shared dataset,
+    # so every entry's langsmith_dataset is empty regardless of the model spec.
+    mats = up.build_provider_matrices(
+        ["openrouter:foo/bar", "openrouter:foo-bar"],
+        ["context"],
+        shard_parallel=10,
+        n_shards_by_cat={"context": 3},
+    )
+    assert all(e["langsmith_dataset"] == "" for e in mats["openrouter"])
 
 
 def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):
@@ -222,6 +320,61 @@ def test_main_accepts_category_shard_count_boundaries(tmp_path, monkeypatch):
             lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
             matrix = _j.loads(lines["anthropic_matrix"])
             assert matrix["include"][0]["n_shards"] == boundary
+
+
+def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv(
+        "UNIFIED_AGENT_IMPL", "tau3"
+    )  # valid harness, not selectable here
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    import pytest
+
+    with pytest.raises(SystemExit, match="UNIFIED_AGENT_IMPL"):
+        up.main([])
+
+
+def test_main_agent_impl_override_reaches_matrix(tmp_path, monkeypatch):
+    # Guards the main() -> build_provider_matrices wiring: a dropped agent_impl
+    # argument would fall back to category defaults and go undetected otherwise.
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "dcode")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert up.main([]) == 0
+    import json as _j
+
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    matrix = _j.loads(lines["anthropic_matrix"])
+    assert {e["agent_impl"] for e in matrix["include"]} == {"dcode"}
+
+
+def test_main_blank_agent_impl_falls_back_to_default(tmp_path, monkeypatch):
+    # A whitespace-only env value must fall back to bare, not raise.
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "   ")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert up.main([]) == 0
+    import json as _j
+
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    matrix = _j.loads(lines["anthropic_matrix"])
+    assert {e["agent_impl"] for e in matrix["include"]} == {"bare"}
+
+
+def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    monkeypatch.setenv("UNIFIED_PROFILE", "medium")
+    with pytest.raises(SystemExit, match=r"UNIFIED_PROFILE must be one of"):
+        up.main()
 
 
 def test_main_rejects_bad_spec(tmp_path, monkeypatch):

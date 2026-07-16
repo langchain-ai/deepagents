@@ -16,6 +16,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -145,6 +146,28 @@ class TestMessageData:
         assert restored._content == "Session started"
         assert restored.id == "test-app-1"
         assert restored._is_markdown is False
+
+    def test_rubric_result_roundtrip_preserves_complete_details(self) -> None:
+        """Virtualization must not discard or flatten expandable grader output."""
+        details = "Explanation\nfull output\n\nNext step\nfix it"
+        original = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            details,
+            id="test-rubric-1",
+        )
+        original._expanded = True
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.RUBRIC
+        assert data.content == "Acceptance criteria not yet satisfied"
+        assert data.rubric_details == details
+        assert data.rubric_expanded is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, RubricResultMessage)
+        assert restored._summary == "Acceptance criteria not yet satisfied"
+        assert restored._details == details
+        assert restored._deferred_expanded is True
 
     def test_app_message_markdown_roundtrip(self):
         """Markdown AppMessages must survive dehydrate/rehydrate with their flag.
@@ -590,6 +613,58 @@ class TestMessageStore:
             scroll_position=bottom_spacer_top - 400,
             viewport_height=100,
             bottom_spacer_top=bottom_spacer_top,
+        )
+
+    def test_should_hydrate_below_at_bottom_edge(self):
+        """Reaching the scroll edge must hydrate even if the distance check misses.
+
+        Estimated spacer heights can drift from the real DOM layout, leaving the
+        viewport parked at `max_scroll` while the spacer-distance heuristic sits
+        exactly at (or just past) its threshold. Without the edge guarantee the
+        archived tail is stranded — the flaky-hydration failure this reproduces.
+        """
+        store = MessageStore()
+        for i in range(100):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 16
+        store._visible_end = 19
+
+        bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
+        # Geometry where distance_from_bottom_spacer == threshold, so the plain
+        # heuristic returns False forever.
+        scroll_position = 10.0
+        viewport_height = 3
+        assert not store.should_hydrate_below(
+            scroll_position=scroll_position,
+            viewport_height=viewport_height,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+        # Same geometry, but scrolled to the edge: hydration must run.
+        assert store.should_hydrate_below(
+            scroll_position=scroll_position,
+            viewport_height=viewport_height,
+            bottom_spacer_top=bottom_spacer_top,
+            max_scroll=scroll_position,
+        )
+
+    def test_should_hydrate_below_at_edge_with_no_messages_below(self):
+        """The bottom edge never hydrates when the window already ends the store."""
+        store = MessageStore()
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 0
+        store._visible_end = 10
+
+        assert not store.has_messages_below
+        assert not store.should_hydrate_below(
+            scroll_position=5.0,
+            viewport_height=3,
+            bottom_spacer_top=store.range_height(0, 10),
+            max_scroll=5.0,
         )
 
     def test_visible_range(self):

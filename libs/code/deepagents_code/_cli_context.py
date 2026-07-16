@@ -35,6 +35,10 @@ class CLIContextSchema:
 
     model_params: dict[str, Any] = field(default_factory=dict)
 
+    profile_overrides: dict[str, Any] = field(default_factory=dict)
+
+    model_context_limit: int | None = None
+
     auto_approve: bool = False
 
     approval_mode_key: str | None = None
@@ -42,6 +46,8 @@ class CLIContextSchema:
     thread_id: str | None = None
 
     blocked_goal_retry_context: str | None = None
+
+    offload_tool_call_id: str | None = None
 
 
 class CLIContext(TypedDict, total=False):
@@ -60,6 +66,12 @@ class CLIContext(TypedDict, total=False):
     model_params: dict[str, Any]
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
+
+    profile_overrides: dict[str, Any]
+    """Model profile metadata supplied by `--profile-override`."""
+
+    model_context_limit: int | None
+    """Effective context-window limit for profile-aware middleware."""
 
     auto_approve: bool
     """Whether gated tool calls should skip the human-approval interrupt.
@@ -93,4 +105,11 @@ class CLIContext(TypedDict, total=False):
     This is intentionally carried in runtime context instead of the user
     message so it is not parsed as a file mention or checkpointed as human
     input.
+    """
+
+    offload_tool_call_id: str | None
+    """The sole tool-call ID authorized during a server-driven `/offload` run.
+
+    This is set by the client, not graph state, so model-generated calls cannot
+    grant themselves permission to execute during the hidden compaction turn.
     """

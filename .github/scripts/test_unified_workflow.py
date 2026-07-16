@@ -650,6 +650,37 @@ def test_harbor_job_preserves_override_without_project_resync() -> None:
     assert job_env.count('      UV_NO_SYNC: "true"') == 1
 
 
+def test_harbor_override_preserves_locked_transitive_dependencies() -> None:
+    """A source override must not silently replace the locked environment."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor_job = _indented_block(workflow, "  harbor:")
+    override = _indented_block(harbor_job, '      - name: "⚓ Install Harbor override"')
+    script = _step_script(override)
+    assert 'uv pip install --no-deps --reinstall --refresh "${specs[@]}"' in script
+    assert "uv pip check" in script
+
+
+def test_harbor_agent_dependencies_exclude_mcp_prereleases() -> None:
+    """Keep Fireworks prerelease support from selecting the MCP 2.0 beta."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor_job = _indented_block(workflow, "  harbor:")
+    run_harbor = _indented_block(harbor_job, '      - name: "⚓ Run Harbor"')
+    assert "UV_PRERELEASE=allow" not in run_harbor
+
+
+def test_docker_daemon_is_recovered_before_harbor_runs() -> None:
+    """Retry a transient hosted-runner Docker failure before starting trials."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor_job = _indented_block(workflow, "  harbor:")
+    docker = _indented_block(harbor_job, '      - name: "🐳 Ensure Docker daemon"')
+    assert "if: ${{ inputs.sandbox_env == 'docker' }}" in docker
+    script = _step_script(docker)
+    assert script.count("docker info") == 2
+    assert "sudo systemctl restart docker" in script
+    assert "for attempt in 1 2 3 4 5" in script
+    assert "exit 1" in script
+
+
 def test_harbor_job_uses_read_only_token_permissions() -> None:
     """Limit the secret-bearing job while retaining aggregate artifact cleanup."""
     workflow = HARBOR_WORKFLOW.read_text()
@@ -681,6 +712,8 @@ def test_override_inputs_warn_against_mutable_or_credentialed_sources() -> None:
         assert "trusted package source" in description
         assert "Prefer an immutable commit SHA" in description
         assert "never embed credentials" in description
+        assert "installed without dependencies" in description
+        assert "compatible with the locked environment" in description
         assert 'default: ""' in override
         assert "type: string" in override
         descriptions.append(description)

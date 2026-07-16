@@ -450,6 +450,10 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
+        # --no-deps preserves the dependency set installed from uv.lock; an
+        # override must remain compatible with the locked Harbor environment.
+        # Without it, installing a source override can silently upgrade unrelated
+        # transitive packages and make the comparison non-reproducible.
         run: |
           # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
           # so newline is the only safe delimiter. Collect into an array and pass
@@ -459,7 +463,8 @@ jobs:
           while IFS= read -r line; do
             [ -n "$line" ] && specs+=("$line")
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
-          uv pip install --reinstall --refresh "${specs[@]}"
+          uv pip install --no-deps --reinstall --refresh "${specs[@]}"
+          uv pip check
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -531,6 +536,27 @@ jobs:
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
           fi
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+
+      - name: "🐳 Ensure Docker daemon"
+        if: ${{ inputs.sandbox_env == 'docker' }}
+        run: |
+          if docker info >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          echo "::warning::Docker daemon is unavailable; attempting one restart."
+          sudo systemctl restart docker
+          for attempt in 1 2 3 4 5; do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon became ready after restart."
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+
+          echo "::error::Docker daemon did not become ready after restart."
+          sudo systemctl status docker --no-pager || true
+          exit 1
 
       - name: "⚓ Run Harbor"
         env:
@@ -879,12 +905,11 @@ jobs:
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
+            # Harbor's managed installer already uses
+            # `--prerelease=if-necessary`. Do not set UV_PRERELEASE=allow here:
+            # it applies to every agent dependency and previously selected the
+            # incompatible MCP 2.0 beta through an unbounded transitive edge.
+            fireworks)    agent_env_args+=(--agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}') ;;
             ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
             groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;

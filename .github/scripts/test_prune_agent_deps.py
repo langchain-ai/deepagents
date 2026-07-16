@@ -51,6 +51,7 @@ SAMPLE_DEPS: list[str] = [
     "langchain-openai>=1.3.0,<1.4.0",
     "langchain-openrouter>=0.2.3,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
+    "mcp>=1.9.2,<2.0.0",
     "langchain-mcp-adapters>=0.3.0,<0.4.0",
     "aiohttp>=3.14.0,<4.0.0",
     "toml>=0.10.2,<1.0.0",
@@ -61,6 +62,7 @@ NON_PROVIDER_DEPS: list[str] = [
     "./.local_deps/deepagents",
     "./.local_deps/deepagents-code",
     "langchain>=1.3.9,<2.0.0",
+    "mcp>=1.9.2,<2.0.0",
     "langchain-mcp-adapters>=0.3.0,<0.4.0",
     "aiohttp>=3.14.0,<4.0.0",
     "toml>=0.10.2,<1.0.0",
@@ -208,10 +210,9 @@ def test_main_unknown_provider_fails_without_writing(
 ) -> None:
     """An unmapped provider hard-fails (its plumbing isn't wired in harbor.yml).
 
-    Failing fast beats the no-op fallback, which would retain langchain-fireworks
-    — whose transitive fireworks-ai dep is a prerelease — and fail the agent-env
-    install with a cryptic resolver error (no UV_PRERELEASE=allow off the
-    fireworks arm). The file is left untouched because we fail before writing.
+    Failing fast beats the no-op fallback, which would retain every provider
+    integration and install an unnecessarily large, conflict-prone environment.
+    The file is left untouched because we fail before writing.
     """
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, SAMPLE_DEPS)
@@ -335,6 +336,11 @@ def test_sample_deps_match_real_config() -> None:
     passing against a stale snapshot after someone edits the real config.
     """
     assert SAMPLE_DEPS == _real_dependencies()
+
+
+def test_real_config_excludes_mcp_v2() -> None:
+    """MCP 2 removed `RequestContext`, which adapter 0.3 imports at startup."""
+    assert "mcp>=1.9.2,<2.0.0" in _real_dependencies()
 
 
 @pytest.mark.parametrize("provider", sorted(prune.PROVIDER_TO_PACKAGE))

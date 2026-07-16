@@ -24,13 +24,15 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 
 | Category | pass@k | avg@k | tasks |
 | --- | --- | --- | --- |
-| autonomous (harbor-index) | 0.400 | 0.222 | 15 |
-| conversation (tau3-subset) | 0.545 | 0.333 | 11 |
-| context (context-retrieval) | 0.375 | 0.250 | 8 |
-| **macro** | **0.440** | **0.269** |  |
-| **micro** | **0.441** | **0.265** |  |
+| autonomous (harbor-index) | 0.400 | 0.267 | 15 |
+| conversation (tau3-subset) | 0.727 | 0.455 | 11 |
+| context (context-retrieval) | 0.625 | 0.375 | 8 |
+| **macro** | **0.584** | **0.365** |  |
+| **micro** | **0.559** | **0.353** |  |
 
-Run [29451389710](https://github.com/langchain-ai/deepagents/actions/runs/29451389710) · 2026-07-15 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~1h
+Run [29509108062](https://github.com/langchain-ai/deepagents/actions/runs/29509108062) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~25m
+
+One conversation shard hit a transient Docker-daemon failure; recovered from the run's artifacts (merged the retried shard), no tasks re-run.
 
 ## openai:gpt-5.6-luna
 
@@ -52,10 +54,10 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 
 | Category | pass@k | avg@k | tasks |
 | --- | --- | --- | --- |
-| autonomous (harbor-index) | 0.400 | 0.156 | 15 |
-| conversation (tau3-subset) | 0.273 | 0.212 | 11 |
-| context (context-retrieval) | 0.375 | 0.125 | 8 |
-| **macro** | **0.349** | **0.164** |  |
-| **micro** | **0.353** | **0.167** |  |
+| autonomous (harbor-index) | 0.333 | 0.178 | 15 |
+| conversation (tau3-subset) | 0.273 | 0.182 | 11 |
+| context (context-retrieval) | 0.500 | 0.333 | 8 |
+| **macro** | **0.369** | **0.231** |  |
+| **micro** | **0.353** | **0.216** |  |
 
-Run [29304843581](https://github.com/langchain-ai/deepagents/actions/runs/29304843581) · 2026-07-14 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`af2e862`
+Run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/29509109809) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~50m

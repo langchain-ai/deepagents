@@ -227,6 +227,14 @@ def test_sanitize_auto_reason_redacts_secrets_urls_and_control_text() -> None:
     assert len(sanitized) <= 512
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["http://example.com:bad/path", "http://example.com:99999/path"],
+)
+def test_sanitize_auto_reason_handles_invalid_url_ports(url: str) -> None:
+    assert sanitize_auto_reason(url) == "[redacted URL]"
+
+
 def test_mcp_read_only_hint_must_be_coherent() -> None:
     read_only = _tool(
         "mcp_read",

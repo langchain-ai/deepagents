@@ -276,11 +276,12 @@ def gated_mcp_tool_names(mcp_tools: Sequence[BaseTool]) -> set[str]:
 def _redact_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
+        port = parsed.port
     except ValueError:
         return "[redacted URL]"
     host = parsed.hostname or ""
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
+    if port is not None:
+        host = f"{host}:{port}"
     if parsed.username is not None or parsed.password is not None:
         host = f"***@{host}"
     query = urlencode([(key, "[redacted]") for key, _value in parse_qsl(parsed.query)])

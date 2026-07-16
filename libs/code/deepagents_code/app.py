@@ -7658,6 +7658,10 @@ class DeepAgentsApp(App):
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        # These startup paths (`-m`, `--skill`, `--goal`) submit outside
+        # `_submit_input`, so dismiss the startup tip here to match the
+        # interactive submission behavior.
+        await self._dismiss_startup_tip()
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(
@@ -8301,9 +8305,12 @@ class DeepAgentsApp(App):
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 
-        Called from `_submit_input`, so every submission path (interactive
-        and external) dismisses the tip. Subsequent calls are no-ops: the
-        widget is already gone and `query_one` raises `NoMatches`.
+        Called from both submission entry points: `_submit_input` (the shared
+        interactive/external path) and `_submit_initial_submission` (the
+        `-m`/`--skill`/`--goal` startup path, which submits without going
+        through `_submit_input`). Every submission path therefore dismisses
+        the tip. Subsequent calls are no-ops: the widget is already gone and
+        `query_one` raises `NoMatches`.
         """
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()
@@ -17060,7 +17067,7 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` fields for the console header.
+            Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -17092,6 +17099,24 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _thread_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable/link metadata can
+            # ride along with the value; still degrades defensively because a
+            # diagnostic overlay must open even when a subsystem misbehaves.
+            try:
+                thread_id = self._lc_thread_id
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Thread' failed", exc_info=True)
+                return SnapshotField(
+                    label="Thread", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Thread",
+                value=thread_id or "(none)",
+                copyable=bool(thread_id),
+                thread_id=thread_id,
+            )
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -17107,7 +17132,7 @@ class DeepAgentsApp(App):
         return [
             _safe("Version", lambda: __version__),
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
-            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _thread_field(),
             _safe("CWD", lambda: self._cwd),
             _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),

@@ -1,0 +1,47 @@
+.github/scripts/aggregate_unified.py
+  s_6274ebc5113090::t_262fab38ddb9ca 123
+  s_6274ebc5113090::t_11784f6a67b19b 1-3,5-8,11-12
+  s_6274ebc5113090::t_b267242e19aade 149-155,159,161-162,164-165,168-170,181
+  s_6274ebc5113090::t_d866c9d8dec3d1 108-111
+  s_6274ebc5113090::t_8ed4352acbd914 219
+  s_6274ebc5113090::t_61b98d2b58a169 252
+  s_6274ebc5113090::t_a9cac78323b59c 270
+  s_6274ebc5113090::t_412986ca1dd7ff 299
+  s_6274ebc5113090::t_1196795f311d36 390,397
+  s_6274ebc5113090::t_1931a183263382 311-313
+.github/scripts/test_aggregate_unified.py
+  s_6274ebc5113090::t_8dead08e0afafa 341,350
+  s_6274ebc5113090::t_8013c931ecef70 409,423-426
+  s_6274ebc5113090::t_841933d57c6990 265,276,289-292
+  s_6274ebc5113090::t_a15b3f516bc420 197,208
+  s_6274ebc5113090::t_75974c2bf1620a 801,812,825-828
+  s_6274ebc5113090::t_4ae8577f82a439 845,856,871-874
+  s_6274ebc5113090::t_0da84a61e68b4b 613-614,639-640,721-722
+  s_6274ebc5113090::t_c6c242f9b7bb11 367-372,378
+  s_6274ebc5113090::t_f48d18e932f142 744,755,766,779-786
+  s_6274ebc5113090::t_8e2dcff32ad2e0 953-956
+  s_6274ebc5113090::t_9ede01a46047af 934
+  s_6274ebc5113090::t_7552442e6e9d82 988-1022
+  s_6274ebc5113090::t_7ca1533cfe1d05 303,315
+  s_6274ebc5113090::t_a3e75f7536aea7 677-678
+  s_6274ebc5113090::t_51482a3cd9a582 387-392
+  s_6274ebc5113090::t_3baf3c0b6ae92b 888-893,897-900
+  s_6274ebc5113090::t_df2dfda0c9755a 165-167,172-177,187-189
+  s_6274ebc5113090::t_17895349402924 231,242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "94ef03313433c9584dde4ff54fea83369dce03da",
+  "prompts": {},
+  "sessions": {
+    "s_6274ebc5113090": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89ad1fb5-d636-4578-8bd5-cdf9fb091409",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

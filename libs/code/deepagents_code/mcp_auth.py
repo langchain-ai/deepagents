@@ -51,6 +51,7 @@ from typing_extensions import override
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
+    from _thread import LockType
     from pathlib import Path
 
     from mcp.client.auth.oauth2 import OAuthContext
@@ -218,6 +219,19 @@ timeout the provider reloads tokens from disk and avoids using any still-stale
 refresh token (see `_acquire_refresh_lock`).
 """
 
+_TOKEN_FILE_LOCKS: dict[Path, LockType] = {}
+_TOKEN_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _token_file_lock(path: Path) -> LockType:
+    """Return the process-wide mutation lock for `path`."""
+    with _TOKEN_FILE_LOCKS_GUARD:
+        lock = _TOKEN_FILE_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _TOKEN_FILE_LOCKS[path] = lock
+        return lock
+
 
 def _tokens_dir() -> Path:
     """Return `~/.deepagents/.state/mcp-tokens/`.
@@ -306,14 +320,15 @@ class FileTokenStorage(TokenStorage):
         await asyncio.to_thread(self._set_tokens_sync, tokens)
 
     def _set_tokens_sync(self, tokens: OAuthToken) -> None:
-        data = self._read() or {}
-        data["version"] = _STORAGE_VERSION
-        data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
-        if tokens.expires_in is not None:
-            data["expires_at"] = time.time() + tokens.expires_in
-        else:
-            data.pop("expires_at", None)
-        self._write(data)
+        with _token_file_lock(self.path):
+            data = self._read() or {}
+            data["version"] = _STORAGE_VERSION
+            data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
+            if tokens.expires_in is not None:
+                data["expires_at"] = time.time() + tokens.expires_in
+            else:
+                data.pop("expires_at", None)
+            self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         """Return the stored client registration, or `None` if none is persisted."""
@@ -333,10 +348,13 @@ class FileTokenStorage(TokenStorage):
         await asyncio.to_thread(self._set_client_info_sync, client_info)
 
     def _set_client_info_sync(self, client_info: OAuthClientInformationFull) -> None:
-        data = self._read() or {}
-        data["version"] = _STORAGE_VERSION
-        data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
-        self._write(data)
+        with _token_file_lock(self.path):
+            data = self._read() or {}
+            data["version"] = _STORAGE_VERSION
+            data["client_info"] = json.loads(
+                client_info.model_dump_json(exclude_none=True)
+            )
+            self._write(data)
 
     async def get_oauth_metadata(self) -> OAuthMetadata | None:
         """Return stored public OAuth authorization metadata, if available."""
@@ -356,10 +374,13 @@ class FileTokenStorage(TokenStorage):
         await asyncio.to_thread(self._set_oauth_metadata_sync, metadata)
 
     def _set_oauth_metadata_sync(self, metadata: OAuthMetadata) -> None:
-        data = self._read() or {}
-        data["version"] = _STORAGE_VERSION
-        data["oauth_metadata"] = json.loads(metadata.model_dump_json(exclude_none=True))
-        self._write(data)
+        with _token_file_lock(self.path):
+            data = self._read() or {}
+            data["version"] = _STORAGE_VERSION
+            data["oauth_metadata"] = json.loads(
+                metadata.model_dump_json(exclude_none=True)
+            )
+            self._write(data)
 
     async def set_tokens_and_client_info(
         self,
@@ -380,15 +401,18 @@ class FileTokenStorage(TokenStorage):
         tokens: OAuthToken,
         client_info: OAuthClientInformationFull,
     ) -> None:
-        data = self._read() or {}
-        data["version"] = _STORAGE_VERSION
-        data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
-        data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
-        if tokens.expires_in is not None:
-            data["expires_at"] = time.time() + tokens.expires_in
-        else:
-            data.pop("expires_at", None)
-        self._write(data)
+        with _token_file_lock(self.path):
+            data = self._read() or {}
+            data["version"] = _STORAGE_VERSION
+            data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
+            data["client_info"] = json.loads(
+                client_info.model_dump_json(exclude_none=True)
+            )
+            if tokens.expires_in is not None:
+                data["expires_at"] = time.time() + tokens.expires_in
+            else:
+                data.pop("expires_at", None)
+            self._write(data)
 
     async def get_expires_at(self) -> float | None:
         """Return the stored absolute token expiry (Unix epoch), or `None`.
@@ -514,6 +538,10 @@ class FileTokenStorage(TokenStorage):
                 both "nothing to discard" and "could not discard" (an
                 unreadable or unwritable token file, logged where it happens).
         """
+        with _token_file_lock(self.path):
+            return self._discard_client_info_if_loopback_unusable_sync()
+
+    def _discard_client_info_if_loopback_unusable_sync(self) -> bool:
         try:
             data = self._read()
         except RuntimeError as exc:

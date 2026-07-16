@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -171,6 +172,92 @@ class TestFileTokenStorage:
         assert got_tok is not None
         assert got_ci.client_id == "client-id"
         assert got_tok.access_token == "at"
+
+    async def test_concurrent_instances_preserve_distinct_updates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-file read-modify-write operations retain both updates."""
+        token_storage = FileTokenStorage("notion")
+        client_storage = FileTokenStorage("notion")
+        write_barrier = threading.Barrier(2)
+        physical_write_lock = threading.Lock()
+        loop_thread = threading.get_ident()
+        filesystem_threads: list[int] = []
+        real_write = FileTokenStorage._write
+
+        def _coordinated_write(storage: FileTokenStorage, data: dict[str, Any]) -> None:
+            filesystem_threads.append(threading.get_ident())
+            with contextlib.suppress(threading.BrokenBarrierError):
+                write_barrier.wait(timeout=1)
+            # Isolate lost-update behavior from the fixed-name temporary file:
+            # both stale snapshots are written successfully, in sequence.
+            with physical_write_lock:
+                real_write(storage, data)
+
+        monkeypatch.setattr(FileTokenStorage, "_write", _coordinated_write)
+
+        await asyncio.gather(
+            token_storage.set_tokens(_make_tokens()),
+            client_storage.set_client_info(_make_client_info()),
+        )
+
+        stored_tokens = await token_storage.get_tokens()
+        stored_client = await client_storage.get_client_info()
+        assert stored_tokens is not None
+        assert stored_client is not None
+        assert filesystem_threads
+        assert all(thread_id != loop_thread for thread_id in filesystem_threads)
+
+    async def test_concurrent_instances_do_not_overlap_tmp_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-file mutations cannot collide while writing the shared `.tmp`."""
+        first = FileTokenStorage("notion")
+        second = FileTokenStorage("notion")
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _collision_detecting_write(
+            storage: FileTokenStorage, data: dict[str, Any]
+        ) -> None:
+            try:
+                write_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                real_write(storage, data)
+                return
+            msg = "concurrent writers collided on the shared temporary file"
+            raise FileExistsError(msg)
+
+        monkeypatch.setattr(
+            FileTokenStorage,
+            "_write",
+            _collision_detecting_write,
+        )
+
+        await asyncio.gather(
+            first.set_tokens(_make_tokens("first")),
+            second.set_tokens(_make_tokens("second")),
+        )
+
+    async def test_different_token_files_can_write_concurrently(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per-file synchronization does not serialize unrelated servers."""
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _coordinated_write(storage: FileTokenStorage, data: dict[str, Any]) -> None:
+            write_barrier.wait(timeout=1)
+            real_write(storage, data)
+
+        monkeypatch.setattr(FileTokenStorage, "_write", _coordinated_write)
+
+        await asyncio.gather(
+            FileTokenStorage("alpha").set_tokens(_make_tokens("alpha")),
+            FileTokenStorage("beta").set_tokens(_make_tokens("beta")),
+        )
+
+        assert not write_barrier.broken
 
     async def test_sets_file_permissions_on_posix(self, fake_home: Path) -> None:
         """Token files are created with private user-only permissions."""
@@ -2322,6 +2409,42 @@ class TestFileTokenStorageExtras:
 
         assert storage.discard_client_info_if_loopback_unusable() is False
         assert await storage.get_client_info() is not None
+
+    async def test_discard_and_token_write_are_serialized_across_instances(
+        self, fake_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The synchronous self-heal cannot race an async token update."""
+        del fake_home
+        token_storage = FileTokenStorage("notion")
+        heal_storage = FileTokenStorage("notion")
+        await token_storage.set_client_info(_make_client_info())
+
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _collision_detecting_write(
+            storage: FileTokenStorage, data: dict[str, Any]
+        ) -> None:
+            try:
+                write_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                real_write(storage, data)
+                return
+            msg = "self-heal overlapped another shared-envelope mutation"
+            raise FileExistsError(msg)
+
+        monkeypatch.setattr(
+            FileTokenStorage,
+            "_write",
+            _collision_detecting_write,
+        )
+
+        await asyncio.gather(
+            token_storage.set_tokens(_make_tokens()),
+            asyncio.to_thread(heal_storage.discard_client_info_if_loopback_unusable),
+        )
+
+        assert await token_storage.get_tokens() is not None
 
     async def test_discard_noop_without_client_info(self, fake_home: Path) -> None:
         """No persisted registration means nothing to discard."""

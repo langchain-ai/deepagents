@@ -132,8 +132,7 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     )
     assert eval_job.count("n_retries: ${{ inputs.n_retries }}") == 1
     assert (
-        eval_job.count("retry_agent_timeouts: ${{ inputs.retry_agent_timeouts }}")
-        == 1
+        eval_job.count("retry_agent_timeouts: ${{ inputs.retry_agent_timeouts }}") == 1
     )
     assert (
         eval_job.count("harbor_package_override: ${{ inputs.harbor_package_override }}")
@@ -280,16 +279,17 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     assert "UNIFIED_N_SHARDS_" not in workflow
 
 
-def test_combine_needs_prep_and_eval() -> None:
-    """Combine waits on the single eval job, not a fixed provider job list."""
+def test_combine_needs_prep_eval_and_usage() -> None:
+    """Combine waits on eval and its best-effort usage collection job."""
     workflow = UNIFIED_WORKFLOW.read_text()
     combine_job = _indented_block(workflow, "  combine:")
     needs = _indented_block(combine_job, "    needs:")
     assert "- prep" in needs
     assert "- eval" in needs
-    # marker line ("needs:") plus exactly the two job names, no leftover
+    assert "- usage" in needs
+    # marker line ("needs:") plus exactly the three job names, no leftover
     # provider jobs.
-    assert len([line for line in needs.splitlines() if line.strip()]) == 3
+    assert len([line for line in needs.splitlines() if line.strip()]) == 4
 
 
 def test_combine_receives_expected_leaves() -> None:
@@ -700,6 +700,43 @@ def test_harbor_job_uses_read_only_token_permissions() -> None:
     assert aggregate_permissions.count("      actions: write") == 1
 
 
+def test_unified_collects_langsmith_usage_in_read_only_job() -> None:
+    text = UNIFIED_WORKFLOW.read_text()
+    usage = _indented_block(text, "  usage:")
+    combine = _indented_block(text, "  combine:")
+    collector = _indented_block(usage, '      - name: "💰 Query rollout usage"')
+    permissions = _indented_block(usage, "    permissions:")
+
+    assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in collector
+    script = _step_script(collector)
+    assert "collect_langsmith_usage.py _usage_runs" in script
+    assert "$LANGSMITH_API_KEY" not in script
+    assert "      contents: read" in permissions
+    assert "      actions: read" in permissions
+    assert "write" not in permissions
+    assert "LANGSMITH_API_KEY" not in combine
+    assert "usage_args=(--usage-json _usage/langsmith_usage.json)" in combine
+
+
+def test_harbor_shards_record_authoritative_langsmith_experiment() -> None:
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(workflow, "  harbor:")
+    package = _indented_block(harbor, '      - name: "📦 Package Harbor artifacts"')
+    script = _step_script(package)
+
+    assert 'os.environ["HARBOR_LANGSMITH_EXPERIMENT"]' in script
+    assert "langsmith-experiment.json" in script
+    assert '"schema_version": 1' in script
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+
 def test_override_inputs_warn_against_mutable_or_credentialed_sources() -> None:
     """Keep trusted-source guidance consistent on both dispatch surfaces."""
     descriptions: list[str] = []
@@ -801,10 +838,7 @@ def test_harbor_run_can_retry_agent_timeouts_explicitly() -> None:
 
     harbor_job = _indented_block(workflow, "  harbor:")
     job_env = _indented_block(harbor_job, "    env:")
-    assert (
-        "HARBOR_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}"
-        in job_env
-    )
+    assert "HARBOR_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}" in job_env
 
     run_step = _indented_block(harbor_job, '      - name: "⚓ Run Harbor"')
     assert 'case "$HARBOR_RETRY_AGENT_TIMEOUTS" in' in run_step

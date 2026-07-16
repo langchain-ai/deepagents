@@ -90,6 +90,24 @@ def test_aggregate_and_summary(tmp_path: Path):
     }
 
 
+def test_langsmith_experiment_reads_unique_repeated_markers(tmp_path: Path):
+    for shard in ("a", "b"):
+        path = tmp_path / shard / agg.LANGSMITH_MARKER
+        path.parent.mkdir()
+        path.write_text(json.dumps({"schema_version": 1, "experiment": "experiment-a"}))
+
+    assert agg.langsmith_experiment(tmp_path) == "experiment-a"
+
+
+def test_langsmith_experiment_rejects_conflicting_markers(tmp_path: Path):
+    for shard, experiment in (("a", "experiment-a"), ("b", "experiment-b")):
+        path = tmp_path / shard / agg.LANGSMITH_MARKER
+        path.parent.mkdir()
+        path.write_text(json.dumps({"schema_version": 1, "experiment": experiment}))
+
+    assert agg.langsmith_experiment(tmp_path) is None
+
+
 def test_errored_and_missing_count_as_fail(tmp_path: Path):
     _write_trial(tmp_path / "t__0", "taskX", reward=1.0)
     _write_trial(
@@ -530,6 +548,9 @@ def test_make_summary_records_config():
 def test_main_cli_records_config(tmp_path):
     root = tmp_path / "shards"
     root.mkdir()
+    (root / agg.LANGSMITH_MARKER).write_text(
+        json.dumps({"schema_version": 1, "experiment": "experiment-a"})
+    )
     agg.main(
         [
             str(root),
@@ -549,3 +570,4 @@ def test_main_cli_records_config(tmp_path):
     )
     summary = json.loads((root / "summary.json").read_text())
     assert summary["config"] == "bare"
+    assert summary["langsmith_experiment"] == "experiment-a"

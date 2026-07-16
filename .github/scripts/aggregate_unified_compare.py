@@ -13,6 +13,15 @@ from pathlib import Path
 from typing import cast
 
 import aggregate_unified as unified
+import collect_langsmith_usage as langsmith_usage
+
+
+USAGE_METRICS = (
+    "prompt_tokens_per_rollout",
+    "completion_tokens_per_rollout",
+    "total_tokens_per_rollout",
+    "cost_usd_per_rollout",
+)
 
 
 def _json_list(raw: str, label: str) -> list[object]:
@@ -79,6 +88,147 @@ def _task_results(path: Path, k: int) -> dict[str, float]:
     return results
 
 
+def _load_usage(path: Path | None) -> dict[str, dict[str, object]]:
+    if path is None:
+        return {}
+    value = _load_json_object(path, "usage summary")
+    if value.get("schema_version") != 1 or not isinstance(
+        value.get("experiments"), dict
+    ):
+        raise ValueError(f"invalid usage summary: {path}")
+    experiments = cast(dict[str, object], value["experiments"])
+    if not all(
+        isinstance(name, str) and isinstance(item, dict)
+        for name, item in experiments.items()
+    ):
+        raise ValueError(f"invalid experiment usage entries: {path}")
+    return cast(dict[str, dict[str, object]], experiments)
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return cast(dict[str, object], value)
+
+
+def _category_usage(
+    leaf_dir: Path,
+    runtime: str | None,
+    experiments: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    summary = _load_json_object(leaf_dir / "summary.json", "category summary")
+    experiment = summary.get("langsmith_experiment")
+    expected = langsmith_usage.expected_rollouts(summary)
+    if not isinstance(experiment, str) or not experiment:
+        block = langsmith_usage.unavailable_usage(expected)
+        return {"runtime": runtime, "experiment": None, **block}
+    block = experiments.get(experiment) or langsmith_usage.unavailable_usage(expected)
+    return {"runtime": runtime, "experiment": experiment, **block}
+
+
+def _usage_int(block: dict[str, object], field: str) -> int:
+    coverage = cast(dict[str, object], block["coverage"])
+    value = coverage.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _usage_total(block: dict[str, object], field: str) -> float | int | None:
+    totals = cast(dict[str, object], block["totals"])
+    value = totals.get(field)
+    return (
+        value
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _overall_usage(categories: dict[str, dict[str, object]]) -> dict[str, object]:
+    unique: dict[str, dict[str, object]] = {}
+    for block in categories.values():
+        experiment = block.get("experiment")
+        if isinstance(experiment, str) and experiment:
+            unique.setdefault(experiment, block)
+    if not unique:
+        return {"experiments": [], **langsmith_usage.unavailable_usage(None)}
+
+    blocks = list(unique.values())
+    expected_values = [
+        cast(dict[str, object], block["coverage"]).get("expected_rollouts")
+        for block in blocks
+    ]
+    expected = (
+        sum(cast(list[int], expected_values))
+        if all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in expected_values
+        )
+        else None
+    )
+    observed = sum(_usage_int(block, "observed_rollouts") for block in blocks)
+    token_rollouts = sum(_usage_int(block, "token_rollouts") for block in blocks)
+    priced_rollouts = sum(_usage_int(block, "priced_rollouts") for block in blocks)
+    errored_rollouts = sum(_usage_int(block, "errored_rollouts") for block in blocks)
+
+    prompt = sum(
+        cast(int, value)
+        for block in blocks
+        if (value := _usage_total(block, "prompt_tokens")) is not None
+    )
+    completion = sum(
+        cast(int, value)
+        for block in blocks
+        if (value := _usage_total(block, "completion_tokens")) is not None
+    )
+    total = sum(
+        cast(int, value)
+        for block in blocks
+        if (value := _usage_total(block, "total_tokens")) is not None
+    )
+    cost = sum(
+        float(value)
+        for block in blocks
+        if (value := _usage_total(block, "cost_usd")) is not None
+    )
+    statuses = {block.get("status") for block in blocks}
+    status = (
+        "complete"
+        if statuses == {"complete"}
+        else "partial"
+        if observed
+        else "unavailable"
+    )
+    return {
+        "experiments": sorted(unique),
+        "status": status,
+        "coverage": {
+            "expected_rollouts": expected,
+            "observed_rollouts": observed,
+            "token_rollouts": token_rollouts,
+            "priced_rollouts": priced_rollouts,
+            "errored_rollouts": errored_rollouts,
+        },
+        "totals": {
+            "prompt_tokens": prompt if token_rollouts else None,
+            "completion_tokens": completion if token_rollouts else None,
+            "total_tokens": total if token_rollouts else None,
+            "cost_usd": cost if priced_rollouts else None,
+        },
+        "averages": {
+            "prompt_tokens_per_rollout": (
+                prompt / token_rollouts if token_rollouts else None
+            ),
+            "completion_tokens_per_rollout": (
+                completion / token_rollouts if token_rollouts else None
+            ),
+            "total_tokens_per_rollout": (
+                total / token_rollouts if token_rollouts else None
+            ),
+            "cost_usd_per_rollout": cost / priced_rollouts if priced_rollouts else None,
+        },
+    }
+
+
 def _row_from_bundle(
     bundle: tuple[Path, dict[str, object]] | None,
     *,
@@ -87,9 +237,11 @@ def _row_from_bundle(
     config: str,
     categories: list[str],
     rollouts: int,
+    usage_by_experiment: dict[str, dict[str, object]],
 ) -> dict[str, object]:
     leaves: list[dict] = []
     tasks: dict[str, dict[str, float]] = {}
+    category_usage: dict[str, dict[str, object]] = {}
     if bundle is not None:
         root, manifest = bundle
         if (
@@ -102,15 +254,44 @@ def _row_from_bundle(
         records = manifest["categories"]
         if not isinstance(records, dict):
             raise ValueError("bundle categories must be an object")
+        category_records = cast(dict[str, object], records)
         for category in categories:
-            record = records.get(category)
-            if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            record_value = category_records.get(category)
+            record = (
+                cast(dict[str, object], record_value)
+                if isinstance(record_value, dict)
+                else None
+            )
+            runtime = (
+                cast(str, record.get("runtime"))
+                if record is not None and isinstance(record.get("runtime"), str)
+                else None
+            )
+            if record is None or not isinstance(record.get("path"), str):
+                category_usage[category] = {
+                    "runtime": runtime,
+                    "experiment": None,
+                    **langsmith_usage.unavailable_usage(None),
+                }
                 continue
             leaf_dir = root / cast(str, record["path"])
             leaf = unified.read_leaf(leaf_dir, expected_rollouts=rollouts)
             leaf["config"] = config
             leaves.append(leaf)
             tasks[category] = _task_results(leaf_dir / "per_task.jsonl", rollouts)
+            category_usage[category] = _category_usage(
+                leaf_dir, runtime, usage_by_experiment
+            )
+
+    for category in categories:
+        category_usage.setdefault(
+            category,
+            {
+                "runtime": None,
+                "experiment": None,
+                **langsmith_usage.unavailable_usage(None),
+            },
+        )
 
     expected = [
         {"model": model, "config": config, "category": category}
@@ -126,6 +307,10 @@ def _row_from_bundle(
         "config": config,
         **result,
         "tasks": tasks,
+        "usage": {
+            "categories": category_usage,
+            "overall": _overall_usage(category_usage),
+        },
     }
 
 
@@ -218,6 +403,126 @@ def _pairwise(
     return output
 
 
+def _usage_scope(row: dict[str, object], scope: str) -> dict[str, object]:
+    usage = cast(dict[str, object], row["usage"])
+    if scope == "overall":
+        return cast(dict[str, object], usage["overall"])
+    categories = cast(dict[str, dict[str, object]], usage["categories"])
+    return categories[scope]
+
+
+def _usage_average(block: dict[str, object], metric: str) -> float | None:
+    averages = cast(dict[str, object], block["averages"])
+    value = averages.get(metric)
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _usage_metric_delta(
+    first: dict[str, object], second: dict[str, object], metric: str
+) -> dict[str, float | None]:
+    baseline = _usage_average(first, metric)
+    candidate = _usage_average(second, metric)
+    absolute = (
+        candidate - baseline if baseline is not None and candidate is not None else None
+    )
+    percent = (
+        absolute / baseline * 100
+        if absolute is not None and baseline not in (None, 0.0)
+        else None
+    )
+    return {
+        "baseline": baseline,
+        "candidate": candidate,
+        "absolute": absolute,
+        "percent": percent,
+    }
+
+
+def _usage_scopes(
+    first: dict[str, object], second: dict[str, object], categories: list[str]
+) -> dict[str, object]:
+    output: dict[str, object] = {}
+    for scope in [*categories, "overall"]:
+        first_block = _usage_scope(first, scope)
+        second_block = _usage_scope(second, scope)
+        first_experiment = first_block.get("experiment")
+        second_experiment = second_block.get("experiment")
+        shared = (
+            scope != "overall"
+            and isinstance(first_experiment, str)
+            and first_experiment == second_experiment
+        )
+        output[scope] = {
+            "shared_experiment": shared,
+            "from_coverage": first_block["coverage"],
+            "to_coverage": second_block["coverage"],
+            "metrics": {
+                metric: _usage_metric_delta(first_block, second_block, metric)
+                for metric in USAGE_METRICS
+            },
+        }
+    return output
+
+
+def _usage_identity(row: dict[str, object]) -> dict[str, str]:
+    return {
+        "version_id": cast(str, row["version_id"]),
+        "branch": cast(str, row["branch"]),
+        "config": cast(str, row["config"]),
+    }
+
+
+def _usage_comparisons(
+    rows: list[dict[str, object]],
+    sources: list[dict[str, str]],
+    models: list[str],
+    configs: list[str],
+    categories: list[str],
+) -> list[dict[str, object]]:
+    by_subject = {
+        (
+            cast(str, row["version_id"]),
+            cast(str, row["model"]),
+            cast(str, row["config"]),
+        ): row
+        for row in rows
+    }
+    output: list[dict[str, object]] = []
+    for first_source, second_source in combinations(sources, 2):
+        for model in models:
+            for config in configs:
+                first = by_subject[(first_source["version_id"], model, config)]
+                second = by_subject[(second_source["version_id"], model, config)]
+                output.append(
+                    {
+                        "kind": "cross_branch",
+                        "model": model,
+                        "from": _usage_identity(first),
+                        "to": _usage_identity(second),
+                        "scopes": _usage_scopes(first, second, categories),
+                    }
+                )
+    for source in sources:
+        for model in models:
+            for first_config, second_config in combinations(configs, 2):
+                first = by_subject[(source["version_id"], model, first_config)]
+                second = by_subject[(source["version_id"], model, second_config)]
+                output.append(
+                    {
+                        "kind": "within_branch",
+                        "model": model,
+                        "from": _usage_identity(first),
+                        "to": _usage_identity(second),
+                        "scopes": _usage_scopes(first, second, categories),
+                    }
+                )
+    return output
+
+
 def compare(
     root: Path,
     *,
@@ -226,9 +531,11 @@ def compare(
     configs: list[str],
     categories: list[str],
     rollouts: int,
+    usage_by_experiment: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Build every expected subject row and all source-pair deltas."""
     bundles = _discover(root)
+    experiment_usage = usage_by_experiment or {}
     rows = [
         _row_from_bundle(
             bundles.get((source["version_id"], model, config)),
@@ -237,13 +544,14 @@ def compare(
             config=config,
             categories=categories,
             rollouts=rollouts,
+            usage_by_experiment=experiment_usage,
         )
         for source in sources
         for model in models
         for config in configs
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "rollouts_per_task": rollouts,
         "sources": sources,
         "models": models,
@@ -251,6 +559,9 @@ def compare(
         "categories": categories,
         "rows": rows,
         "pairwise": _pairwise(rows, sources, categories),
+        "usage_comparisons": _usage_comparisons(
+            rows, sources, models, configs, categories
+        ),
     }
 
 
@@ -262,6 +573,187 @@ def _fmt(value: float | None, *, signed: bool = False) -> str:
 
 def _md(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _fmt_usage(value: float | None, *, cost: bool = False, signed: bool = False) -> str:
+    if value is None:
+        return "—"
+    prefix = "+" if signed and value >= 0 else ""
+    return f"{prefix}{value:.6f}" if cost else f"{prefix}{value:.1f}"
+
+
+def _fmt_percent(value: float | None) -> str:
+    return "—" if value is None else f"{value:+.2f}%"
+
+
+def _coverage_text(block: dict[str, object]) -> tuple[str, str, str, str]:
+    coverage = cast(dict[str, object], block["coverage"])
+    observed = coverage.get("observed_rollouts")
+    expected = coverage.get("expected_rollouts")
+    token = coverage.get("token_rollouts")
+    priced = coverage.get("priced_rollouts")
+    errored = coverage.get("errored_rollouts")
+    expected_text = str(expected) if isinstance(expected, int) else "—"
+    return (
+        f"{observed}/{expected_text}",
+        f"{token}/{observed}",
+        f"{priced}/{observed}",
+        str(errored),
+    )
+
+
+def _usage_markdown(result: dict[str, object]) -> list[str]:
+    rows = cast(list[dict[str, object]], result["rows"])
+    categories = cast(list[str], result["categories"])
+    grouped: dict[tuple[str, ...], dict[str, object]] = {}
+    for row in rows:
+        usage = cast(dict[str, object], row["usage"])
+        category_blocks = cast(dict[str, dict[str, object]], usage["categories"])
+        for category in categories:
+            block = category_blocks[category]
+            experiment = block.get("experiment")
+            key = (
+                cast(str, row["version_id"]),
+                cast(str, row["branch"]),
+                cast(str, row["model"]),
+                category,
+                experiment if isinstance(experiment, str) else "",
+                "" if isinstance(experiment, str) else cast(str, row["config"]),
+            )
+            entry = grouped.setdefault(
+                key,
+                {
+                    "version_id": row["version_id"],
+                    "branch": row["branch"],
+                    "model": row["model"],
+                    "scope": category,
+                    "runtime": block.get("runtime"),
+                    "configs": [],
+                    "block": block,
+                },
+            )
+            cast(list[str], entry["configs"]).append(cast(str, row["config"]))
+        overall = cast(dict[str, object], usage["overall"])
+        grouped[
+            (
+                cast(str, row["version_id"]),
+                cast(str, row["branch"]),
+                cast(str, row["model"]),
+                "overall",
+                cast(str, row["config"]),
+                "",
+            )
+        ] = {
+            "version_id": row["version_id"],
+            "branch": row["branch"],
+            "model": row["model"],
+            "scope": "overall",
+            "runtime": "—",
+            "configs": [row["config"]],
+            "block": overall,
+        }
+
+    lines = [
+        "",
+        "## Usage and cost",
+        "",
+        "Averages use only rollouts carrying that metric; coverage columns show the denominators.",
+        "",
+        "| Version | Branch | Model | Config(s) | Scope | Runtime | Status | Traces | Token coverage | Price coverage | Errors | Avg input tokens | Avg output tokens | Avg total tokens | Avg cost (USD) |",
+        "|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for entry in grouped.values():
+        block = cast(dict[str, object], entry["block"])
+        averages = cast(dict[str, object], block["averages"])
+        traces, tokens, prices, errors = _coverage_text(block)
+        configs = ", ".join(dict.fromkeys(cast(list[str], entry["configs"])))
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md(entry["version_id"]),
+                    _md(entry["branch"]),
+                    _md(entry["model"]),
+                    _md(configs),
+                    _md(entry["scope"]),
+                    _md(entry["runtime"] or "—"),
+                    _md(block["status"]),
+                    traces,
+                    tokens,
+                    prices,
+                    errors,
+                    _fmt_usage(
+                        cast(float | None, averages["prompt_tokens_per_rollout"])
+                    ),
+                    _fmt_usage(
+                        cast(float | None, averages["completion_tokens_per_rollout"])
+                    ),
+                    _fmt_usage(
+                        cast(float | None, averages["total_tokens_per_rollout"])
+                    ),
+                    _fmt_usage(
+                        cast(float | None, averages["cost_usd_per_rollout"]),
+                        cost=True,
+                    ),
+                ]
+            )
+            + " |"
+        )
+
+    comparisons = cast(list[dict[str, object]], result["usage_comparisons"])
+    if not comparisons:
+        return lines
+    lines.extend(
+        [
+            "",
+            "## Usage and cost deltas",
+            "",
+            "Delta is candidate minus baseline; percentage uses the baseline denominator.",
+            "",
+            "| Kind | Comparison | Model | Scope | Shared experiment | Δ avg input | Δ avg output | Δ avg total | Δ total % | Δ avg cost (USD) | Δ cost % |",
+            "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for comparison in comparisons:
+        first = cast(dict[str, str], comparison["from"])
+        second = cast(dict[str, str], comparison["to"])
+        scopes = cast(dict[str, dict[str, object]], comparison["scopes"])
+        label = (
+            f"{first['version_id']}/{first['config']} → "
+            f"{second['version_id']}/{second['config']}"
+        )
+        for scope, block in scopes.items():
+            shared = bool(block["shared_experiment"])
+            metrics = cast(dict[str, dict[str, float | None]], block["metrics"])
+            if shared:
+                input_delta = output_delta = total_delta = total_percent = "shared"
+                cost_delta = cost_percent = "shared"
+            else:
+                input_delta = _fmt_usage(
+                    metrics["prompt_tokens_per_rollout"]["absolute"], signed=True
+                )
+                output_delta = _fmt_usage(
+                    metrics["completion_tokens_per_rollout"]["absolute"], signed=True
+                )
+                total_delta = _fmt_usage(
+                    metrics["total_tokens_per_rollout"]["absolute"], signed=True
+                )
+                total_percent = _fmt_percent(
+                    metrics["total_tokens_per_rollout"]["percent"]
+                )
+                cost_delta = _fmt_usage(
+                    metrics["cost_usd_per_rollout"]["absolute"],
+                    cost=True,
+                    signed=True,
+                )
+                cost_percent = _fmt_percent(metrics["cost_usd_per_rollout"]["percent"])
+            lines.append(
+                f"| {_md(comparison['kind'])} | {_md(label)} | "
+                f"{_md(comparison['model'])} | {_md(scope)} | "
+                f"{'yes' if shared else 'no'} | {input_delta} | {output_delta} | "
+                f"{total_delta} | {total_percent} | {cost_delta} | {cost_percent} |"
+            )
+    return lines
 
 
 def render_markdown(result: dict[str, object]) -> str:
@@ -414,6 +906,7 @@ def render_markdown(result: dict[str, object]) -> str:
                 lines.append(
                     f"| {_md(first['version_id'])} → {_md(second['version_id'])} | {_md(pair['model'])} | {_md(pair['config'])} | {_md(category)} | {counts['wins']} | {counts['losses']} | {counts['ties']} | {counts['missing']} |"
                 )
+    lines.extend(_usage_markdown(result))
     return "\n".join(lines) + "\n"
 
 
@@ -446,13 +939,13 @@ def write_outputs(result: dict[str, object], out_dir: Path) -> None:
             {
                 "model": f"{row['version_id']} {row['branch']} / {row['model']} / {row['config']}",
                 "scores": {
-                    category: cast(dict[str, object], row["categories"])
-                    .get(category, {})
-                    .get("pass_at_k")
+                    category: category_row.get("pass_at_k")
                     for category in categories
-                    if cast(dict[str, object], row["categories"])
-                    .get(category, {})
-                    .get("pass_at_k")
+                    if (
+                        category_row := cast(
+                            dict[str, dict[str, object]], row["categories"]
+                        ).get(category, {})
+                    ).get("pass_at_k")
                     is not None
                 },
             },
@@ -479,7 +972,8 @@ def _sources(raw: str) -> list[dict[str, str]]:
     for value in values:
         if not isinstance(value, dict):
             raise ValueError("--sources-json entries must be objects")
-        source = {key: value.get(key) for key in ("version_id", "branch", "sha")}
+        source_value = cast(dict[str, object], value)
+        source = {key: source_value.get(key) for key in ("version_id", "branch", "sha")}
         if not all(isinstance(item, str) and item for item in source.values()):
             raise ValueError(
                 "--sources-json entries require version_id, branch, and sha"
@@ -504,6 +998,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--configs-json", required=True)
     parser.add_argument("--categories-json", required=True)
     parser.add_argument("--rollouts", type=int, required=True)
+    parser.add_argument("--usage-json", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.rollouts < 1:
@@ -515,6 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
         configs=_strings(args.configs_json, "--configs-json"),
         categories=_strings(args.categories_json, "--categories-json"),
         rollouts=args.rollouts,
+        usage_by_experiment=_load_usage(args.usage_json),
     )
     write_outputs(result, args.out_dir)
     rows = cast(list[dict[str, object]], result["rows"])

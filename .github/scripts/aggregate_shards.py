@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 PASS_THRESHOLD = 1.0
+LANGSMITH_MARKER = "langsmith-experiment.json"
 
 
 class Aggregation(NamedTuple):
@@ -114,6 +115,43 @@ def load_result(path: Path) -> dict | None:
         emit_annotation(f"::warning::ignoring non-object result.json at {path}")
         return None
     return data
+
+
+def langsmith_experiment(root: Path) -> str | None:
+    """Return the unique LangSmith experiment recorded by shard artifacts.
+
+    Missing markers are valid for local and legacy artifacts. Malformed or
+    conflicting markers are ignored with a warning so score aggregation remains
+    available while cost analysis is explicitly unavailable.
+    """
+    experiments: set[str] = set()
+    invalid = False
+    for path in sorted(root.rglob(LANGSMITH_MARKER)):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            emit_annotation(f"::warning::could not read {path}: {exc}")
+            invalid = True
+            continue
+        experiment = value.get("experiment") if isinstance(value, dict) else None
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != 1
+            or not isinstance(experiment, str)
+            or not experiment
+        ):
+            emit_annotation(f"::warning::invalid LangSmith experiment marker at {path}")
+            invalid = True
+            continue
+        experiments.add(experiment)
+    if invalid or len(experiments) > 1:
+        if len(experiments) > 1:
+            emit_annotation(
+                "::warning::conflicting LangSmith experiments in shard artifacts; "
+                "cost analysis will be unavailable"
+            )
+        return None
+    return next(iter(experiments), None)
 
 
 def raw_reward(result: dict) -> object:
@@ -292,6 +330,7 @@ def make_summary(
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    langsmith_experiment_name: str | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
     cannot drift in schema. The metric keys are dynamic (``pass@{K}`` /
@@ -302,6 +341,7 @@ def make_summary(
         "model": model,
         "category": category,
         "config": config,
+        "langsmith_experiment": langsmith_experiment_name,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -477,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out_dir or args.root
     agg = aggregate(args.root)
+    experiment = langsmith_experiment(args.root)
     shards_found = len(agg.job_ids) + len(agg.empty_shards)
     # A shard actually failed only if the matrix job did not fully succeed. Empty
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
@@ -511,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            langsmith_experiment_name=experiment,
         )
         write_outputs(summary, [], out_dir)
         if incomplete:
@@ -567,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        langsmith_experiment_name=experiment,
     )
     if incomplete:
         emit_annotation(

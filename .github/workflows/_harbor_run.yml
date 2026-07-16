@@ -1092,6 +1092,21 @@ jobs:
         # original tree remains byte-for-byte intact inside the archive.
         run: |
           mkdir -p harbor-jobs/terminal-bench
+          if [ -n "${HARBOR_LANGSMITH_EXPERIMENT:-}" ]; then
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          marker = {
+              "schema_version": 1,
+              "experiment": os.environ["HARBOR_LANGSMITH_EXPERIMENT"],
+          }
+          Path("harbor-jobs/terminal-bench/langsmith-experiment.json").write_text(
+              json.dumps(marker, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          fi
           tar --zstd -cf harbor-shard.tar.zst -C harbor-jobs terminal-bench
 
       - name: "📤 Upload Harbor artifacts"

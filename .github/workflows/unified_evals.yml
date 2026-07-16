@@ -434,11 +434,67 @@ jobs:
       suite_configs: ${{ needs.prep.outputs.configs }}
       conversation_sources: ${{ needs.prep.outputs.conversation_sources }}
 
+  usage:
+    name: "💰 Collect LangSmith usage"
+    needs:
+      - prep
+      - eval
+    if: ${{ always() && needs.prep.outputs.comparison_mode == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          enable-cache: "false"
+          working-directory: libs/evals
+
+      - name: "📦 Install collector dependencies"
+        working-directory: libs/evals
+        run: uv sync --locked
+
+      - name: "⬇️ Download comparison bundles"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: unified-run-*
+          path: _usage_artifacts
+
+      - name: "📦 Extract comparison bundles"
+        run: |
+          mkdir -p _usage_runs
+          while IFS= read -r -d '' archive; do
+            artifact=$(basename "$(dirname "$archive")")
+            mkdir -p "_usage_runs/$artifact"
+            tar --zstd -xf "$archive" -C "_usage_runs/$artifact"
+          done < <(find _usage_artifacts -type f -name 'run.tar.zst' -print0)
+
+      - name: "💰 Query rollout usage"
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          uv run --project libs/evals --no-sync python \
+            .github/scripts/collect_langsmith_usage.py _usage_runs \
+            --out _usage/langsmith_usage.json
+
+      - name: "📤 Upload usage summary"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-langsmith-usage
+          path: _usage/langsmith_usage.json
+          if-no-files-found: error
+
   combine:
     name: "📊 Combine cross-model results"
     needs:
       - prep
       - eval
+      - usage
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # Every ref publishes to the same branch. Serialize the publishing jobs so
@@ -509,6 +565,14 @@ jobs:
             sleep $((attempt * 5))
           done
 
+      - name: "⬇️ Download LangSmith usage"
+        if: ${{ needs.prep.outputs.comparison_mode == 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: unified-langsmith-usage
+          path: _usage
+
       - name: "📊 Combine"
         env:
           COMPARISON_MODE: ${{ needs.prep.outputs.comparison_mode }}
@@ -522,12 +586,17 @@ jobs:
         run: |
           if [ "$COMPARISON_MODE" = "true" ]; then
             mkdir -p _runs
+            usage_args=()
+            if [ -f _usage/langsmith_usage.json ]; then
+              usage_args=(--usage-json _usage/langsmith_usage.json)
+            fi
             python3 .github/scripts/aggregate_unified_compare.py _runs \
               --sources-json "$SOURCES" \
               --models-json "$MODELS" \
               --configs-json "$CONFIGS" \
               --categories-json "$EXPECTED_CATEGORIES" \
               --rollouts "$ROLLOUTS" \
+              "${usage_args[@]}" \
               --out-dir _combined
           else
             mkdir -p _leaves

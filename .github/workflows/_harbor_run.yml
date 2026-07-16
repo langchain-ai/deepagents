@@ -464,7 +464,45 @@ jobs:
             [ -n "$line" ] && specs+=("$line")
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
           uv pip install --no-deps --reinstall --refresh "${specs[@]}"
-          uv pip check
+          # `uv pip check` validates the entire monorepo environment and can
+          # fail on unrelated inconsistencies already present in the lockfile.
+          # Validate only each overridden distribution's active direct
+          # requirements so the override cannot introduce a new incompatibility.
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+          from importlib.metadata import PackageNotFoundError, distribution, version
+
+          from packaging.requirements import Requirement
+
+          failures = []
+          names = []
+          for spec in os.environ["HARBOR_PACKAGE_OVERRIDE"].splitlines():
+              if not spec:
+                  continue
+              name = Requirement(spec).name
+              names.append(name)
+              for declared in distribution(name).requires or []:
+                  requirement = Requirement(declared)
+                  if requirement.marker is not None and not requirement.marker.evaluate():
+                      continue
+                  try:
+                      installed = version(requirement.name)
+                  except PackageNotFoundError:
+                      failures.append(f"{name} requires missing package {requirement.name}")
+                      continue
+                  if requirement.specifier and installed not in requirement.specifier:
+                      failures.append(
+                          f"{name} requires {requirement}, but {installed} is installed"
+                      )
+
+          if failures:
+              print("Harbor override dependency check failed:", file=sys.stderr)
+              for failure in failures:
+                  print(f"- {failure}", file=sys.stderr)
+              raise SystemExit(1)
+          print("Verified Harbor override dependencies: " + ", ".join(names))
+          PY
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

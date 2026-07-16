@@ -657,7 +657,11 @@ def test_harbor_override_preserves_locked_transitive_dependencies() -> None:
     override = _indented_block(harbor_job, '      - name: "⚓ Install Harbor override"')
     script = _step_script(override)
     assert 'uv pip install --no-deps --reinstall --refresh "${specs[@]}"' in script
-    assert "uv pip check" in script
+    assert "uv pip check" not in script
+    assert "from packaging.requirements import Requirement" in script
+    assert "for declared in distribution(name).requires or []:" in script
+    assert "requirement.marker.evaluate()" in script
+    assert "installed not in requirement.specifier" in script
 
 
 def test_harbor_agent_dependencies_exclude_mcp_prereleases() -> None:

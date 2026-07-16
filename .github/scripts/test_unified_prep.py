@@ -24,7 +24,7 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
     assert up.provider_of("weirdvendor:x", known) == "other"
 
 
-def test_derive_pool_budgets_packed_shards_at_full_concurrency():
+def test_derive_pool_uses_full_concurrency_for_packed_shards():
     # Packed shards can use all four slots: 40 // 4 = 10.
     assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (10, 1)
     # concurrency 1 -> 40 shard jobs; 80 // 40 = 2 models.
@@ -313,6 +313,18 @@ def test_build_flat_matrix_bounds_per_model_total_across_categories():
         cat_entries = [e for e in entries if e["category"] == cat]
         seen = " ".join(e["include_tasks"] for e in cat_entries).split()
         assert seen == expected  # every task present exactly once, order preserved
+
+
+def test_derive_pool_budgets_packed_shards_at_full_concurrency():
+    tasks = {"autonomous": [f"harbor-index/a{i}" for i in range(260)]}
+    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks)
+    assert any(len(entry["include_tasks"].split()) > 1 for entry in entries)
+
+    max_parallel, _ = up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=len(entries), n_models=1
+    )
+    assert max_parallel == 10
+    assert max_parallel * 4 == up.MAX_TASKS_PER_MODEL
 
 
 def test_build_flat_matrix_below_cap_stays_one_task_per_shard():

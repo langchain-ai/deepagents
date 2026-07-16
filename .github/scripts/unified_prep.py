@@ -2,7 +2,7 @@
 
 Parses a free-form comma-separated model CSV, validates it via models.py,
 maps each category to its Harbor dataset, and emits a per-model flat matrix
-(one entry per single-task shard, spanning every category) to GITHUB_OUTPUT.
+(one entry per shard, spanning every category) to GITHUB_OUTPUT.
 
 Pool sizing is derived by `derive_pool`, not clamped after the fact: given
 `concurrency` (trials in flight per shard job), `max_parallel =

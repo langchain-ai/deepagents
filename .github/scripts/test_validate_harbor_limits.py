@@ -102,8 +102,8 @@ def test_derive_shard_parallel_saturates_pool_and_clamps_to_n_shards(
 def test_derive_shard_parallel_uses_concurrency_when_rollouts_are_lower(
     mod: ModuleType,
 ) -> None:
+    """Multiple tasks let a shard fill concurrency beyond one task's rollouts."""
     pool = mod.derive_shard_parallel(concurrency=4, rollouts=2, n_shards=100)
-
     assert pool == 10
     assert pool * 4 == mod.MAX_TASKS_PER_MODEL
 

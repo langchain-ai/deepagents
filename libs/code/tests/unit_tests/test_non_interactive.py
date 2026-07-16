@@ -312,10 +312,12 @@ class TestSandboxTypeForwarding:
             await run_non_interactive(
                 message="test task",
                 sandbox_type="modal",
+                profile_override={"max_input_tokens": 32_000},
             )
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+        assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:

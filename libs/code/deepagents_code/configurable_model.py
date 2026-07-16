@@ -433,8 +433,13 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
+        model_kwargs = (
+            {"profile_overrides": ctx.profile_overrides}
+            if ctx.profile_overrides
+            else {}
+        )
         try:
-            model_result = create_model(model)
+            model_result = create_model(model, **model_kwargs)
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
@@ -475,8 +480,17 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
+        model_kwargs = (
+            {"profile_overrides": ctx.profile_overrides}
+            if ctx.profile_overrides
+            else {}
+        )
         try:
-            model_result = await asyncio.to_thread(create_model, model)
+            model_result = await asyncio.to_thread(
+                create_model,
+                model,
+                **model_kwargs,
+            )
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "

@@ -3804,6 +3804,29 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     return _assemble_langsmith_thread_url(project_url, thread_id)
 
 
+def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
+    """Build a LangSmith thread URL only when its project URL is cached.
+
+    This non-blocking variant lets transient UI surfaces render a previously
+    resolved link immediately without repeating or scheduling another lookup.
+
+    Args:
+        thread_id: Thread identifier to build the URL for.
+
+    Returns:
+        Full thread URL string when the active project's URL is already cached,
+        otherwise `None`.
+    """
+    project_name = get_langsmith_project_name()
+    if not project_name or _langsmith_url_cache is None:
+        return None
+
+    cached_name, cached_url = _langsmith_url_cache
+    if cached_name != project_name:
+        return None
+    return _assemble_langsmith_thread_url(cached_url, thread_id)
+
+
 def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement

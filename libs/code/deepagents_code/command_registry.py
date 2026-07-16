@@ -216,7 +216,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/restart",
         description="Restart the agent server",
         bypass_tier=BypassTier.ALWAYS,
-        hidden_keywords="respawn server",
+        hidden_keywords="respawn server reconnect connect",
     ),
     SlashCommand(
         name="/theme",

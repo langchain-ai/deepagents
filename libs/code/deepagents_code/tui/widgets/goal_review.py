@@ -273,6 +273,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "edit"
         if self._edit_input is not None:
             self._edit_input.text = self._criteria
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
@@ -284,6 +285,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "reject"
         if self._edit_input is not None:
             self._edit_input.text = ""
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
@@ -331,7 +333,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as revised criteria."""
         if self._edit_input is None:
             return
-        criteria = self._edit_input.text.strip()
+        criteria = self._edit_input.submitted_value.strip()
         if not criteria:
             self._hint_empty_submission("criteria")
             return
@@ -341,7 +343,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as regeneration feedback."""
         if self._edit_input is None:
             return
-        message = self._edit_input.text.strip()
+        message = self._edit_input.submitted_value.strip()
         if not message:
             self._hint_empty_submission("feedback")
             return
@@ -361,7 +363,7 @@ class GoalReviewMenu(Container):
         glyphs = get_glyphs()
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
-            "Shift+Enter newline"
+            f"Shift+Enter newline {glyphs.bullet} Ctrl+X external editor"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:
@@ -386,13 +388,15 @@ class GoalReviewMenu(Container):
         if self._input_mode == "edit":
             self._help_widget.update(
                 f"Enter save edits {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"Shift+Enter newline {glyphs.bullet} "
+                f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return
         if self._input_mode == "reject":
             self._help_widget.update(
                 f"Enter regenerate {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"Shift+Enter newline {glyphs.bullet} "
+                f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return
         self._help_widget.update(

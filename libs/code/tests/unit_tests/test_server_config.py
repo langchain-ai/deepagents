@@ -397,6 +397,18 @@ class TestServerConfigEdgeCases:
 
         assert restored.rubric_max_iterations == 7
 
+    def test_profile_overrides_round_trip_to_server(self) -> None:
+        """Profile metadata must reach server-side model construction."""
+        original = ServerConfig(profile_overrides={"max_input_tokens": 32000})
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.profile_overrides == {"max_input_tokens": 32000}
+
     def test_sandbox_type_none_string_round_trips(self) -> None:
         """sandbox_type='none' normalizes to None and survives round-trip."""
         original = ServerConfig(sandbox_type="none")

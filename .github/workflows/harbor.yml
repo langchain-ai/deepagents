@@ -9,8 +9,7 @@
 #   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
-#   LANGSMITH_API_KEY          — experiment tracking (always required)
-#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   LANGSMITH_API_KEY          — experiment tracking + LangSmith sandbox (always required)
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
 #   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
@@ -164,6 +163,16 @@ on:
         required: false
         default: "1.0"
         type: string
+      env_build_timeout_multiplier:
+        description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
+        required: false
+        default: "1.0"
+        type: string
+      override_storage_mb:
+        description: "Override the sandbox snapshot filesystem size (MB), raising harbor's 32 GiB floor. Use for heavy harbor-index images that fail the LangSmith snapshot build by exhausting storage (e.g. 65536 = 64 GiB). 0 = don't override."
+        required: false
+        default: "0"
+        type: string
       disable_verification:
         description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
         required: false
@@ -180,9 +189,14 @@ on:
         default: "10"
         type: string
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         required: false
         default: ""
+        type: string
+      judge_models:
+        description: "Grader model for LLM-judge verifiers (e.g. harbor-index), used with an OpenAI judge. Prefer an independent grader, not the model under test."
+        required: false
+        default: "gpt-5.6-luna"
         type: string
 permissions:
   contents: read
@@ -323,6 +337,9 @@ jobs:
       n_tasks: ${{ inputs.n_tasks }}
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
+      override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}

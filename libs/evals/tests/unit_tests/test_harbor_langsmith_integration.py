@@ -141,7 +141,6 @@ def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
         "GOOGLE_API_KEY",
         "GROQ_API_KEY",
         "LANGSMITH_API_KEY",
-        "LANGSMITH_SANDBOX_API_KEY",
         "NVIDIA_API_KEY",
         "OLLAMA_API_KEY",
         "OPENAI_API_KEY",
@@ -152,7 +151,6 @@ def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
 
     assert "secrets." not in install_step
     assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in run_step
-    assert "inputs.sandbox_env == 'langsmith'" in run_step
     assert "startsWith(matrix.model, 'fireworks:')" in run_step
     assert "startsWith(matrix.model, 'ollama:')" in run_step
 

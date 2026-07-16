@@ -2,6 +2,34 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.40](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.39...deepagents-code==0.1.40) (2026-07-16)
+
+
+### Features
+
+* **code:** add "always allow" to project MCP approval prompt ([#4562](https://github.com/langchain-ai/deepagents/issues/4562)) ([ffab82a](https://github.com/langchain-ai/deepagents/commit/ffab82a9458d2a03b95cbc515f883212090a6992))
+* **code:** add `Ctrl+X` to goal review editing ([#4780](https://github.com/langchain-ai/deepagents/issues/4780)) ([641b906](https://github.com/langchain-ai/deepagents/commit/641b906157db2c6ae476805f0714ae8f51040492))
+* **code:** add plugin marketplace support ([#4554](https://github.com/langchain-ai/deepagents/issues/4554)) ([0187d14](https://github.com/langchain-ai/deepagents/commit/0187d14b83301c116a2f177e6e04ae7a8cc99ca7))
+* **code:** auto-accept `/goal` criteria in YOLO mode ([#4784](https://github.com/langchain-ai/deepagents/issues/4784)) ([cc662f2](https://github.com/langchain-ai/deepagents/commit/cc662f236dbf72303be5cbf2c4cfd00710a2d32c))
+* **code:** move `/goal` criteria generation server-side ([#4754](https://github.com/langchain-ai/deepagents/issues/4754)) ([9fdd498](https://github.com/langchain-ai/deepagents/commit/9fdd498937842e2ac490ae0e0ca74eef47abd0bb))
+* **code:** persist reasoning effort across restarts ([#4728](https://github.com/langchain-ai/deepagents/issues/4728)) ([c584dcf](https://github.com/langchain-ai/deepagents/commit/c584dcfb3ad287446e0209b8bd4ca31cee587eea))
+* **code:** toast to re-paste when a chat paste collapses ([#4742](https://github.com/langchain-ai/deepagents/issues/4742)) ([e50e238](https://github.com/langchain-ai/deepagents/commit/e50e2383261ba39923b5d6c48b7fe3b058475cd3))
+
+
+### Bug Fixes
+
+* **code:** clean offloaded history when deleting a thread ([#4751](https://github.com/langchain-ai/deepagents/issues/4751)) ([47788ed](https://github.com/langchain-ai/deepagents/commit/47788ededafd44f74b4368ec6793bf4685ad3a3a))
+* **code:** close subprocess transport on install teardown ([#4735](https://github.com/langchain-ai/deepagents/issues/4735)) ([625e601](https://github.com/langchain-ai/deepagents/commit/625e601da8cd77e13b98b2b81626f320478108dc))
+* **code:** complete goals after satisfied grading ([#4781](https://github.com/langchain-ai/deepagents/issues/4781)) ([682ce0f](https://github.com/langchain-ai/deepagents/commit/682ce0fc760e96cf546ea9c97050293548aebc45))
+* **code:** deduplicate content from system prompt by overwriting base prompt ([#4516](https://github.com/langchain-ai/deepagents/issues/4516)) ([2266f58](https://github.com/langchain-ai/deepagents/commit/2266f58e4713d23ba0b30eb8646424d01165c11b))
+* **code:** hydrate transcript tail when scrolled to the bottom edge ([#4733](https://github.com/langchain-ai/deepagents/issues/4733)) ([02a2461](https://github.com/langchain-ai/deepagents/commit/02a246144c764a1c57b60223652ade8716c7529b))
+* **code:** keep chat input responsive during MCP viewer `Ctrl+R` reconnect ([#4753](https://github.com/langchain-ai/deepagents/issues/4753)) ([28dc96d](https://github.com/langchain-ai/deepagents/commit/28dc96d08bc057f2e435b557062a819db4191310))
+* **code:** match primary-input `Ctrl+D` behavior in inline free-text fields ([#4729](https://github.com/langchain-ai/deepagents/issues/4729)) ([8a6963b](https://github.com/langchain-ai/deepagents/commit/8a6963ba52eee2ab8de5df2c14210f472c828d38))
+* **code:** put local offloaded tool results on the real filesystem ([#4740](https://github.com/langchain-ai/deepagents/issues/4740)) ([36051e2](https://github.com/langchain-ai/deepagents/commit/36051e2a6cdcd9c22f6118f5cfc481e0540913ea))
+* **code:** share paste handling with inline free-text prompts ([#4736](https://github.com/langchain-ai/deepagents/issues/4736)) ([369ec69](https://github.com/langchain-ai/deepagents/commit/369ec6920af35cdec713b9e27d0d1816cafaf556))
+* **code:** surface tool calls awaiting approval ([#4739](https://github.com/langchain-ai/deepagents/issues/4739)) ([8148724](https://github.com/langchain-ai/deepagents/commit/814872492eb2bed4d5c382c6c1fe985ad4354b68))
+* **code:** targeted uv constraints for dcode prerelease deps ([#4744](https://github.com/langchain-ai/deepagents/issues/4744)) ([36c4024](https://github.com/langchain-ai/deepagents/commit/36c40241b85ec5b0452d9ca334e5f09b95dc16aa))
+
 ## [0.1.39](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.38...deepagents-code==0.1.39) (2026-07-14)
 
 ### Bug fixes

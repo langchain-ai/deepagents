@@ -15639,8 +15639,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self.notify(
-                "Auto beta enabled. It reviews gated actions but known bypasses "
-                "remain.",
+                "Automated review (beta) is enabled. It checks approval-gated "
+                "actions, but may not catch every issue.",
                 severity="warning",
                 timeout=8,
                 markup=False,

@@ -2,8 +2,9 @@
 
 import inspect
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from textual.widgets import OptionList
 
 from deepagents_code.app import DeepAgentsApp
@@ -81,6 +82,70 @@ def test_healthy_marketplace_label_shows_available_plugins() -> None:
     assert not row.has_error
     assert "3 available" in label.plain
     assert get_glyphs().error not in label.plain
+
+
+async def test_install_dismisses_reconnect_from_installed_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discover rows lack MCP metadata; install must inspect the returned instance."""
+    screen = PluginManagerScreen()
+    screen._selected_plugin = _PluginRow(
+        "linear@tools",
+        "Linear plugin",
+        False,
+        None,
+        None,
+        display_name="Linear",
+    )
+    assert screen._selected_plugin.mcp_server_names == ()
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.install_plugin",
+        lambda _plugin_id: object(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
+        lambda _instance: (("linear", "linear__linear@tools", True),),
+    )
+    monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
+    monkeypatch.setattr(screen, "notify", MagicMock())
+    dismiss = MagicMock()
+    monkeypatch.setattr(screen, "dismiss", dismiss)
+
+    await screen._install_selected_plugin()
+
+    dismiss.assert_called_once_with(("Linear", True))
+
+
+async def test_install_keeps_manager_open_without_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screen = PluginManagerScreen()
+    screen._selected_plugin = _PluginRow(
+        "skills@tools",
+        "Skills only",
+        False,
+        None,
+        None,
+        display_name="Skills",
+    )
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.install_plugin",
+        lambda _plugin_id: object(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
+        lambda _instance: (),
+    )
+    monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
+    monkeypatch.setattr(screen, "notify", MagicMock())
+    dismiss = MagicMock()
+    monkeypatch.setattr(screen, "dismiss", dismiss)
+
+    await screen._install_selected_plugin()
+
+    dismiss.assert_not_called()
 
 
 async def test_marketplace_divider_refits_on_resize() -> None:

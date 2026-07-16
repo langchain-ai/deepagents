@@ -597,15 +597,20 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if row is None:
             return
         try:
-            await asyncio.to_thread(install_plugin, row.plugin_id)
+            # install_plugin returns the loaded instance; Discover rows do not
+            # carry MCP metadata until install, so inspect the result here.
+            instance = await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
             self._refresh_view()
             return
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
         label = row.label
-        needs_login = bool(row.mcp_login_servers)
-        has_mcp = bool(row.mcp_server_names)
+        entries = plugin_mcp_server_entries(instance)
+        has_mcp = bool(entries)
+        needs_login = any(needs for _label, _scoped, needs in entries)
         self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"

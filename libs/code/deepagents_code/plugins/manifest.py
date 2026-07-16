@@ -12,6 +12,7 @@ from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
     PluginManifest,
+    UnsupportedComponent,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,11 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".codex-plugin") / "plugin.json",
 )
 _PATH_COMPONENT_FIELDS = {"skills", "mcpServers"}
-_UNSUPPORTED_COMPONENT_DIRS = ("agents", "commands", "hooks")
+_UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
+    "agents",
+    "commands",
+    "hooks",
+)
 _NAME_RE = re.compile(r"^[^\s]+$")
 
 
@@ -234,9 +239,11 @@ def _existing_component_path(path: Path, plugin_root: Path) -> tuple[Path, ...]:
         return (resolved,)
 
 
-def _unsupported_component_dirs(plugin_root: Path) -> tuple[str, ...]:
+def _unsupported_component_dirs(
+    plugin_root: Path,
+) -> tuple[UnsupportedComponent, ...]:
     """Return present component dirs that deepagents-code does not load."""
-    found: list[str] = []
+    found: list[UnsupportedComponent] = []
     for name in _UNSUPPORTED_COMPONENT_DIRS:
         path = plugin_root / name
         try:

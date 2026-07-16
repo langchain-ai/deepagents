@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from deepagents_code.plugins.models import UnsupportedComponent
+
 PluginTab = Literal["discover", "installed", "marketplaces", "errors"]
 PluginManagerView = Literal[
     "list",
@@ -15,7 +17,7 @@ PluginManagerView = Literal[
 PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _PluginRow:
     plugin_id: str
     description: str
@@ -26,7 +28,7 @@ class _PluginRow:
     skill_names: tuple[str, ...] = ()
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
-    unsupported_components: tuple[str, ...] = ()
+    unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None
 

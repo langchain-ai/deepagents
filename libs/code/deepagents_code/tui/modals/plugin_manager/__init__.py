@@ -85,8 +85,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
                 servers.
-            loaded_plugin_ids: Plugin ids loaded into the current session
-                Enabled plugins missing from this set are shown as pending reload.
+            loaded_plugin_ids: Plugin ids loaded into the current session.
+                Plugins whose enabled state differs from this set (enabled but
+                not loaded, or disabled but still loaded) are shown as pending
+                reload.
         """
         super().__init__()
         self._tab: PluginTab = "discover"

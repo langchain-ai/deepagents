@@ -60,6 +60,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
+    plugin_data_dir,
     sanitize_plugin_id,
     save_marketplace_record,
     set_plugin_enabled,
@@ -1257,3 +1258,55 @@ def test_manager_state_previews_local_discover_components(
     assert any(
         name.endswith("__docs") or name == "docs" for name in row.mcp_server_names
     )
+
+
+def test_manager_preview_does_not_create_plugin_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    data_dir = plugin_data_dir(plugin_id)
+
+    assert not data_dir.exists()
+
+    state = _load_manager_state()
+
+    assert any(row.plugin_id == plugin_id for row in state.available_plugins)
+    assert not data_dir.exists()
+
+
+def test_manager_state_marks_installed_plugin_with_missing_cache_as_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+
+    entry = get_primary_install_entry(plugin_id)
+    assert entry is not None
+    shutil.rmtree(entry.install_path)
+
+    state = _load_manager_state(loaded_plugin_ids=frozenset())
+    row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
+
+    assert row.load_state == "error"
+    assert row.load_error is not None
+    assert "re-run install" in row.load_error
+    # The actionable reason also reaches the Errors tab, not just the row.
+    assert any("re-run install" in err for err in state.errors)

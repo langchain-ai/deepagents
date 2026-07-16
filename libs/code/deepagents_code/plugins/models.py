@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
+UnsupportedComponent = Literal["agents", "commands", "hooks"]
+"""Plugin component directory that `deepagents-code` does not load."""
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
 
@@ -69,12 +71,13 @@ class PluginManifest:
 class ComponentInventory:
     """Inventory of supported plugin components.
 
-    `unsupported` lists plugin component directories that are not loaded by dcode`
+    `unsupported` lists plugin component directories that `deepagents-code` does
+    not load (e.g. `agents/`, `commands/`, `hooks/`).
     """
 
     skills: tuple[Path, ...] = ()
     mcp_files: tuple[Path, ...] = ()
-    unsupported: tuple[str, ...] = ()
+    unsupported: tuple[UnsupportedComponent, ...] = ()
     warnings: tuple[str, ...] = ()
 
 

@@ -2598,8 +2598,11 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
-        self._session_plugin_ids: frozenset[str] = self._snapshot_session_plugin_ids()
+        self._session_plugin_ids: frozenset[str] = frozenset()
         """Plugin ids loaded into the current session (startup or last `/reload`)."""
+
+        self._discovered_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids found by the latest background skill discovery."""
 
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
@@ -3719,7 +3722,7 @@ class DeepAgentsApp(App):
         # Discover skills first so /skill: autocomplete is ready as early
         # as possible. The heavy filesystem scan runs in a thread.
         self.run_worker(
-            self._discover_skills(),
+            self._discover_startup_skills(),
             exclusive=True,
             group="startup-skill-discovery",
         )
@@ -4067,6 +4070,17 @@ class DeepAgentsApp(App):
                 )
         return True
 
+    async def _discover_startup_skills(self) -> bool:
+        """Discover skills and record plugins loaded by initial startup.
+
+        Returns:
+            Whether skill and plugin discovery succeeded.
+        """
+        discovered = await self._discover_skills()
+        if discovered:
+            self._session_plugin_ids = self._discovered_plugin_ids
+        return discovered
+
     def _discover_skills_and_roots(
         self,
     ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
@@ -4079,14 +4093,12 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_code.plugins.adapters.skills import (
-            discover_plugin_skill_sources_and_roots,
-        )
+        from deepagents_code.plugins.adapters.skills import discover_plugin_skill_state
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots = (
-            discover_plugin_skill_sources_and_roots()
+        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
+            discover_plugin_skill_state()
         )
         return discover_skills_and_roots(
             assistant_id,
@@ -11266,7 +11278,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
                 plugin_result = discover_plugins()
-                self._session_plugin_ids = frozenset(
+                discovered_plugin_ids = frozenset(
                     plugin.plugin_id for plugin in plugin_result.plugins
                 )
                 plugin_count = len(plugin_result.plugins)
@@ -11300,6 +11312,7 @@ class DeepAgentsApp(App):
                         self._discard_queue()
                     restarted = await self._restart_server_manual()
                     if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                     else:
                         report += (
@@ -17050,20 +17063,6 @@ class DeepAgentsApp(App):
                 loaded_plugin_ids=self._session_plugin_ids,
             )
         )
-
-    @staticmethod
-    def _snapshot_session_plugin_ids() -> frozenset[str]:
-        """Return enabled plugin ids that should count as loaded for this session."""
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        if not is_env_truthy(EXPERIMENTAL):
-            return frozenset()
-        try:
-            from deepagents_code.plugins import discover_plugins
-
-            return frozenset(plugin.plugin_id for plugin in discover_plugins().plugins)
-        except (OSError, RuntimeError, ValueError):
-            return frozenset()
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

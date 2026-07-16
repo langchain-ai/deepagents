@@ -75,14 +75,9 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
 
 
 def _plugin_mcp_server_names(instance: PluginInstance) -> tuple[str, ...]:
-    from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+    from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_names
 
-    names: list[str] = []
-    for config in plugin_mcp_configs((instance,)):
-        servers = config.get("mcpServers")
-        if isinstance(servers, dict):
-            names.extend(key for key in servers if isinstance(key, str))
-    return tuple(dict.fromkeys(names))
+    return plugin_mcp_server_names(instance)
 
 
 def _plugin_mcp_connected(
@@ -109,6 +104,7 @@ def _instance_for_manager_row(
         return None
     entry = get_primary_install_entry(plugin_id)
     if entry is None:
+        errors.append(f"{plugin_id}: no install entry found; re-run install")
         return None
     root = Path(entry.install_path)
     try:
@@ -117,13 +113,12 @@ def _instance_for_manager_row(
         errors.append(f"{plugin_id}: could not inspect install path: {exc}")
         return None
     if not installed:
+        errors.append(f"{plugin_id}: install cache missing at {root}; re-run install")
         return None
     from deepagents_code.plugins.discovery import _plugin_from_install_path
 
-    try:
-        plugin_name, marketplace_name = split_plugin_id(plugin_id)
-    except ValueError:
-        return None
+    # plugin_id is built as `{name}@{marketplace}`, so split_plugin_id cannot fail.
+    plugin_name, marketplace_name = split_plugin_id(plugin_id)
     try:
         loaded, warnings = _plugin_from_install_path(
             plugin_id=plugin_id,
@@ -164,10 +159,8 @@ def _preview_local_plugin_instance(
         return None
     from deepagents_code.plugins.discovery import _plugin_from_install_path
 
-    try:
-        plugin_name, marketplace_name = split_plugin_id(plugin_id)
-    except ValueError:
-        return None
+    # plugin_id is built as `{name}@{marketplace}`, so split_plugin_id cannot fail.
+    plugin_name, marketplace_name = split_plugin_id(plugin_id)
     try:
         loaded, warnings = _plugin_from_install_path(
             plugin_id=plugin_id,
@@ -178,7 +171,8 @@ def _preview_local_plugin_instance(
     except (OSError, RuntimeError) as exc:
         errors.append(f"{plugin_id}: {exc}")
         return None
-    # Preview warnings stay on the instance inventory; avoid flooding Errors.
+    # Preview is best-effort: inventory warnings are intentionally not surfaced
+    # for un-installed plugins (they reach Errors once the plugin is installed).
     _ = warnings
     return loaded
 
@@ -197,20 +191,21 @@ def _row_from_instance(
     skill_names = _list_plugin_skill_names(instance) if instance else ()
     mcp_names = _plugin_mcp_server_names(instance) if instance else ()
     unsupported = instance.inventory.unsupported if instance else ()
+    session_loaded = plugin_id in loaded_plugin_ids
     return _PluginRow(
-        plugin_id,
-        description,
-        is_enabled,
-        instance.version if instance else None,
-        author,
-        len(skill_names) if instance else None,
-        skill_names,
-        _plugin_mcp_connected(instance, mcp_server_info)
-        if instance and plugin_id in loaded_plugin_ids
+        plugin_id=plugin_id,
+        description=description,
+        enabled=is_enabled,
+        version=instance.version if instance else None,
+        author=author,
+        skill_count=len(skill_names) if instance else None,
+        skill_names=skill_names,
+        mcp_connected=_plugin_mcp_connected(instance, mcp_server_info)
+        if instance and session_loaded
         else None,
-        mcp_names,
-        unsupported,
-        session_loaded=plugin_id in loaded_plugin_ids,
+        mcp_server_names=mcp_names,
+        unsupported_components=unsupported,
+        session_loaded=session_loaded,
         load_error=load_error,
     )
 

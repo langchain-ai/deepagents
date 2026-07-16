@@ -20042,6 +20042,30 @@ class TestPrewarmAwait:
             f"prewarm must precede skill discovery thread; got {call_order}"
         )
 
+    def test_constructor_does_not_discover_plugins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plugin filesystem discovery must stay off the pre-paint hot path."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        with patch("deepagents_code.plugins.discover_plugins") as discover_mock:
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        discover_mock.assert_not_called()
+        assert app._session_plugin_ids == frozenset()
+
+    async def test_startup_skill_discovery_records_loaded_plugin_ids(self) -> None:
+        """The post-paint discovery result initializes running session state."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._discovered_plugin_ids = frozenset({"quality@tools"})
+
+        with patch.object(app, "_discover_skills", AsyncMock(return_value=True)):
+            discovered = await app._discover_startup_skills()
+
+        assert discovered is True
+        assert app._session_plugin_ids == frozenset({"quality@tools"})
+
     async def test_discover_skills_prewarm_failure_warns_with_debug_hint(
         self,
     ) -> None:

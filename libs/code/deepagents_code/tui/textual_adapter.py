@@ -659,6 +659,8 @@ async def execute_task_textual(
         else:
             final_input = prompt_text
 
+        from deepagents_code.config import settings
+
         images_to_send = []
         videos_to_send = []
         if image_tracker:
@@ -666,7 +668,10 @@ async def execute_task_textual(
             videos_to_send = image_tracker.get_videos()
         if images_to_send or videos_to_send:
             message_content = create_multimodal_content(
-                final_input, images_to_send, videos_to_send
+                final_input,
+                images_to_send,
+                videos_to_send,
+                unsupported_modalities=settings.model_unsupported_modalities,
             )
         else:
             message_content = final_input
@@ -1257,8 +1262,6 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
                             active_model = settings.model_name or ""
                             active_provider = settings.model_provider or ""
                             if input_toks or output_toks:

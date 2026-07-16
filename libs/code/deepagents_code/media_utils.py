@@ -567,14 +567,19 @@ def encode_to_base64(data: bytes) -> str:
 
 
 def create_multimodal_content(
-    text: str, images: list[ImageData], videos: list[VideoData] | None = None
+    text: str,
+    images: list[ImageData],
+    videos: list[VideoData] | None = None,
+    *,
+    unsupported_modalities: frozenset[str] = frozenset(),
 ) -> list[Any]:
-    """Create multimodal message content with text, images, and videos.
+    """Create model-compatible content from text and media attachments.
 
     Args:
-        text: Text content of the message
-        images: List of ImageData objects
-        videos: Optional list of VideoData objects
+        text: Text content of the message.
+        images: List of `ImageData` objects.
+        videos: Optional list of `VideoData` objects.
+        unsupported_modalities: Media types to omit from the model request.
 
     Returns:
         List of content blocks in LangChain message format.
@@ -599,14 +604,23 @@ def create_multimodal_content(
         item.placeholder_span for item in media if item.placeholder_span is not None
     ]
     clean_text = strip_media_placeholders(text, placeholders, placeholder_spans=spans)
+    omitted: list[str] = []
+    if images and "image" in unsupported_modalities:
+        omitted.append(f"{len(images)} image attachment(s)")
+    if videos and "video" in unsupported_modalities:
+        omitted.append(f"{len(videos)} video attachment(s)")
+    if omitted:
+        notice = (
+            f"[Omitted {' and '.join(omitted)}: the active model cannot process them.]"
+        )
+        clean_text = f"{clean_text}\n\n{notice}" if clean_text else notice
     if clean_text:
         content_blocks.append({"type": "text", "text": clean_text})
 
-    # Add image blocks
-    content_blocks.extend(image.to_message_content() for image in images)
+    if "image" not in unsupported_modalities:
+        content_blocks.extend(image.to_message_content() for image in images)
 
-    # Add video blocks
-    if videos:
+    if videos and "video" not in unsupported_modalities:
         content_blocks.extend(video.to_message_content() for video in videos)
 
     return content_blocks

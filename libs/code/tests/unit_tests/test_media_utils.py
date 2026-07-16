@@ -323,6 +323,47 @@ class TestCreateMultimodalContent:
         assert result[0]["text"] == "Describe this:"
         assert result[1]["type"] == "image_url"
 
+    def test_unsupported_image_is_replaced_with_notice(self) -> None:
+        """Unsupported image blocks are omitted before the model request."""
+        img = ImageData(base64_data="abc123", format="png", placeholder="[image 1]")
+
+        result = create_multimodal_content(
+            "Describe [image 1]",
+            [img],
+            unsupported_modalities=frozenset({"image"}),
+        )
+
+        assert result == [
+            {
+                "type": "text",
+                "text": (
+                    "Describe\n\n"
+                    "[Omitted 1 image attachment(s): the active model "
+                    "cannot process them.]"
+                ),
+            }
+        ]
+
+    def test_unsupported_attachment_only_stays_nonempty(self) -> None:
+        """An unsupported attachment-only prompt still produces valid text."""
+        img = ImageData(base64_data="abc123", format="png", placeholder="[image 1]")
+
+        result = create_multimodal_content(
+            "[image 1]",
+            [img],
+            unsupported_modalities=frozenset({"image"}),
+        )
+
+        assert result == [
+            {
+                "type": "text",
+                "text": (
+                    "[Omitted 1 image attachment(s): the active model "
+                    "cannot process them.]"
+                ),
+            }
+        ]
+
     def test_text_and_multiple_images(self) -> None:
         """Test creating content with text and multiple images."""
         img1 = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
@@ -1006,6 +1047,28 @@ class TestCreateMultimodalContentWithVideo:
         assert result[0]["type"] == "text"
         assert result[1]["type"] == "image_url"
         assert result[2]["type"] == "video"
+
+    def test_mixed_media_omits_only_unsupported_modality(self) -> None:
+        """Supported media remains when another modality is unavailable."""
+        img = ImageData(base64_data="img", format="png", placeholder="[image 1]")
+        vid = VideoData(base64_data="vid", format="mp4", placeholder="[video 1]")
+
+        result = create_multimodal_content(
+            "Compare [image 1] with [video 1]",
+            [img],
+            [vid],
+            unsupported_modalities=frozenset({"video"}),
+        )
+
+        assert len(result) == 2
+        assert result[0] == {
+            "type": "text",
+            "text": (
+                "Compare with\n\n"
+                "[Omitted 1 video attachment(s): the active model cannot process them.]"
+            ),
+        }
+        assert result[1]["type"] == "image_url"
 
     def test_video_only(self) -> None:
         """Test that empty text is not included when only video is present."""

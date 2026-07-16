@@ -12727,6 +12727,31 @@ class TestOnApprovalMenuDecidedCleanup:
 class TestActionOpenEditor:
     """Tests for the external editor action."""
 
+    @staticmethod
+    async def _open_goal_editor(
+        app: DeepAgentsApp,
+        pilot: Pilot[DeepAgentsApp],
+        *,
+        reject: bool = False,
+    ) -> tuple[GoalReviewMenu, GoalReviewTextArea, asyncio.Future[GoalReviewResult]]:
+        """Mount a goal review and enter one of its text-editing modes."""
+        messages = app.query_one("#messages", Container)
+        menu = GoalReviewMenu("goal", "- original criterion")
+        future: asyncio.Future[GoalReviewResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+        menu.set_future(future)
+        await messages.mount(menu)
+        app._pending_goal_review_widget = menu
+        await pilot.pause()
+        menu.focus()
+        await pilot.pause()
+        await pilot.press("r" if reject else "e")
+        await pilot.pause()
+        text_area = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+        assert app.focused is text_area
+        return menu, text_area, future
+
     async def test_updates_text_on_successful_edit(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         text_area = MagicMock()
@@ -12797,6 +12822,238 @@ class TestActionOpenEditor:
         mock_notify.assert_called_once()
         assert "failed" in mock_notify.call_args[0][0].lower()
         chat_input.focus_input.assert_called_once()
+
+    async def test_ctrl_x_edits_focused_goal_criteria_without_submitting(self) -> None:
+        """Ctrl+X should round-trip criteria through the focused goal editor."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, text_area, future = await self._open_goal_editor(app, pilot)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="- revised criterion",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "- original criterion", allow_empty=True, raise_on_error=True
+            )
+            assert text_area.text == "- revised criterion"
+            assert text_area.cursor_location == text_area.document.end
+            assert app.focused is text_area
+            assert menu._input_mode == "edit"
+            assert future.done() is False
+
+    async def test_ctrl_x_edits_rejection_feedback_without_submitting(self) -> None:
+        """Ctrl+X should round-trip feedback without leaving rejection mode."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, text_area, future = await self._open_goal_editor(
+                app, pilot, reject=True
+            )
+            text_area.text = "add coverage"
+            text_area.move_cursor(text_area.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="add coverage and docs",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "add coverage", allow_empty=True, raise_on_error=True
+            )
+            assert text_area.text == "add coverage and docs"
+            assert text_area.cursor_location == text_area.document.end
+            assert app.focused is text_area
+            assert menu._input_mode == "reject"
+            assert future.done() is False
+
+    async def test_ctrl_x_preserves_empty_goal_editor_result(self) -> None:
+        """An empty external edit should remain for normal goal validation."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, text_area, future = await self._open_goal_editor(app, pilot)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor", return_value=""
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "- original criterion", allow_empty=True, raise_on_error=True
+            )
+            assert text_area.text == ""
+            assert text_area.cursor_location == (0, 0)
+            assert app.focused is text_area
+            assert menu._input_mode == "edit"
+            assert future.done() is False
+
+    async def test_ctrl_x_expands_and_resets_goal_editor_paste_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """External edits should use logical paste text and discard stale backing."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, text_area, future = await self._open_goal_editor(app, pilot)
+            text_area.text = ""
+            big = "- criterion\n" * 5
+            await text_area._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert text_area.text == "[Pasted text #1 +5 lines]"
+            assert text_area._pasted_contents
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="replacement",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                big, allow_empty=True, raise_on_error=True
+            )
+            assert text_area.text == "replacement"
+            assert text_area.submitted_value == "replacement"
+            assert text_area._pasted_contents == {}
+            assert text_area._next_paste_id == 1
+            assert app.focused is text_area
+            assert future.done() is False
+
+    async def test_ctrl_x_cancel_preserves_goal_editor_and_paste_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling the editor should preserve visible and stored paste text."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, text_area, future = await self._open_goal_editor(app, pilot)
+            text_area.text = ""
+            big = "- criterion\n" * 5
+            await text_area._on_paste(events.Paste(big))
+            await pilot.pause()
+            visible = text_area.text
+            pasted = dict(text_area._pasted_contents)
+            next_paste_id = text_area._next_paste_id
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor", return_value=None
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                big, allow_empty=True, raise_on_error=True
+            )
+            assert text_area.text == visible
+            assert text_area._pasted_contents == pasted
+            assert text_area._next_paste_id == next_paste_id
+            assert app.focused is text_area
+            assert future.done() is False
+
+    async def test_ctrl_x_goal_editor_failure_preserves_text_and_focus(self) -> None:
+        """Editor errors should notify without moving focus to the chat input."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, text_area, future = await self._open_goal_editor(app, pilot)
+            original = text_area.text
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.resolve_editor",
+                    return_value=["missing-editor"],
+                ),
+                patch(
+                    "deepagents_code.editor.subprocess.run",
+                    side_effect=FileNotFoundError("missing-editor"),
+                ),
+                patch.object(app, "notify") as notify,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            notify.assert_called_once_with(
+                "External editor failed. Check $VISUAL/$EDITOR.",
+                severity="error",
+                timeout=5,
+            )
+            assert text_area.text == original
+            assert app.focused is text_area
+            assert future.done() is False
+
+    @pytest.mark.parametrize("state", ["hidden", "unfocused", "detached"])
+    async def test_inactive_goal_editor_does_not_intercept_chat_ctrl_x(
+        self, state: str
+    ) -> None:
+        """Only the visible, attached, focused goal editor should capture Ctrl+X."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, text_area, future = await self._open_goal_editor(app, pilot)
+            if state == "hidden":
+                menu.action_cancel()
+                assert text_area.display is False
+            elif state == "unfocused":
+                menu.focus()
+                assert text_area.display is True
+            else:
+                await menu.remove()
+                assert menu.is_attached is False
+            await pilot.pause()
+            assert app.focused is not text_area
+
+            chat_input = app.query_one(ChatInput)
+            chat_input.set_value_at_end("chat draft")
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited chat draft",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "chat draft", allow_empty=False, raise_on_error=False
+            )
+            assert chat_input.value == "edited chat draft"
+            assert app.focused is chat_input.input_widget
+            assert future.done() is False
 
 
 class TestEditorSlashCommand:

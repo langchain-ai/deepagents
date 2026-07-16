@@ -141,6 +141,19 @@ class TestOpenInEditor:
             result = open_in_editor("original")
         assert result is None
 
+    @patch("deepagents_code.editor.subprocess.run")
+    def test_returns_empty_edit_when_allowed(self, mock_run: MagicMock) -> None:
+        """Callers with submit-time validation may preserve an empty edit."""
+
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            pathlib.Path(cmd[-1]).write_text("", encoding="utf-8")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        with patch("deepagents_code.editor.resolve_editor", return_value=["nano"]):
+            result = open_in_editor("original", allow_empty=True)
+        assert result == ""
+
     def test_returns_none_on_editor_not_found(self) -> None:
         with (
             patch(

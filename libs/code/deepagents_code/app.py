@@ -568,7 +568,11 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.debug_console import SnapshotField
-    from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+    from deepagents_code.tui.widgets.goal_review import (
+        GoalReviewMenu,
+        GoalReviewResult,
+        GoalReviewTextArea,
+    )
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
@@ -15097,20 +15101,61 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
-    async def action_open_editor(self) -> None:
-        """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
+    def _focused_goal_review_editor(self) -> GoalReviewTextArea | None:
+        """Return the active focused goal-review editor, if any."""
+        menu = self._pending_goal_review_widget
+        if (
+            menu is None
+            or menu._input_mode is None
+            or not menu.is_attached
+            or not menu.display
+            or not menu.visible
+        ):
+            return None
+
+        from deepagents_code.tui.widgets.goal_review import GoalReviewTextArea
+
+        focused = self.focused
+        if (
+            not isinstance(focused, GoalReviewTextArea)
+            or focused is not menu._edit_input
+            or not focused.is_attached
+            or not focused.display
+            or not focused.visible
+        ):
+            return None
+        return focused
+
+    async def _open_text_area_in_editor(
+        self,
+        text_area: TextArea,
+        current_text: str,
+        *,
+        allow_empty: bool,
+        raise_editor_errors: bool,
+        restore_focus: Callable[[], object],
+        reset_after_edit: Callable[[], None] | None = None,
+    ) -> None:
+        """Edit text externally, then restore the originating field's focus.
+
+        Args:
+            text_area: Field to replace when the editor returns a result.
+            current_text: Complete value to pre-populate in the editor.
+            allow_empty: Whether a blank edited result should replace the field.
+            raise_editor_errors: Whether launch and file errors should reach the
+                notification handler instead of looking like cancellation.
+            restore_focus: Callback that restores the originating editable surface.
+            reset_after_edit: Optional state reset after replacing the field text.
+        """
         from deepagents_code.editor import open_in_editor
 
-        chat_input = self._chat_input
-        if not chat_input or not chat_input._text_area:
-            return
-
-        current_text = chat_input._text_area.text or ""
-
-        edited: str | None = None
         try:
             with self.suspend():
-                edited = open_in_editor(current_text)
+                edited = open_in_editor(
+                    current_text,
+                    allow_empty=allow_empty,
+                    raise_on_error=raise_editor_errors,
+                )
         except Exception:
             logger.warning("External editor failed", exc_info=True)
             self.notify(
@@ -15118,14 +15163,41 @@ class DeepAgentsApp(App):
                 severity="error",
                 timeout=5,
             )
-            chat_input.focus_input()
+        else:
+            if edited is not None:
+                text_area.text = edited
+                if reset_after_edit is not None:
+                    reset_after_edit()
+                lines = edited.split("\n")
+                text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        finally:
+            restore_focus()
+
+    async def action_open_editor(self) -> None:
+        """Open the focused editable surface in $VISUAL/$EDITOR."""
+        goal_editor = self._focused_goal_review_editor()
+        if goal_editor is not None:
+            await self._open_text_area_in_editor(
+                goal_editor,
+                goal_editor.submitted_value,
+                allow_empty=True,
+                raise_editor_errors=True,
+                restore_focus=goal_editor.focus,
+                reset_after_edit=goal_editor.reset_paste_state,
+            )
             return
 
-        if edited is not None:
-            chat_input._text_area.text = edited
-            lines = edited.split("\n")
-            chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
-        chat_input.focus_input()
+        chat_input = self._chat_input
+        if not chat_input or not chat_input._text_area:
+            return
+
+        await self._open_text_area_in_editor(
+            chat_input._text_area,
+            chat_input._text_area.text or "",
+            allow_empty=False,
+            raise_editor_errors=False,
+            restore_focus=chat_input.focus_input,
+        )
 
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""

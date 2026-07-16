@@ -55,12 +55,11 @@ r"""Textual key name for the `Ctrl+\` chord that toggles the console."""
 
 
 class SnapshotField(NamedTuple):
-    """A single `label`/`value` row in the console's session snapshot.
+    """A single row in the console's session snapshot.
 
-    A named pair (rather than a bare ``tuple[str, str]``) so the two display-only
-    string slots cannot be silently transposed at the construction site. The
-    optional flags let a row opt into click-to-copy and, for the thread row, a
-    resolvable ``(langsmith)`` trace link.
+    The four named fields keep the display strings and their interaction metadata
+    explicit at construction sites. `copyable` opts a row into click-to-copy, and
+    `thread_id` enables a resolvable `(langsmith)` trace link for the thread row.
     """
 
     label: str
@@ -711,7 +710,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
-            snapshot: Ordered `(label, value)` fields rendered in the header.
+            snapshot: Ordered `SnapshotField` rows rendered in the header.
         """
         super().__init__()
         self._snapshot = list(snapshot)
@@ -774,23 +773,37 @@ class DebugConsoleScreen(ModalScreen[None]):
     async def _fetch_langsmith_link(self, thread_id: str) -> None:
         """Resolve a thread's LangSmith URL and re-render the snapshot.
 
-        Mirrors the welcome banner: the lookup runs in a thread with a short
-        timeout so an unreachable LangSmith never blocks the console, and any
-        failure degrades to no link rather than surfacing an error in a
-        diagnostic overlay.
+        Follows the welcome banner's thread + short-timeout pattern so an
+        unreachable LangSmith never blocks the console, but splits error
+        handling by expectedness: an expected timeout/I/O failure degrades
+        quietly to no link, while an unexpected error is logged loudly so a
+        genuine resolution bug is not hidden inside the diagnostic overlay.
         """
         from deepagents_code.config import build_langsmith_thread_url
 
-        # A diagnostic overlay must not crash on a lookup failure, so every
-        # error degrades to no link.
         try:
             url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, Exception):
+        except (TimeoutError, OSError):
+            # Expected: the outer timeout fired or a network error escaped the
+            # helper. A passive convenience link merely fails to appear.
             logger.debug(
-                "LangSmith thread URL lookup failed for %r", thread_id, exc_info=True
+                "LangSmith thread URL lookup timed out/failed for %r",
+                thread_id,
+                exc_info=True,
+            )
+            return
+        except Exception:  # a diagnostic overlay must not crash on a lookup bug
+            # Unexpected: a real defect in URL resolution. WARNING (not DEBUG) so
+            # the traceback lands in the always-on in-memory buffer and is visible
+            # in the console itself; the package logger sits at INFO by default,
+            # which drops DEBUG.
+            logger.warning(
+                "LangSmith thread URL lookup errored unexpectedly for %r",
+                thread_id,
+                exc_info=True,
             )
             return
         if url:

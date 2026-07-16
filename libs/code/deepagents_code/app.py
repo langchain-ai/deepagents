@@ -17018,7 +17018,7 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` fields for the console header.
+            Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -17056,7 +17056,7 @@ class DeepAgentsApp(App):
             # diagnostic overlay must open even when a subsystem misbehaves.
             try:
                 thread_id = self._lc_thread_id
-            except Exception as exc:  # a diagnostic must still open on a bad field
+            except Exception as exc:
                 logger.warning("Debug snapshot field 'Thread' failed", exc_info=True)
                 return SnapshotField(
                     label="Thread", value=f"(unavailable: {type(exc).__name__})"

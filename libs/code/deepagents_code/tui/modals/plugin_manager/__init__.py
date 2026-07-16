@@ -72,6 +72,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
     ]
 
     CSS_PATH = "plugin_manager.tcss"
+    # Prefer the option list over the search Input so Enter activates rows on
+    # open; `/` still focuses search explicitly.
+    AUTO_FOCUS = "#plugin-manager-options"
 
     # Divider width used before the options list has been laid out (e.g. in unit
     # tests that build options off-screen). At render time the divider is sized to
@@ -390,7 +393,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         source_input.display = False
         options.display = True
         search_input.display = self._tab in {"discover", "installed"}
-        if search_input.display:
+        if search_input.display and search_input.value != self._search_query:
             search_input.value = self._search_query
         highlighted = options.highlighted
         options.clear_options()
@@ -746,10 +749,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self._refresh_view()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Leave search or add a marketplace from its source input."""
+        """Activate the highlighted row from search, or add a marketplace."""
         if event.input.id == "plugin-manager-search":
             event.stop()
-            self.query_one("#plugin-manager-options", OptionList).focus()
+            options = self.query_one("#plugin-manager-options", OptionList)
+            options.focus()
+            options.action_select()
             return
         if event.input.id != "plugin-marketplace-source":
             return

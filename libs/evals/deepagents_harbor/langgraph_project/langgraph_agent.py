@@ -17,12 +17,15 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
+from langchain.agents.middleware.types import ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.messages.utils import get_buffer_string
+from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -347,6 +350,37 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
+def make_structured_graph(config: dict[str, object] | None = None) -> object:
+    """Prototype: minimal coding agent with a terminus-style per-turn structured contract.
+
+    Same tools/summarization/caching as ``make_minimal_graph``, but a
+    ``_StructuredTurnMiddleware`` forces every turn into a structured
+    ``{analysis, plan, commands}`` object and executes only the ``commands`` (as
+    ``execute`` calls). Reasoning is separated from action so the model cannot run away
+    emitting a huge artifact as its action. Experimental A/B against
+    ``make_minimal_graph``; ``make_minimal_graph`` is left unchanged.
+    """
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    workdir = _workdir(configurable)
+    backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
+    return create_agent(
+        model=model,
+        tools=[_make_execute_tool(backend)],
+        system_prompt=CODING_SYSTEM_PROMPT,
+        middleware=[
+            _StructuredTurnMiddleware(),
+            _TerminusSummarizationMiddleware(
+                model,
+                trigger=("tokens", 50_000),
+                keep=("messages", 20),
+                summary_prompt=CODING_SUMMARY_PROMPT,
+            ),
+            AnthropicPromptCachingMiddleware(),
+        ],
+    )
+
+
 CODING_SYSTEM_PROMPT = """You are an autonomous coding agent working in a sandbox at /app. \
 There is no human available to answer questions, so make reasonable assumptions and keep working \
 until the task is fully solved.
@@ -507,6 +541,86 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
         except Exception:  # noqa: BLE001  # graceful degradation to the base draft
             return draft
         return self._augment(draft, questions, answers)
+
+
+class _Turn(BaseModel):
+    """One structured agent turn: reasoning is separated from the executed action."""
+
+    analysis: str = Field(default="", description="What the terminal state shows and what remains to do.")
+    plan: str = Field(default="", description="What you will do next this turn and why.")
+    commands: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Shell commands to run this turn, in order. Chain a dependent sequence into one "
+            "string with && (e.g. 'gcc -o p p.c && ./p'). Do NOT put large file contents here; "
+            "write files with a heredoc or a generator script. Leave empty only when finishing."
+        ),
+    )
+    task_complete: bool = Field(
+        default=False,
+        description="Set true only after you have run the task's tests/verifier and observed them pass.",
+    )
+
+
+class _StructuredTurnMiddleware(AgentMiddleware):
+    """Force each turn into a terminus-style ``{analysis, plan, commands}`` contract.
+
+    Instead of free-form tool calling, every turn the model produces a structured
+    ``_Turn`` via ``with_structured_output``: reasoning goes into ``analysis``/``plan``
+    (never executed) and only ``commands`` run, each converted to an ``execute`` tool
+    call. This separates thinking from action so the model cannot run away emitting a
+    huge artifact as its action, and keeps each turn bounded. On a parse failure (for
+    example a truncated over-long response) it degrades gracefully to a normal
+    free-form model call via ``handler``.
+    """
+
+    def __init__(self, *, tool_name: str = "execute") -> None:
+        super().__init__()
+        self._tool_name = tool_name
+
+    def _messages(self, request: Any) -> list[Any]:
+        msgs = list(request.messages)
+        if request.system_message is not None:
+            return [request.system_message, *msgs]
+        return msgs
+
+    def _to_response(self, turn: _Turn) -> ModelResponse:
+        content = f"Analysis: {turn.analysis}\nPlan: {turn.plan}".strip()
+        commands = [c for c in turn.commands if c and c.strip()]
+        if commands:
+            tool_calls = [
+                {
+                    "name": self._tool_name,
+                    "args": {"command": c},
+                    "id": f"cmd_{uuid.uuid4().hex[:8]}",
+                    "type": "tool_call",
+                }
+                for c in commands
+            ]
+            return ModelResponse(result=[AIMessage(content=content, tool_calls=tool_calls)], structured_response=None)
+        return ModelResponse(result=[AIMessage(content=content or "Task complete.")], structured_response=None)
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        try:
+            result = request.model.with_structured_output(_Turn, include_raw=True).invoke(self._messages(request))
+            turn = result.get("parsed") if isinstance(result, dict) else result
+        except Exception:  # noqa: BLE001  # fall back to free-form on any structured-output failure
+            turn = None
+        if not isinstance(turn, _Turn):
+            return handler(request)
+        return self._to_response(turn)
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        try:
+            result = await request.model.with_structured_output(_Turn, include_raw=True).ainvoke(
+                self._messages(request)
+            )
+            turn = result.get("parsed") if isinstance(result, dict) else result
+        except Exception:  # noqa: BLE001  # fall back to free-form on any structured-output failure
+            turn = None
+        if not isinstance(turn, _Turn):
+            return await handler(request)
+        return self._to_response(turn)
 
 
 class _ProcessManager:

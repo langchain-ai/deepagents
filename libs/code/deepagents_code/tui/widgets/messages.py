@@ -2993,8 +2993,10 @@ class ToolGroupSummary(Static):
 
     Tools are hidden from the moment they start; this single line shows live
     progress ("Running 1 shell command…") and flips to the past tense
-    ("Ran 1 shell command") once every tool finishes. Clicking the line or
-    pressing Ctrl+O expands the underlying tool rows (and their diffs).
+    ("Ran 1 shell command") once every tool finishes. The live line counts only
+    the tools still in progress, so finished calls drop out of it as they
+    complete; the past-tense line summarizes every tool that ran. Clicking the
+    line or pressing Ctrl+O expands the underlying tool rows (and their diffs).
 
     Two modes:
 
@@ -3055,6 +3057,10 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
+        # The set of in-progress tool names the cached present line was built
+        # from. The live line counts only running tools, so it must be rebuilt
+        # whenever a member finishes, not just when membership grows.
+        self._present_key: tuple[str, ...] | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -3244,10 +3250,11 @@ class ToolGroupSummary(Static):
         if in_progress is None:
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
-            if self._present_text is None:
-                self._present_text = summarize_tool_group(
-                    [tool.tool_name for tool in self._tools], tense="present"
-                )
+            pending = [tool.tool_name for tool in self._tools if tool.is_pending]
+            key = tuple(pending)
+            if self._present_text is None or key != self._present_key:
+                self._present_text = summarize_tool_group(pending, tense="present")
+                self._present_key = key
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
             self.update(

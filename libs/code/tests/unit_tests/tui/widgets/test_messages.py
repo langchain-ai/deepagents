@@ -4088,6 +4088,30 @@ class TestLiveToolGroupSummary:
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
 
+    async def test_live_line_counts_only_running_members(self) -> None:
+        """Finished tools drop out of the live line while others still run."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)  # execute
+            running = pilot.app.query_one("#t2", ToolCallMessage)  # read_file
+
+            summary.add_member(done)
+            summary.add_member(running)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+
+            # The shell command finishes but the read is still in flight: the
+            # live line must stop advertising the completed command.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Reading 1 file" in rendered.plain
+            assert "shell command" not in rendered.plain
+
     async def test_pending_member_is_revealed_for_approval(self) -> None:
         """Only unfinished calls leave the collapsed group before approval."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary

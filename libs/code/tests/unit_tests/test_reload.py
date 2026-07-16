@@ -1087,7 +1087,7 @@ class TestReloadPluginsViaReload:
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.tui.widgets.messages import AppMessage
 
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        monkeypatch.setenv(EXPERIMENTAL, "0")
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1103,3 +1103,53 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Plugins:" not in text
+
+    @pytest.mark.parametrize(
+        ("restarted", "expected_ids"),
+        [
+            (False, frozenset({"old@tools"})),
+            (True, frozenset({"new@tools"})),
+        ],
+    )
+    async def test_updates_loaded_ids_only_after_successful_restart(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        restarted: bool,
+        expected_ids: frozenset[str],
+    ) -> None:
+        """A failed restart leaves the prior server's plugin status intact."""
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> bool:  # noqa: RUF029
+                return restarted
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            assert app._session_plugin_ids == expected_ids

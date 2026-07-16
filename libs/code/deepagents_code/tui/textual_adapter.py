@@ -555,6 +555,7 @@ async def execute_task_textual(
     rubric: str | None = None,
     goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
+    on_rubric_evaluation_end: Callable[[str, str], None] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -588,6 +589,8 @@ async def execute_task_textual(
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
+        on_rubric_evaluation_end: Optional callback receiving the grading run ID
+            and result for validated main-agent rubric completion events.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -868,6 +871,26 @@ async def execute_task_textual(
                             else AppMessage(formatted_rubric_event)
                         )
                         await adapter._mount_message(message)
+                        if (
+                            on_rubric_evaluation_end is not None
+                            and rubric_message.get("type") == "rubric_evaluation_end"
+                        ):
+                            grading_run_id = rubric_message.get("grading_run_id")
+                            result = rubric_message.get("result")
+                            if (
+                                isinstance(grading_run_id, str)
+                                and grading_run_id.strip()
+                                and isinstance(result, str)
+                            ):
+                                try:
+                                    on_rubric_evaluation_end(
+                                        grading_run_id.strip(), result
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "on_rubric_evaluation_end callback failed",
+                                        exc_info=True,
+                                    )
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a

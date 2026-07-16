@@ -233,6 +233,7 @@ async def test_failed_criteria_turn_shows_actionable_message() -> None:
     cleanup.assert_awaited_once_with(
         force_goal_sync=True,
         goal_criteria_request_id="request-fail",
+        goal_grading_run_id=None,
     )
 
 
@@ -403,6 +404,7 @@ async def test_cancelled_criteria_turn_still_runs_request_cleanup() -> None:
     cleanup.assert_awaited_once_with(
         force_goal_sync=True,
         goal_criteria_request_id="request-cancel",
+        goal_grading_run_id=None,
     )
 
 

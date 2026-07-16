@@ -443,18 +443,20 @@ def test_aggregate_runs_per_category() -> None:
     upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
     assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
     assert (
-        "format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, "
-        "steps.slug.outputs.slug)" in upload
+        "format('harbor-combined-{0}-{1}-{2}-{3}', inputs.branch, matrix.agent_impl, "
+        "matrix.category, steps.slug.outputs.slug)" in upload
     )
 
 
 def test_shard_artifact_name_includes_agent() -> None:
     harbor = HARBOR_WORKFLOW.read_text()
     # The agent-safe slug is computed and folded into the shard artifact name so
-    # two configs of the same model+category do not collide.
+    # two configs of the same model+category do not collide. (The branch-safe
+    # slug prefixes it; the full branch-first name is pinned in
+    # test_shard_artifact_name_includes_branch.)
     assert "HARBOR_AGENT_SAFE=" in harbor
     assert (
-        "shard-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-"
+        "${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-"
         "${{ env.LEAF_SLUG }}-${{ strategy.job-index }}" in harbor
     )
 
@@ -464,6 +466,24 @@ def test_aggregate_passes_config() -> None:
     assert "--config" in harbor
     # agg-matrix groups by (category, agent_impl).
     assert 'entry.get("agent_impl")' in harbor
+
+
+def test_harbor_overlays_branch_source() -> None:
+    harbor = HARBOR_WORKFLOW.read_text()
+    assert "Overlay branch agent source" in harbor
+    assert "git checkout FETCH_HEAD --" in harbor
+    assert "libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py" in harbor
+
+
+def test_shard_artifact_name_includes_branch() -> None:
+    harbor = HARBOR_WORKFLOW.read_text()
+    assert "HARBOR_BRANCH_SAFE=" in harbor
+    assert (
+        "shard-${{ env.HARBOR_BRANCH_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-"
+        "${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-"
+        "${{ strategy.job-index }}" in harbor
+    )
+    assert "--branch" in harbor
 
 
 def test_chart_publishers_are_serialized_and_replace_rerun_assets() -> None:

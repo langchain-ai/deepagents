@@ -1124,12 +1124,45 @@ class TestReloadPluginsViaReload:
         else:
             call_after_refresh.assert_not_called()
 
-    @pytest.mark.parametrize("choice", ["reload", "later"])
+    async def test_plugin_manager_state_error_schedules_reminder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A state read failure should not escape the modal dismiss callback."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        discovery = MagicMock(
+            side_effect=[
+                PluginDiscoveryResult(plugins=()),
+                PermissionError("plugin directory is unreadable"),
+            ]
+        )
+        app = DeepAgentsApp()
+        call_after_refresh = MagicMock()
+
+        monkeypatch.setattr("deepagents_code.plugins.discover_plugins", discovery)
+        monkeypatch.setattr(
+            "deepagents_code.plugins.store.load_enabled_plugin_ids",
+            lambda: frozenset[str](),
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callback(None),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", call_after_refresh)
+
+        await app._show_plugin_manager()
+
+        call_after_refresh.assert_called_once()
+        assert callable(call_after_refresh.call_args.args[0])
+
+    @pytest.mark.parametrize("choice", ["reload", "later", None])
     async def test_plugin_reload_prompt_choice(
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        choice: str,
+        choice: str | None,
     ) -> None:
         """Reload runs the command; deferral leaves one transcript reminder."""
         from deepagents_code.app import DeepAgentsApp
@@ -1159,6 +1192,42 @@ class TestReloadPluginsViaReload:
             message = mount_call.args[0]
             assert isinstance(message, AppMessage)
             assert "/reload" in str(message._content)
+
+    @pytest.mark.parametrize(
+        "error",
+        [TimeoutError(), RuntimeError("prompt mount failed")],
+        ids=["timeout", "unexpected-error"],
+    )
+    async def test_plugin_reload_prompt_error_leaves_reminder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        error: Exception,
+    ) -> None:
+        """Prompt failures should retain a manual `/reload` recovery path."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        submit = AsyncMock()
+        mount = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(side_effect=error),
+        )
+        monkeypatch.setattr(app, "_submit_input", submit)
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._offer_plugin_reload()
+
+        submit.assert_not_awaited()
+        mount.assert_awaited_once()
+        mount_call = mount.await_args
+        assert mount_call is not None
+        message = mount_call.args[0]
+        assert isinstance(message, AppMessage)
+        assert "/reload" in str(message._content)
 
     async def test_reports_plugin_summary_when_experimental(
         self, monkeypatch: pytest.MonkeyPatch

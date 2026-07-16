@@ -610,6 +610,8 @@ the caller. Shared by the install-confirm, MCP-reconnect, and restart-prompt
 watchdogs so the three stay in lockstep.
 """
 
+_PLUGIN_RELOAD_REMINDER = "Plugin changes are pending. Run /reload when ready."
+
 
 def _resolve_theme_name(value: object) -> str | None:
     """Resolve a user-supplied theme name to a canonical registry key.
@@ -17792,14 +17794,28 @@ class DeepAgentsApp(App):
         )
 
         def on_close(_result: None) -> None:
-            current_fingerprints = self._fingerprint_plugins(discover_plugins().plugins)
-            if (
-                load_enabled_plugin_ids() != enabled_plugin_ids
-                or current_fingerprints != self._plugin_fingerprints
-            ):
+            try:
+                current_fingerprints = self._fingerprint_plugins(
+                    discover_plugins().plugins
+                )
+                if (
+                    load_enabled_plugin_ids() != enabled_plugin_ids
+                    or current_fingerprints != self._plugin_fingerprints
+                ):
+                    self.call_after_refresh(
+                        lambda: self.run_worker(
+                            self._offer_plugin_reload(),
+                            exclusive=True,
+                            group="plugin-reload-prompt",
+                        )
+                    )
+            except Exception:
+                # State discovery may fail while the modal unwinds; preserve a
+                # manual reload path instead of raising from its dismiss callback.
+                logger.exception("Failed to check plugin state after manager close")
                 self.call_after_refresh(
                     lambda: self.run_worker(
-                        self._offer_plugin_reload(),
+                        self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER)),
                         exclusive=True,
                         group="plugin-reload-prompt",
                     )
@@ -17826,23 +17842,18 @@ class DeepAgentsApp(App):
             )
         except TimeoutError:
             logger.warning("Plugin reload prompt timed out")
-            await self._mount_message(
-                AppMessage("Plugin changes are pending. Run /reload when ready.")
-            )
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
             return
         except Exception:
+            # Modal could not be mounted; fall back to a pending reload reminder.
             logger.exception("Failed to mount plugin reload prompt")
-            await self._mount_message(
-                AppMessage("Plugin changes are pending. Run /reload when ready.")
-            )
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
             return
 
         if choice == "reload":
             await self._submit_input("/reload", "command")
-        elif choice == "later":
-            await self._mount_message(
-                AppMessage("Plugin changes are pending. Run /reload when ready.")
-            )
+        else:
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

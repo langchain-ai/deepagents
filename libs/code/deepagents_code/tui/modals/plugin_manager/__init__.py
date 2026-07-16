@@ -55,8 +55,8 @@ from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    Plugin changes are applied by the reload prompt shown after this screen
-    closes.
+    A reload prompt shown after this screen closes offers to apply plugin
+    changes via `/reload`.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [

@@ -1730,8 +1730,43 @@ class TestExecuteTaskTextualTurnMarkers:
         assert first_meta["turn_id"]
         assert second_meta["turn_id"]
         assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session's auto-approve mode is labeled onto every turn's trace.
+        assert first_meta["dcode_auto_approve"] is True
+        assert second_meta["dcode_auto_approve"] is True
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
+
+    async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
+        """A manual-approval session must not label its trace as auto-approve.
+
+        Complements the positive case above: guards the TUI call site
+        (`bool(session_state.auto_approve)` -> `build_stream_config`) against
+        wiring that would stamp `dcode_auto_approve` regardless of the mode.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
 
 
 class TestExecuteTaskTextualAutoApproveInput:

@@ -1683,7 +1683,7 @@ def build_stream_config(
     Also records `dcode_auto_approve=True` when auto-approve ("YOLO") mode is
     active, so runs that ran tools without HITL approval are filterable in trace
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
-    key (see below), so it is safe to stamp trace-wide.
+    key (see above), so it is safe to stamp trace-wide.
 
     Args:
         thread_id: The app session thread identifier. Set both on

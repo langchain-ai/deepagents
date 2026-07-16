@@ -1,0 +1,19 @@
+libs/acp/pyproject.toml
+  s_bc87132c20fecc::t_3177ac728cdb0d 64-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "90d851691cbcf7ea82bad49734654f0a4d6e0245",
+  "prompts": {},
+  "sessions": {
+    "s_bc87132c20fecc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ddda2bbc-ad70-43d1-bd46-e1b45e50f5a0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Dariel Dato-on <293921406+darieldatoon@users.noreply.github.com>"
+    }
+  }
+}

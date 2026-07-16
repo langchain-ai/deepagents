@@ -4,10 +4,9 @@
 
 ## [0.1.41](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.40...deepagents-code==0.1.41) (2026-07-16)
 
-
 ### Bug Fixes
 
-* **code:** pin filelock below 3.30 to avoid blocking import ([#4786](https://github.com/langchain-ai/deepagents/issues/4786)) ([f9b7d75](https://github.com/langchain-ai/deepagents/commit/f9b7d75f24301081ae8973cd59f00e609eb024c5))
+- Pinned `filelock` below 3.30 to avoid blocking imports ([#4786](https://github.com/langchain-ai/deepagents/issues/4786))
 
 ## [0.1.40](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.39...deepagents-code==0.1.40) (2026-07-16)
 

@@ -448,10 +448,12 @@ class MCPSessionManager:
             # "Attempted to exit cancel scope in a different task than it was
             # entered in". Catch `BaseException` (not just `Exception`) so a
             # `CancelledError` — e.g. from a crashed Streamable HTTP transport
-            # task group cancelling `session.initialize()` — triggers the same
-            # in-task teardown instead of abandoning the session, and so genuine
-            # user/app cancellation still propagates rather than surfacing as an
-            # ordinary tool error.
+            # task group cancelling `session.initialize()` — also triggers the
+            # in-task teardown below instead of abandoning the session. The bare
+            # `raise` re-raises the original exception unchanged, so cancellation
+            # (and any other error) always propagates regardless; widening the
+            # catch only controls whether teardown runs, not whether the error
+            # propagates.
             try:
                 await exit_stack.aclose()
             except Exception:

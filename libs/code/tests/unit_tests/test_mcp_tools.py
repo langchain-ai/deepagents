@@ -1128,8 +1128,14 @@ class TestMCPSessionManager:
         assert exit_task[0] is enter_task[0]
         assert not manager._entries
 
-    async def test_cleanup_failure_does_not_mask_original_cancellation(self) -> None:
-        """A teardown error must not mask the original cancellation."""
+    async def test_cleanup_failure_does_not_mask_original_cancellation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A teardown error is logged and does not mask the original cancellation.
+
+        The swallowed cleanup failure must still be surfaced via a warning
+        rather than dropped silently.
+        """
         session = AsyncMock()
         session.initialize = AsyncMock(side_effect=asyncio.CancelledError)
 
@@ -1153,11 +1159,23 @@ class TestMCPSessionManager:
 
         with (
             patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
             pytest.raises(asyncio.CancelledError),
         ):
             await manager.get_session("filesystem")
 
         assert not manager._entries
+        cleanup_logs = [
+            record
+            for record in caplog.records
+            if "Failed to close a partially initialized MCP session"
+            in record.getMessage()
+        ]
+        assert cleanup_logs, "the swallowed cleanup failure must be logged"
+        assert "filesystem" in cleanup_logs[0].getMessage()
+        assert cleanup_logs[0].exc_info is not None, (
+            "the cleanup failure must be logged with its traceback"
+        )
 
 
 class TestTransientErrorDetection:

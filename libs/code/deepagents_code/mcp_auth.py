@@ -26,10 +26,11 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from anyio import CancelScope
 from filelock import FileLock, Timeout
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.utils import (
@@ -224,7 +225,15 @@ _TOKEN_FILE_LOCKS_GUARD = threading.Lock()
 
 
 def _token_file_lock(path: Path) -> LockType:
-    """Return the process-wide mutation lock for `path`."""
+    """Return the process-wide mutation lock for `path`.
+
+    Only read-modify-write *mutations* (the `_set_*_sync` methods and the
+    loopback self-heal) take this lock, to serialize their overlapping updates
+    to the shared envelope. Reads deliberately do **not**: `_write` publishes
+    via an atomic `tmp.replace(path)`, so a reader always sees a whole old or
+    whole new file and has no modify step to lose. Guarding reads would only add
+    needless contention and re-introduce event-loop blocking risk.
+    """
     with _TOKEN_FILE_LOCKS_GUARD:
         lock = _TOKEN_FILE_LOCKS.get(path)
         if lock is None:
@@ -255,6 +264,38 @@ def _token_file_stem(server_name: str, server_url: str | None) -> str:
         return server_name
     digest = hashlib.sha256(server_url.encode("utf-8")).hexdigest()[:16]
     return f"{server_name}-{digest}"
+
+
+_T = TypeVar("_T")
+
+
+async def _join_task_deferring_cancellation(
+    task: asyncio.Task[_T],
+) -> asyncio.CancelledError | None:
+    """Join `task` without letting caller cancellation cancel the task.
+
+    The caller must inspect `task.result()` before re-raising the returned
+    cancellation so the task's failure can take precedence.
+
+    Returns:
+        The first cancellation deferred while waiting, if any.
+    """
+    cancellation: asyncio.CancelledError | None = None
+    try:
+        # Unlike awaiting the task directly, cancelling `asyncio.wait` does not
+        # cancel the member task. It also avoids Python 3.14's shield-failure log.
+        await asyncio.wait((task,))
+    except asyncio.CancelledError as exc:
+        cancellation = exc
+        # Block repeated cancellation from the same AnyIO scope. Direct
+        # `Task.cancel()` calls are separate edges, so keep joining after each.
+        with CancelScope(shield=True):
+            while not task.done():
+                try:
+                    await asyncio.wait((task,))
+                except asyncio.CancelledError:
+                    continue
+    return cancellation
 
 
 class FileTokenStorage(TokenStorage):
@@ -316,8 +357,22 @@ class FileTokenStorage(TokenStorage):
         cold-started provider can detect a stale access token and trigger
         the SDK's `refresh_token` grant instead of a full browser re-auth.
         Cleared when `expires_in` is absent so the sidecar can't go stale.
+
+        Once persistence starts, cancellation is delayed until the write is
+        terminal. If persistence fails while cancellation is pending, the
+        persistence error takes precedence so it is not silently discarded.
         """
-        await asyncio.to_thread(self._set_tokens_sync, tokens)
+        write_task = asyncio.create_task(
+            asyncio.to_thread(self._set_tokens_sync, tokens)
+        )
+        cancellation = await _join_task_deferring_cancellation(write_task)
+
+        # A refresh may rotate the refresh token. Observe persistence before
+        # propagating cancellation so the refresh lock cannot be released while
+        # a new token is still queued, and so a write failure is not discarded.
+        write_task.result()
+        if cancellation is not None:
+            raise cancellation
 
     def _set_tokens_sync(self, tokens: OAuthToken) -> None:
         with _token_file_lock(self.path):
@@ -1295,12 +1350,18 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             or the lock could not be created, signalling the caller to avoid
             using the possibly in-flight refresh token after reloading.
         """
-        try:
-            await asyncio.to_thread(
+        acquire_task = asyncio.create_task(
+            asyncio.to_thread(
                 lock.acquire,
                 timeout=_REFRESH_LOCK_TIMEOUT_SECONDS,
             )
+        )
+        cancellation = await _join_task_deferring_cancellation(acquire_task)
+        try:
+            acquire_task.result()
         except Timeout:
+            if cancellation is not None:
+                raise cancellation from None
             # A timeout means a peer may still be mid-refresh with this same
             # token. Do not refresh unlocked: rotating-token servers can treat
             # the second grant as reuse and revoke the whole token family.
@@ -1312,6 +1373,8 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             )
             return False
         except OSError as exc:
+            if cancellation is not None:
+                raise cancellation from None
             # Creating/locking the sidecar can fail (read-only or missing
             # tokens dir, permission denial on a hardened host). Avoid an
             # unlocked refresh so we do not replay a rotating refresh token if a
@@ -1323,6 +1386,8 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                 type(exc).__name__,
             )
             return False
+        if cancellation is not None:
+            raise cancellation
         return True
 
     @contextlib.asynccontextmanager
@@ -1331,9 +1396,9 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
 
         Acquires the lock (waiting up to `_REFRESH_LOCK_TIMEOUT_SECONDS`; on
         timeout it yields `False` so the caller can avoid the refresh grant) and
-        always releases it on exit. Release is gated on `lock.is_locked` rather
-        than the acquire result, so a cancellation that lands *after* the worker
-        thread took the lock still frees it instead of orphaning it until GC.
+        always releases it on exit. Acquisition and release are joined before
+        cancellation escapes, so neither worker can acquire or retain the lock
+        after the guard has returned.
 
         Args:
             lock_path: Sibling `.lock` path from `FileTokenStorage`.
@@ -1345,11 +1410,37 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         # `asyncio.to_thread` worker threads; the default would refuse the
         # cross-thread release and leak the OS lock until process exit.
         lock = FileLock(str(lock_path), thread_local=False)
+        pending_exception: BaseException | None = None
         try:
             yield await self._acquire_refresh_lock(lock)
+        except BaseException as exc:
+            # Preserve the guarded operation's exception while joining cleanup.
+            pending_exception = exc
+            raise
         finally:
             if lock.is_locked:
-                await asyncio.to_thread(lock.release)
+                release_task = asyncio.create_task(asyncio.to_thread(lock.release))
+                cancellation = await _join_task_deferring_cancellation(release_task)
+                try:
+                    release_task.result()
+                except Exception as exc:
+                    if pending_exception is None or isinstance(
+                        pending_exception, asyncio.CancelledError
+                    ):
+                        raise
+                    pending_exception.add_note(
+                        "MCP refresh lock release also failed with "
+                        f"{type(exc).__name__}."
+                    )
+                    logger.warning(
+                        "Failed to release the MCP token refresh lock for %s "
+                        "while propagating %s",
+                        self.context.server_url,
+                        type(pending_exception).__name__,
+                        exc_info=True,
+                    )
+                if cancellation is not None and pending_exception is None:
+                    raise cancellation
 
     async def _persist_oauth_metadata(self) -> None:
         """Persist discovered public OAuth metadata when storage supports it."""

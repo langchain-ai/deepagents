@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import anyio
 import httpx
 import pytest
 from mcp.client.auth import TokenStorage
@@ -189,8 +190,9 @@ class TestFileTokenStorage:
             filesystem_threads.append(threading.get_ident())
             with contextlib.suppress(threading.BrokenBarrierError):
                 write_barrier.wait(timeout=1)
-            # Isolate lost-update behavior from the fixed-name temporary file:
-            # both stale snapshots are written successfully, in sequence.
+            # If the per-file lock regressed and both writers ran concurrently,
+            # serialize the physical writes so the test observes a clean
+            # last-writer-wins lost update rather than a shared-`.tmp` collision.
             with physical_write_lock:
                 real_write(storage, data)
 
@@ -238,6 +240,9 @@ class TestFileTokenStorage:
             first.set_tokens(_make_tokens("first")),
             second.set_tokens(_make_tokens("second")),
         )
+
+        # Both serialized writes landed rather than colliding on the `.tmp`.
+        assert await first.get_tokens() is not None
 
     async def test_different_token_files_can_write_concurrently(
         self, monkeypatch: pytest.MonkeyPatch
@@ -445,6 +450,142 @@ class TestFileTokenStorage:
         assert got.access_token == "at"
         assert await storage.get_expires_at() is not None
 
+    async def test_set_tokens_joins_write_despite_repeated_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated cancellation waits for a rotated refresh token to reach disk."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        write_finished = threading.Event()
+        allow_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            try:
+                real_write(data)
+            finally:
+                write_finished.set()
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+        task = asyncio.create_task(storage.set_tokens(_make_tokens()))
+
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), (
+                "cancellation must stay joined to the in-flight token write"
+            )
+
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done(), (
+                    "repeated cancellation must not detach the token write"
+                )
+
+            allow_write.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert write_finished.is_set()
+            got = await storage.get_tokens()
+            assert got is not None
+            assert got.access_token == "at"
+        finally:
+            allow_write.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def test_set_tokens_joins_write_under_anyio_level_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An AnyIO cancelled scope cannot detach in-flight token persistence."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        scopes: list[anyio.CancelScope] = []
+
+        real_write = storage._write
+
+        def _patched_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _patched_write)
+
+        async def _persist_in_cancel_scope() -> bool:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                await storage.set_tokens(_make_tokens())
+            return scope.cancelled_caught
+
+        task = asyncio.create_task(_persist_in_cancel_scope())
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            scopes[0].cancel()
+            await asyncio.sleep(0)
+
+            assert not task.done(), (
+                "level cancellation must stay joined to the in-flight write"
+            )
+            allow_write.set()
+
+            assert await task is True
+            got = await storage.get_tokens()
+            assert got is not None
+            assert got.access_token == "at"
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_set_tokens_reports_write_failure_while_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A persistence failure takes precedence without leaking to the loop."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        loop = asyncio.get_running_loop()
+        loop_contexts: list[dict[str, Any]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: loop_contexts.append(context))
+
+        def _failing_write(data: dict[str, Any]) -> None:
+            del data
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the token write")
+            msg = "token persistence failed"
+            raise OSError(msg)
+
+        monkeypatch.setattr(storage, "_write", _failing_write)
+        task = asyncio.create_task(storage.set_tokens(_make_tokens()))
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_write.set()
+            with pytest.raises(OSError, match="token persistence failed"):
+                await task
+            await asyncio.sleep(0)
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+            loop.set_exception_handler(previous_handler)
+
+        assert not loop_contexts
+
     async def test_reads_run_off_event_loop_thread(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -468,6 +609,68 @@ class TestFileTokenStorage:
         assert all(thread_id != loop_thread for thread_id in read_threads), (
             "token reads must run off the event-loop thread"
         )
+
+    async def test_all_setters_persist_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every setter offloads its blocking `_write` off the loop thread.
+
+        `set_tokens`/`get_tokens` are covered above; this pins the remaining
+        setters — notably `set_tokens_and_client_info`, the atomic combined
+        write on the primary OAuth-completion path this PR targets.
+        """
+        storage = FileTokenStorage("notion")
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+        real_write = storage._write
+
+        def _spy_write(data: dict) -> None:
+            write_threads.append(threading.get_ident())
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _spy_write)
+
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+
+        assert len(write_threads) == 2, "both setters should have written once"
+        assert all(thread_id != loop_thread for thread_id in write_threads), (
+            "token persistence must run off the event-loop thread"
+        )
+
+    async def test_read_not_blocked_by_in_flight_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read runs lock-free instead of serializing behind a live mutation.
+
+        A mutation holding the per-file lock during its blocking write must not
+        stall a concurrent read, which never takes that lock.
+        """
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+
+        write_holding_lock = threading.Event()
+        release_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict) -> None:
+            # Called while `_set_tokens_sync` holds the per-file lock.
+            write_holding_lock.set()
+            if not release_write.wait(timeout=5):
+                pytest.fail("timed out holding the per-file mutation lock")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+        write_task = asyncio.create_task(storage.set_tokens(_make_tokens("new")))
+        try:
+            assert await asyncio.to_thread(write_holding_lock.wait, 5)
+            # The mutation is parked inside `_write` still holding the lock; a
+            # read must complete instead of serializing behind it.
+            got = await asyncio.wait_for(storage.get_tokens(), timeout=1)
+            assert got is not None
+        finally:
+            release_write.set()
+            await write_task
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -1118,6 +1321,263 @@ class TestRefreshTokenSerialization:
             pytest.fail("refresh lock was not released after a successful refresh")
         else:
             probe.release()
+
+    async def test_refresh_lock_held_until_cancelled_write_finishes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation cannot release the refresh lock ahead of persistence."""
+        from filelock import FileLock, Timeout
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+
+        async def _persist_under_refresh_lock() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                await storage.set_tokens(_make_tokens())
+
+        task = asyncio.create_task(_persist_under_refresh_lock())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            with pytest.raises(Timeout):
+                await asyncio.to_thread(probe.acquire, timeout=0)
+
+            allow_write.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_write_failure_wins_over_level_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cancelled refresh reports persistence failure after releasing its lock."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        release_started = threading.Event()
+        allow_release = threading.Event()
+        scopes: list[anyio.CancelScope] = []
+        real_release = FileLock.release
+
+        def _failing_write(data: dict[str, Any]) -> None:
+            del data
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the token write")
+            msg = "token persistence failed"
+            raise OSError(msg)
+
+        def _blocking_release(lock: FileLock, *, force: bool = False) -> None:
+            release_started.set()
+            if not allow_release.wait(timeout=5):
+                pytest.fail("timed out waiting to release the refresh lock")
+            real_release(lock, force=force)
+
+        monkeypatch.setattr(storage, "_write", _failing_write)
+        monkeypatch.setattr(FileLock, "release", _blocking_release)
+
+        async def _persist_in_cancel_scope() -> bool:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                async with provider._refresh_lock_guard(
+                    storage.refresh_lock_path
+                ) as acquired:
+                    assert acquired
+                    await storage.set_tokens(_make_tokens())
+            return scope.cancelled_caught
+
+        task = asyncio.create_task(_persist_in_cancel_scope())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            scopes[0].cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_write.set()
+            assert await asyncio.to_thread(release_started.wait, 5)
+            assert not task.done()
+
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_release.set()
+            with pytest.raises(OSError, match="token persistence failed"):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            allow_write.set()
+            allow_release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_acquisition_joins_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation waits for a lock-acquire worker and releases its result."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        acquire_started = asyncio.Event()
+        real_acquire = provider._acquire_refresh_lock
+
+        async def _tracked_acquire(lock: FileLock) -> bool:
+            acquire_started.set()
+            return await real_acquire(lock)
+
+        monkeypatch.setattr(provider, "_acquire_refresh_lock", _tracked_acquire)
+        peer = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer.acquire()
+
+        async def _enter_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        task = asyncio.create_task(_enter_guard())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            await acquire_started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            peer.release()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            if peer.is_locked:
+                peer.release()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_release_failure_preserves_body_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A cleanup failure is reported without replacing the guarded error."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _raise_in_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                msg = "guarded operation failed"
+                raise ValueError(msg)
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_auth"),
+            pytest.raises(ValueError, match="guarded operation failed") as exc_info,
+        ):
+            await _raise_in_guard()
+
+        assert exc_info.value.__notes__ == [
+            "MCP refresh lock release also failed with OSError."
+        ]
+        assert any(
+            "Failed to release the MCP token refresh lock" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 @pytest.mark.usefixtures("fake_home")

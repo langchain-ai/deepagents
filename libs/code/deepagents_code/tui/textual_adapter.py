@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import httpx
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.resume_state import RubricResult
 
     # Type alias matching HITLResponse["decisions"] element type
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -222,6 +223,21 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     if metadata is None:
         return False
     return metadata.get("lc_source") == "summarization"
+
+
+class RubricEvaluationEnd(NamedTuple):
+    """A validated `rubric_evaluation_end` event forwarded to the caller.
+
+    Bundling the two fields as named attributes (rather than two positional
+    strings) makes the grading-run correlation self-documenting and removes the
+    risk of transposing the run ID and the verdict at a call site.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for this grading run."""
+
+    result: RubricResult
+    """Terminal/loop verdict carried by the event."""
 
 
 def _format_rubric_event(data: dict[str, Any]) -> str | None:
@@ -555,6 +571,7 @@ async def execute_task_textual(
     rubric: str | None = None,
     goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
+    on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -588,6 +605,9 @@ async def execute_task_textual(
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
+        on_rubric_evaluation_end: Optional callback receiving a validated
+            `RubricEvaluationEnd` (grading run ID and verdict) for each
+            main-agent `rubric_evaluation_end` event.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -868,6 +888,32 @@ async def execute_task_textual(
                             else AppMessage(formatted_rubric_event)
                         )
                         await adapter._mount_message(message)
+                        if (
+                            on_rubric_evaluation_end is not None
+                            and rubric_message.get("type") == "rubric_evaluation_end"
+                        ):
+                            grading_run_id = rubric_message.get("grading_run_id")
+                            result = rubric_message.get("result")
+                            if (
+                                isinstance(grading_run_id, str)
+                                and grading_run_id.strip()
+                                and isinstance(result, str)
+                            ):
+                                # Structurally validated here; the verdict is
+                                # cast to `RubricResult` at this boundary and the
+                                # consumer re-checks it against the known set.
+                                try:
+                                    on_rubric_evaluation_end(
+                                        RubricEvaluationEnd(
+                                            grading_run_id=grading_run_id.strip(),
+                                            result=cast("RubricResult", result),
+                                        )
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "on_rubric_evaluation_end callback failed",
+                                        exc_info=True,
+                                    )
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a

@@ -106,7 +106,7 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
-    console.print("  dcode config <show|list|get|path>         Inspect configuration")
+    console.print("  dcode config <show|get|path>              Inspect configuration")
     console.print(
         "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
     )
@@ -741,7 +741,7 @@ def show_config_help() -> None:
     console.print("  dcode config <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  show|list|ls      Show effective values and their source")
+    console.print("  show              Show effective values and their source")
     console.print("  get <key>         Show one option's value and source")
     console.print("  path              Show config file locations")
     console.print()

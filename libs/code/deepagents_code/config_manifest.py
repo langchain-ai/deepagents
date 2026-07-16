@@ -173,7 +173,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config show`."""
 
     summary: str
     """One-line description of what the option controls."""

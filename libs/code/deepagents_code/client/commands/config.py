@@ -1,10 +1,10 @@
 """CLI commands for the `config` group: inspect the configuration surface.
 
-`config show` (aliased as `config list`/`ls`) resolves each option against the
-app credential store (for credentials), the live environment, and `config.toml`,
-reporting the effective value and which source provided it, matching what
-`git config --list` / `aws configure list` users expect. Adding `--verbose`/`--all`
-folds in each option's description and where it can be set (the static catalog).
+`config show` resolves each option against the app credential store (for
+credentials), the live environment, and `config.toml`, reporting the effective
+value and which source provided it, matching what `git config --list` /
+`aws configure list` users expect. Adding `--verbose`/`--all` folds in each
+option's description and where it can be set (the static catalog).
 `config get <key>` does the same for a single option. `config path` prints the
 on-disk config locations.
 
@@ -92,7 +92,6 @@ def setup_config_parser(
 
     show_parser = config_sub.add_parser(
         "show",
-        aliases=["list", "ls"],
         help="Show effective config values and their source",
         add_help=False,
     )
@@ -359,16 +358,15 @@ def _show_json_row(
     store_error: str | None,
     include_catalog: bool,
 ) -> dict[str, Any]:
-    """Build one show/list --json row, redacting secrets and flagging store errors.
+    """Build one `config show --json` row, redacting secrets and flagging errors.
 
     Returns:
         A JSON-serializable row. Redacted options report presence only (`value`
             is `None`); a `store_error` key is added to credential rows when
             the `/auth` store was unreadable, so a corrupt store is
             distinguishable from an empty one in the bug-report artifact. When
-            `include_catalog` is set the static catalog fields (summary, type,
-            default, ...) are folded in so `config list --json` consumers stay
-            unbroken.
+            `include_catalog` is set (i.e. `--verbose`) the static catalog
+            fields (summary, type, default, ...) are folded in.
     """
     row: dict[str, Any] = {
         "key": option.key,
@@ -395,20 +393,16 @@ def _show_json_row(
     return row
 
 
-def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) -> int:
+def _run_show(output_format: OutputFormat, *, verbose: bool) -> int:
     """Resolve every option and print its effective value and source.
 
     With `verbose`, each option also lists its description and where it can be
-    set (the catalog detail formerly served by `config list`).
+    set (the static catalog detail).
 
     Args:
         output_format: `text` for the rendered view, `json` for a machine-
             readable payload.
         verbose: Fold each option's description and how-to-set into the output.
-        list_mode: `True` when invoked as `config list`/`ls` rather than
-            `config show`. It selects the `config list` JSON envelope label and,
-            for backward compatibility, includes the static catalog fields in
-            `config list --json` even without `verbose`.
 
     Returns:
         Process exit code (`0` on success).
@@ -430,13 +424,11 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) ->
     ]
 
     if output_format == "json":
-        label = "config list" if list_mode else "config show"
-        # `config list --json` was the catalog endpoint; keep its catalog fields
-        # so existing consumers stay unbroken (now additive alongside effective
-        # values). `config show --json` stays effective-only unless `--verbose`.
-        include_catalog = verbose or list_mode
+        # `config show --json` stays effective-only unless `--verbose` folds in
+        # the static catalog fields.
+        include_catalog = verbose
         write_json(
-            label,
+            "config show",
             [
                 _show_json_row(
                     row.option,
@@ -551,8 +543,8 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
             write_json("config get", {"key": key, "error": "unknown option"})
         else:
             print(  # noqa: T201
-                f"Unknown config option: {key!r}. Run `dcode config list` to "
-                "see available keys.",
+                f"Unknown config option: {key!r}. Run "
+                "`dcode config show --verbose` to see available keys.",
                 file=sys.stderr,
             )
         return 1
@@ -637,10 +629,8 @@ def run_config_command(args: argparse.Namespace) -> int:
     command = getattr(args, "config_command", None)
     verbose: bool = getattr(args, "verbose", False)
 
-    if command in {"show", "list", "ls"}:
-        return _run_show(
-            output_format, verbose=verbose, list_mode=command in {"list", "ls"}
-        )
+    if command == "show":
+        return _run_show(output_format, verbose=verbose)
     if command == "get":
         return _run_get(args.key, output_format)
     if command == "path":

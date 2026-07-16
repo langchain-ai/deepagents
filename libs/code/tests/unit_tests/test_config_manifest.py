@@ -1461,12 +1461,6 @@ def test_run_show_text_returns_zero() -> None:
     assert run_config_command(args) == 0
 
 
-def test_run_list_text_returns_zero() -> None:
-    """`config list` aliases the effective-value view and renders without error."""
-    args = argparse.Namespace(config_command="list", output_format="text")
-    assert run_config_command(args) == 0
-
-
 def test_run_show_verbose_text_shows_descriptions(capsys) -> None:
     """`config show --verbose` folds in each option's description and how-to-set.
 
@@ -1485,22 +1479,39 @@ def test_run_show_verbose_text_shows_descriptions(capsys) -> None:
     assert "set via" in rendered
 
 
-def test_config_parser_wires_aliases_and_verbose_flag(monkeypatch) -> None:
-    """Real argparse wiring: `config list --all --json` parses as verbose list JSON.
+def test_config_parser_wires_show_and_verbose_flag(monkeypatch) -> None:
+    """Real argparse wiring: `config show --all --json` parses as verbose show JSON.
 
     Every other command test builds a `Namespace` directly, so this is the only
-    guard that the `list`/`ls` aliases and the `-v`/`--verbose`/`--all` flag are
+    guard that the `show` subcommand and the `-v`/`--verbose`/`--all` flag are
     actually registered on the parser.
     """
     import sys
 
     from deepagents_code.main import parse_args
 
-    monkeypatch.setattr(sys, "argv", ["dcode", "config", "list", "--all", "--json"])
+    monkeypatch.setattr(sys, "argv", ["dcode", "config", "show", "--all", "--json"])
     ns = parse_args()
-    assert ns.config_command == "list"
+    assert ns.config_command == "show"
     assert ns.verbose is True
     assert ns.output_format == "json"
+
+
+@pytest.mark.parametrize("removed_alias", ["list", "ls"])
+def test_config_parser_rejects_removed_aliases(monkeypatch, removed_alias) -> None:
+    """The `list`/`ls` aliases are no longer registered on the `config` parser.
+
+    argparse exits with status 2 for an unknown subcommand, so parsing
+    `config list`/`config ls` must raise `SystemExit` rather than resolve to the
+    `show` view.
+    """
+    import sys
+
+    from deepagents_code.main import parse_args
+
+    monkeypatch.setattr(sys, "argv", ["dcode", "config", removed_alias])
+    with pytest.raises(SystemExit):
+        parse_args()
 
 
 def test_run_get_text_returns_zero() -> None:
@@ -1812,63 +1823,6 @@ def test_run_show_verbose_json_serializes_catalog(capsys) -> None:
         <= set(r)
         for r in rows
     )
-
-
-def test_run_list_json_preserves_catalog(capsys) -> None:
-    """`config list --json` keeps catalog fields for backward compatibility.
-
-    `list` was the machine-readable catalog endpoint, so its JSON must stay
-    additive: effective value/source plus the original catalog fields, even
-    without `--verbose`.
-    """
-    import json
-
-    args = argparse.Namespace(config_command="list", output_format="json")
-    assert run_config_command(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config list"
-    rows = payload["data"]
-    assert any(
-        r["key"] == "interpreter.memory_limit_mb" and r["default"] == 64 for r in rows
-    )
-    assert all(
-        {"key", "type", "default", "redacted", "env_var", "toml_path", "cli_flag"}
-        <= set(r)
-        for r in rows
-    )
-
-
-def test_run_ls_json_uses_list_label(capsys) -> None:
-    """The `ls` alias shares the `config list` JSON envelope label and catalog."""
-    import json
-
-    args = argparse.Namespace(config_command="ls", output_format="json")
-    assert run_config_command(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config list"
-    assert all("type" in r for r in payload["data"])
-
-
-@pytest.mark.usefixtures("stored_auth_dir")
-def test_run_list_json_redacts_stored_secret_value(capsys) -> None:
-    """`config list --json` redacts a stored secret like `config show --json`.
-
-    `list` newly resolves effective values (it was a static catalog before), so
-    the redaction invariant must be proven on this path too.
-    """
-    import json
-
-    from deepagents_code import auth_store
-
-    auth_store.set_stored_key("anthropic", "from-store")
-    args = argparse.Namespace(config_command="list", output_format="json")
-    assert run_config_command(args) == 0
-    raw = capsys.readouterr().out
-    rows = json.loads(raw)["data"]
-    row = next(r for r in rows if r["key"] == "credentials.anthropic")
-    assert row["set"] is True
-    assert row["value"] is None
-    assert "from-store" not in raw
 
 
 # --- Provider/credential drift ----------------------------------------------

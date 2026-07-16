@@ -20,6 +20,7 @@ from deepagents_code.media_utils import (
     get_clipboard_image,
     get_image_from_path,
     get_video_from_path,
+    model_supports_media,
     strip_media_placeholders,
 )
 
@@ -51,6 +52,40 @@ class TestImageData:
 
         assert result["type"] == "image_url"
         assert result["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+class TestModelSupportsMedia:
+    """Tests for the model_supports_media capability predicate."""
+
+    def test_multimodal_model_accepts_media(self) -> None:
+        """A model with no unsupported modalities accepts images and video."""
+        assert model_supports_media(frozenset(), has_images=True, has_videos=True)
+
+    def test_text_only_model_rejects_images(self) -> None:
+        """A model that does not support image input rejects attached images."""
+        assert not model_supports_media(
+            {"image", "video"}, has_images=True, has_videos=False
+        )
+
+    def test_text_only_model_rejects_video(self) -> None:
+        """A model that does not support video input rejects attached video."""
+        assert not model_supports_media(
+            {"image", "video"}, has_images=False, has_videos=True
+        )
+
+    def test_image_model_without_video_rejects_video(self) -> None:
+        """A model supporting images but not video rejects a video attachment."""
+        assert not model_supports_media({"video"}, has_images=True, has_videos=True)
+
+    def test_image_model_accepts_image_only(self) -> None:
+        """A model supporting images accepts an image-only message."""
+        assert model_supports_media({"video"}, has_images=True, has_videos=False)
+
+    def test_no_media_is_always_supported(self) -> None:
+        """With no media attached the predicate is a no-op that returns True."""
+        assert model_supports_media(
+            {"image", "video"}, has_images=False, has_videos=False
+        )
 
 
 class TestMediaTracker:

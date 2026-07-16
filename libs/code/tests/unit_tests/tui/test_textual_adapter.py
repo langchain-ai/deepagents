@@ -1758,6 +1758,82 @@ class TestExecuteTaskTextualAutoApproveInput:
             (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
         ]
 
+    async def test_media_dropped_for_text_only_model(self) -> None:
+        """Image attachments are stripped (not forwarded) on a text-only model.
+
+        A text-only provider such as `fireworks:.../glm-5p2` reports `image` as
+        an unsupported modality; forwarding the block 400s and crashes the turn.
+        The guard must drop the media, warn the user, and send text only.
+        """
+        from deepagents_code.input import MediaTracker
+        from deepagents_code.media_utils import ImageData
+
+        agent = _SequencedAgent([[]])
+        mounted: list[object] = []
+
+        async def _capture_mount(widget: object) -> None:  # noqa: RUF029
+            mounted.append(widget)
+
+        adapter = TextualUIAdapter(
+            mount_message=_capture_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="abc", format="png", placeholder=""))
+
+        with patch.object(
+            config_module.settings,
+            "model_unsupported_modalities",
+            frozenset({"image", "video"}),
+        ):
+            await execute_task_textual(
+                user_input="look at [image 1]",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                image_tracker=tracker,
+            )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        content = stream_input["messages"][0]["content"]
+        # Text-only content: no structured image block leaks through.
+        assert isinstance(content, str)
+        assert "image_url" not in content
+        assert any(isinstance(widget, AppMessage) for widget in mounted)
+
+    async def test_media_forwarded_for_multimodal_model(self) -> None:
+        """Image attachments reach a multimodal model as structured blocks."""
+        from deepagents_code.input import MediaTracker
+        from deepagents_code.media_utils import ImageData
+
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="abc", format="png", placeholder=""))
+
+        with patch.object(
+            config_module.settings, "model_unsupported_modalities", frozenset()
+        ):
+            await execute_task_textual(
+                user_input="look at [image 1]",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                image_tracker=tracker,
+            )
+
+        content = agent.stream_inputs[0]["messages"][0]["content"]
+        assert isinstance(content, list)
+        assert any(block.get("type") == "image_url" for block in content)
+
     async def test_rubric_is_sent_as_graph_state(self) -> None:
         """Rubrics should travel beside messages, not inside user content."""
         agent = _SequencedAgent([[]])

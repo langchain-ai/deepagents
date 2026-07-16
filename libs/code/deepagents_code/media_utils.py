@@ -52,6 +52,32 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
 """Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
 
+IMAGE_MODALITY: str = "image"
+"""Modality label for image content blocks (matches model-profile labels)."""
+
+VIDEO_MODALITY: str = "video"
+"""Modality label for video content blocks (matches model-profile labels)."""
+
+
+def model_supports_media(
+    unsupported_modalities: Iterable[str],
+    *,
+    has_images: bool,
+    has_videos: bool,
+) -> bool:
+    """Return whether the model accepts the media modalities being attached.
+
+    `unsupported_modalities` is the profile-derived set on
+    `settings.model_unsupported_modalities` (e.g. a text-only model like
+    ``fireworks:.../glm-5p2`` reports ``{"image", "video", ...}``). Consulted
+    before dispatch so media is never forwarded to a model that will reject it
+    with an HTTP 400.
+    """
+    unsupported = set(unsupported_modalities)
+    if has_images and IMAGE_MODALITY in unsupported:
+        return False
+    return not (has_videos and VIDEO_MODALITY in unsupported)
+
 
 def strip_media_placeholders(
     text: str,

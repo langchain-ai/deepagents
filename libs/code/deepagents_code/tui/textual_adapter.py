@@ -74,7 +74,11 @@ from deepagents_code.hooks import (
     dispatch_hook_fire_and_forget,
 )
 from deepagents_code.input import MediaTracker, parse_file_mentions
-from deepagents_code.media_utils import create_multimodal_content
+from deepagents_code.media_utils import (
+    create_multimodal_content,
+    model_supports_media,
+    strip_media_placeholders,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -664,6 +668,36 @@ async def execute_task_textual(
         if image_tracker:
             images_to_send = image_tracker.get_images()
             videos_to_send = image_tracker.get_videos()
+        if images_to_send or videos_to_send:
+            from deepagents_code.config import settings
+
+            if not model_supports_media(
+                settings.model_unsupported_modalities,
+                has_images=bool(images_to_send),
+                has_videos=bool(videos_to_send),
+            ):
+                # Never forward media to a text-only model — the provider would
+                # 400 and crash the turn. Drop the blocks and tell the user.
+                await adapter._mount_message(
+                    AppMessage(
+                        "The current model can't read images or video; switch to "
+                        "a multimodal model or remove the attachment. Sending your "
+                        "message as text only."
+                    )
+                )
+                dropped_media = [*images_to_send, *videos_to_send]
+                final_input = strip_media_placeholders(
+                    final_input,
+                    [item.placeholder for item in dropped_media],
+                    placeholder_spans=[
+                        item.placeholder_span
+                        for item in dropped_media
+                        if item.placeholder_span is not None
+                    ],
+                )
+                images_to_send = []
+                videos_to_send = []
+
         if images_to_send or videos_to_send:
             message_content = create_multimodal_content(
                 final_input, images_to_send, videos_to_send

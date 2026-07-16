@@ -19,12 +19,13 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
 
+from deepagents_code import _env_vars
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -806,6 +807,34 @@ def _validate_mcp_config_servers(config: dict[str, Any]) -> None:
         _validate_server_config(server_name, server_config)
 
 
+def _drop_invalid_mcp_config_servers(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Remove invalid server entries without rejecting valid siblings.
+
+    Callers use this only after config precedence has been resolved, so an
+    invalid winning definition is dropped instead of revealing a shadowed
+    lower-precedence server with the same name.
+
+    Args:
+        config: Parsed MCP config with a top-level `mcpServers` mapping.
+
+    Returns:
+        A tuple containing the config with only valid servers and a mapping of
+            dropped server names to validation errors.
+    """
+    valid: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for name, server in config["mcpServers"].items():
+        try:
+            _validate_server_config(name, server)
+        except (ValueError, TypeError, RuntimeError) as exc:
+            errors[name] = str(exc)
+        else:
+            valid[name] = server
+    return {**config, "mcpServers": valid}, errors
+
+
 def _load_mcp_config_top_level(config_path: Path) -> dict[str, Any]:
     """Load an MCP config file and validate only its top-level shape.
 
@@ -873,6 +902,64 @@ def _resolve_project_config_base(project_context: ProjectContext | None) -> Path
     from deepagents_code.project_utils import find_project_root
 
     return find_project_root() or Path.cwd()
+
+
+def project_root_for_mcp_config_path(
+    path: Path, *, fallback: Path | None = None
+) -> Path:
+    """Infer the project root that owns a project-level MCP config path.
+
+    Args:
+        path: Project-level `.mcp.json` path.
+        fallback: Root to use as the base for relative config paths.
+
+    Returns:
+        The owning project root.
+    """
+    parent = path.parent
+    if fallback is not None and not path.is_absolute():
+        parent = fallback if str(parent) == "." else fallback / parent
+    if parent.name == ".deepagents":
+        return parent.parent
+    return parent
+
+
+def filter_trusted_project_servers(
+    servers: Mapping[str, Any],
+    trust_lists: McpServerTrustLists,
+    *,
+    project_root: Path,
+    config_trusted: bool = False,
+) -> dict[str, Any]:
+    """Return only the project servers that survive the user's trust policy.
+
+    The single place the per-server trust rule lives, shared by the runtime
+    tool loader and the `mcp login` resolver so reject-precedence cannot drift
+    between them: a disabled name is dropped even from a `config_trusted`
+    config; otherwise a server is kept when the whole config is trusted or the
+    user's scoped approvals / env allowlist enable it (`is_enabled`).
+
+    Args:
+        servers: `mcpServers`-shaped mapping of name to definition.
+        trust_lists: The user's allow/deny policy.
+        project_root: Resolved project root owning `servers`, for scoped
+            fingerprint matching.
+        config_trusted: Whether the config as a whole is trusted (e.g.
+            `--trust-project-mcp`). Defaults to `False`.
+
+    Returns:
+        The kept subset of `servers`, in input order.
+    """
+    kept: dict[str, Any] = {}
+    for name, server in servers.items():
+        if name in trust_lists.disabled:
+            # Explicit reject always wins, even for a trusted config.
+            continue
+        if config_trusted or trust_lists.is_enabled(
+            name, project_root=project_root, server=server
+        ):
+            kept[name] = server
+    return kept
 
 
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
@@ -971,10 +1058,32 @@ def extract_stdio_server_commands(
     return results
 
 
+class ProjectServerSummary(NamedTuple):
+    """A project MCP server row shown to the user and gated for trust.
+
+    A `NamedTuple` (not a bare 3-tuple) so the three same-typed `str` slots get
+    field names — a `name`/`kind` swap can't type-check silently — while staying
+    tuple-compatible with existing unpacking and indexing.
+    """
+
+    name: str
+    """MCP server name."""
+
+    kind: str
+    """Transport kind from `_resolve_server_type`: `"stdio"`, `"http"`, or
+    `"sse"` for a well-formed entry. Typed `str`, not a `Literal`, because these
+    summaries are built from *unvalidated* configs (the trust prompt inspects
+    raw merged servers before validation), so a malformed `type`/`transport`
+    passes through verbatim (e.g. `{"type": "banana"}` yields `"banana"`)."""
+
+    summary: str
+    """`"<command> <args>"` for stdio entries, the URL for remote entries."""
+
+
 def extract_project_server_summaries(
     config: dict[str, Any],
-) -> list[tuple[str, str, str]]:
-    """Return `(name, kind, summary)` for every server in a project config.
+) -> list[ProjectServerSummary]:
+    """Return a `ProjectServerSummary` for every server in a project config.
 
     Used by the trust prompt and the untrusted-config skip warning so that
     both stdio servers (which spawn local commands) and remote servers
@@ -985,11 +1094,9 @@ def extract_project_server_summaries(
         config: Parsed MCP config dictionary.
 
     Returns:
-        List of `(server_name, kind, summary)`. `kind` is `"stdio"`,
-            `"http"`, `"sse"`, or `"unknown"`. `summary` is `"<command> <args>"`
-            for stdio entries and the URL for remote entries.
+        One `ProjectServerSummary` per server, in config order.
     """
-    results: list[tuple[str, str, str]] = []
+    results: list[ProjectServerSummary] = []
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
         return results
@@ -1009,7 +1116,7 @@ def extract_project_server_summaries(
             summary = str(server.get("url", ""))
         else:
             summary = ""
-        results.append((name, kind, summary))
+        results.append(ProjectServerSummary(name, kind, summary))
     return results
 
 
@@ -1030,17 +1137,110 @@ def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"mcpServers": merged}
 
 
-def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
-    """Load an MCP config file, returning `None` on any error.
+def _merge_mcp_configs_with_sources(
+    configs: list[tuple[Path, dict[str, Any]]],
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    """Merge MCP configs and retain the winning source for each server.
+
+    Args:
+        configs: `(path, config)` pairs in ascending precedence order.
+
+    Returns:
+        The merged config and a mapping from each server name to the path that
+        supplied its highest-precedence definition.
+    """
+    servers: dict[str, Any] = {}
+    sources: dict[str, Path] = {}
+    for path, config in configs:
+        config_servers = config.get("mcpServers")
+        if isinstance(config_servers, dict):
+            servers.update(config_servers)
+            for name in cast("dict[str, Any]", config_servers):
+                sources[name] = path
+    return {"mcpServers": servers}, sources
+
+
+def load_mcp_config_lenient(
+    config_path: Path, *, disabled_servers: Collection[str] = ()
+) -> dict[str, Any] | None:
+    """Load a single MCP config file, returning `None` on any error.
+
+    Disabled servers are removed before per-server validation, so explicitly
+    denied entries can neither block loading nor surface to a caller inspecting
+    the config. The single-file counterpart to `load_merged_mcp_configs_lenient`
+    (which the trust prompt uses); this one has no production caller today and is
+    retained as the standalone lenient loader.
 
     Args:
         config_path: Config path to load.
+        disabled_servers: Server names to remove before validation.
 
     Returns:
         The parsed config, or `None` if loading or validation fails.
     """
-    config, _ = load_mcp_config_with_error(config_path)
-    return config
+    config, _ = _load_mcp_config_top_level_with_error(config_path)
+    if config is None:
+        return None
+
+    servers = config["mcpServers"]
+    filtered = {
+        **config,
+        "mcpServers": {
+            name: server
+            for name, server in servers.items()
+            if name not in disabled_servers
+        },
+    }
+    try:
+        _validate_mcp_config_servers(filtered)
+    except (ValueError, TypeError, RuntimeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None
+    return filtered
+
+
+def load_merged_mcp_configs_lenient(
+    config_paths: Collection[Path], *, disabled_servers: Collection[str] = ()
+) -> dict[str, Any] | None:
+    """Load and validate project configs after resolving precedence.
+
+    The trust prompt must inspect the exact merged server definitions that a
+    whole-config approval can activate. Parsing each file with per-server
+    validation first can discard valid lower-precedence siblings when a bad
+    entry in that file is replaced by a valid higher-precedence definition.
+
+    Args:
+        config_paths: Project config paths in ascending precedence order.
+        disabled_servers: Server names to remove before validation.
+
+    Returns:
+        The merged, filtered config, or `None` when no config is usable. Invalid
+            winning server definitions are dropped without hiding valid siblings.
+    """
+    configs: list[dict[str, Any]] = []
+    for path in config_paths:
+        config, _ = _load_mcp_config_top_level_with_error(path)
+        if config is not None:
+            configs.append(config)
+    if not configs:
+        return None
+
+    merged = merge_mcp_configs(configs)
+    servers = merged["mcpServers"]
+    filtered = {
+        **merged,
+        "mcpServers": {
+            name: server
+            for name, server in servers.items()
+            if name not in disabled_servers
+        },
+    }
+    valid, errors = _drop_invalid_mcp_config_servers(filtered)
+    for name, error in errors.items():
+        logger.warning("Skipping invalid merged MCP server %r: %s", name, error)
+    if errors and not valid["mcpServers"]:
+        return None
+    return valid
 
 
 def load_mcp_config_with_error(
@@ -2122,7 +2322,7 @@ async def get_mcp_tools(
 
 
 def _log_skipped_project_servers(
-    dropped: list[tuple[str, str, str]],
+    dropped: list[ProjectServerSummary],
     *,
     trust_project_mcp: bool | None,
     config_trusted: bool,
@@ -2135,7 +2335,7 @@ def _log_skipped_project_servers(
     (`--trust-project-mcp` off) or merely not yet granted.
 
     Args:
-        dropped: `(name, kind, summary)` tuples for each skipped server.
+        dropped: `ProjectServerSummary` rows for each skipped server.
         trust_project_mcp: The caller's tri-state trust flag.
         config_trusted: Whether the project config was otherwise trusted (so the
             only reason to drop is an explicit user-level deny entry).
@@ -2168,6 +2368,7 @@ async def resolve_and_load_mcp_tools(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    additional_configs: tuple[dict[str, Any], ...] = (),
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -2187,19 +2388,23 @@ async def resolve_and_load_mcp_tools(
             are gated too because an attacker-controlled `.mcp.json` can SSRF or
             exfiltrate `${VAR}` headers during the discovery preflight.
 
-            - `True`: always trust project configs (all servers).
-            - `False`: drop all project servers (stdio and remote).
-            - `None`: consult the persistent trust store — trusted configs
-                load fully; all servers from untrusted project configs are
-                dropped.
+            - `True`: grant whole-config trust (all servers load).
+            - `False` / `None`: no whole-config trust. `None` is treated
+                identically to `False` — the persistent trust store this once
+                consulted was removed, so project servers load only via the
+                user's scoped approvals / env allowlist described below.
 
-            Regardless of this flag, the user-level allow/deny lists
-            (`[mcp].enabled_project_servers` /`disabled_project_servers` and
-            their env equivalents, via `load_mcp_server_trust_lists`) are
-            applied: named servers load from an otherwise-untrusted config,
-            and explicitly denied servers are dropped even from a trusted one.
+            Regardless of this flag, the user-level allow/deny policy
+            (`[mcp].enabled_project_server_approvals`,
+            `[mcp].disabled_project_servers`, and env equivalents via
+            `load_mcp_server_trust_lists`) is applied: scoped approvals load
+            from an otherwise-untrusted config only when the project root and
+            server fingerprint match, and explicitly denied servers are dropped
+            even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        additional_configs: Config layers injected by higher-level composition,
+            such as plugin-provided MCP servers.
         stateless: When `True`, do not return an owned runtime session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2242,116 +2447,141 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
-    project_trusted: bool | None = None
-    trust_lists: McpServerTrustLists | None = None
+    configs.extend(additional_configs)
+    loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
+
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:
             config_load_errors.append((path, error))
-        if config is None:
-            continue
+        if config is not None:
+            loaded_project_configs.append((path, config))
 
-        project_servers = extract_project_server_summaries(config)
-        if not project_servers:
-            # No dict servers yielded a summary, so every entry is malformed.
-            # Re-validate the already-loaded config (no second file read) to
-            # surface a precise per-server error; this always fails today, but
-            # the append path is kept so a future validator that accepts such a
-            # shape would still load it.
-            try:
-                _validate_mcp_config_servers(config)
-            except (ValueError, TypeError, RuntimeError) as exc:
-                config_load_errors.append((path, str(exc)))
-            else:
-                configs.append(config)
-            continue
+    if loaded_project_configs:
+        project_config, server_sources = _merge_mcp_configs_with_sources(
+            loaded_project_configs
+        )
+        project_servers = extract_project_server_summaries(project_config)
 
-        # Whether the config as a whole is trusted (flag/env/fingerprint). This
-        # governs the default for un-listed servers; the user-level allow/deny
-        # lists below refine it per server.
-        if trust_project_mcp is True:
-            config_trusted = True
-        elif trust_project_mcp is False:
-            config_trusted = False
-        else:
-            if project_trusted is None:
-                from deepagents_code.mcp_trust import (
-                    compute_config_fingerprint,
-                    is_project_mcp_trusted,
+        # Whole-config trust comes only from the flag (`--trust-project-mcp`
+        # or the interactive approval prompt's decision). Without it, servers
+        # load solely via the user's scoped approvals below.
+        config_trusted = trust_project_mcp is True
+
+        # The allow/deny lists are sourced only from the user's own config
+        # (home config.toml + env) — never from the repo — so a committed
+        # .mcp.json cannot self-approve.
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            load_mcp_server_trust_lists,
+        )
+
+        trust_lists = load_mcp_server_trust_lists()
+        if trust_lists.read_error is not None:
+            # Surface the read failure as a visible config error (a bare
+            # logger.warning has no handler outside debug mode).
+            config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+        if trust_lists.legacy_ignored:
+            # The removed flat allowlist stops loading these silently; make
+            # it visible here too, since the loader runs in non-interactive
+            # paths where the migration warning would otherwise be unseen.
+            ignored = ", ".join(sorted(trust_lists.legacy_ignored))
+            config_load_errors.append(
+                (
+                    DEFAULT_CONFIG_PATH,
+                    (
+                        "[mcp].enabled_project_servers is no longer used; "
+                        "re-approve via the project MCP prompt to keep loading: "
+                        f"{ignored}"
+                    ),
                 )
-
-                project_root = str(
-                    _resolve_project_config_base(project_context).resolve()
+            )
+        if trust_lists.legacy_env_ignored:
+            # The env var was renamed; make the set-but-ignored old name visible
+            # here too so its servers don't silently stop pre-approving.
+            config_load_errors.append(
+                (
+                    Path("<env>"),
+                    (
+                        f"{_env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS} is no "
+                        "longer used; it was renamed to "
+                        f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}"
+                    ),
                 )
-                fingerprint = compute_config_fingerprint(project_configs)
-                project_trusted = is_project_mcp_trusted(project_root, fingerprint)
-            config_trusted = project_trusted
-
-        # The allow/deny lists are sourced only from the user's own config (home
-        # config.toml + env) — never from the repo — so a committed .mcp.json
-        # cannot self-approve. Loaded lazily and reused across project configs.
-        if trust_lists is None:
-            from deepagents_code.model_config import (
-                DEFAULT_CONFIG_PATH,
-                load_mcp_server_trust_lists,
+            )
+        if trust_lists.malformed_approvals:
+            # A corrupt saved approval would otherwise just silently re-prompt;
+            # surface it here (the loader runs in non-interactive paths where a
+            # bare logger.warning is unseen), mirroring the legacy notices above.
+            count = trust_lists.malformed_approvals
+            entry_word = "entry" if count == 1 else "entries"
+            config_load_errors.append(
+                (
+                    DEFAULT_CONFIG_PATH,
+                    (
+                        f"{count} [mcp].enabled_project_server_approvals {entry_word} "
+                        "could not be read and were ignored; re-approve via the "
+                        "project MCP prompt to keep loading affected servers"
+                    ),
+                )
             )
 
-            trust_lists = load_mcp_server_trust_lists()
-            if trust_lists.read_error is not None:
-                # Surface the read failure as a visible config error (a bare
-                # logger.warning has no handler outside debug mode).
-                config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
-
         if trust_lists.load_failed:
-            # Fail closed: the user's allow/deny policy could not be read, so do
-            # not honor whole-config trust — otherwise a server the user meant to
-            # deny would load. Names explicitly enabled via a readable source
-            # (shell env) still survive the filter below.
+            # Fail closed: the user's allow/deny policy could not be read,
+            # so do not honor whole-config trust. Env-enabled names still
+            # survive because the trust-list loader discards scoped
+            # approvals when it records a read error.
             config_trusted = False
 
-        # Keep only servers that survive the trust decision. Dropping the rest
-        # here (rather than loading all or none) preserves the SSRF/header-
-        # exfiltration gate: a non-allowlisted remote entry from an attacker-
-        # controlled .mcp.json never reaches the preflight HEAD probe or the
-        # `${VAR}` config interpolation during the discovery handshake.
-        servers = config["mcpServers"]
+        # Resolve precedence before trust. If a higher-precedence file changes
+        # an approved server, rejecting that winning definition must not reveal
+        # the stale approved definition beneath it. Every server — even a
+        # malformed one — passes through the trust filter, so no entry can reach
+        # `configs` without a trust decision (defense in depth against a future
+        # validator that accepts a shape `extract_project_server_summaries`
+        # currently skips).
+        project_base = _resolve_project_config_base(project_context)
         kept: dict[str, Any] = {}
-        for name, server in servers.items():
-            if name in trust_lists.disabled:
-                # Explicit reject always wins, even for a trusted config.
-                continue
-            if config_trusted or name in trust_lists.enabled:
-                kept[name] = server
-        if kept:
-            filtered = {**config, "mcpServers": kept}
-            try:
-                _validate_mcp_config_servers(filtered)
-            except (ValueError, TypeError, RuntimeError) as exc:
-                # The whole filtered config is dropped, so name the kept
-                # (trusted/allowlisted) servers that will NOT load — otherwise
-                # they vanish silently (the skip-log below only covers servers
-                # dropped by the trust decision, not by this validation failure).
-                logger.warning(
-                    "Skipping invalid MCP config %s after project trust "
-                    "filtering; these trusted/allowlisted servers will not "
-                    "load: %s (%s)",
-                    path,
-                    ", ".join(kept),
-                    exc,
+        for name, server in project_config["mcpServers"].items():
+            source = server_sources[name]
+            project_root = project_root_for_mcp_config_path(
+                source, fallback=project_base
+            )
+            kept.update(
+                filter_trusted_project_servers(
+                    {name: server},
+                    trust_lists,
+                    project_root=project_root,
+                    config_trusted=config_trusted,
                 )
-                config_load_errors.append((path, str(exc)))
-            else:
-                configs.append(filtered)
+            )
 
-        # Servers dropped by the trust *decision* (disabled, or not allowlisted
-        # in an untrusted config). A validation failure above is reported
-        # separately, so those kept-but-unloaded names are intentionally not
-        # re-listed here with a trust-based reason.
-        dropped = [
-            (name, kind, summary)
-            for name, kind, summary in project_servers
-            if name not in kept
-        ]
+        if kept:
+            filtered = {**project_config, "mcpServers": kept}
+            valid, errors = _drop_invalid_mcp_config_servers(filtered)
+            for name, error in errors.items():
+                logger.warning(
+                    "Skipping invalid trusted project MCP server %r: %s",
+                    name,
+                    error,
+                )
+                config_load_errors.append((server_sources[name], error))
+            if valid["mcpServers"]:
+                configs.append(valid)
+        elif not project_servers:
+            # Nothing was trusted and no dict server produced a summary, so
+            # every entry is malformed. Re-validate the merged config (no second
+            # file read) to surface a precise per-server error instead of
+            # dropping the file silently.
+            try:
+                _validate_mcp_config_servers(project_config)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                config_load_errors.append((loaded_project_configs[-1][0], str(exc)))
+
+        # Servers dropped by the trust decision are logged only after
+        # precedence resolution, so shadowed definitions cannot be reported
+        # or loaded as if they were still active.
+        dropped = [summary for summary in project_servers if summary.name not in kept]
         if dropped:
             _log_skipped_project_servers(
                 dropped,

@@ -484,6 +484,27 @@ jobs:
             libs/partners/quickjs
           echo "Overlaid agent source from branch: $BRANCH"
 
+      - name: "🐳 Wait for the Docker daemon"
+        # GH-hosted runners intermittently have the Docker daemon not-yet-ready at
+        # job start; harbor's docker sandbox then hard-fails with "Docker daemon is
+        # not running", losing an otherwise-good shard. Wait it out (docker-sandbox
+        # only). No sudo/start: the codebase disallows privilege escalation in
+        # workflows, and this targets the startup race, not a dead daemon (which
+        # still fails the shard, but the aggregator no longer voids the scorecard
+        # for a single missing shard).
+        if: ${{ inputs.sandbox_env == 'docker' }}
+        run: |
+          for i in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready (after ${i} check(s))."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Docker daemon not ready after ~120s."
+          docker info || true
+          exit 1
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -1098,6 +1119,7 @@ jobs:
           AGENT_IMPL: ${{ matrix.agent_impl }}
           BRANCH: ${{ inputs.branch }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
@@ -1106,6 +1128,18 @@ jobs:
           expected_shards_args=()
           if [ -n "$EXPECTED_SHARDS" ]; then
             expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
+          fi
+          # needs.harbor.result is the single result of the whole harbor matrix.
+          # On a flat multi-category run that matrix spans every category, so one
+          # failed shard would mark *every* category's summary incomplete. There
+          # the per-category --expected-shards count is the category-local
+          # completeness authority (a category whose shards all uploaded is
+          # complete regardless of a sibling category's failure), so the global
+          # result is not passed. The single-dataset path (one category leg)
+          # keeps it: that result maps to its lone category.
+          harbor_result_args=()
+          if [ -z "$FLAT_MATRIX" ]; then
+            harbor_result_args=(--harbor-result "$HARBOR_RESULT")
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
@@ -1117,7 +1151,7 @@ jobs:
             --category "$CATEGORY" \
             --config "$AGENT_IMPL" \
             --branch "$BRANCH" \
-            --harbor-result "$HARBOR_RESULT" \
+            "${harbor_result_args[@]}" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"

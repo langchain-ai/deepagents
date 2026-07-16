@@ -23,13 +23,13 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
 
 
 def test_derive_pool_from_concurrency_and_rollouts():
-    # concurrency 4, rollouts 3 -> per_shard=3 -> 40//3=13 ; 80//13=6
-    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_groups=1) == (13, 1)
-    # concurrency 1 -> per_shard=1 -> 40 ; 80//40=2
+    # Packed shards use full concurrency: conc 4 -> 40//4=10 ; 80//10=8 capped to n_groups
+    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_groups=1) == (10, 1)
+    # concurrency 1 -> 40//1=40 ; 80//40=2
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_groups=5) == (40, 2)
-    # rollouts < concurrency clamps per_shard to rollouts (the utilization win)
-    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_groups=1)[0] == 20
-    # clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_groups
+    # Lower rollouts do not reduce a packed shard's peak concurrency.
+    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_groups=1)[0] == 10
+    # clamp inner to n_shards when few tasks; outer clamps to n_groups
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_groups=1) == (8, 1)
 
 
@@ -233,8 +233,8 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert up.main([]) == 0
     lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
-    assert lines["max_parallel"] == "13"      # conc4,roll3 -> 40//3
-    assert lines["model_parallel"] == "2"     # 80//13=6 -> min(6, 2 models)
+    assert lines["max_parallel"] == "10"      # conc4 -> 40//4 (packed shard = full conc)
+    assert lines["model_parallel"] == "2"     # 80//10=8 -> min(8, 2 groups)
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
     assert len(eval_matrix) == 2  # one entry per (model, branch); default branch=current
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
@@ -269,11 +269,11 @@ def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
 
 
 def test_derive_pool_divides_inner_by_branches():
-    # per_shard=3 -> M=40//3=13; two branches -> inner=13//2=6; outer bounded by groups.
+    # conc 4 -> per_model=40//4=10; two branches -> inner=10//2=5; outer bounded by groups.
     inner, outer = up.derive_pool(
         concurrency=4, rollouts=3, n_shards=100, n_groups=2, n_branches=2
     )
-    assert inner == 6
+    assert inner == 5
     assert outer == 2
 
 
@@ -281,7 +281,7 @@ def test_derive_pool_single_branch_matches_legacy():
     inner, outer = up.derive_pool(
         concurrency=4, rollouts=3, n_shards=100, n_groups=5, n_branches=1
     )
-    assert (inner, outer) == (13, 5)
+    assert (inner, outer) == (10, 5)
 
 
 def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
@@ -289,7 +289,7 @@ def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
-    monkeypatch.setenv("UNIFIED_CONCURRENCY", "40")  # per_shard=min(40,3)=3 -> M=13
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "40")  # budget_shards=40//40=1
     monkeypatch.setenv("UNIFIED_BRANCHES", ",".join(f"b{i}" for i in range(14)))
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
     with pytest.raises(SystemExit):
@@ -384,3 +384,48 @@ def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
         leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"
     )
     assert autonomous_config_counts == Counter({"bare": 1, "dcode": 1})
+
+
+def test_derive_pool_budgets_packed_shards_at_full_concurrency():
+    # A packed shard runs multiple tasks at full concurrency, so the per-model
+    # budget divides MAX_TASKS_PER_MODEL by concurrency (not min(conc, rollouts)).
+    tasks = {"autonomous": [f"harbor-index/a{i}" for i in range(260)]}
+    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks)
+    assert any(len(entry["include_tasks"].split()) > 1 for entry in entries)
+
+    inner, _ = up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=len(entries), n_groups=1
+    )
+    assert inner == 10
+    assert inner * 4 == up.MAX_TASKS_PER_MODEL
+
+
+def test_build_flat_matrix_packs_above_cap():
+    tasks = {
+        "autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous"], tasks, code_impls=["dcode"]
+    )
+    assert len(entries) <= shard_matrix.MAX_SHARDS
+    # Every task still present, split across include_tasks strings.
+    seen = " ".join(e["include_tasks"] for e in entries).split()
+    assert seen == tasks["autonomous"]
+
+
+def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
+    # Lite-like: total is well under MAX_SHARDS, so behavior is unchanged --
+    # one task per matrix entry, no packing.
+    tasks = {
+        "autonomous": [f"harbor-index/a{i}" for i in range(15)],
+        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
+        "context": [f"cb-cloud-{i}" for i in range(8)],
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt",
+        ["autonomous", "conversation", "context"],
+        tasks,
+        code_impls=["dcode"],
+    )
+    assert len(entries) == 15 + 11 + 8
+    assert all(len(e["include_tasks"].split()) == 1 for e in entries)

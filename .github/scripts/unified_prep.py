@@ -2,13 +2,13 @@
 
 Parses a free-form comma-separated model CSV, validates it via models.py,
 maps each category to its Harbor dataset, and emits a per-model flat matrix
-(one entry per single-task shard, spanning every category) to GITHUB_OUTPUT.
+(one entry per shard, spanning every category) to GITHUB_OUTPUT.
 
 Pool sizing is derived by `derive_pool`, not clamped after the fact: given
-`concurrency` (trials in flight per task) and `rollouts` (trials per task),
-`per_shard = min(concurrency, rollouts)` is the peak concurrent trials a
-single 1-task shard ever runs. `max_parallel = MAX_TASKS_PER_MODEL //
-per_shard` saturates the per-model 40-trial budget, and `model_parallel =
+`concurrency` (trials in flight per shard job), `max_parallel =
+MAX_TASKS_PER_MODEL // concurrency` saturates the per-model 40-trial budget.
+Using the full concurrency is necessary because packed shards can contain
+multiple tasks. `model_parallel =
 MAX_RUNNERS // max_parallel` bounds how many models run at once so total
 runners stay within MAX_RUNNERS. Both invariants hold by construction:
   per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
@@ -155,15 +155,18 @@ def derive_pool(
 ) -> tuple[int, int]:
     """Derive (inner_max_parallel, outer_parallel).
 
-    per_shard is the peak concurrent trials in one 1-task shard. `M` is the
-    per-model concurrent-shard budget. Dividing by `n_branches` keeps a model's
-    concurrently-running branch jobs summed within that budget, so per-model
-    provider load is unchanged by the branch axis. outer_parallel bounds how many
-    (model, branch) jobs run at once so total runners stay within MAX_RUNNERS.
-    With n_branches == 1 and n_groups == n_models this is the pre-branch behavior.
+    A packed shard can run multiple tasks and therefore uses its full
+    `concurrency` even when `rollouts` is lower, so the per-model concurrent-shard
+    budget divides MAX_TASKS_PER_MODEL by `concurrency`. Dividing that budget by
+    `n_branches` keeps a model's concurrently-running branch jobs summed within it,
+    so per-model provider load is unchanged by the branch axis. outer_parallel
+    bounds how many (model, branch) jobs run at once so total runners stay within
+    MAX_RUNNERS. With n_branches == 1 and n_groups == n_models this is the
+    pre-branch behavior. `rollouts` stays in the signature for callers that supply
+    all run limits.
     """
-    per_shard = max(1, min(concurrency, rollouts))
-    per_model = max(1, MAX_TASKS_PER_MODEL // per_shard)
+    del rollouts
+    per_model = max(1, MAX_TASKS_PER_MODEL // max(1, concurrency))
     inner = max(1, min(per_model // n_branches, n_shards))
     outer = max(1, min(MAX_RUNNERS // inner, n_groups))
     return inner, outer
@@ -335,7 +338,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
         if not tasks_json:
-            raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
+            raise SystemExit(
+                "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
+            )
         with open(tasks_json) as f:
             tasks_by_cat = json.load(f)
 
@@ -363,14 +368,15 @@ def main(argv: list[str] | None = None) -> int:
     # per-model concurrency is unchanged by the config axis.
     n_shards = max((len(v) for v in per_model_matrices.values()), default=1)
     n_branches = len(branches)
-    per_shard = max(1, min(concurrency, rollouts))
-    budget_shards = max(1, MAX_TASKS_PER_MODEL // per_shard)
+    # A packed shard uses full `concurrency`, so the per-model concurrent-shard
+    # budget divides by concurrency (not min(concurrency, rollouts)).
+    budget_shards = max(1, MAX_TASKS_PER_MODEL // concurrency)
     if n_branches > budget_shards:
         raise SystemExit(
             f"branches_to_compare has {n_branches} branches but the per-model "
             f"concurrent-shard budget is {budget_shards} (at concurrency="
-            f"{concurrency}, rollouts={rollouts}). Reduce branches or lower "
-            "concurrency/rollouts so branches can share the per-model budget."
+            f"{concurrency}). Reduce branches or lower concurrency so branches "
+            "can share the per-model budget."
         )
     max_parallel, model_parallel = derive_pool(
         concurrency, rollouts, n_shards, n_models * n_branches, n_branches

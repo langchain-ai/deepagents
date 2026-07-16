@@ -3383,12 +3383,12 @@ class DeepAgentsApp(App):
         # Apply any skill commands discovered before the widget was mounted
         if self._discovered_skills:
             from deepagents_code.command_registry import (
-                SLASH_COMMANDS,
                 build_skill_commands,
+                get_slash_commands,
             )
 
             cmds = build_skill_commands(self._discovered_skills)
-            merged = list(SLASH_COMMANDS) + cmds
+            merged = list(get_slash_commands()) + cmds
             self._chat_input.update_slash_commands(merged)
 
         # Set initial auto-approve state
@@ -4012,8 +4012,8 @@ class DeepAgentsApp(App):
             simply ignore the result.
         """
         from deepagents_code.command_registry import (
-            SLASH_COMMANDS,
             build_skill_commands,
+            get_slash_commands,
         )
 
         try:
@@ -4054,7 +4054,7 @@ class DeepAgentsApp(App):
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:
-                merged = list(SLASH_COMMANDS) + skill_commands
+                merged = list(get_slash_commands()) + skill_commands
                 self._chat_input.update_slash_commands(merged)
             else:
                 logger.debug(
@@ -4076,10 +4076,20 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
+        from deepagents_code.plugins.adapters.skills import (
+            discover_plugin_skill_sources_and_roots,
+        )
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        return discover_skills_and_roots(assistant_id)
+        plugin_skill_sources, plugin_skill_roots = (
+            discover_plugin_skill_sources_and_roots()
+        )
+        return discover_skills_and_roots(
+            assistant_id,
+            plugin_skill_sources=plugin_skill_sources,
+            plugin_skill_roots=plugin_skill_roots,
+        )
 
     def _discover_skills_and_roots_with_import_lock(
         self,
@@ -6783,6 +6793,8 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget is not None:
             while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
+
+        self._reveal_pending_tool_calls()
 
         # Pause the elapsed-time counter while the user decides, then resume it
         # when the decision future completes. Resolve, reject, and cancel all
@@ -10801,16 +10813,14 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
+            from deepagents_code.command_registry import get_slash_commands
+
+            command_names = ", ".join(
+                f"{entry.name} {entry.argument_hint}".rstrip()
+                for entry in get_slash_commands()
+            )
             help_body = (
-                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/copy, /goal, /offload, /editor, /effort, "
-                "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /restart, /rubric, "
-                "/skill:<name>, /remember, "
-                "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/tools, /threads, /trace, "
-                "/update, /auto-update, /install, /changelog, /docs, "
-                "/feedback, /help\n\n"
+                f"Commands: {command_names}, /skill:<name>\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -11077,6 +11087,18 @@ class DeepAgentsApp(App):
             args = command.strip()[len("/mcp ") :].strip()
             await self._mount_message(UserMessage(command))
             await self._handle_mcp_subcommand(args)
+        elif cmd == "/plugins":
+            await self._mount_message(UserMessage(command))
+            from deepagents_code._env_vars import (
+                EXPERIMENTAL,
+                EXPERIMENTAL_HINT,
+                is_env_truthy,
+            )
+
+            if not is_env_truthy(EXPERIMENTAL):
+                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
+                return
+            await self._show_plugin_manager()
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
@@ -11231,6 +11253,53 @@ class DeepAgentsApp(App):
                 if removed_skills:
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
+
+            # Experimental plugins: rediscover and restart the owned server so
+            # plugin MCP config is picked up without a separate slash command.
+            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+            if is_env_truthy(EXPERIMENTAL):
+                from deepagents_code.plugins import discover_plugins
+                from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+                plugin_result = discover_plugins()
+                plugin_count = len(plugin_result.plugins)
+                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                mcp_count = sum(
+                    len(servers)
+                    for config in mcp_configs
+                    if isinstance((servers := config.get("mcpServers")), dict)
+                )
+                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                report += (
+                    f"\nPlugins: {plugin_count} plugin"
+                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{plugin_skill_count} skill"
+                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{mcp_count} plugin MCP server"
+                    f"{'s' if mcp_count != 1 else ''}"
+                )
+                if plugin_result.warnings:
+                    report += (
+                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                        "during load."
+                    )
+
+                restarted = False
+                if self._server_proc is not None and self._server_kwargs is not None:
+                    if self._agent_running and self._agent_worker:
+                        self._cancel_worker(self._agent_worker)
+                        self._agent_running = False
+                    else:
+                        self._discard_queue()
+                    restarted = await self._restart_server_manual()
+                    if restarted:
+                        report += "\nAgent server restarted for plugin MCP."
+                    else:
+                        report += (
+                            "\nAgent server was not restarted; plugin MCP may be stale."
+                        )
+
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
@@ -13668,6 +13737,17 @@ class DeepAgentsApp(App):
             self._message_store.mark_pruned_below(pruned_ids)
             self._sync_transcript_spacers(messages_container)
 
+    def _reveal_pending_tool_calls(self) -> None:
+        """Surface grouped tool calls before asking for approval."""
+        group = self._active_tool_group
+        self._close_active_tool_group()
+        if group is None or not group.is_attached:
+            return
+        try:
+            group.reveal_pending()
+        except Exception:
+            logger.exception("Failed to reveal pending tool calls")
+
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""
         group = self._active_tool_group
@@ -14740,6 +14820,7 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
@@ -14779,6 +14860,9 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_jump_up()
+            return
+        if isinstance(self.screen, PluginManagerScreen):
+            self.screen.action_previous_tab()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -16950,6 +17034,16 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    async def _show_plugin_manager(self) -> None:
+        """Open the interactive plugin manager."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        self.push_screen(
+            PluginManagerScreen(
+                mcp_server_info=self._mcp_server_info or [],
+            )
+        )
+
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.
 
@@ -17133,9 +17227,21 @@ class DeepAgentsApp(App):
         def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
             if result == MCP_VIEWER_RECONNECT_REQUEST:
-                # `action_reconnect` gates dismiss on pending state, so
-                # `force=False` is correct.
-                self.call_later(self._reconnect_from_viewer_safe)
+                # Run the reconnect as a detached task, NOT via `call_later`.
+                # `call_later` awaits the coroutine inside the app's message
+                # pump, so `_respawn_server`'s multi-second `server_proc.restart()`
+                # would stall the pump — key events stop being forwarded and the
+                # chat input is frozen ("blocked") for the whole reconnect.
+                # `asyncio.create_task` keeps the pump free (mirrors the
+                # force-reconnect confirm path), so input stays responsive:
+                # keystrokes stay live, and any message the user submits while
+                # `_connecting` is queued and drained once `ServerReady` fires.
+                # `_reconnect_from_viewer_safe` handles its own errors;
+                # `_log_task_exception` surfaces anything unexpected.
+                # `action_reconnect` gates dismiss on pending state, so the
+                # implicit `force=False` reconnect is correct.
+                task = asyncio.create_task(self._reconnect_from_viewer_safe())
+                task.add_done_callback(_log_task_exception)
                 return
             if result:
                 # User picked an unauthenticated server — start login.
@@ -17148,10 +17254,13 @@ class DeepAgentsApp(App):
     async def _reconnect_from_viewer_safe(self) -> None:
         """Run the post-viewer reconnect and surface unexpected failures.
 
-        `call_later` schedules this on Textual's message pump, which
-        logs but does not display exceptions. Re-checks pending state
-        so a flip between dismiss and the pump tick silently no-ops
-        instead of degrading to the CLI no-op notice.
+        Scheduled via `asyncio.create_task` from `_show_mcp_viewer`'s
+        dismiss callback so the reconnect runs detached from the message
+        pump; `_log_task_exception` logs any escaped error, and this
+        wrapper additionally catches failures to display an `ErrorMessage`.
+        Re-checks pending state so a flip between the viewer dismiss and
+        this task starting silently no-ops instead of degrading to the
+        CLI no-op notice.
         """
         if not self._pending_mcp_reconnect:
             return
@@ -17529,7 +17638,11 @@ class DeepAgentsApp(App):
         if self._mcp_preload_kwargs is None:
             return
         config_path = self._mcp_preload_kwargs.get("mcp_config_path")
-        resolution = resolve_mcp_config(config_path)
+        trust_project_mcp = self._mcp_preload_kwargs.get("trust_project_mcp")
+        resolution = resolve_mcp_config(
+            config_path,
+            trust_project_mcp=trust_project_mcp,
+        )
         if isinstance(resolution, ConfigResolutionError):
             await self._mount_message(
                 ErrorMessage(f"MCP login failed: {resolution.message}"),

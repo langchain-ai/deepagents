@@ -82,6 +82,7 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from pathlib import Path
 
     from langchain_core.runnables import RunnableConfig
 
@@ -1450,16 +1451,29 @@ async def run_non_interactive(
             build_skill_invocation_envelope,
             discover_skills_and_roots,
         )
-        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.load import (
+            ExtendedSkillMetadata,
+            load_skill_content,
+        )
 
         normalized_skill = initial_skill.strip().lower()
         try:
             # Offloaded to a thread: discovery does blocking filesystem I/O
             # (a JSON trust-store read plus `Path.resolve()` calls) that must
             # not block the event loop.
-            skills, allowed_roots = await asyncio.to_thread(
-                discover_skills_and_roots, assistant_id
+            from deepagents_code.plugins.adapters.skills import (
+                discover_plugin_skill_sources_and_roots,
             )
+
+            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
+                return discover_skills_and_roots(
+                    assistant_id,
+                    plugin_skill_sources=plugin_sources,
+                    plugin_skill_roots=plugin_roots,
+                )
+
+            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
             console.print(

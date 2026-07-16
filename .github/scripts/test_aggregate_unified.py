@@ -603,11 +603,13 @@ def test_main_rejects_nonpositive_rollouts(
     assert "--rollouts must be >= 1" in capsys.readouterr().err
 
 
-def test_main_fails_only_when_every_expected_model_is_incomplete(
+def test_main_warns_but_succeeds_when_every_expected_model_is_incomplete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # An incomplete run must still produce a usable scorecard (exit 0) rather than
+    # voiding everything; the incompleteness is surfaced as a warning.
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
         '[{"model": "m", "branch": "current", "config": "bare", '
@@ -618,10 +620,10 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 1
+    assert rc == 0
     assert (out / "unified_summary.json").exists()
     assert (
-        "::error::Every expected (model, branch, config) row is incomplete"
+        "::warning::Every expected (model, branch, config) row is incomplete"
         in capsys.readouterr().out
     )
 
@@ -629,7 +631,7 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
     assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
 
 
-def test_main_fails_when_required_leaf_has_no_tasks(
+def test_main_warns_when_required_leaf_has_no_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -655,11 +657,11 @@ def test_main_fails_when_required_leaf_has_no_tasks(
 
     combined = json.loads((out / "unified_summary.json").read_text())
     (model,) = combined["rows"]
-    assert rc == 1
+    assert rc == 0
     assert model["categories"]["context"]["incomplete"] is True
     assert model["incomplete"] is True
     assert (
-        "::error::Every expected (model, branch, config) row is incomplete"
+        "::warning::Every expected (model, branch, config) row is incomplete"
         in capsys.readouterr().out
     )
 
@@ -688,7 +690,7 @@ def test_main_passes_when_an_unexpected_row_is_complete(
     assert rc == 0
     assert "::warning::missing / current / bare incomplete" in output
     assert (
-        "::error::Every expected (model, branch, config) row is incomplete"
+        "::warning::Every expected (model, branch, config) row is incomplete"
         not in output
     )
 
@@ -734,7 +736,7 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
     output = capsys.readouterr().out
     combined = json.loads((out / "unified_summary.json").read_text())
     (model,) = combined["rows"]
-    assert rc == 1
+    assert rc == 0
     assert "rollouts_per_task is 2; expected 3" in output
     assert model["missing_categories"] == ["context"]
 

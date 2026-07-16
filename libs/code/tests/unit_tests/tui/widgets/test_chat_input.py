@@ -14,7 +14,7 @@ from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
 from deepagents_code import _textual_patches as _textual_patches
-from deepagents_code.command_registry import SLASH_COMMANDS
+from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
 from deepagents_code.tui.widgets import (
@@ -1711,7 +1711,7 @@ class TestDismissCompletion:
 
             # Menu should reappear with all commands
             assert len(chat._current_suggestions) == min(
-                len(SLASH_COMMANDS), MAX_SUGGESTIONS
+                len(get_slash_commands()), MAX_SUGGESTIONS
             )
             assert popup.styles.display == "block"
 
@@ -2598,6 +2598,7 @@ class TestSlashCompletionCursorMapping:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
+            # Shared prefix `re`: shorter `/remember` ranks above `/reload`.
             chat._text_area.insert("re")
             await pilot.pause()
 

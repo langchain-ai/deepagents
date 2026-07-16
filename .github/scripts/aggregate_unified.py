@@ -422,12 +422,16 @@ def main(argv: list[str] | None = None) -> int:
         combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
     )
     rows = combined["rows"]
+    # Incompleteness is surfaced per row in write_outputs (a ::warning:: plus the
+    # ⚠️ markers in the table) and never fails the job: a partial scorecard the
+    # reader can inspect beats a voided run with no output. A single errored shard
+    # no longer nukes the whole cross-model comparison.
     if expected_leaves and rows and all(r["incomplete"] for r in rows):
         print(
-            "::error::Every expected (model, branch, config) row is incomplete; "
-            "no complete unified result is available."
+            "::warning::Every expected (model, branch, config) row is incomplete; "
+            "the scorecard below is ranked on partial data — inspect the per-row "
+            "notes above."
         )
-        return 1
     return 0
 
 

@@ -176,7 +176,7 @@ class TestMessageData:
         or `to_widget` would silently downgrade rehydrated `/version` extras
         tables to plain-text rendering.
         """
-        from deepagents_code.tui.widgets.messages import _MutedRichMarkdown
+        from textual.content import Content
 
         markdown_source = (
             "### Installed optional dependencies\n"
@@ -195,8 +195,11 @@ class TestMessageData:
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._is_markdown is True
-        rendered = restored._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
+        # Markdown renders to selectable `Content` (not a raw Rich renderable)
+        # so the rehydrated extras table stays copyable.
+        rendered = restored.render()
+        assert isinstance(rendered, Content)
+        assert "langchain-anthropic" in rendered.plain
 
     def test_diff_message_roundtrip(self):
         """Test DiffMessage serialization and deserialization."""

@@ -46,15 +46,27 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
     code = """
         import json
         import sys
+        from contextlib import nullcontext
         from unittest.mock import patch
 
         from deepagents_code.main import cli_main
 
         argv = ["deepagents", *json.loads(sys.argv[1])]
+        # An intentional prerelease SDK pin can make `doctor` exit unhealthy;
+        # omit that environment-specific check while testing startup bootstrap.
+        requirement_patch = (
+            patch(
+                "deepagents_code.extras_info.sdk_requirement_from_cli",
+                return_value=None,
+            )
+            if argv[1:] == ["doctor", "--json"]
+            else nullcontext()
+        )
         try:
             with (
                 patch.object(sys, "argv", argv),
                 patch("deepagents_code.main.check_cli_dependencies"),
+                requirement_patch,
             ):
                 cli_main()
         finally:

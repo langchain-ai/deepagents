@@ -145,26 +145,40 @@ def _installed_component_lines(row: _PluginRow) -> list[str]:
     return ["No components found."]
 
 
-def _status_lines(row: _PluginRow) -> list[str]:
+def _status_lines(row: _PluginRow) -> list[Content]:
     glyphs = get_glyphs()
     if row.load_state == "error":
         detail = row.load_error or "Plugin failed to load."
-        return [f"Status: Error — {detail}", "Fix the error, then run /reload."]
+        return [
+            Content.styled(f"Status: Error — {detail}", "dim"),
+            Content.styled("Fix the error, then run /reload.", "dim"),
+        ]
     if row.load_state == "disabled":
-        return ["Status: Disabled", "Enable the plugin, then run /reload to load it."]
+        return [
+            Content.styled("Status: Disabled", "dim"),
+            Content.styled("Enable the plugin, then run /reload to load it.", "dim"),
+        ]
     if row.load_state == "pending_reload":
         if row.enabled:
             return [
-                "Status: Installed · pending /reload",
-                "Run /reload to load this plugin into the current session.",
+                Content.styled("Status: Installed · pending /reload", "dim"),
+                Content.styled(
+                    "Run /reload to load this plugin into the current session.", "dim"
+                ),
             ]
         return [
-            "Status: Disabled · pending /reload",
-            "Run /reload to unload this plugin from the current session.",
+            Content.styled("Status: Disabled · pending /reload", "dim"),
+            Content.styled(
+                "Run /reload to unload this plugin from the current session.", "dim"
+            ),
         ]
-    lines = [f"Status: {glyphs.checkmark} Enabled"]
+    lines = [Content.styled(f"Status: {glyphs.checkmark} Enabled", "$success")]
     if row.mcp_connected is False:
-        lines.append("MCP servers need a server restart (/reload) to connect.")
+        lines.append(
+            Content.styled(
+                "MCP servers need a server restart (/reload) to connect.", "dim"
+            )
+        )
     return lines
 
 
@@ -214,7 +228,7 @@ def _installed_plugin_details_content(row: _PluginRow) -> Content:
     for index, line in enumerate(_status_lines(row)):
         if index:
             parts.append("\n")
-        parts.append(Content.styled(line, "dim"))
+        parts.append(line)
     parts.extend(["\n\n", Content.styled("Installed components:", "bold")])
     for line in _installed_component_lines(row):
         parts.extend(["\n  ", Content.styled(line, "dim")])

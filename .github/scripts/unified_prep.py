@@ -141,7 +141,10 @@ def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
 
 def _load_tasks_json(path: str) -> dict[str, list[str]]:
     """Load the complete-profile task mapping with strict shape validation."""
-    msg = "UNIFIED_TASKS_JSON must be a JSON object mapping category names to lists of task strings"
+    msg = (
+        "UNIFIED_TASKS_JSON must be a JSON object mapping category names "
+        "to lists of task strings"
+    )
     try:
         with open(path) as handle:
             raw: object = json.load(handle)
@@ -179,11 +182,19 @@ def build_flat_matrix(
             )
         else:
             runtimes = list(
-                dict.fromkeys(agent_configs.conversation_runtime_for(config) for config in configs)
+                dict.fromkeys(
+                    agent_configs.conversation_runtime_for(config)
+                    for config in configs
+                )
             )
-            groups.extend((category, runtime, tasks) for runtime in runtimes if tasks)
+            groups.extend(
+                (category, runtime, tasks) for runtime in runtimes if tasks
+            )
 
-    counts = {f"{category}\0{runtime}": len(tasks) for category, runtime, tasks in groups}
+    counts = {
+        f"{category}\0{runtime}": len(tasks)
+        for category, runtime, tasks in groups
+    }
     budgets = (
         _allocate_shard_budgets(counts, shard_matrix.MAX_SHARDS)
         if sum(counts.values()) > shard_matrix.MAX_SHARDS

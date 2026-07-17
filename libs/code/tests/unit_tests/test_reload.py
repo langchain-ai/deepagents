@@ -1,9 +1,12 @@
 """Tests for runtime config reload behavior."""
 
+from __future__ import annotations
+
 import logging
 import os
-from pathlib import Path
-from unittest.mock import MagicMock
+import threading
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import dotenv as _dotenv_module
 import pytest
@@ -13,8 +16,22 @@ from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.config import Settings
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+    from pathlib import Path
+
+    from deepagents_code.app import _PluginFingerprint
+    from deepagents_code.plugins.models import PluginInstance
+
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
+
+
+def _test_plugin_fingerprint(version: str) -> _PluginFingerprint:
+    from deepagents_code.app import _PluginFingerprint
+
+    return _PluginFingerprint(version=version, manifest=None, components=())
+
 
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",
@@ -1045,6 +1062,639 @@ class TestReloadThemeReapply:
 class TestReloadPluginsViaReload:
     """Plugins should reload through `/reload`."""
 
+    def test_fingerprint_detects_nested_skill_edits(self, tmp_path: Path) -> None:
+        """Editing `SKILL.md` under a skills directory must change the fingerprint."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        skills_root = tmp_path / "skills"
+        skill_dir = skills_root / "demo"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("---\nname: demo\n---\noriginal\n", encoding="utf-8")
+
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(skills_root,)),
+        )
+
+        before = DeepAgentsApp._fingerprint_plugins((plugin,))
+        skill_md.write_text("---\nname: demo\n---\nedited\n", encoding="utf-8")
+        after = DeepAgentsApp._fingerprint_plugins((plugin,))
+
+        assert before != after
+
+    def test_fingerprint_detects_added_and_removed_nested_files(
+        self, tmp_path: Path
+    ) -> None:
+        """Adding then removing a nested file must each change the fingerprint.
+
+        Directory stat alone can stay put across a child add/remove on some
+        filesystems, so the recursive walk is what has to notice.
+        """
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        skills_root = tmp_path / "skills" / "demo"
+        skills_root.mkdir(parents=True)
+        (skills_root / "SKILL.md").write_text("---\nname: demo\n---\n", "utf-8")
+
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(tmp_path / "skills",)),
+        )
+
+        base = DeepAgentsApp._fingerprint_plugins((plugin,))
+        extra = skills_root / "helper.py"
+        extra.write_text("x = 1\n", encoding="utf-8")
+        with_extra = DeepAgentsApp._fingerprint_plugins((plugin,))
+        extra.unlink()
+        removed = DeepAgentsApp._fingerprint_plugins((plugin,))
+
+        assert base != with_extra
+        assert with_extra != removed
+        assert base == removed
+
+    def test_fingerprint_records_sentinel_for_unreadable_subdir(
+        self, tmp_path: Path
+    ) -> None:
+        """An unreadable subdirectory must perturb the fingerprint, not vanish.
+
+        Recursive scanners can skip subtrees they cannot descend into, which
+        would otherwise let an edit hidden beneath one read as "no change".
+        """
+        import sys
+
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("chmod-based unreadability is not enforced here")
+
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        skills_root = tmp_path / "skills"
+        locked = skills_root / "locked"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text("---\nname: demo\n---\n", "utf-8")
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(skills_root,)),
+        )
+
+        readable = DeepAgentsApp._fingerprint_plugins((plugin,))
+        locked.chmod(0o000)
+        try:
+            unreadable = DeepAgentsApp._fingerprint_plugins((plugin,))
+        finally:
+            locked.chmod(0o755)
+
+        # The locked directory is recorded as a -1/-1 sentinel rather than
+        # dropped, so the change is visible instead of silently swallowed.
+        assert readable != unreadable
+        fingerprint = unreadable["demo@tools"]
+        assert any(
+            entry.path == str(locked) and entry.mtime_ns == -1
+            for entry in fingerprint.components
+        )
+        assert DeepAgentsApp._plugin_fingerprint_changed(fingerprint, fingerprint)
+
+    def test_fingerprint_caps_recursive_scan(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Oversized component trees stop at the hard entry limit."""
+        from deepagents_code import app as app_module
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        for index in range(5):
+            (skills_root / f"skill-{index}.md").write_text(str(index), encoding="utf-8")
+        monkeypatch.setattr(app_module, "_MAX_PLUGIN_FINGERPRINT_ENTRIES", 3)
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(skills_root,)),
+        )
+
+        first = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
+        second = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
+
+        assert any(
+            entry.mtime_ns == app_module._TRUNCATED_PLUGIN_FINGERPRINT_STAT
+            for entry in first.components
+        )
+        assert DeepAgentsApp._plugin_fingerprint_changed(first, second)
+
+    def test_fingerprint_does_not_follow_symlinks(self, tmp_path: Path) -> None:
+        """A nested directory symlink is recorded without scanning its target."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        plugin_root = tmp_path / "plugin"
+        skills_root = plugin_root / "skills"
+        outside = tmp_path / "outside"
+        skills_root.mkdir(parents=True)
+        outside.mkdir()
+        outside_file = outside / "external.md"
+        outside_file.write_text("external", encoding="utf-8")
+        link = skills_root / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pytest.skip("directory symlinks are unavailable")
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=plugin_root,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(skills=(skills_root,)),
+        )
+
+        fingerprint = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
+        paths = {entry.path for entry in fingerprint.components}
+
+        assert str(link) in paths
+        assert str(outside_file) not in paths
+
+    def test_fingerprint_rejects_component_outside_plugin_root(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed inventory cannot make fingerprinting inspect another tree."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        plugin_root = tmp_path / "plugin"
+        plugin_root.mkdir()
+        outside = tmp_path / "outside.json"
+        outside.write_text('{"mcpServers": {}}', encoding="utf-8")
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=plugin_root,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(mcp_files=(outside,)),
+        )
+
+        fingerprint = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
+
+        assert fingerprint.components == ((str(outside), -1, -1),)
+
+    def test_fingerprint_detects_version_change(self, tmp_path: Path) -> None:
+        """A version bump must change the fingerprint even with identical files."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        def _plugin(version: str) -> PluginInstance:
+            return PluginInstance(
+                plugin_id="demo@tools",
+                name="demo",
+                marketplace="tools",
+                version=version,
+                root=tmp_path,
+                data_dir=tmp_path / "data",
+                manifest=None,
+                inventory=ComponentInventory(),
+            )
+
+        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
+        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
+
+        assert before != after
+
+    def test_fingerprint_detects_manifest_change(self, tmp_path: Path) -> None:
+        """A manifest change must flip the fingerprint even when files match."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import (
+            ComponentInventory,
+            PluginInstance,
+            PluginManifest,
+        )
+
+        def _plugin(manifest_version: str) -> PluginInstance:
+            manifest = PluginManifest(
+                name="demo",
+                version=manifest_version,
+                component_paths={},
+                inline_mcp={},
+            )
+            return PluginInstance(
+                plugin_id="demo@tools",
+                name="demo",
+                marketplace="tools",
+                # Hold the instance version fixed to isolate the manifest dimension.
+                version="1.0",
+                root=tmp_path,
+                data_dir=tmp_path / "data",
+                manifest=manifest,
+                inventory=ComponentInventory(),
+            )
+
+        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
+        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
+
+        assert before != after
+
+    def test_fingerprint_detects_mcp_file_edits(self, tmp_path: Path) -> None:
+        """Editing an `mcp_files` entry (a file path) must change the fingerprint."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
+
+        mcp_file = tmp_path / ".mcp.json"
+        mcp_file.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+        plugin = PluginInstance(
+            plugin_id="demo@tools",
+            name="demo",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=None,
+            inventory=ComponentInventory(mcp_files=(mcp_file,)),
+        )
+
+        before = DeepAgentsApp._fingerprint_plugins((plugin,))
+        mcp_file.write_text('{"mcpServers": {"x": {}}}', encoding="utf-8")
+        after = DeepAgentsApp._fingerprint_plugins((plugin,))
+
+        assert before != after
+
+    def test_plugin_login_labels_filters_dedupes_and_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only added, login-needing plugins are listed, deduped, with name fallback."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import (
+            ComponentInventory,
+            PluginInstance,
+            PluginManifest,
+        )
+
+        def _plugin(name: str, *, display_name: str | None) -> PluginInstance:
+            manifest = (
+                None
+                if display_name is None
+                else PluginManifest(
+                    name=name,
+                    display_name=display_name,
+                    version="1.0",
+                    component_paths={},
+                    inline_mcp={},
+                )
+            )
+            return PluginInstance(
+                plugin_id=f"{name}@tools",
+                name=name,
+                marketplace="tools",
+                version="1.0",
+                root=tmp_path,
+                data_dir=tmp_path / "data",
+                manifest=manifest,
+                inventory=ComponentInventory(),
+            )
+
+        # login_needed twice -> should dedupe to one "Login" label; no_login has
+        # no login-requiring server; nameless falls back to plugin.name;
+        # not_added is excluded because it is not in the added set.
+        entries_by_id = {
+            "login_needed@tools": (("s", "scoped", True),),
+            "no_login@tools": (("s", "scoped", False),),
+            "nameless@tools": (("s", "scoped", True),),
+            "not_added@tools": (("s", "scoped", True),),
+        }
+        monkeypatch.setattr(
+            "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
+            lambda plugin: entries_by_id[plugin.plugin_id],
+        )
+
+        plugins = (
+            _plugin("login_needed", display_name="Login"),
+            _plugin("dupe", display_name="Login"),
+            _plugin("no_login", display_name="Silent"),
+            _plugin("nameless", display_name=None),
+            _plugin("not_added", display_name="Skipped"),
+        )
+        # "dupe" shares the "Login" display name to exercise deduplication.
+        entries_by_id["dupe@tools"] = (("s", "scoped", True),)
+        added = {
+            "login_needed@tools",
+            "dupe@tools",
+            "no_login@tools",
+            "nameless@tools",
+        }
+
+        labels = DeepAgentsApp._plugin_login_labels(plugins, added)
+
+        assert labels == ("Login", "nameless")
+
+    @pytest.mark.parametrize(
+        "change", ["none", "fingerprint", "fingerprint_key_added", "enabled"]
+    )
+    async def test_plugin_manager_reminder_compares_actual_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        change: str,
+    ) -> None:
+        """Closing compares persisted state even when the modal reports no result."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        if change == "fingerprint":
+            # Same plugin id, different fingerprint: exercises the intersection
+            # branch of _plugin_fingerprints_changed.
+            before = {"demo@tools": _test_plugin_fingerprint("before")}
+            after = {"demo@tools": _test_plugin_fingerprint("after")}
+        elif change == "fingerprint_key_added":
+            # A plugin appears (e.g. a marketplace added while the manager was
+            # open) with enabled ids unchanged: exercises the keys-differ branch,
+            # which is this PR's headline async-marketplace-add scenario.
+            before = {}
+            after = {"demo@tools": _test_plugin_fingerprint("after")}
+        else:
+            before = {}
+            after = {}
+        fingerprints = iter((before, after))
+        enabled_before = frozenset[str]()
+        enabled_after = (
+            frozenset({"demo@tools"}) if change == "enabled" else enabled_before
+        )
+        enabled_ids = iter((enabled_before, enabled_after))
+        app = DeepAgentsApp()
+        offer_reload = AsyncMock()
+        scheduled: list[Coroutine[object, object, None]] = []
+        ui_thread = threading.get_ident()
+        fingerprint_threads: list[int] = []
+
+        def fingerprint_plugins(_plugins: object) -> dict[str, _PluginFingerprint]:
+            fingerprint_threads.append(threading.get_ident())
+            return next(fingerprints)
+
+        monkeypatch.setattr(
+            "deepagents_code.plugins.discover_plugins",
+            lambda: PluginDiscoveryResult(plugins=()),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.plugins.store.load_enabled_plugin_ids",
+            lambda: next(enabled_ids),
+        )
+        monkeypatch.setattr(
+            app,
+            "_fingerprint_plugins",
+            fingerprint_plugins,
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callback(None),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
+        monkeypatch.setattr(
+            app,
+            "run_worker",
+            lambda coroutine, **_kwargs: scheduled.append(coroutine),
+        )
+        monkeypatch.setattr(app, "_offer_plugin_reload", offer_reload)
+
+        await app._show_plugin_manager()
+        await scheduled[0]
+
+        assert app._plugin_fingerprints == before
+        assert len(fingerprint_threads) == 2
+        assert all(thread != ui_thread for thread in fingerprint_threads)
+        if change != "none":
+            offer_reload.assert_awaited_once()
+        else:
+            offer_reload.assert_not_awaited()
+
+    async def test_plugin_manager_state_error_schedules_reminder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A state read failure should not escape the modal dismiss callback."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        discovery = MagicMock(
+            side_effect=[
+                PluginDiscoveryResult(plugins=()),
+                PermissionError("plugin directory is unreadable"),
+            ]
+        )
+        app = DeepAgentsApp()
+        mount = AsyncMock()
+        scheduled: list[Coroutine[object, object, None]] = []
+
+        monkeypatch.setattr("deepagents_code.plugins.discover_plugins", discovery)
+        monkeypatch.setattr(
+            "deepagents_code.plugins.store.load_enabled_plugin_ids",
+            lambda: frozenset[str](),
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callback(None),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
+        monkeypatch.setattr(
+            app,
+            "run_worker",
+            lambda coroutine, **_kwargs: scheduled.append(coroutine),
+        )
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._show_plugin_manager()
+        await scheduled[0]
+
+        mount.assert_awaited_once()
+        mount_call = mount.await_args
+        assert mount_call is not None
+        message = mount_call.args[0]
+        assert "Couldn't check plugin state" in str(message._content)
+        assert "/reload" in str(message._content)
+
+    async def test_plugin_manager_reopen_preserves_deferred_reload_baseline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reopening after deferral must retain the state from before changes."""
+        from deepagents_code.app import DeepAgentsApp
+
+        before: dict[str, _PluginFingerprint] = {}
+        after = {"linear@tools": _test_plugin_fingerprint("v1")}
+        snapshots = iter(
+            (
+                (frozenset[str](), before),
+                (frozenset({"linear@tools"}), after),
+                (frozenset({"linear@tools"}), after),
+                (frozenset({"linear@tools"}), after),
+            )
+        )
+        app = DeepAgentsApp()
+        offer_reload = AsyncMock()
+        scheduled: list[Coroutine[object, object, None]] = []
+
+        monkeypatch.setattr(app, "_snapshot_plugin_state", lambda: next(snapshots))
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callback(None),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
+        monkeypatch.setattr(
+            app,
+            "run_worker",
+            lambda coroutine, **_kwargs: scheduled.append(coroutine),
+        )
+        monkeypatch.setattr(app, "_offer_plugin_reload", offer_reload)
+
+        await app._show_plugin_manager()
+        await scheduled[0]
+        await app._show_plugin_manager()
+        await scheduled[1]
+
+        assert app._plugin_fingerprints == before
+        offer_reload.assert_awaited_once()
+
+    async def test_plugin_manager_warns_when_snapshot_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pre-open snapshot failure still opens the manager and warns on close."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp()
+        pushed: list[object] = []
+        scheduled: list[Coroutine[object, object, None]] = []
+        mount = AsyncMock()
+
+        monkeypatch.setattr(
+            app,
+            "_snapshot_plugin_state",
+            MagicMock(side_effect=PermissionError("plugin directory is unreadable")),
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda screen, callback: (pushed.append(screen), callback(None)),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
+        monkeypatch.setattr(
+            app,
+            "run_worker",
+            lambda coroutine, **_kwargs: scheduled.append(coroutine),
+        )
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._show_plugin_manager()
+        await scheduled[0]
+
+        assert len(pushed) == 1
+        assert len(scheduled) == 1
+        mount.assert_awaited_once()
+        mount_call = mount.await_args
+        assert mount_call is not None
+        assert "Couldn't check plugin state" in str(mount_call.args[0]._content)
+        assert app._plugin_fingerprints is None
+
+    @pytest.mark.parametrize("choice", ["reload", "later", None])
+    async def test_plugin_reload_prompt_choice(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        choice: str | None,
+    ) -> None:
+        """Reload runs the command; deferral leaves one transcript reminder."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        submit = AsyncMock()
+        mount = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=choice),
+        )
+        monkeypatch.setattr(app, "_submit_input", submit)
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._offer_plugin_reload()
+
+        if choice == "reload":
+            submit.assert_awaited_once_with("/reload", "command")
+            mount.assert_not_awaited()
+        else:
+            submit.assert_not_awaited()
+            mount.assert_awaited_once()
+            mount_call = mount.await_args
+            assert mount_call is not None
+            message = mount_call.args[0]
+            assert isinstance(message, AppMessage)
+            assert "/reload" in str(message._content)
+
+    @pytest.mark.parametrize(
+        "error",
+        [TimeoutError(), RuntimeError("prompt mount failed")],
+        ids=["timeout", "unexpected-error"],
+    )
+    async def test_plugin_reload_prompt_error_leaves_reminder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        error: Exception,
+    ) -> None:
+        """Prompt failures should retain a manual `/reload` recovery path."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        submit = AsyncMock()
+        mount = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(side_effect=error),
+        )
+        monkeypatch.setattr(app, "_submit_input", submit)
+        monkeypatch.setattr(app, "_mount_message", mount)
+
+        await app._offer_plugin_reload()
+
+        submit.assert_not_awaited()
+        mount.assert_awaited_once()
+        mount_call = mount.await_args
+        assert mount_call is not None
+        message = mount_call.args[0]
+        assert isinstance(message, AppMessage)
+        assert "/reload" in str(message._content)
+
     async def test_reports_plugin_summary(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1076,6 +1726,261 @@ class TestReloadPluginsViaReload:
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Plugins: 0 plugins · 0 skills · 0 plugin MCP servers" in text
 
+    async def _reload_transcript_with_fingerprints(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        old: dict[str, _PluginFingerprint] | None,
+        new: dict[str, _PluginFingerprint],
+        plugins: tuple[PluginInstance, ...] = (),
+        fingerprint_threads: list[int] | None = None,
+    ) -> str:
+        """Drive `/reload` with seeded before/after fingerprints.
+
+        Returns:
+            The joined transcript text of all rendered app messages.
+        """
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            def fingerprint_plugins(
+                _plugins: object,
+            ) -> dict[str, _PluginFingerprint]:
+                if fingerprint_threads is not None:
+                    fingerprint_threads.append(threading.get_ident())
+                return new
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=plugins),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+            monkeypatch.setattr(app, "_fingerprint_plugins", fingerprint_plugins)
+            app._plugin_fingerprints = old
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            return "\n".join(str(w._content) for w in app.query(AppMessage))
+
+    @pytest.mark.parametrize(
+        ("old_versions", "new_versions", "expected"),
+        [
+            pytest.param(
+                {"demo@tools": "v1"},
+                {"demo@tools": "v1"},
+                "Plugin changes: no changes detected.",
+                id="no-changes",
+            ),
+            pytest.param(
+                {},
+                {"demo@tools": "v1"},
+                "Plugin changes: 1 plugin added.",
+                id="added-singular",
+            ),
+            pytest.param(
+                {},
+                {"demo@tools": "v1", "extra@tools": "v1"},
+                "Plugin changes: 2 plugins added.",
+                id="added-plural",
+            ),
+            pytest.param(
+                {"demo@tools": "v1"},
+                {},
+                "Plugin changes: 1 plugin removed.",
+                id="removed",
+            ),
+            pytest.param(
+                {"demo@tools": "v1"},
+                {"demo@tools": "v2"},
+                "Plugin changes: 1 plugin changed.",
+                id="changed",
+            ),
+            pytest.param(
+                {"demo@tools": "v1", "gone@tools": "v1"},
+                {"demo@tools": "v2", "new@tools": "v1"},
+                "Plugin changes: 1 plugin added, 1 plugin removed, 1 plugin changed.",
+                id="added-removed-changed",
+            ),
+        ],
+    )
+    async def test_reload_report_summarizes_plugin_changes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        old_versions: dict[str, str],
+        new_versions: dict[str, str],
+        expected: str,
+    ) -> None:
+        """`/reload` summarizes added/removed/changed plugins against the baseline."""
+        old = {
+            plugin_id: _test_plugin_fingerprint(version)
+            for plugin_id, version in old_versions.items()
+        }
+        new = {
+            plugin_id: _test_plugin_fingerprint(version)
+            for plugin_id, version in new_versions.items()
+        }
+        text = await self._reload_transcript_with_fingerprints(
+            monkeypatch, old=old, new=new
+        )
+
+        assert expected in text
+
+    async def test_reload_report_omits_changes_on_first_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first `/reload` has no baseline, so it omits the changes line."""
+        text = await self._reload_transcript_with_fingerprints(
+            monkeypatch,
+            old=None,
+            new={"demo@tools": _test_plugin_fingerprint("v1")},
+        )
+
+        assert "Plugin changes:" not in text
+
+    async def test_reload_fingerprints_plugins_off_ui_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` must not recursively scan plugin files on the UI thread."""
+        ui_thread = threading.get_ident()
+        fingerprint_threads: list[int] = []
+
+        await self._reload_transcript_with_fingerprints(
+            monkeypatch,
+            old={},
+            new={},
+            fingerprint_threads=fingerprint_threads,
+        )
+
+        assert len(fingerprint_threads) == 1
+        assert fingerprint_threads[0] != ui_thread
+
+    async def test_reload_reports_mcp_login_for_new_plugin(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """New HTTP MCP plugins retain their post-reload sign-in guidance."""
+        from deepagents_code.plugins.models import (
+            ComponentInventory,
+            PluginInstance,
+            PluginManifest,
+        )
+
+        plugin = PluginInstance(
+            plugin_id="linear@tools",
+            name="linear",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=PluginManifest(
+                name="linear",
+                display_name="Linear",
+                version="1.0",
+                component_paths={},
+                inline_mcp={
+                    "mcpServers": {
+                        "linear": {
+                            "type": "http",
+                            "url": "https://mcp.example.com",
+                        }
+                    }
+                },
+            ),
+            inventory=ComponentInventory(),
+        )
+
+        text = await self._reload_transcript_with_fingerprints(
+            monkeypatch,
+            old={},
+            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
+            plugins=(plugin,),
+        )
+
+        assert "Sign in to Linear via `/mcp`." in text
+
+    async def test_reload_omits_sign_in_on_first_reload(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """First `/reload` has no baseline, so sign-in guidance is suppressed too."""
+        from deepagents_code.plugins.models import (
+            ComponentInventory,
+            PluginInstance,
+            PluginManifest,
+        )
+
+        plugin = PluginInstance(
+            plugin_id="linear@tools",
+            name="linear",
+            marketplace="tools",
+            version="1.0",
+            root=tmp_path,
+            data_dir=tmp_path / "data",
+            manifest=PluginManifest(
+                name="linear",
+                display_name="Linear",
+                version="1.0",
+                component_paths={},
+                inline_mcp={
+                    "mcpServers": {
+                        "linear": {"type": "http", "url": "https://mcp.example.com"}
+                    }
+                },
+            ),
+            inventory=ComponentInventory(),
+        )
+
+        text = await self._reload_transcript_with_fingerprints(
+            monkeypatch,
+            old=None,
+            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
+            plugins=(plugin,),
+        )
+
+        assert "Sign in to" not in text
+
+    async def test_reload_reports_plugin_discovery_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A discovery failure degrades to a manual-retry note, not a crash."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                MagicMock(side_effect=PermissionError("unreadable plugin dir")),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Couldn't read plugin state; run /reload to be safe." in text
+            # The reload still completed: the config-reload header is present and
+            # no plugin summary line was emitted.
+            assert "Configuration reloaded." in text
+            assert "Plugins:" not in text
+
     @pytest.mark.parametrize(
         ("restarted", "expected_ids"),
         [
@@ -1090,11 +1995,9 @@ class TestReloadPluginsViaReload:
         expected_ids: frozenset[str],
     ) -> None:
         """A failed restart leaves the prior server's plugin status intact."""
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

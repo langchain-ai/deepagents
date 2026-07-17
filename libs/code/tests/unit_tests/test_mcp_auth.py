@@ -1492,26 +1492,30 @@ class TestRefreshTokenSerialization:
             interactive=False,
         )
         assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
-        write_started = threading.Event()
+        loop = asyncio.get_running_loop()
+        write_started = asyncio.Event()
         allow_write = threading.Event()
-        release_started = threading.Event()
+        release_started = asyncio.Event()
         allow_release = threading.Event()
         scopes: list[anyio.CancelScope] = []
         real_release = FileLock.release
 
         def _failing_write(data: dict[str, Any]) -> None:
             del data
-            write_started.set()
+            loop.call_soon_threadsafe(write_started.set)
             if not allow_write.wait(timeout=5):
                 pytest.fail("timed out waiting to fail the token write")
             msg = "token persistence failed"
             raise OSError(msg)
 
         def _blocking_release(lock: FileLock, *, force: bool = False) -> None:
-            release_started.set()
+            if force:
+                real_release(lock, force=True)
+                return
+            loop.call_soon_threadsafe(release_started.set)
             if not allow_release.wait(timeout=5):
                 pytest.fail("timed out waiting to release the refresh lock")
-            real_release(lock, force=force)
+            real_release(lock)
 
         monkeypatch.setattr(storage, "_write", _failing_write)
         monkeypatch.setattr(FileLock, "release", _blocking_release)
@@ -1529,13 +1533,13 @@ class TestRefreshTokenSerialization:
         task = asyncio.create_task(_persist_in_cancel_scope())
         probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
         try:
-            assert await asyncio.to_thread(write_started.wait, 5)
+            await asyncio.wait_for(write_started.wait(), timeout=5)
             scopes[0].cancel()
             await asyncio.sleep(0)
             assert not task.done()
 
             allow_write.set()
-            assert await asyncio.to_thread(release_started.wait, 5)
+            await asyncio.wait_for(release_started.wait(), timeout=5)
             assert not task.done()
 
             task.cancel()

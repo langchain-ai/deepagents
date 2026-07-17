@@ -9,6 +9,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    InvalidToolCall,
     RemoveMessage,
     SystemMessage,
     ToolCall,
@@ -3201,6 +3202,63 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[6].tool_call_id == "456"
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
+
+    def test_invalid_tool_call_synthetic_message_has_error_status(self) -> None:
+        """Invalid tool calls must produce ToolMessage with status='error' (not default 'success')."""
+        input_messages = [
+            HumanMessage(content="Call echo.", id="1"),
+            AIMessage(
+                content="",
+                invalid_tool_calls=[
+                    InvalidToolCall(
+                        id="call_malformed",
+                        name="echo",
+                        args='{"value":',
+                        error="Invalid JSON",
+                        type="invalid_tool_call",
+                    )
+                ],
+                id="2",
+            ),
+            HumanMessage(content="What happened?", id="3"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        # Skip RemoveMessage sentinel
+        patched_messages = messages[1:]
+        # Find the synthetic ToolMessage
+        tool_messages = [m for m in patched_messages if m.type == "tool"]
+        assert len(tool_messages) == 1
+        synthetic = tool_messages[0]
+        assert synthetic.tool_call_id == "call_malformed"
+        assert synthetic.name == "echo"
+        assert synthetic.status == "error"
+        assert "malformed or truncated" in synthetic.content
+
+    def test_cancelled_tool_call_synthetic_message_has_default_status(self) -> None:
+        """Cancelled (not malformed) tool calls keep the default 'success' status."""
+        input_messages = [
+            HumanMessage(content="Do something.", id="1"),
+            AIMessage(
+                content="",
+                tool_calls=[ToolCall(id="call_ok", name="echo", args={"value": "hi"})],
+                id="2",
+            ),
+            HumanMessage(content="Interrupt!", id="3"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        patched_messages = state_update["messages"][1:]
+        tool_messages = [m for m in patched_messages if m.type == "tool"]
+        assert len(tool_messages) == 1
+        synthetic = tool_messages[0]
+        assert synthetic.tool_call_id == "call_ok"
+        assert synthetic.status == "success"
+        assert "cancelled" in synthetic.content
 
 
 class TestTruncation:

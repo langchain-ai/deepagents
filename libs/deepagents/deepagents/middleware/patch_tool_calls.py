@@ -39,8 +39,11 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                 name = tool_call["name"] or "unknown"
                 if tool_call.get("type") == "invalid_tool_call":
                     content = f"Tool call {name} with id {tool_call_id} could not be executed - arguments were malformed or truncated."
+                    patched_messages.append(
+                        ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+                    )
                 else:
                     content = f"Tool call {name} with id {tool_call_id} was cancelled - another message came in before it could be completed."
-                patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id))
+                    patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id))
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}

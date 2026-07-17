@@ -108,6 +108,16 @@ For a persistent editable `dcode-dev` install that stays separate from a release
 - Features that run shell commands must never do so *silently* by default. Either gate them behind an explicit env var or config key (opt-in), or — if default-enabled — announce the action before running it and offer a documented opt-out. Auto-update is the sole default-enabled exception: it shows a one-time migration notice and skips the first install when enabled only by the opt-out default, prints the upgrade it is about to perform, is overridable via `DEEPAGENTS_CODE_AUTO_UPDATE` / `[update].auto_update`, and is always disabled for editable installs.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
+## Editing Notion docs over MCP
+
+The Notion MCP tools (`notion_notion-fetch`, `notion_notion-update-page`, `notion_notion-get-comments`) are runtime-connected, so this is guidance rather than tool code. When collaboratively editing a Notion page:
+
+- Treat the `notion_notion-update-page` response as the authoritative post-edit state of the page. Do **not** call `notion_notion-fetch` on the same page just to confirm an edit landed.
+- Batch related block/section edits into as few `notion_notion-update-page` calls as reasonable instead of running edit-then-refetch loops.
+- Re-fetch the full page only (a) once at the start to establish context, (b) once at the very end to verify the final result, or (c) when an update call returns a conflict/error indicating the local view is stale.
+
+Each full-page fetch returns the entire document and accumulates in the context window; repeated post-update fetches on the same page can drive a single session past 1M tokens and cause context-length errors.
+
 ## Logging
 
 Debug logging is configured **once**, on the `deepagents_code` package logger, by the `configure_debug_logging` call in `deepagents_code/__init__.py`. Child module loggers (`logging.getLogger(__name__)`) reach the shared debug file via propagation.

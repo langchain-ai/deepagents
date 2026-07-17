@@ -15,6 +15,7 @@ from deepagents_code.approval_mode import (
     ApprovalMode,
     approval_mode_key,
     approval_mode_payload,
+    aread_approval_mode_from_store,
     awrite_approval_mode,
     has_yolo_acknowledgement,
     read_approval_mode_from_store,
@@ -39,6 +40,28 @@ class _Store:
 
 class _FailingStore:
     def get(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        msg = "store unavailable"
+        raise RuntimeError(msg)
+
+
+class _AsyncOnlyStore:
+    def __init__(self, item: object = None) -> None:
+        self.item = item
+
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
+        assert namespace == APPROVAL_MODE_NAMESPACE
+        assert key
+        return self.item
+
+    def get(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        msg = "synchronous Store access is forbidden on the event loop"
+        raise AssertionError(msg)
+
+
+class _AsyncFailingStore:
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
         _ = (namespace, key)
         msg = "store unavailable"
         raise RuntimeError(msg)
@@ -113,6 +136,66 @@ def test_read_approval_mode_from_store_exception_fails_closed(
         assert (
             read_approval_mode_from_store(
                 _FailingStore(),
+                approval_mode_key("thread-1"),
+            )
+            is None
+        )
+
+    assert "Could not read approval-mode store item" in caplog.text
+
+
+async def test_aread_approval_mode_prefers_async_store_api() -> None:
+    key = approval_mode_key("thread-1")
+    item = _StoreItem({"mode": "auto"})
+
+    assert (
+        await aread_approval_mode_from_store(_AsyncOnlyStore(item), key)
+        is ApprovalMode.AUTO
+    )
+
+
+async def test_aread_approval_mode_falls_back_to_sync_get() -> None:
+    """A store exposing only sync `get()` is still read via the fallback branch."""
+    key = approval_mode_key("thread-1")
+    item = _StoreItem({"mode": "yolo"})
+
+    assert await aread_approval_mode_from_store(_Store(item), key) is ApprovalMode.YOLO
+
+
+@pytest.mark.parametrize(
+    ("store", "key"),
+    [
+        (None, approval_mode_key("thread-1")),
+        (object(), approval_mode_key("thread-1")),  # no get()/aget()
+        (_AsyncOnlyStore(None), approval_mode_key("thread-1")),  # missing item
+        (
+            _AsyncOnlyStore(_StoreItem(["not", "a", "mapping"])),
+            approval_mode_key("thread-1"),
+        ),
+        (
+            _AsyncOnlyStore(_StoreItem({"auto_approve": "yes"})),
+            approval_mode_key("thread-1"),
+        ),
+        (_AsyncOnlyStore(_StoreItem({"mode": "not-a-mode"})), approval_mode_key("x")),
+        (_AsyncOnlyStore(_StoreItem({"mode": "auto"})), ""),
+        (_AsyncOnlyStore(_StoreItem({"mode": "auto"})), None),
+    ],
+)
+async def test_aread_approval_mode_fails_closed(
+    store: object,
+    key: str | None,
+) -> None:
+    """The async reader re-implements the sync fail-closed guards; verify each."""
+    assert await aread_approval_mode_from_store(store, key) is None
+
+
+async def test_aread_approval_mode_exception_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="deepagents_code.approval_mode"):
+        assert (
+            await aread_approval_mode_from_store(
+                _AsyncFailingStore(),
                 approval_mode_key("thread-1"),
             )
             is None

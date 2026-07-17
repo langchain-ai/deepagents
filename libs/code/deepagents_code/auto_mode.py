@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -46,8 +47,8 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from deepagents_code.approval_mode import (
     ApprovalMode,
     approval_mode_key,
+    aread_approval_mode_from_store,
     coerce_approval_mode,
-    read_approval_mode_from_store,
 )
 
 if TYPE_CHECKING:
@@ -394,16 +395,21 @@ def _counter_key(thread_key: str) -> str:
     return thread_key
 
 
-def _read_counters(
+async def _read_counters(
     store: object,
     thread_key: str,
     mode: ApprovalMode,
 ) -> AutoModeCounters | None:
+    aget = getattr(store, "aget", None)
     get = getattr(store, "get", None)
-    if get is None:
-        return None
     try:
-        item = get(AUTO_MODE_COUNTERS_NAMESPACE, _counter_key(thread_key))
+        if callable(aget):
+            result = aget(AUTO_MODE_COUNTERS_NAMESPACE, _counter_key(thread_key))
+            item = await result if inspect.isawaitable(result) else result
+        elif callable(get):
+            item = get(AUTO_MODE_COUNTERS_NAMESPACE, _counter_key(thread_key))
+        else:
+            return None
     except Exception:
         logger.warning("Could not read Auto mode counters", exc_info=True)
         return None
@@ -415,12 +421,28 @@ def _read_counters(
     return counters
 
 
-def _write_counters(store: object, thread_key: str, counters: AutoModeCounters) -> bool:
+async def _write_counters(
+    store: object, thread_key: str, counters: AutoModeCounters
+) -> bool:
+    aput = getattr(store, "aput", None)
     put = getattr(store, "put", None)
-    if put is None:
-        return False
     try:
-        put(AUTO_MODE_COUNTERS_NAMESPACE, _counter_key(thread_key), dict(counters))
+        if callable(aput):
+            result = aput(
+                AUTO_MODE_COUNTERS_NAMESPACE,
+                _counter_key(thread_key),
+                dict(counters),
+            )
+            if inspect.isawaitable(result):
+                await result
+        elif callable(put):
+            put(
+                AUTO_MODE_COUNTERS_NAMESPACE,
+                _counter_key(thread_key),
+                dict(counters),
+            )
+        else:
+            return False
     except Exception:
         logger.warning("Could not write Auto mode counters", exc_info=True)
         return False
@@ -448,12 +470,12 @@ def _thread_key(runtime: object) -> str | None:
     return raw_key if raw_key == approval_mode_key(thread_id) else None
 
 
-def _live_mode(runtime: object) -> ApprovalMode:
+async def _live_mode(runtime: object) -> ApprovalMode:
     key = _thread_key(runtime)
     if key is None:
         logger.warning("Approval-mode Store key is missing or invalid; using Manual")
         return ApprovalMode.MANUAL
-    mode = read_approval_mode_from_store(getattr(runtime, "store", None), key)
+    mode = await aread_approval_mode_from_store(getattr(runtime, "store", None), key)
     return mode if mode is not None else ApprovalMode.MANUAL
 
 
@@ -987,7 +1009,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._classifier_timeout_seconds = classifier_timeout_seconds
         self._known_secrets = _known_credential_values()
 
-    def _sync_counter_context(  # noqa: PLR6301
+    async def _counter_context(  # noqa: PLR6301
         self,
         request: ModelRequest,
         mode: ApprovalMode,
@@ -996,7 +1018,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if thread_key is None:
             return None
         store = request.runtime.store
-        counters = _read_counters(store, thread_key, mode)
+        counters = await _read_counters(store, thread_key, mode)
         if counters is None:
             return None
         changed = False
@@ -1010,11 +1032,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             counters["consecutive_denials"] = 0
             counters["last_turn_id"] = turn_id
             changed = True
-        if changed and not _write_counters(store, thread_key, counters):
+        if changed and not await _write_counters(store, thread_key, counters):
             return None
         return thread_key, counters
 
-    def _reconcile_routed_plan(  # noqa: PLR6301
+    async def _reconcile_routed_plan(  # noqa: PLR6301
         self, request: ModelRequest
     ) -> None:
         raw_plan = request.state.get("_auto_decision_plan")
@@ -1037,13 +1059,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         thread_key = _thread_key(request.runtime)
         if thread_key is None:
             return
-        mode = _live_mode(request.runtime)
-        counters = _read_counters(request.runtime.store, thread_key, mode)
+        mode = await _live_mode(request.runtime)
+        counters = await _read_counters(request.runtime.store, thread_key, mode)
         if counters is None:
             return
         if any(message.status != "error" for message in terminal.values()):
             counters["consecutive_denials"] = 0
-        _write_counters(request.runtime.store, thread_key, counters)
+        await _write_counters(request.runtime.store, thread_key, counters)
 
     async def _classify(
         self,
@@ -1094,7 +1116,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         Raises:
             asyncio.CancelledError: If the primary or classifier call is cancelled.
         """
-        self._reconcile_routed_plan(request)
+        await self._reconcile_routed_plan(request)
         response = await handler(request)
         ai_message = next(
             (
@@ -1112,7 +1134,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         calls = list(ai_message.tool_calls)
         gated_calls = [call for call in calls if call["name"] in self.interrupt_on]
-        mode = _live_mode(request.runtime)
+        mode = await _live_mode(request.runtime)
         thread_key = _thread_key(request.runtime) or ""
         batch_id = _batch_id(calls)
         manual_ids = [_tool_call_id(call) for call in gated_calls]
@@ -1129,7 +1151,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "fallback_reason": None,
         }
 
-        counter_context = self._sync_counter_context(request, mode)
+        counter_context = await self._counter_context(request, mode)
         if mode is not ApprovalMode.AUTO or not gated_calls:
             return ExtendedModelResponse(
                 model_response=response,
@@ -1258,7 +1280,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             latency_ms = int((time.monotonic() - started) * 1000)
             counters["consecutive_unavailable"] += 1
             counters["last_batch_id"] = batch_id
-            counters_saved = _write_counters(
+            counters_saved = await _write_counters(
                 request.runtime.store, thread_key, counters
             )
             if not counters_saved:
@@ -1336,7 +1358,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 }
             )
         counters["last_batch_id"] = batch_id
-        if not _write_counters(request.runtime.store, thread_key, counters):
+        if not await _write_counters(request.runtime.store, thread_key, counters):
             for decision in plan["decisions"]:
                 if decision["path"] == "classifier":
                     decision["disposition"] = "require_human"
@@ -1606,7 +1628,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return {"_auto_decision_plan": None}
         thread_key = _thread_key(runtime)
         plan = self._validated_plan(state, ai_message, thread_key)
-        current_mode = _live_mode(runtime)
+        current_mode = await _live_mode(runtime)
         manual_ids = {
             _tool_call_id(call)
             for call in ai_message.tool_calls
@@ -1641,7 +1663,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         proposal_mode = coerce_approval_mode(plan["mode_at_proposal"])
         counters = (
-            _read_counters(runtime.store, thread_key, current_mode)
+            await _read_counters(runtime.store, thread_key, current_mode)
             if thread_key is not None
             else None
         )
@@ -1649,7 +1671,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
             counters["last_mode"] = current_mode.value
-            if thread_key is None or not _write_counters(
+            if thread_key is None or not await _write_counters(
                 runtime.store, thread_key, counters
             ):
                 current_mode = ApprovalMode.MANUAL
@@ -1727,7 +1749,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if approved_fallback and counters is not None and thread_key is not None:
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
-            _write_counters(runtime.store, thread_key, counters)
+            await _write_counters(runtime.store, thread_key, counters)
 
         terminal_ids = {message.tool_call_id for message in artificial}
         pending = [

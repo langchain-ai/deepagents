@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -109,6 +110,31 @@ def _item_value(item: object) -> object:
     return getattr(item, "value", None)
 
 
+def _approval_mode_from_item(item: object) -> ApprovalMode | None:
+    """Extract a validated approval mode from a Store item.
+
+    Args:
+        item: SDK or runtime store-item shape.
+
+    Returns:
+        The stored mode, or `None` when the item is missing or malformed.
+    """
+    if item is None:
+        logger.debug("Approval-mode store item is missing")
+        return None
+
+    value = _item_value(item)
+    raw_mode = value.get("mode") if isinstance(value, Mapping) else None
+    if isinstance(raw_mode, str):
+        try:
+            return ApprovalMode(raw_mode)
+        except ValueError:
+            pass
+
+    logger.warning("Approval-mode store item has invalid contents")
+    return None
+
+
 def read_approval_mode_from_store(
     store: object, key: str | None
 ) -> ApprovalMode | None:
@@ -139,20 +165,48 @@ def read_approval_mode_from_store(
     except Exception:
         logger.warning("Could not read approval-mode store item", exc_info=True)
         return None
-    if item is None:
-        logger.debug("Approval-mode store item is missing")
+    return _approval_mode_from_item(item)
+
+
+async def aread_approval_mode_from_store(
+    store: object, key: str | None
+) -> ApprovalMode | None:
+    """Asynchronously read a live approval mode from a LangGraph Store.
+
+    The graph server supplies an async batched Store whose synchronous methods
+    reject calls from the event-loop thread. Prefer `aget()` for that runtime,
+    while retaining a synchronous fallback for lightweight local test stores.
+
+    Args:
+        store: `request.runtime.store` from the graph server.
+        key: Store key produced by `approval_mode_key`.
+
+    Returns:
+        A validated mode, or `None` when the record cannot be trusted. Callers
+        must interpret `None` as `manual`.
+    """
+    if store is None:
+        logger.debug("Approval-mode store is unavailable")
+        return None
+    if not isinstance(key, str) or not key:
+        logger.debug("Approval-mode store key is missing or invalid")
         return None
 
-    value = _item_value(item)
-    raw_mode = value.get("mode") if isinstance(value, Mapping) else None
-    if isinstance(raw_mode, str):
-        try:
-            return ApprovalMode(raw_mode)
-        except ValueError:
-            pass
-
-    logger.warning("Approval-mode store item has invalid contents")
-    return None
+    aget = getattr(store, "aget", None)
+    get = getattr(store, "get", None)
+    try:
+        if callable(aget):
+            result = aget(APPROVAL_MODE_NAMESPACE, key)
+            item = await result if inspect.isawaitable(result) else result
+        elif callable(get):
+            item = get(APPROVAL_MODE_NAMESPACE, key)
+        else:
+            logger.debug("Approval-mode store does not expose get() or aget()")
+            return None
+    except Exception:
+        logger.warning("Could not read approval-mode store item", exc_info=True)
+        return None
+    return _approval_mode_from_item(item)
 
 
 async def awrite_approval_mode(

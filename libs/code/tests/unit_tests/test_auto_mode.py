@@ -79,6 +79,42 @@ class _FailingCounterStore(_Store):
         super().put(namespace, key, value)
 
 
+class _AsyncOnlyStore(_Store):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reject_sync = False
+
+    def get(self, namespace: tuple[str, ...], key: str) -> _Item | None:
+        if self.reject_sync:
+            msg = "synchronous Store access is forbidden on the event loop"
+            raise AssertionError(msg)
+        return super().get(namespace, key)
+
+    def put(self, namespace: tuple[str, ...], key: str, value: object) -> None:
+        if self.reject_sync:
+            msg = "synchronous Store access is forbidden on the event loop"
+            raise AssertionError(msg)
+        super().put(namespace, key, value)
+
+    async def aget(self, namespace: tuple[str, ...], key: str) -> _Item | None:
+        return super().get(namespace, key)
+
+    async def aput(self, namespace: tuple[str, ...], key: str, value: object) -> None:
+        super().put(namespace, key, value)
+
+
+class _AsyncFailingCounterStore(_AsyncOnlyStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_counter_writes = False
+
+    async def aput(self, namespace: tuple[str, ...], key: str, value: object) -> None:
+        if self.fail_counter_writes and namespace == AUTO_MODE_COUNTERS_NAMESPACE:
+            msg = "counter store unavailable"
+            raise RuntimeError(msg)
+        await super().aput(namespace, key, value)
+
+
 class _StructuredModel:
     def __init__(self, result: object = None, error: Exception | None = None) -> None:
         self.result = result
@@ -359,6 +395,88 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
     )
 
     assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+
+
+async def test_auto_uses_async_graph_store_apis(tmp_path: Path) -> None:
+    store = _AsyncOnlyStore()
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {
+        "file_path": str(tmp_path / "README.md"),
+        "old_string": "before",
+        "new_string": "after",
+    }
+    request, active_store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="edit_file",
+        args=args,
+        store=store,
+    )
+    store.reject_sync = True
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="edit_file",
+        args=args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+    counters = cast(
+        "dict[str, Any]", active_store.items[AUTO_MODE_COUNTERS_NAMESPACE, key]
+    )
+    assert counters["last_turn_id"] == "turn-1"
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "edit_file",
+                "args": args,
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    update = await middleware.aafter_model(
+        cast(
+            "AgentState[Any]",
+            {"messages": [ai_message], "_auto_decision_plan": plan},
+        ),
+        request.runtime,
+    )
+
+    assert update is not None
+    assert update["messages"] == [ai_message]
+
+
+async def test_auto_async_counter_write_failure_routes_human(tmp_path: Path) -> None:
+    """A failed async `aput` fails closed to a human review, like the sync path."""
+    store = _AsyncFailingCounterStore()
+    model = _StructuredModel(error=RuntimeError("provider unavailable"))
+    middleware = _middleware(tmp_path)
+    request, _active_store, key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        store=store,
+    )
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["last_turn_id"] = "turn-1"
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    store.reject_sync = True
+    store.fail_counter_writes = True
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["fallback_reason"] == "control_state_unavailable"
+    assert plan["decisions"][0]["disposition"] == "require_human"
 
 
 @pytest.mark.parametrize(

@@ -108,6 +108,14 @@ For a persistent editable `dcode-dev` install that stays separate from a release
 - Features that run shell commands must never do so *silently* by default. Either gate them behind an explicit env var or config key (opt-in), or — if default-enabled — announce the action before running it and offer a documented opt-out. Auto-update is the sole default-enabled exception: it shows a one-time migration notice and skips the first install when enabled only by the opt-out default, prints the upgrade it is about to perform, is overridable via `DEEPAGENTS_CODE_AUTO_UPDATE` / `[update].auto_update`, and is always disabled for editable installs.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
+## Stage / commit / push workflow
+
+When staging, committing, and pushing changes on the user's behalf, run pre-commit verification honestly and halt on failure.
+
+- **Path consistency.** When running a lint/format/test command against changed files (e.g. `ruff format`, `ruff check`, `ty`, `pytest`), derive each file argument from the *same* repo-root-relative paths you pass to `git add` in that turn. Do not strip, shorten, or otherwise transform directory components (e.g. dropping `deepagents_code/` from `libs/code/deepagents_code/plugins/adapters/skills.py`). Before invoking the tool, confirm each path exists — reuse the verified git-tracked path list or check with `test -f`.
+- **Halt on nonzero exit.** Any nonzero exit code from a pre-commit verification step must be explicitly acknowledged in your reasoning and must block the subsequent `git commit` / `git push` until the failure is resolved or the user explicitly approves proceeding. Treat `No such file or directory (os error 2)` from a format/lint step as a path-construction error — re-derive the correct path and retry; it is **not** a passing check.
+- **Completion honesty.** Never state that "all pre-commit hooks/checks passed" unless every verification command in the turn exited 0. If any exited nonzero, report which command failed and that it was not resolved.
+
 ## Logging
 
 Debug logging is configured **once**, on the `deepagents_code` package logger, by the `configure_debug_logging` call in `deepagents_code/__init__.py`. Child module loggers (`logging.getLogger(__name__)`) reach the shared debug file via propagation.

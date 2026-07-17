@@ -1090,6 +1090,12 @@ async def _run_agent_loop(
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
+        # Surface an invoked skill's name as queryable trace metadata so skill
+        # usage can be aggregated in LangSmith (RunQueryStats group_by metadata
+        # path=ls_skill_name). See skills/invocation.py for the __skill envelope.
+        skill_meta = message_kwargs.get("additional_kwargs", {}).get("__skill")
+        if isinstance(skill_meta, dict) and skill_meta.get("name"):
+            config.setdefault("metadata", {})["ls_skill_name"] = skill_meta["name"]
     stream_input: dict[str, Any] | Command = {
         "messages": [user_msg],
         "goal_criteria_request": None,

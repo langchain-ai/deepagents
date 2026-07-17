@@ -1,22 +1,20 @@
-"""CLI commands for the `config` group: inspect the configuration surface.
+"""CLI commands for inspecting the configuration surface.
 
-`config show` resolves each option against the app credential store (for
+Bare `config` resolves each option against the app credential store (for
 credentials), the live environment, and `config.toml`, reporting the effective
-value and which source provided it, matching what `git config --list` /
-`aws configure list` users expect. Adding `--verbose`/`--all` folds in each
-option's description and where it can be set (the static catalog).
-`config get <key>` does the same for a single option. `config path` prints the
-on-disk config locations.
+value and which source provided it. Adding `--verbose`/`--all` folds in each
+option's description and where it can be set (the static catalog). `config get
+<key>` does the same for a single option, while `config path` prints the on-disk
+config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
-value — `config show`/`config get` report only whether they are set and from
-which source, so the output is safe to paste into a bug report.
+value — `config`/`config get` report only whether they are set and from which
+source, so the output is safe to paste into a bug report.
 
-Help rendering for a bare `config` invocation is served by `ui.show_config_help`,
-which does not import this module. The heavy manifest/runtime imports here are
-function-local to the subcommands, so a bare `config`/`config -h` invocation
-never pulls them onto the startup path (`parse_args` does import this module to
-register the subparsers, but only its light top-level imports run then).
+Help rendering for `config -h` is served by `ui.show_config_help`. The heavy
+manifest/runtime imports here are function-local, so help never pulls them onto
+the startup path (`parse_args` imports this module to register the parsers, but
+only its light top-level imports run then).
 """
 
 from __future__ import annotations
@@ -78,30 +76,15 @@ def setup_config_parser(
         action=make_help_action(_lazy_ui_help("show_config_help")),
     )
     add_output_args(config_parser)
+    config_parser.add_argument(
+        "-v",
+        "--verbose",
+        "--all",
+        dest="verbose",
+        action="store_true",
+        help="Also show each option's description and where to set it",
+    )
     config_sub = config_parser.add_subparsers(dest="config_command")
-
-    def _add_verbose_arg(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "-v",
-            "--verbose",
-            "--all",
-            dest="verbose",
-            action="store_true",
-            help="Also show each option's description and where to set it",
-        )
-
-    show_parser = config_sub.add_parser(
-        "show",
-        help="Show effective config values and their source",
-        add_help=False,
-    )
-    show_parser.add_argument(
-        "-h",
-        "--help",
-        action=make_help_action(_lazy_ui_help("show_config_help")),
-    )
-    _add_verbose_arg(show_parser)
-    add_output_args(show_parser)
 
     get_parser = config_sub.add_parser(
         "get",
@@ -136,7 +119,7 @@ def setup_config_parser(
 class _StoredCredentialView:
     """Snapshot of the `/auth` credential store for one command invocation.
 
-    Built once per `config show`/`get` so the store is read and parsed a single
+    Built once per `config`/`config get` so the store is read and parsed a single
     time rather than once per credential option.
     """
 
@@ -166,7 +149,7 @@ def _load_stored_credentials() -> _StoredCredentialView:
     """Read every `/auth`-stored API key once, degrading a corrupt store to empty.
 
     Reading the store a single time (rather than once per credential option)
-    keeps `config show` to one `auth.json` parse and one warning. A corrupt
+    keeps `config` to one `auth.json` parse and one warning. A corrupt
     store is logged once and reported via the returned `error`, so resolution
     degrades to env/`config.toml` instead of failing the command — and the
     corruption stays visible in the output rather than masquerading as an empty
@@ -349,7 +332,7 @@ class ResolvedOption(NamedTuple):
 # --- Commands ---------------------------------------------------------------
 
 
-def _show_json_row(
+def _config_json_row(
     option: ConfigOption,
     *,
     is_set: bool,
@@ -358,7 +341,7 @@ def _show_json_row(
     store_error: str | None,
     include_catalog: bool,
 ) -> dict[str, Any]:
-    """Build one `config show --json` row, redacting secrets and flagging errors.
+    """Build one `config --json` row, redacting secrets and flagging errors.
 
     Returns:
         A JSON-serializable row. Redacted options report presence only (`value`
@@ -393,7 +376,7 @@ def _show_json_row(
     return row
 
 
-def _run_show(output_format: OutputFormat, *, verbose: bool) -> int:
+def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     """Resolve every option and print its effective value and source.
 
     With `verbose`, each option also lists its description and where it can be
@@ -424,13 +407,13 @@ def _run_show(output_format: OutputFormat, *, verbose: bool) -> int:
     ]
 
     if output_format == "json":
-        # `config show --json` stays effective-only unless `--verbose` folds in
+        # `config --json` stays effective-only unless `--verbose` folds in
         # the static catalog fields.
         include_catalog = verbose
         write_json(
-            "config show",
+            "config",
             [
-                _show_json_row(
+                _config_json_row(
                     row.option,
                     is_set=row.is_set,
                     source=row.source,
@@ -444,9 +427,9 @@ def _run_show(output_format: OutputFormat, *, verbose: bool) -> int:
         return 0
 
     if verbose:
-        _print_show_verbose(resolved, store_error=stored.error)
+        _print_config_verbose(resolved, store_error=stored.error)
     else:
-        _print_show_table(resolved, store_error=stored.error)
+        _print_config_table(resolved, store_error=stored.error)
     return 0
 
 
@@ -462,7 +445,7 @@ def _print_store_warning(store_error: str | None) -> None:
     console.print()
 
 
-def _print_show_table(
+def _print_config_table(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
@@ -497,7 +480,7 @@ def _print_show_table(
         console.print()
 
 
-def _print_show_verbose(
+def _print_config_verbose(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
@@ -544,7 +527,7 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
         else:
             print(  # noqa: T201
                 f"Unknown config option: {key!r}. Run "
-                "`dcode config show --verbose` to see available keys.",
+                "`dcode config --verbose` to see available keys.",
                 file=sys.stderr,
             )
         return 1
@@ -620,17 +603,17 @@ def _run_path(output_format: OutputFormat) -> int:
 
 
 def run_config_command(args: argparse.Namespace) -> int:
-    """Dispatch a parsed `config` subcommand.
+    """Dispatch a parsed `config` invocation.
 
     Returns:
-        Process exit code from the dispatched subcommand.
+        Process exit code from the selected config action.
     """
     output_format: OutputFormat = getattr(args, "output_format", "text")
     command = getattr(args, "config_command", None)
     verbose: bool = getattr(args, "verbose", False)
 
-    if command == "show":
-        return _run_show(output_format, verbose=verbose)
+    if command is None:
+        return _run_config(output_format, verbose=verbose)
     if command == "get":
         return _run_get(args.key, output_format)
     if command == "path":

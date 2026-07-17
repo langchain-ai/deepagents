@@ -15,7 +15,12 @@ import textwrap
 
 import pytest
 
-from deepagents_code.main import _HELP_SPECS, _show_bare_command_group_help, parse_args
+from deepagents_code.main import (
+    _BARE_ACTION_GROUPS,
+    _HELP_SPECS,
+    _show_bare_command_group_help,
+    parse_args,
+)
 
 # Module *prefixes* that must not appear in `sys.modules` after a help-only
 # invocation. Using prefixes (rather than an explicit allowlist) catches
@@ -100,7 +105,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["skills"], "dcode skills <command>"),
         (["threads"], "dcode threads <command>"),
         (["mcp"], "dcode mcp <command>"),
-        (["config"], "dcode config <command>"),
+        (["config", "-h"], "dcode config [options]"),
         (["auth"], "dcode auth <command>"),
         (["tools"], "dcode tools <command>"),
     ],
@@ -158,6 +163,16 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
     assert bootstrap_done is True
 
 
+def test_bare_config_runs_primary_action() -> None:
+    """Bare `config` must resolve values instead of rendering command help."""
+    result = _run_cli_main(["config", "--json"])
+
+    assert result.returncode == 0, result.stderr
+    assert '"command": "config"' in result.stdout
+    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
+    assert bootstrap_done is True
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -165,7 +180,7 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
         ["skills", "list"],
         ["threads", "list"],
         ["mcp", "login", "example.com"],
-        ["config", "show"],
+        ["config", "get", "interpreter.memory_limit_mb"],
         ["auth", "list"],
         ["tools", "install"],
         ["tools", "list"],
@@ -188,21 +203,21 @@ def test_unknown_command_bypasses_fast_path() -> None:
     assert _show_bare_command_group_help(args) is False
 
 
-def test_help_specs_covers_every_subparser_group() -> None:
-    """Drift guard: every top-level group with sub-subparsers is in `_HELP_SPECS`.
-
-    If a future PR adds a new command group with `add_subparsers(...)` but
-    forgets to register it here, the fast path silently regresses for that
-    group. This mirrors `test_args.TestHelpScreenDrift`.
-    """
+def test_command_group_specs_cover_every_subparser_group() -> None:
+    """Every command group must declare what its bare invocation does."""
     parser = _build_top_level_parser()
     groups_with_subparsers = _top_level_subparser_groups(parser)
-    missing = groups_with_subparsers - set(_HELP_SPECS)
+    overlap = set(_HELP_SPECS) & _BARE_ACTION_GROUPS
+    assert not overlap, (
+        f"Command groups declare conflicting defaults: {sorted(overlap)}"
+    )
+
+    known_groups = set(_HELP_SPECS) | _BARE_ACTION_GROUPS
+    missing = groups_with_subparsers - known_groups
     assert not missing, (
-        f"Top-level command groups have sub-subparsers but are missing from "
-        f"`_HELP_SPECS` in main.py: {sorted(missing)}.\n"
-        f"Add an entry mapping each group to its `<group>_command` dest and "
-        f"`show_<group>_help` UI function."
+        "Top-level command groups have subparsers but no declared bare behavior: "
+        f"{sorted(missing)}. Add each group to `_HELP_SPECS` or "
+        "`_BARE_ACTION_GROUPS` in main.py."
     )
 
 

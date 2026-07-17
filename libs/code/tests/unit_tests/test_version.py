@@ -18,6 +18,8 @@ from deepagents_code._version import __version__
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from deepagents_code.extras_info import VersionReport
+
 
 @pytest.fixture(autouse=True)
 def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
@@ -372,6 +374,81 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
 
     assert "Editable install" not in text
     assert "Core dependencies:" not in text
+
+
+def _mismatch_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
+    """Build a report with editable installs, CLI drift, and an SDK mismatch."""
+    from packaging.requirements import Requirement
+
+    from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+    return VersionReport(
+        cli=DistributionVersion(
+            name="deepagents-code",
+            source_version=__version__,
+            metadata_version=cli_metadata,
+            editable=True,
+            source_path="~/src/deepagents/libs/code",
+            status="resolved",
+        ),
+        sdk=DistributionVersion(
+            name="deepagents",
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="~/src/deepagents/libs/deepagents",
+            status="resolved",
+        ),
+        sdk_requirement=Requirement("deepagents==0.7.0a7"),
+        sdk_requirement_satisfied=False,
+    )
+
+
+def test_build_version_text_reports_editable_drift_and_sdk_mismatch() -> None:
+    """`--version` surfaces CLI stale metadata and an SDK requirement mismatch."""
+    from deepagents_code.main import build_version_text
+
+    with patch(
+        "deepagents_code.extras_info.collect_version_report",
+        return_value=_mismatch_version_report(),
+    ):
+        text = build_version_text()
+
+    assert (
+        f"deepagents-code {__version__} (editable; installed metadata: 0.1.40)" in text
+    )
+    assert (
+        "deepagents (SDK) 0.6.12 "
+        "(editable; required by deepagents-code: 0.7.0a7 — mismatch)" in text
+    )
+
+
+async def test_version_slash_command_reports_editable_drift_and_sdk_mismatch() -> None:
+    """`/version` renders the same drift/mismatch facts as `--version`."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.extras_info.collect_version_report",
+            return_value=_mismatch_version_report(),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        content = str(
+            [m for m in app.query(AppMessage) if not m._is_markdown][-1]._content
+        )
+        assert (
+            f"deepagents-code version: {__version__} "
+            "(editable; installed metadata: 0.1.40)" in content
+        )
+        assert (
+            "deepagents (SDK) version: 0.6.12 "
+            "(editable; required by deepagents-code: 0.7.0a7 — mismatch)" in content
+        )
 
 
 def test_format_core_dependencies_lists_known_packages() -> None:

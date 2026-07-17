@@ -25,6 +25,7 @@ from urllib.request import url2pathname
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +121,414 @@ def _sdk_version_from_source(root: Path) -> str | None:
     return None
 
 
+def _contract_home(path: Path) -> str:
+    """Return `path` as text with a home-directory prefix contracted to `~`.
+
+    Args:
+        path: Filesystem path to render.
+
+    Returns:
+        The stringified path, with a leading home directory replaced by `~`
+            when applicable. The raw path is returned when the home directory
+            cannot be determined.
+    """
+    text = str(path)
+    try:
+        home = str(Path.home())
+    except (OSError, RuntimeError):
+        return text
+    if text == home:
+        return "~"
+    prefix = home if home.endswith("/") else f"{home}/"
+    if text.startswith(prefix):
+        return f"~/{text[len(prefix) :]}"
+    return text
+
+
+@dataclass(frozen=True)
+class DistributionVersion:
+    """Structured version facts for a single installed distribution.
+
+    Separates three facts that are easily conflated: the live version declared
+    by the imported source (`source_version`), the version recorded in the
+    installed distribution metadata (`metadata_version`), and whether the
+    install is editable (with its `source_path`). `status` records whether the
+    metadata lookup succeeded so diagnostic callers can distinguish a genuinely
+    absent package from an unexpected lookup failure.
+    """
+
+    name: str
+    """Distribution name, such as `deepagents` or `deepagents-code`."""
+
+    source_version: str | None
+    """Version read from the imported/source `_version.py`, when available."""
+
+    metadata_version: str | None
+    """Version from `importlib.metadata`, when the distribution is installed."""
+
+    editable: bool
+    """Whether the distribution is installed in editable mode."""
+
+    source_path: str | None
+    """`~`-contracted editable source root, when known."""
+
+    status: SdkVersionStatus
+    """Outcome of the metadata lookup."""
+
+    @property
+    def primary_version(self) -> str | None:
+        """Version to report as authoritative.
+
+        Editable installs prefer the live source version because their metadata
+        can lag the working tree after a local version change; every other
+        install uses the metadata version.
+        """
+        if self.editable and self.source_version:
+            return self.source_version
+        return self.metadata_version
+
+    @property
+    def has_drift(self) -> bool:
+        """Whether the source and metadata versions are both known and differ."""
+        return (
+            self.source_version is not None
+            and self.metadata_version is not None
+            and self.source_version != self.metadata_version
+        )
+
+
+@dataclass(frozen=True)
+class VersionReport:
+    """Network-free snapshot of the version facts diagnostics need.
+
+    Bundles the running CLI and installed SDK version facts with the result of
+    comparing the `deepagents` requirement that `deepagents-code` declares
+    against the installed SDK metadata version.
+    """
+
+    cli: DistributionVersion
+    """Version facts for the running `deepagents-code` distribution."""
+
+    sdk: DistributionVersion
+    """Version facts for the installed `deepagents` SDK distribution."""
+
+    sdk_requirement: Requirement | None
+    """The `deepagents` requirement declared by `deepagents-code`, if found."""
+
+    sdk_requirement_satisfied: bool | None
+    """Whether the installed SDK metadata satisfies `sdk_requirement`.
+
+    `None` when the comparison cannot be made (no declared requirement, the SDK
+    is not installed, or an unparseable version).
+    """
+
+    @property
+    def sdk_requirement_mismatch(self) -> bool:
+        """Whether the installed SDK metadata violates the declared requirement."""
+        return self.sdk_requirement_satisfied is False
+
+
+def _read_cli_source_version() -> str | None:
+    """Return the running `deepagents-code` source version, or `None`.
+
+    Reads `deepagents_code._version.__version__`, which is always present for
+    the running package but is imported defensively so best-effort diagnostics
+    never crash on a broken checkout.
+    """
+    try:
+        from deepagents_code._version import __version__
+    except Exception:
+        logger.debug("Could not read deepagents-code source version", exc_info=True)
+        return None
+    return __version__ if isinstance(__version__, str) and __version__ else None
+
+
+def _cli_editable_info() -> tuple[bool, str | None]:
+    """Return the editable status and source path for `deepagents-code`.
+
+    Reuses the cached PEP 610 detection in `config` rather than reimplementing
+    it, so both surfaces agree and stay patchable in tests.
+    """
+    try:
+        from deepagents_code.config import (
+            _get_editable_install_path,
+            _is_editable_install,
+        )
+
+        return _is_editable_install(), _get_editable_install_path()
+    except Exception:
+        logger.debug(
+            "Could not determine deepagents-code editable status", exc_info=True
+        )
+        return False, None
+
+
+def collect_cli_version_info() -> DistributionVersion:
+    """Collect version facts for the running `deepagents-code` distribution.
+
+    Returns:
+        The structured CLI version facts. The status is `"resolved"` whenever a
+            source or metadata version is available, `"not_installed"` when both
+            are absent, and `"error"` on an unexpected metadata failure with no
+            source fallback.
+    """
+    source = _read_cli_source_version()
+    try:
+        metadata: str | None = pkg_version("deepagents-code")
+        status: SdkVersionStatus = "resolved"
+    except PackageNotFoundError:
+        logger.debug("deepagents-code package metadata not found in environment")
+        metadata = None
+        status = "resolved" if source else "not_installed"
+    except Exception:  # Best-effort lookup; never propagate to the caller
+        logger.warning(
+            "Unexpected error looking up deepagents-code metadata version",
+            exc_info=True,
+        )
+        metadata = None
+        status = "resolved" if source else "error"
+    editable, path = _cli_editable_info()
+    return DistributionVersion(
+        name="deepagents-code",
+        source_version=source,
+        metadata_version=metadata,
+        editable=editable,
+        source_path=path,
+        status=status,
+    )
+
+
+def collect_sdk_version_info() -> DistributionVersion:
+    """Collect version facts for the installed `deepagents` SDK distribution.
+
+    Editable SDK installs prefer the source tree's `_version.py`; everything
+    else reports the installed metadata version. Distinguishes a genuinely
+    missing package from an unexpected metadata error.
+
+    Returns:
+        The structured SDK version facts.
+    """
+    try:
+        metadata = pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        return DistributionVersion(
+            name="deepagents",
+            source_version=None,
+            metadata_version=None,
+            editable=False,
+            source_path=None,
+            status="not_installed",
+        )
+    except Exception:  # Best-effort lookup; never propagate to the caller
+        logger.warning(
+            "Unexpected error looking up deepagents SDK version", exc_info=True
+        )
+        return DistributionVersion(
+            name="deepagents",
+            source_version=None,
+            metadata_version=None,
+            editable=False,
+            source_path=None,
+            status="error",
+        )
+
+    source_root = _editable_sdk_source_root()
+    editable = source_root is not None
+    source_version = _sdk_version_from_source(source_root) if source_root else None
+    source_path = _contract_home(source_root) if source_root else None
+    return DistributionVersion(
+        name="deepagents",
+        source_version=source_version,
+        metadata_version=metadata,
+        editable=editable,
+        source_path=source_path,
+        status="resolved",
+    )
+
+
+def sdk_requirement_from_cli(
+    distribution_name: str = "deepagents-code",
+) -> Requirement | None:
+    """Return the base `deepagents` requirement declared by `deepagents-code`.
+
+    Reads the installed distribution's `Requires-Dist` metadata and parses each
+    entry with `packaging.Requirement`, returning the unconditional `deepagents`
+    dependency. Extras-gated or environment-conditional variants whose marker
+    does not apply to the current environment are skipped.
+
+    Args:
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        The parsed `deepagents` requirement, or `None` when the distribution or
+            requirement cannot be read.
+    """
+    try:
+        dist = distribution(distribution_name)
+    except PackageNotFoundError:
+        logger.debug(
+            "Distribution %s not found; cannot read deepagents requirement",
+            distribution_name,
+        )
+        return None
+    except Exception:  # Best-effort lookup; never propagate to the caller
+        logger.warning(
+            "Unexpected error reading %s requirements", distribution_name, exc_info=True
+        )
+        return None
+
+    target = canonicalize_name("deepagents")
+    for raw in dist.requires or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            logger.warning("Could not parse Requires-Dist entry: %s", raw)
+            continue
+        if canonicalize_name(req.name) != target:
+            continue
+        if req.marker is not None:
+            # Skip extras-gated (`extra == "..."`) or environment-conditional
+            # variants that do not apply; only the base runtime dependency is
+            # meaningful for a straight installed-version comparison.
+            try:
+                if not req.marker.evaluate():
+                    continue
+            except Exception:
+                logger.debug(
+                    "Could not evaluate marker for Requires-Dist entry: %s",
+                    raw,
+                    exc_info=True,
+                )
+                continue
+        return req
+    return None
+
+
+def _requirement_satisfied(
+    requirement: Requirement | None, metadata_version: str | None
+) -> bool | None:
+    """Return whether `metadata_version` satisfies `requirement`.
+
+    Args:
+        requirement: The declared requirement, or `None`.
+        metadata_version: The installed SDK metadata version, or `None`.
+
+    Returns:
+        `True`/`False` when the comparison can be made, or `None` when either
+            input is absent or the version cannot be parsed. Prereleases are
+            allowed so a prerelease pin (e.g. `==0.7.0a7`) is evaluated
+            correctly.
+    """
+    if requirement is None or metadata_version is None:
+        return None
+    try:
+        parsed = Version(metadata_version)
+    except InvalidVersion:
+        logger.debug(
+            "Could not parse SDK metadata version %r for requirement comparison",
+            metadata_version,
+            exc_info=True,
+        )
+        return None
+    return requirement.specifier.contains(parsed, prereleases=True)
+
+
+def collect_version_report() -> VersionReport:
+    """Collect the offline version report used by `--version`, `/version`, and doctor.
+
+    Returns:
+        A `VersionReport` bundling CLI and SDK version facts with the declared
+            `deepagents` requirement and whether the installed SDK metadata
+            satisfies it. Performs no network or subprocess calls.
+    """
+    cli = collect_cli_version_info()
+    sdk = collect_sdk_version_info()
+    requirement = sdk_requirement_from_cli()
+    satisfied = _requirement_satisfied(requirement, sdk.metadata_version)
+    return VersionReport(
+        cli=cli,
+        sdk=sdk,
+        sdk_requirement=requirement,
+        sdk_requirement_satisfied=satisfied,
+    )
+
+
+def _format_requirement_display(requirement: Requirement) -> str:
+    """Render a requirement's version constraint for display.
+
+    A single exact pin (`==X`) is shown as the bare version for readability;
+    any other constraint keeps its full specifier form.
+
+    Returns:
+        The display form of the requirement's version constraint.
+    """
+    specs = list(requirement.specifier)
+    if len(specs) == 1 and specs[0].operator == "==":
+        return specs[0].version
+    return str(requirement.specifier) or "any"
+
+
+def _join_annotation_parts(parts: list[str]) -> str:
+    """Join annotation parts into a trailing ` (...)` suffix.
+
+    Returns:
+        The parts joined as ` (a; b)`, or an empty string when `parts` is empty.
+    """
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
+def format_cli_version_annotation(info: DistributionVersion) -> str:
+    """Return the editable/drift annotation for the CLI version line.
+
+    Args:
+        info: The CLI version facts.
+
+    Returns:
+        A trailing ` (...)` suffix flagging an editable install and any drift
+            between the source and installed metadata versions, or an empty
+            string when neither applies (so normal installs stay unchanged).
+    """
+    parts: list[str] = []
+    if info.editable:
+        parts.append("editable")
+    if info.has_drift and info.metadata_version is not None:
+        parts.append(f"installed metadata: {info.metadata_version}")
+    return _join_annotation_parts(parts)
+
+
+def format_sdk_version_annotation(report: VersionReport) -> str:
+    """Return the editable/drift/mismatch annotation for the SDK version line.
+
+    Args:
+        report: The collected version report.
+
+    Returns:
+        A trailing ` (...)` suffix flagging an editable SDK install, any drift
+            between the source and installed metadata versions, and an
+            actionable requirement mismatch when the installed SDK metadata does
+            not satisfy the requirement declared by `deepagents-code`. Empty
+            when none applies.
+    """
+    info = report.sdk
+    parts: list[str] = []
+    if info.editable:
+        parts.append("editable")
+    if info.has_drift and info.metadata_version is not None:
+        parts.append(f"installed metadata: {info.metadata_version}")
+    if report.sdk_requirement_mismatch and report.sdk_requirement is not None:
+        required = _format_requirement_display(report.sdk_requirement)
+        parts.append(f"required by deepagents-code: {required} — mismatch")
+    return _join_annotation_parts(parts)
+
+
 def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
     """Resolve the installed `deepagents` SDK version.
 
-    Single source of truth for the lookup that `--version`, `/version`, and
-    `doctor` each used to reimplement. Editable installs can have stale package
-    metadata after local version files change, so they prefer the source tree's
-    `_version.py` and fall back to metadata when the source version is
+    Compatibility wrapper over `collect_sdk_version_info` for callers that only
+    need the primary version and lookup status. Editable installs can have stale
+    package metadata after local version files change, so they prefer the source
+    tree's `_version.py` and fall back to metadata when the source version is
     unavailable. Distinguishes a genuinely missing package from an unexpected
     metadata error so diagnostic callers can report the two differently, while
     collapse-friendly callers can ignore the split.
@@ -135,24 +537,10 @@ def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
         `(version, status)`. `version` is the resolved version string when
             `status` is `"resolved"`, otherwise `None`.
     """
-    try:
-        metadata_version = pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        return None, "not_installed"
-    except Exception:  # Best-effort lookup; never propagate to the caller
-        logger.warning(
-            "Unexpected error looking up deepagents SDK version", exc_info=True
-        )
-        return None, "error"
-
-    source_root = _editable_sdk_source_root()
-    if source_root:
-        source_version = _sdk_version_from_source(source_root)
-        if source_version:
-            return source_version, "resolved"
-
-    return metadata_version, "resolved"
+    info = collect_sdk_version_info()
+    if info.status != "resolved":
+        return None, info.status
+    return info.primary_version, "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

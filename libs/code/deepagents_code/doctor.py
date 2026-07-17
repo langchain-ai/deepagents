@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import argparse
 
     from deepagents_code.config import TracingStatus
+    from deepagents_code.extras_info import VersionReport
 
 logger = logging.getLogger(__name__)
 
@@ -59,22 +60,24 @@ def _platform_tag() -> str:
     return f"{platform.system()}-{platform.machine()}".lower()
 
 
-def _sdk_version() -> tuple[str, bool]:
-    """Return the installed `deepagents` SDK version and whether it resolved.
+def _sdk_diagnostic(report: VersionReport) -> tuple[str, bool]:
+    """Return the doctor SDK version value and whether it is healthy.
 
-    Maps the shared `resolve_sdk_version` outcome onto doctor's display: a
-    genuinely missing package reads as `not installed`, an unexpected lookup
-    failure as `unknown`, and only a resolved version is marked healthy.
+    A genuinely missing package reads as `not installed`, an unexpected lookup
+    failure as `unknown`, and a resolved version carries its editable/drift/
+    mismatch annotation. A dependency-requirement mismatch is unhealthy; drift
+    between the source and installed metadata alone is informational, since it
+    is normal while editing SDK source.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import format_sdk_version_annotation
 
-    sdk_version, status = resolve_sdk_version()
-    if status == "resolved":
-        # `sdk_version` is a real string when the status is "resolved".
-        return sdk_version or "unknown", True
-    if status == "not_installed":
+    sdk = report.sdk
+    if sdk.status == "not_installed":
         return "not installed", False
-    return "unknown", False
+    if sdk.status != "resolved":
+        return "unknown", False
+    value = f"{sdk.primary_version}{format_sdk_version_annotation(report)}"
+    return value, not report.sdk_requirement_mismatch
 
 
 def _build_commit() -> str | None:
@@ -157,9 +160,20 @@ def _collect_diagnostics() -> DiagnosticSection:
         _get_editable_install_path,
         _is_editable_install,
     )
+    from deepagents_code.extras_info import collect_version_report
     from deepagents_code.update_check import detect_install_method
 
-    sdk_version, sdk_ok = _sdk_version()
+    report = collect_version_report()
+    sdk_version, sdk_ok = _sdk_diagnostic(report)
+
+    # Source/metadata drift is informational (normal while editing source), so
+    # it annotates the value without flagging the CLI item unhealthy.
+    cli = report.cli
+    if cli.has_drift and cli.metadata_version is not None:
+        cli_value = f"{__version__} (installed metadata: {cli.metadata_version})"
+    else:
+        cli_value = __version__
+
     editable = _is_editable_install()
     if editable:
         method = "editable"
@@ -171,7 +185,7 @@ def _collect_diagnostics() -> DiagnosticSection:
     return DiagnosticSection(
         title="Diagnostics",
         items=[
-            DiagnosticItem("deepagents-code", __version__),
+            DiagnosticItem("deepagents-code", cli_value),
             DiagnosticItem("deepagents (SDK)", sdk_version, ok=sdk_ok),
             DiagnosticItem("Commit hash", _commit_hash(path)),
             DiagnosticItem("Python", platform.python_version()),

@@ -453,6 +453,48 @@ class TestDebugConsoleScreen:
             assert log.line_count == 0
             assert screen._rendered_upto == buffer.total_emitted
 
+    async def test_clear_view_reports_cursor_via_on_clear(self) -> None:
+        logger.info("debug-console-on-clear-marker")
+        cleared: list[int] = []
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot(), on_clear=cleared.append)
+            app.push_screen(screen)
+            await pilot.pause()
+            buffer = get_log_buffer()
+            assert buffer is not None
+
+            # Capture the cursor at clear time; the shared process-wide buffer
+            # may accrue records between the clear and a later re-read.
+            expected = buffer.total_emitted
+            await pilot.press("ctrl+l")
+            await pilot.pause()
+            assert cleared == [expected]
+
+    async def test_cleared_upto_seeds_render_cursor(self) -> None:
+        logger.info("debug-console-pre-clear-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            buffer = get_log_buffer()
+            assert buffer is not None
+            # Simulate a prior clear by seeding past everything emitted so far.
+            screen = DebugConsoleScreen(_snapshot(), cleared_upto=buffer.total_emitted)
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert not any(
+                "debug-console-pre-clear-marker" in record.message
+                for record in log.records
+            )
+
+            logger.info("debug-console-post-clear-marker")
+            screen._poll_logs()
+            await pilot.pause()
+            assert any(
+                "debug-console-post-clear-marker" in record.message
+                for record in log.records
+            )
+
     async def test_copy_key_invokes_clipboard_with_retained_lines(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1307,6 +1349,48 @@ class TestDebugConsoleToggle:
             app.action_toggle_debug_console()
             await pilot.pause()
             assert not isinstance(app.screen, DebugConsoleScreen)
+
+    async def test_clear_persists_across_reopen(self) -> None:
+        logger.info("debug-console-persist-marker")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            screen = cast("DebugConsoleScreen", app.screen)
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert any(
+                "debug-console-persist-marker" in record.message
+                for record in log.records
+            )
+
+            buffer = get_log_buffer()
+            assert buffer is not None
+            expected = buffer.total_emitted
+            await pilot.press("ctrl+l")
+            await pilot.pause()
+            assert app._debug_console_cleared_upto == expected
+
+            # A record emitted after the clear must survive the reopen; only the
+            # pre-clear tail is suppressed.
+            logger.info("debug-console-post-clear-marker")
+
+            # Close and reopen: the cleared records must not come back, but the
+            # post-clear record must appear.
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            reopened = cast("DebugConsoleScreen", app.screen)
+            reopened_log = reopened.query_one("#debug-log", _DebugLogView)
+            assert not any(
+                "debug-console-persist-marker" in record.message
+                for record in reopened_log.records
+            )
+            assert any(
+                "debug-console-post-clear-marker" in record.message
+                for record in reopened_log.records
+            )
 
     async def test_debug_command_opens_console(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")

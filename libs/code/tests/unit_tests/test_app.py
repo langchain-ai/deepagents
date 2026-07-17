@@ -4471,6 +4471,7 @@ class TestAskUserLifecycle:
         tool = MagicMock(spec=ToolCallMessage)
         tool.has_class.return_value = False
         tool.has_output = False
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True
         container = MagicMock()
         container.children = [tool]
@@ -4496,6 +4497,7 @@ class TestAskUserLifecycle:
         tool.has_class.return_value = False
         tool.has_output = True
         tool.has_expandable_output = False  # short result, nothing to expand
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True  # multi-line code block
         container = MagicMock()
         container.children = [tool]
@@ -4520,6 +4522,7 @@ class TestAskUserLifecycle:
         tool.has_class.return_value = False
         tool.has_output = True
         tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True  # long command, expandable
         container = MagicMock()
         container.children = [tool]
@@ -4539,10 +4542,12 @@ class TestAskUserLifecycle:
         older = MagicMock(spec=ToolCallMessage)
         older.has_class.return_value = False
         older.has_output = True
+        older.has_expandable_task_desc = False
         older.has_expandable_args = False
         newer = MagicMock(spec=ToolCallMessage)
         newer.has_class.return_value = False
         newer.has_output = False
+        newer.has_expandable_task_desc = False
         newer.has_expandable_args = True
         container = MagicMock()
         container.children = [older, newer]
@@ -4553,6 +4558,31 @@ class TestAskUserLifecycle:
         # Walks children in reverse, so the newer row is hit first.
         newer.toggle_args.assert_called_once_with()
         older.toggle_output.assert_not_called()
+
+    def test_ctrl_o_prefers_task_description_when_truncated(self) -> None:
+        """Ctrl+O toggles a truncated `task` description before its output.
+
+        The description owns Ctrl+O (like a command/code block); the output
+        stays reachable by clicking its own row.
+        """
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # expandable output present
+        tool.has_expandable_task_desc = True  # long description
+        tool.has_expandable_args = False
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_task_desc.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
 
     def test_ctrl_o_targets_content_mounted_after_a_group(self) -> None:
         """Content mounted after a tool group stays reachable from Ctrl+O.
@@ -4592,6 +4622,7 @@ class TestAskUserLifecycle:
         group = MagicMock(spec=ToolGroupSummary)
         folded = MagicMock(spec=ToolCallMessage)
         folded.has_class.return_value = True  # folded into the group
+        folded.display = False
         # DOM: older skill, then the group summary followed by its folded row.
         container = MagicMock()
         container.children = [skill, group, folded]
@@ -4602,6 +4633,33 @@ class TestAskUserLifecycle:
         group.toggle.assert_called_once_with()
         folded.toggle_output.assert_not_called()
         skill.toggle_body.assert_not_called()
+
+    def test_ctrl_o_targets_visible_grouped_task_description(self) -> None:
+        """An expanded group's visible task description takes Ctrl+O priority."""
+        from deepagents_code.tui.widgets.messages import (
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        group = MagicMock(spec=ToolGroupSummary)
+        task = MagicMock(spec=ToolCallMessage)
+        task.has_class.return_value = True  # marker remains after group expansion
+        task.display = True
+        task.has_expandable_task_desc = True
+        task.has_expandable_args = False
+        task.has_output = True
+        task.has_expandable_output = True
+        container = MagicMock()
+        container.children = [group, task]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        task.toggle_task_desc.assert_called_once_with()
+        task.toggle_output.assert_not_called()
+        group.toggle.assert_not_called()
 
     def test_ctrl_o_prefers_recent_rubric_over_tool_group(self) -> None:
         """A newer rubric result should win Ctrl+O over an older tool group."""
@@ -5994,6 +6052,61 @@ class TestGoalCommand:
             assert app._goal_review_task is None
             handle.assert_awaited_once_with("ship login")
 
+    async def test_successful_generation_keeps_proposal_when_clear_fails(
+        self,
+    ) -> None:
+        """A stale marker for the completed request must not drop the proposal."""
+        request_id = "request-create"
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+            app._lc_thread_id = "thread-1"
+            handle = AsyncMock()
+            # The post-run clear failed to persist, so the checkpoint still names
+            # the completed request; the fresh proposal shares that request id.
+            fetch = AsyncMock(
+                return_value={
+                    "goal_criteria_request": {
+                        "request_id": request_id,
+                        "kind": "create",
+                        "objective": "ship login",
+                    },
+                    "_pending_goal_objective": "ship login",
+                    "_pending_goal_rubric": "- tests pass",
+                    "_pending_goal_kind": "create",
+                    "_pending_goal_request_id": request_id,
+                }
+            )
+
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "_clear_submitted_goal_criteria_request",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task(
+                    force_goal_sync=True,
+                    goal_criteria_request_id=request_id,
+                )
+
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._queued_goal_application is None
+            handle.assert_awaited_once_with("ship login")
+
     async def test_failed_or_cancelled_yolo_generation_does_not_accept(self) -> None:
         """A terminal unsuccessful criteria turn must discard its partial draft."""
         request_id = "request-cancelled"
@@ -6272,18 +6385,21 @@ class TestGoalCommand:
     async def test_restored_proposal_with_active_request_is_not_auto_accepted(
         self,
     ) -> None:
-        """Resume should fail closed when a saved proposal was superseded."""
+        """Resume should fail closed when a failed draft still has its marker."""
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
-        payload = _ThreadHistoryPayload(
-            [],
-            0,
-            "",
-            pending_goal_objective="old objective",
-            pending_goal_rubric="- old criteria",
-            pending_goal_kind="create",
-            pending_goal_request_id="request-old",
-            goal_criteria_request_active=True,
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "goal_criteria_request": {"request_id": "request-failed"},
+                "_pending_goal_objective": "partial objective",
+                "_pending_goal_rubric": "- partial criteria",
+                "_pending_goal_kind": "create",
+                "_pending_goal_request_id": "request-failed",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
         )
+        assert payload.goal_criteria_request_active is True
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
@@ -8849,59 +8965,55 @@ class TestGoalCommand:
     async def test_forced_sync_create_double_fault_prompts_retry(self) -> None:
         """A create with no local pending state prompts the user to retry."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = None
-            app._pending_goal_rubric = None
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(force=True)
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = None
+        app._pending_goal_rubric = None
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(force=True)
 
-            mount.assert_awaited_once()
-            await_args = mount.await_args
-            assert await_args is not None
-            body = str(await_args.args[0]._content)
-            assert "could not be loaded" in body
+        mount.assert_awaited_once()
+        await_args = mount.await_args
+        assert await_args is not None
+        body = str(await_args.args[0]._content)
+        assert "could not be loaded" in body
 
     async def test_forced_sync_amend_double_fault_remounts_review(self) -> None:
         """An amend keeps its local pending proposal, so the review remounts."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = "ship login"
-            app._pending_goal_rubric = "- passkeys work"
-            app._pending_goal_request_id = "request-amend"
-            remount = AsyncMock()
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_remount_pending_goal_rubric_review", remount),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(
-                    force=True,
-                    proposal_request_id="request-amend",
-                )
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = "ship login"
+        app._pending_goal_rubric = "- passkeys work"
+        app._pending_goal_request_id = "request-amend"
+        remount = AsyncMock()
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_remount_pending_goal_rubric_review", remount),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(
+                force=True,
+                proposal_request_id="request-amend",
+            )
 
-            remount.assert_awaited_once()
-            mount.assert_not_awaited()
+        remount.assert_awaited_once()
+        mount.assert_not_awaited()
 
     async def test_fetch_thread_history_coerces_unknown_goal_status(self) -> None:
         """Loading a thread with an unknown status drops it to None."""
@@ -15202,6 +15314,212 @@ class TestExitGracefulWorkerHandoff:
                 # The pending task is not re-armed or replaced.
                 assert app._graceful_exit_task is pending
             pending.cancel()
+
+    @staticmethod
+    def _shutdown_toast() -> str:
+        """Return the shutdown toast for the active terminal charset."""
+        from deepagents_code.config import get_glyphs
+
+        return f"Finishing pending work before exit{get_glyphs().ellipsis}"
+
+    async def test_cleanup_starts_only_after_toast_refresh(self) -> None:
+        """Deferred cleanup waits until Textual has rendered the queued toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify"),
+                patch.object(app, "call_after_refresh") as after_refresh,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+
+                # Let the task reach the render barrier. Fast cleanup must not
+                # start until Textual invokes the after-refresh callback.
+                await asyncio.sleep(0)
+                worker.wait.assert_not_awaited()
+                super_exit.assert_not_called()
+
+                refresh_callback = after_refresh.call_args.args[0]
+                refresh_callback()
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_toast_shown_when_agent_worker_unfinished(self) -> None:
+        """A deferred exit for an unfinished worker shows the shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_shown_when_hooks_pending(self) -> None:
+        """A deferred exit that only drains hooks still shows the toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_shown_once_when_worker_and_hooks_pending(self) -> None:
+        """Both wait conditions being true still yields a single toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_uses_ascii_ellipsis_in_ascii_mode(self) -> None:
+        """The shutdown toast honors the configured ASCII glyph set."""
+        from deepagents_code.config import ASCII_GLYPHS
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "deepagents_code.config.get_glyphs",
+                    return_value=ASCII_GLYPHS,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(
+                "Finishing pending work before exit...",
+                markup=False,
+            )
+
+    async def test_no_toast_for_immediate_idle_exit(self) -> None:
+        """An idle, synchronous exit shows no shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = False
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                super_exit.assert_called_once()
+
+            assert app._graceful_exit_task is None
+            notify.assert_not_called()
+
+    async def test_no_toast_when_worker_present_but_finished(self) -> None:
+        """A present-but-finished worker with no hooks defers nothing."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = True
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                super_exit.assert_called_once()
+
+            assert app._graceful_exit_task is None
+            notify.assert_not_called()
+
+    async def test_no_duplicate_toast_on_repeated_exit(self) -> None:
+        """A forced second exit does not emit a second shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                pending = app._graceful_exit_task
+                assert pending is not None
+
+                # Second press before the deferred task runs force-quits and
+                # must not arm another toast.
+                app.exit()
+                notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+                await pending
 
 
 class TestSlashCommandBypass:
@@ -24324,6 +24642,10 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            # The respawn runs as a detached task so the message pump stays
+            # free; await it to observe the completion banner deterministically.
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert reload_called
@@ -24335,12 +24657,186 @@ class TestRestartCommand:
             assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
+    @pytest.mark.timeout(15)
+    async def test_restart_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` must not freeze the chat input while the server respawns.
+
+        Regression guard: `_handle_restart_command` used to await the
+        multi-second `_restart_server_manual()` (i.e. `server_proc.restart()`)
+        directly on the Textual message pump, so key events could not be
+        forwarded and the chat input was blocked until the restart finished.
+        Running the respawn as a detached task keeps the pump free, so typing
+        lands even while the restart is in-flight. Without the fix this test
+        times out (pump stalled on the gated coroutine).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            gate = asyncio.Event()
+
+            async def _blocked_restart() -> bool:
+                await gate.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _blocked_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+            # The respawn is now in-flight and gated open; the pump must still
+            # deliver keystrokes to the chat input.
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = app._chat_input.value
+            gate.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            await pilot.pause()
+            assert typed == "hi"
+
+    @pytest.mark.timeout(15)
+    async def test_marks_reconnecting_before_detached_respawn_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart state must be visible before the detached task's first await.
+
+        A duplicate `/restart` must also observe that state and return without
+        discarding prompts queued while the first restart is still in flight.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            status_started = asyncio.Event()
+            release_status = asyncio.Event()
+
+            async def _blocked_status(_content: str) -> None:
+                status_started.set()
+                await release_status.wait()
+
+            restart = AsyncMock(return_value=False)
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_mount_transient_app_message", _blocked_status)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_restart_command("/restart")
+            task = app._restart_respawn_task
+            assert task is not None
+            assert not status_started.is_set()
+            assert app._connecting is True
+            assert app._reconnecting is True
+            assert app._agent is None
+
+            try:
+                await status_started.wait()
+                await app._submit_input("queued during restart", mode="normal")
+                assert len(app._pending_messages) == 1
+                assert app._pending_messages[0].text == "queued during restart"
+
+                await app._handle_restart_command("/restart")
+                assert app._restart_respawn_task is task
+                restart.assert_not_awaited()
+                assert len(app._pending_messages) == 1
+                assert app._pending_messages[0].text == "queued during restart"
+            finally:
+                release_status.set()
+                await task
+
+            restart.assert_awaited_once()
+            assert app._connecting is False
+            assert app._reconnecting is False
+
+    @pytest.mark.timeout(15)
+    async def test_message_queued_during_restart_drains_after_server_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt queued mid-restart survives and drains once the server is up.
+
+        Completes the "queued and drained once `ServerReady` fires" guarantee.
+        The detached respawn pre-marks `_connecting`, so a normal submission
+        during it is queued rather than run against the dying server. A
+        successful restart must neither discard nor drain that queue — the
+        flags stay set until `ServerReady` — and the session-start sequence the
+        `ServerReady` handler runs must then drain it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            gate = asyncio.Event()
+
+            async def _gated_restart() -> bool:
+                await gate.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _gated_restart)
+
+            await app._handle_restart_command("/restart")
+            await pilot.pause()
+            # The detached respawn is in-flight with `_connecting` pre-marked,
+            # so a normal submission is queued, not run against the dying server.
+            await app._submit_input("queued during restart", mode="normal")
+            assert len(app._pending_messages) == 1
+
+            gate.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            # A successful restart owns neither discarding nor draining the
+            # queue; the `ServerReady` handler drains, so the prompt is still
+            # pending here.
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "queued during restart"
+
+            # Drive the drain the `ServerReady` handler performs (a respawn
+            # reconnect takes the `_initial_session_started` branch) and confirm
+            # the queued prompt is dispatched.
+            app._initial_session_started = True
+            drain_deferred = AsyncMock()
+            process_next = AsyncMock()
+            app._maybe_drain_deferred = drain_deferred  # ty: ignore
+            app._process_next_from_queue = process_next  # ty: ignore
+            await app._run_session_start_sequence()
+            drain_deferred.assert_awaited_once()
+            process_next.assert_awaited_once()
+
     async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed restart removes "Restarting..." without showing completion.
 
-        Guards the conditional gate in `_handle_restart_command`: the success
+        Guards the conditional gate in `_run_restart_respawn`: the success
         banner is only mounted when `_restart_server_manual()` returns `True`.
         On failure the recovery UI (via `ServerStartFailed`) is the user's
         feedback, so stale transient progress and the misleading completion
@@ -24372,6 +24868,8 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert restart_called
@@ -24379,17 +24877,23 @@ class TestRestartCommand:
             assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
-    async def test_raising_restart_removes_transient_and_propagates(
+    async def test_raising_restart_surfaces_error_and_resets_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A raising `_restart_server_manual()` clears the transient, then raises.
+        """A raising `_restart_server_manual()` surfaces an error and un-wedges.
 
-        The transient "Restarting server..." status is mounted before
-        `_restart_server_manual()` is awaited, so the `try/finally` in
-        `_handle_restart_command` exists solely to remove it when the restart
-        raises (not merely returns `False`). On a raise the transient must be
-        gone, the misleading completion banner must never mount, and the
-        exception must propagate rather than be swallowed.
+        This is the *unexpected* raise path, distinct from the handled
+        `return False` path (which posts `ServerStartFailed` for recovery). The
+        transient "Restarting server..." status is mounted before
+        `_restart_server_manual()` is awaited, and `_run_restart_respawn` runs
+        detached from the message pump, so the exception cannot propagate up a
+        command handler where Textual would surface it. Instead the respawn
+        wrapper must catch it (mirroring `_reconnect_from_viewer_safe`): the
+        transient must be gone, the misleading completion banner must never
+        mount, an `ErrorMessage` must surface the failure to the user rather
+        than it being logged-and-lost, and the pre-marked `_connecting`/
+        `_reconnecting` flags must reset so input submission does not stay
+        wedged. The detached task itself completes without raising.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -24414,14 +24918,23 @@ class TestRestartCommand:
             )
             monkeypatch.setattr(app, "_restart_server_manual", _boom)
 
-            with pytest.raises(RuntimeError, match="respawn exploded"):
-                await app._handle_restart_command("/restart")
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            # The wrapper catches the raise, so awaiting the task does not
+            # re-raise — the failure surfaces as an `ErrorMessage` instead.
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("respawn exploded" in m for m in errors)
+            # The pre-marked reconnecting state must be cleared so a live input
+            # is not left permanently gated by `_connecting`.
+            assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_reload_failure_skips_restart(
         self, monkeypatch: pytest.MonkeyPatch

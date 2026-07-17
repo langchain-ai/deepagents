@@ -228,7 +228,7 @@ The [release-please workflow (`.github/workflows/release-please.yml`)](https://g
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
 
 > [!NOTE]
-> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
+> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. The dispatch job comments on the merged release PR with a direct link to the package release workflow run. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
 
 ### Lockfile Updates
 

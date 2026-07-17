@@ -801,7 +801,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
-      issues: read # read release PR labels for opt-in release bypasses
+      issues: write # read release PR labels and comment with the dispatched run link
       pull-requests: read # resolve the release PR associated with the merge commit
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -843,6 +843,9 @@ jobs:
           # unset just means we couldn't correlate its run in time (it still
           # dispatched).
           declare -A RUN_URLS=()
+          # Cached after the first lookup so the label check and run-link comment
+          # always target the same merged release PR.
+          RELEASE_PR_NUMBER=""
 
           # release.yml's `version` input is required and the API silently accepts
           # an empty string, so guard here. release-please.yml's extraction step
@@ -892,30 +895,41 @@ jobs:
               2>/dev/null || true
           }
 
-          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
-          # Every error path (PR unresolved, label-read API failure) returns
-          # non-zero, so a transient API blip can never flip the dangerous bypass
-          # on — it only ever turns on for a positively-matched label.
-          release_pr_has_label() {
-            local label="$1" pr_number="" labels="" rc=0
-            # `/commits/{sha}/pulls` lists every PR associated with the commit;
-            # filter to the merged one so a non-release PR sharing this SHA can't
-            # be mistaken for the release PR (which produced RELEASE_SHA on main).
+          # `/commits/{sha}/pulls` lists every PR associated with the commit;
+          # filter to the merged one so a non-release PR sharing this SHA can't
+          # be mistaken for the release PR (which produced RELEASE_SHA on main).
+          resolve_release_pr_number() {
+            if [ -n "$RELEASE_PR_NUMBER" ]; then
+              return 0
+            fi
+            local pr_number=""
             pr_number=$(gh api \
               -H "Accept: application/vnd.github+json" \
               "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
               --jq 'map(select(.merged_at != null)) | .[0].number // empty' 2>/dev/null || true)
             if [ -z "$pr_number" ]; then
+              return 1
+            fi
+            RELEASE_PR_NUMBER="$pr_number"
+          }
+
+          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
+          # Every error path (PR unresolved, label-read API failure) returns
+          # non-zero, so a transient API blip can never flip the dangerous bypass
+          # on — it only ever turns on for a positively-matched label.
+          release_pr_has_label() {
+            local label="$1" labels="" rc=0
+            if ! resolve_release_pr_number; then
               echo "::warning::Could not resolve release PR for $RELEASE_SHA; SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' not read)."
               return 1
             fi
             # Capture the label read separately so an API failure is distinguishable
             # from "label genuinely absent" and can be surfaced. `local` is declared
             # above so it doesn't clobber the captured `$?` here.
-            labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+            labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR_NUMBER}/labels" \
               --jq '.[].name' 2>/dev/null) || rc=$?
             if [ "$rc" -ne 0 ]; then
-              echo "::warning::Could not read labels for PR #$pr_number (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
+              echo "::warning::Could not read labels for PR #$RELEASE_PR_NUMBER (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
               return 1
             fi
             printf '%s\n' "$labels" | grep -Fxq "$label"
@@ -977,6 +991,47 @@ jobs:
             echo "::warning::Dispatched $package but could not locate its release.yml run within ${max_poll}s; summary will link the workflow page instead."
           }
 
+          # Post the exact run links on the merged release PR so the person who
+          # merged it can follow publishing without finding the separate workflow.
+          # This is best-effort: a comment failure must not turn a successful
+          # release dispatch into a failed dispatch job.
+          comment_on_release_pr() {
+            local body="" comment_url="" links="" package="" url="" linked=0
+            if ! resolve_release_pr_number; then
+              echo "::warning::Could not resolve release PR for $RELEASE_SHA; dispatched run link will only appear in the step summary."
+              return
+            fi
+
+            for package in "${DISPATCHED[@]}"; do
+              url="${RUN_URLS[$package]:-}"
+              if [ -z "$url" ]; then
+                continue
+              fi
+              links+=$'\n\n'"- [\`release(${package}): ${VERSION}\`](${url})"
+              linked=$((linked + 1))
+            done
+
+            if [ "$linked" -eq 0 ]; then
+              echo "::warning::No exact release.yml run URL was located; not posting a workflow-run comment on PR #$RELEASE_PR_NUMBER."
+              return
+            elif [ "$linked" -eq 1 ]; then
+              body="The package release workflow has started:${links}"
+            else
+              body="The package release workflows have started:${links}"
+            fi
+            body+=$'\n\n'"Follow the linked run for build, test, and publish status."
+
+            if comment_url=$(gh api \
+              --method POST \
+              "/repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR_NUMBER}/comments" \
+              --raw-field body="$body" \
+              --jq '.html_url'); then
+              echo "Commented on release PR #$RELEASE_PR_NUMBER: $comment_url"
+            else
+              echo "::warning::Could not comment on release PR #$RELEASE_PR_NUMBER; the dispatch succeeded and its run link remains in the step summary."
+            fi
+          }
+
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
           # surfaces a warning if the value is something other than "true"/"false".
           CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
@@ -1036,12 +1091,13 @@ jobs:
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
 
           # Now that every package has been dispatched, correlate each one to its
-          # run URL for the summary. Done as a second pass so a slow/missed
-          # correlation can't hold up any dispatch.
+          # run URL for the summary and release PR comment. Done as a second pass so
+          # a slow/missed correlation can't hold up any dispatch.
           if [ "${#DISPATCHED[@]}" -gt 0 ]; then
             for p in "${DISPATCHED[@]}"; do
               locate_run "$p"
             done
+            comment_on_release_pr
           fi
 
           # Append per-package status to the step summary so operators see at a

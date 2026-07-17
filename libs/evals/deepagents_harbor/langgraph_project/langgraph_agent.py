@@ -647,28 +647,25 @@ class _KillAction(_HandleAction):
     action: Literal["kill"] = Field(description="Terminate a background process.")
 
 
-class _FinishAction(BaseModel):
+class _FinishRequest(BaseModel):
     """Explicitly end the task after the acceptance criteria have been verified."""
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["finish"] = Field(
-        description="End the task only after you have observed its tests or verifier pass."
-    )
     summary: str = Field(
-        default="",
+        min_length=1,
         max_length=2_000,
         description="Brief verification summary for the final trajectory record.",
+    )
+    evidence_tool_call_ids: list[str] = Field(
+        min_length=1,
+        max_length=_MAX_STRUCTURED_ACTIONS,
+        description="Structured tool-call IDs whose results verify this completion.",
     )
 
 
 type _StructuredAction = Annotated[
-    _ExecuteAction
-    | _RunBackgroundAction
-    | _PollAction
-    | _WriteStdinAction
-    | _KillAction
-    | _FinishAction,
+    _ExecuteAction | _RunBackgroundAction | _PollAction | _WriteStdinAction | _KillAction,
     Field(discriminator="action"),
 ]
 
@@ -693,17 +690,18 @@ class _Turn(BaseModel):
         max_length=_MAX_STRUCTURED_ACTIONS,
         description=(
             "Actions to take this turn. Use `execute` for short foreground commands and the "
-            "background action set for long-running work. To end, use exactly one `finish` action."
+            "background action set for long-running work."
         ),
+    )
+    finish: _FinishRequest | None = Field(
+        default=None,
+        description="Completion request, allowed only without execution actions and with prior tool evidence.",
     )
 
     @model_validator(mode="after")
-    def _finish_is_the_only_action(self) -> _Turn:
-        if (
-            any(isinstance(action, _FinishAction) for action in self.actions)
-            and len(self.actions) != 1
-        ):
-            msg = "finish must be the only action in a turn"
+    def _has_one_control_path(self) -> _Turn:
+        if self.actions and self.finish is not None:
+            msg = "finish cannot be combined with execution actions"
             raise ValueError(msg)
         return self
 
@@ -730,9 +728,9 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             msgs.append(
                 HumanMessage(
                     content=(
-                        "Your previous structured turn had no actions. Return at least one action, or a "
-                        "sole `finish` action only after you have verified the task passes. Never leave "
-                        "`actions` empty."
+                        "Your previous structured turn was invalid. Return at least one execution action. "
+                        "Use `finish` only after prior structured tool results verify completion, citing "
+                        "their tool-call IDs as evidence."
                     )
                 )
             )
@@ -744,8 +742,13 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         *,
         usage_metadata: UsageMetadata | None = None,
         repair: bool = False,
+        completed_action_ids: set[str] | None = None,
     ) -> ModelResponse | None:
-        if not turn.actions:
+        completed_action_ids = completed_action_ids or set()
+        terminal = turn.finish is not None
+        if terminal and not set(turn.finish.evidence_tool_call_ids) <= completed_action_ids:
+            return None
+        if not terminal and not turn.actions:
             return None
 
         content = "\n".join(
@@ -756,16 +759,15 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             )
             if part
         )
-        terminal = isinstance(turn.actions[0], _FinishAction)
         action_metadata: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
         if terminal:
-            summary = turn.actions[0].summary
-            content = content or (f"Finished: {summary}" if summary else "Task complete.")
+            summary = turn.finish.summary
+            content = content or f"Finished: {summary}"
             action_metadata.append(
                 {
                     "name": "finish",
-                    "args": {"summary": summary},
+                    "args": turn.finish.model_dump(),
                     "tool_call_id": None,
                 }
             )
@@ -807,6 +809,16 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         if tool_calls:
             message_kwargs["tool_calls"] = tool_calls
         return ModelResponse(result=[AIMessage(**message_kwargs)], structured_response=None)
+
+    @staticmethod
+    def _completed_action_ids(messages: list[AnyMessage]) -> set[str]:
+        return {
+            action["tool_call_id"]
+            for message in messages
+            if isinstance(message, ToolMessage)
+            for action in [message.response_metadata.get("structured_action")]
+            if isinstance(action, dict) and isinstance(action.get("tool_call_id"), str)
+        }
 
     @staticmethod
     def _add_action_result_metadata(
@@ -922,7 +934,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 handler(request), usage_metadata, "parse_or_invocation_failure"
             )
-        response = self._to_response(turn, usage_metadata=usage_metadata)
+        completed = self._completed_action_ids(list(request.messages))
+        response = self._to_response(
+            turn, usage_metadata=usage_metadata, completed_action_ids=completed
+        )
         if response is not None:
             return response
 
@@ -932,7 +947,9 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 handler(request), usage_metadata, "empty_turn_repair_failure"
             )
-        response = self._to_response(repair_turn, usage_metadata=usage_metadata, repair=True)
+        response = self._to_response(
+            repair_turn, usage_metadata=usage_metadata, repair=True, completed_action_ids=completed
+        )
         if response is not None:
             return response
         return self._add_fallback_metadata(handler(request), usage_metadata, "empty_turn_repair")
@@ -948,7 +965,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 response, usage_metadata, "parse_or_invocation_failure"
             )
-        response = self._to_response(turn, usage_metadata=usage_metadata)
+        completed = self._completed_action_ids(list(request.messages))
+        response = self._to_response(
+            turn, usage_metadata=usage_metadata, completed_action_ids=completed
+        )
         if response is not None:
             return response
 
@@ -959,7 +979,9 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 response, usage_metadata, "empty_turn_repair_failure"
             )
-        response = self._to_response(repair_turn, usage_metadata=usage_metadata, repair=True)
+        response = self._to_response(
+            repair_turn, usage_metadata=usage_metadata, repair=True, completed_action_ids=completed
+        )
         if response is not None:
             return response
         response = await handler(request)

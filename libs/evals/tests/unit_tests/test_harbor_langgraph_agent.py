@@ -391,17 +391,21 @@ def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
     )
 
 
-def test_structured_turn_finish_is_the_only_terminal_action() -> None:
+def test_structured_turn_finish_requires_prior_action_evidence() -> None:
     middleware = langgraph_agent._StructuredTurnMiddleware()
-    response = middleware._to_response(
-        langgraph_agent._Turn.model_validate(
-            {
-                "analysis": "The verifier passed.",
-                "actions": [{"action": "finish", "summary": "Verifier passed."}],
-            }
-        )
+    turn = langgraph_agent._Turn.model_validate(
+        {
+            "analysis": "The verifier passed.",
+            "finish": {
+                "summary": "Verifier passed.",
+                "evidence_tool_call_ids": ["structured_action_1"],
+            },
+        }
     )
 
+    assert middleware._to_response(turn, completed_action_ids=set()) is None
+
+    response = middleware._to_response(turn, completed_action_ids={"structured_action_1"})
     assert response is not None
     message = response.result[0]
     assert isinstance(message, AIMessage)
@@ -410,7 +414,10 @@ def test_structured_turn_finish_is_the_only_terminal_action() -> None:
     assert message.response_metadata["structured_turn"]["actions"] == [
         {
             "name": "finish",
-            "args": {"summary": "Verifier passed."},
+            "args": {
+                "summary": "Verifier passed.",
+                "evidence_tool_call_ids": ["structured_action_1"],
+            },
             "tool_call_id": None,
         }
     ]
@@ -422,8 +429,11 @@ def test_structured_turn_rejects_finish_with_tool_actions() -> None:
             {
                 "actions": [
                     {"action": "execute", "command": "pytest"},
-                    {"action": "finish", "summary": "done"},
-                ]
+                ],
+                "finish": {
+                    "summary": "done",
+                    "evidence_tool_call_ids": ["structured_action_1"],
+                },
             }
         )
 
@@ -446,7 +456,7 @@ def test_structured_turn_repairs_one_empty_turn_with_finish() -> None:
                 },
                 {
                     "parsed": langgraph_agent._Turn.model_validate(
-                        {"actions": [{"action": "finish", "summary": "verified"}]}
+                        {"actions": [{"action": "execute", "command": "pwd"}]}
                     ),
                     "raw": AIMessage(
                         content="",
@@ -483,7 +493,7 @@ def test_structured_turn_repairs_one_empty_turn_with_finish() -> None:
     assert len(model.messages) == 2
     repair_message = model.messages[1][-1]
     assert isinstance(repair_message, langgraph_agent.HumanMessage)
-    assert "sole `finish` action" in repair_message.content
+    assert "at least one execution action" in repair_message.content
     assert isinstance(response, ModelResponse)
     message = response.result[0]
     assert isinstance(message, AIMessage)

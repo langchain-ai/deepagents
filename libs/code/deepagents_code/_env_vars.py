@@ -84,9 +84,10 @@ DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
 r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
 
 Off by default; toggle the "Click to copy" checkbox in the console or set
-`[ui].debug_console_click_to_copy` in config.toml. Parsed by `classify_env_bool`
-(an unrecognized or empty value falls through to the config value rather than
-forcing the default).
+`[ui].debug_console_click_to_copy` in config.toml. A recognized value is parsed
+by `classify_env_bool`; an unrecognized value falls through to the config value.
+An empty/whitespace value is ignored before parsing (rather than being treated
+as falsy) and also falls through, so it never masks the saved preference.
 
 When set, this env var takes precedence over the persisted
 `[ui].debug_console_click_to_copy` config value on launch, so toggling the

@@ -14,7 +14,7 @@ import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
@@ -12124,6 +12124,45 @@ class TestScrollbarToggle:
 class TestDebugConsoleClickToCopyPreference:
     """Tests for the persisted Debug Console click-to-copy preference."""
 
+    @pytest.mark.parametrize(
+        ("ok", "message", "severity"),
+        [
+            (True, "Replaced malformed [ui] configuration.", "warning"),
+            (False, "Click-to-copy preference could not be saved.", "error"),
+        ],
+    )
+    async def test_persist_notifies_with_result_severity(
+        self,
+        ok: bool,
+        message: str,
+        severity: Literal["warning", "error"],
+    ) -> None:
+        """Repairs and failures are surfaced with their reported severity."""
+        from deepagents_code.app import _ConfigWriteResult
+
+        app = DeepAgentsApp()
+        result = _ConfigWriteResult(ok, message, severity)
+
+        with (
+            patch.object(app, "call_later") as call_later_mock,
+            patch.object(app, "notify") as notify_mock,
+            patch(
+                "deepagents_code.app.asyncio.to_thread",
+                new=AsyncMock(return_value=result),
+            ),
+        ):
+            app._persist_debug_console_click_to_copy(True)
+            persist = call_later_mock.call_args.args[0]
+            await persist()
+
+        assert app._debug_console_click_to_copy is True
+        notify_mock.assert_called_once_with(
+            message,
+            severity=severity,
+            timeout=6,
+            markup=False,
+        )
+
     def test_load_defaults_false_when_config_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -12189,6 +12228,50 @@ class TestDebugConsoleClickToCopyPreference:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY", "maybe")
         assert _load_debug_console_click_to_copy() is True
+
+    def test_empty_env_var_falls_back_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty/whitespace env var is ignored, not treated as falsy."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY", "   ")
+        assert _load_debug_console_click_to_copy() is True
+
+    def test_load_ignores_non_table_ui(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A `[ui]` value that is not a table degrades to the off default."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text('ui = "not-a-table"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_debug_console_click_to_copy() is False
+        assert any("[ui]" in record.getMessage() for record in caplog.records)
+
+    def test_load_handles_unreadable_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Malformed TOML degrades to the off default with a warning."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = tru\n")  # invalid TOML
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_debug_console_click_to_copy() is False
+        assert any("click-to-copy" in record.getMessage() for record in caplog.records)
 
     def test_save_round_trips(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

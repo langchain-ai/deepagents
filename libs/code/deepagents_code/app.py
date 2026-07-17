@@ -17341,9 +17341,10 @@ class DeepAgentsApp(App):
         r"""Persist the Debug Console click-to-copy toggle off the UI thread.
 
         Keeps the in-memory preference in sync so a reopened console reflects
-        the latest choice, and writes `[ui].debug_console_click_to_copy` in a
-        worker thread so a slow disk never blocks the toggle. A write failure
-        degrades to a toast rather than losing the session-level change.
+        the latest choice, and writes `[ui].debug_console_click_to_copy` off the
+        UI thread via `asyncio.to_thread` so a slow disk never blocks the toggle.
+        A write failure degrades to a toast rather than losing the session-level
+        change.
 
         Args:
             enabled: The new click-to-copy state to persist.
@@ -17351,13 +17352,25 @@ class DeepAgentsApp(App):
         self._debug_console_click_to_copy = enabled
 
         async def _persist() -> None:
-            result = await asyncio.to_thread(
-                _save_debug_console_click_to_copy_result, enabled
-            )
-            if not result.ok and result.message:
+            try:
+                result = await asyncio.to_thread(
+                    _save_debug_console_click_to_copy_result, enabled
+                )
+                if result.message is not None:
+                    self.notify(
+                        result.message,
+                        severity=result.severity,
+                        timeout=6,
+                        markup=False,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to persist debug console click-to-copy preference",
+                    exc_info=True,
+                )
                 self.notify(
-                    result.message,
-                    severity="warning",
+                    "Click-to-copy toggled for this session but could not be saved.",
+                    severity="error",
                     timeout=6,
                     markup=False,
                 )

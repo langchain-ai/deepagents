@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.main import parse_args
 from deepagents_code.ui import show_help, show_threads_list_help
 
@@ -50,25 +49,15 @@ class TestInitialPromptArg:
         assert args.initial_prompt == ""
 
 
-def test_plugin_subcommand_parses_without_experimental_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Argparse still accepts `plugin` when experimental is off.
-
-    The experimental gate lives at execution time in `main` (exit 2 + hint),
-    not in argparse, so disabled users get a clear message instead of a usage error.
-    """
-    monkeypatch.delenv(EXPERIMENTAL, raising=False)
+def test_plugin_subcommand_parses() -> None:
+    """Argparse accepts the `plugin` subcommand."""
     with patch.object(sys, "argv", ["deepagents", "plugin", "list"]):
         args = parse_args()
     assert args.command == "plugin"
     assert args.plugin_command == "list"
 
 
-def test_plugin_marketplace_remove_parses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(EXPERIMENTAL, "1")
+def test_plugin_marketplace_remove_parses() -> None:
     with patch.object(
         sys,
         "argv",

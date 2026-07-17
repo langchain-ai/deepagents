@@ -429,3 +429,24 @@ def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
     )
     assert len(entries) == 15 + 11 + 8
     assert all(len(e["include_tasks"].split()) == 1 for e in entries)
+
+
+def test_main_rejects_invalid_full_task_json_shape(tmp_path, monkeypatch):
+    import json as _j
+
+    import pytest
+
+    # _load_tasks_json guards the enumerated task file against malformed
+    # shapes: a non-dict top level, a non-list category value, or a list with
+    # non-string tasks all fail fast with a clear message.
+    for tasks in ({"autonomous": "taskname"}, ["taskname"], {"autonomous": ["task", 1]}):
+        tasks_json = tmp_path / "tasks.json"
+        tasks_json.write_text(_j.dumps(tasks))
+        monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+        monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+        monkeypatch.setenv("UNIFIED_PROFILE", "full")
+        monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+        with pytest.raises(SystemExit, match=r"UNIFIED_TASKS_JSON must be a JSON object"):
+            up.main([])

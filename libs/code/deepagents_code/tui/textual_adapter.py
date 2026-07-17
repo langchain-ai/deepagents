@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import httpx
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.resume_state import RubricResult
 
     # Type alias matching HITLResponse["decisions"] element type
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -222,6 +223,21 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     if metadata is None:
         return False
     return metadata.get("lc_source") == "summarization"
+
+
+class RubricEvaluationEnd(NamedTuple):
+    """A validated `rubric_evaluation_end` event forwarded to the caller.
+
+    Bundling the two fields as named attributes (rather than two positional
+    strings) makes the grading-run correlation self-documenting and removes the
+    risk of transposing the run ID and the verdict at a call site.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for this grading run."""
+
+    result: RubricResult
+    """Terminal/loop verdict carried by the event."""
 
 
 def _format_rubric_event(data: dict[str, Any]) -> str | None:
@@ -551,9 +567,11 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    graph_input: dict[str, Any] | None = None,
     rubric: str | None = None,
     goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
+    on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -579,12 +597,17 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        graph_input: Prepared non-conversation input for a server-side graph
+            operation. When provided, no user message or media is constructed.
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
         goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
+        on_rubric_evaluation_end: Optional callback receiving a validated
+            `RubricEvaluationEnd` (grading run ID and verdict) for each
+            main-agent `rubric_evaluation_end` event.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -613,43 +636,40 @@ async def execute_task_textual(
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
 
-    # Parse file mentions and inject content if any — offload blocking I/O
-    prompt_text, mentioned_files = await asyncio.to_thread(
-        parse_file_mentions, user_input
-    )
-
-    # Max file size to embed inline (256KB, matching mistral-vibe)
-    # Larger files get a reference instead - use read_file tool to view them
-    max_embed_bytes = 256 * 1024
-
-    if mentioned_files:
-        context_parts = [prompt_text, "\n\n## Referenced Files\n"]
-        for file_path in mentioned_files:
-            try:
-                part = await asyncio.to_thread(
-                    _read_mentioned_file, file_path, max_embed_bytes
-                )
-                context_parts.append(part)
-            except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
-                context_parts.append(
-                    f"\n### {file_path.name}\n[Error reading file: {e}]"
-                )
-        final_input = "\n".join(context_parts)
-    else:
-        final_input = prompt_text
-
-    # Include images and videos in the message content
-    images_to_send = []
-    videos_to_send = []
-    if image_tracker:
-        images_to_send = image_tracker.get_images()
-        videos_to_send = image_tracker.get_videos()
-    if images_to_send or videos_to_send:
-        message_content = create_multimodal_content(
-            final_input, images_to_send, videos_to_send
+    message_content: str | list[dict[str, Any]] | None = None
+    if graph_input is None:
+        prompt_text, mentioned_files = await asyncio.to_thread(
+            parse_file_mentions, user_input
         )
-    else:
-        message_content = final_input
+        max_embed_bytes = 256 * 1024
+
+        if mentioned_files:
+            context_parts = [prompt_text, "\n\n## Referenced Files\n"]
+            for file_path in mentioned_files:
+                try:
+                    part = await asyncio.to_thread(
+                        _read_mentioned_file, file_path, max_embed_bytes
+                    )
+                    context_parts.append(part)
+                except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
+                    context_parts.append(
+                        f"\n### {file_path.name}\n[Error reading file: {e}]"
+                    )
+            final_input = "\n".join(context_parts)
+        else:
+            final_input = prompt_text
+
+        images_to_send = []
+        videos_to_send = []
+        if image_tracker:
+            images_to_send = image_tracker.get_images()
+            videos_to_send = image_tracker.get_videos()
+        if images_to_send or videos_to_send:
+            message_content = create_multimodal_content(
+                final_input, images_to_send, videos_to_send
+            )
+        else:
+            message_content = final_input
 
     thread_id = session_state.thread_id
     # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
@@ -658,13 +678,17 @@ async def execute_task_textual(
     # `advance_turn`, but lightweight callers/test doubles may not, so probe for
     # it and degrade to no turn markers rather than raising.
     advance_turn = getattr(session_state, "advance_turn", None)
-    if callable(advance_turn):
+    if graph_input is None and callable(advance_turn):
         turn_id, turn_number = advance_turn()
     else:
         turn_id, turn_number = None, None
     # `build_stream_config` does blocking git filesystem reads and may shell out
     # to `git`; offload it so the Textual event loop stays responsive. Advancing
     # the turn markers above is pure/cheap and stays on the loop.
+    #
+    # `auto_approve` is sampled once here, at turn start, so it labels the trace
+    # with the mode the turn began in. A mid-turn Shift+Tab toggle still changes
+    # execution behavior (via `context`) but does not relabel this turn's trace.
     config = await asyncio.to_thread(
         build_stream_config,
         thread_id,
@@ -672,6 +696,7 @@ async def execute_task_textual(
         sandbox_type=sandbox_type,
         turn_id=turn_id,
         turn_number=turn_number,
+        auto_approve=bool(session_state.auto_approve),
     )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -743,20 +768,24 @@ async def execute_task_textual(
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
 
-    # Clear media from tracker after creating the message
-    if image_tracker:
+    if image_tracker and graph_input is None:
         image_tracker.clear()
 
-    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
-    if message_kwargs:
-        user_msg.update(message_kwargs)
-    # Auto-approve is carried via run context (set per stream iteration below),
-    # not graph state — so the initial input is a plain dict. A first-turn
-    # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
-    # API server and crash `_control_branch` on a fresh thread.
-    stream_input: dict | Command = {"messages": [user_msg]}
-    if rubric:
-        stream_input["rubric"] = rubric
+    if graph_input is None:
+        user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+        if message_kwargs:
+            user_msg.update(message_kwargs)
+        stream_input: dict | Command = {
+            "messages": [user_msg],
+            "goal_criteria_request": None,
+        }
+        if rubric:
+            stream_input["rubric"] = rubric
+    else:
+        stream_input = dict(graph_input)
+    recover_interrupted_turn = not (
+        graph_input is not None and graph_input.get("goal_criteria_request") is not None
+    )
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -864,6 +893,32 @@ async def execute_task_textual(
                             else AppMessage(formatted_rubric_event)
                         )
                         await adapter._mount_message(message)
+                        if (
+                            on_rubric_evaluation_end is not None
+                            and rubric_message.get("type") == "rubric_evaluation_end"
+                        ):
+                            grading_run_id = rubric_message.get("grading_run_id")
+                            result = rubric_message.get("result")
+                            if (
+                                isinstance(grading_run_id, str)
+                                and grading_run_id.strip()
+                                and isinstance(result, str)
+                            ):
+                                # Structurally validated here; the verdict is
+                                # cast to `RubricResult` at this boundary and the
+                                # consumer re-checks it against the known set.
+                                try:
+                                    on_rubric_evaluation_end(
+                                        RubricEvaluationEnd(
+                                            grading_run_id=grading_run_id.strip(),
+                                            result=cast("RubricResult", result),
+                                        )
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "on_rubric_evaluation_end callback failed",
+                                        exc_info=True,
+                                    )
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a
@@ -1801,13 +1856,13 @@ async def execute_task_textual(
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
                                     adapter._sync_tool_widget(tool_msg)
-                                # Bare reject aborts the turn and shows the
-                                # canned "Command rejected" banner so the user
-                                # can redirect. When a reason is supplied, the
-                                # reason itself serves as feedback for the
-                                # agent: keep `any_rejected=False` so the
-                                # stream resumes and the banner is suppressed.
-                                if reject_message is None:
+                                # Bare reject aborts an ordinary conversation
+                                # turn and shows the canned "Command rejected"
+                                # banner. Server operations must receive every
+                                # decision so their nested agent can finish
+                                # without the rejected context. A supplied
+                                # reason likewise resumes either kind of run.
+                                if reject_message is None and graph_input is None:
                                     completed_tool_result_ids.update(
                                         _dispatch_terminal_tool_result_hooks(
                                             adapter._current_tool_messages,
@@ -1930,6 +1985,7 @@ async def execute_task_textual(
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
             start_time=start_time,
+            recover_interrupted_turn=recover_interrupted_turn,
         )
         return turn_stats
     finally:
@@ -2049,6 +2105,7 @@ async def _handle_interrupt_cleanup(
     captured_output_tokens: int,
     turn_stats: SessionStats,
     start_time: float,
+    recover_interrupted_turn: bool = True,
 ) -> None:
     """Shared cleanup for CancelledError and KeyboardInterrupt.
 
@@ -2062,6 +2119,8 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+        recover_interrupted_turn: Whether to append the normal partial assistant
+            and cancellation messages for an interrupted conversation turn.
 
     Raises:
         ValueError: If proactive remote-run cancellation is attempted without a
@@ -2083,7 +2142,8 @@ async def _handle_interrupt_cleanup(
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
-    await adapter._mount_message(AppMessage("Interrupted by user"))
+    if recover_interrupted_turn:
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This
@@ -2108,9 +2168,13 @@ async def _handle_interrupt_cleanup(
                 exc_info=True,
             )
 
-    interrupted_msg = _build_interrupted_ai_message(
-        pending_text_by_namespace,
-        adapter._current_tool_messages,
+    interrupted_msg = (
+        _build_interrupted_ai_message(
+            pending_text_by_namespace,
+            adapter._current_tool_messages,
+        )
+        if recover_interrupted_turn
+        else None
     )
 
     # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
@@ -2154,22 +2218,23 @@ async def _handle_interrupt_cleanup(
         # cancellation notice), not user-driven agent activity; surfacing them as
         # standalone peer runs alongside real agent turns clutters the trace view.
         with tracing_context(enabled=False):
-            if interrupted_msg:
-                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+            if recover_interrupted_turn:
+                if interrupted_msg:
+                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
-            cancellation_msg = HumanMessage(
-                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                "Previous operation was cancelled."
-            )
-            cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
-            # Piggy-back the latest token count on this already-required write
-            # instead of issuing a separate `aupdate_state`. `after_model` never
-            # ran on the partial turn, so without this the count would be stale
-            # on resume.
-            captured_total = captured_input_tokens + captured_output_tokens
-            if captured_total:
-                cancellation_values["_context_tokens"] = captured_total
-            await agent.aupdate_state(config, cancellation_values)
+                cancellation_msg = HumanMessage(
+                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                    "Previous operation was cancelled."
+                )
+                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                # Piggy-back the latest token count on this already-required
+                # write instead of issuing a separate `aupdate_state`.
+                # `after_model` never ran on the partial turn, so without this
+                # the count would be stale on resume.
+                captured_total = captured_input_tokens + captured_output_tokens
+                if captured_total:
+                    cancellation_values["_context_tokens"] = captured_total
+                await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception as exc:  # interrupt cleanup must not propagate

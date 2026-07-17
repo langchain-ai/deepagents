@@ -292,6 +292,7 @@ async def start_server_and_get_agent(
     assistant_id: str,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -319,6 +320,7 @@ async def start_server_and_get_agent(
         assistant_id: Agent identifier.
         model_name: Model spec string.
         model_params: Extra model kwargs.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -369,6 +371,7 @@ async def start_server_and_get_agent(
         project_context=project_context,
         model_name=model_name,
         model_params=model_params,
+        profile_overrides=profile_overrides,
         assistant_id=assistant_id,
         auto_approve=auto_approve,
         interrupt_shell_only=interrupt_shell_only,
@@ -442,6 +445,7 @@ async def server_session(
     assistant_id: str,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -472,6 +476,7 @@ async def server_session(
         assistant_id: Agent identifier.
         model_name: Model spec string.
         model_params: Extra model kwargs.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -508,6 +513,7 @@ async def server_session(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_overrides,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
             shell_allow_list=shell_allow_list,

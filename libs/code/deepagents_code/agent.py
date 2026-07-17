@@ -1457,6 +1457,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1567,6 +1568,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        goal_criteria_tools: External read-only context tools available to server-side
+            goal criteria generation. `None` disables goal criteria requests.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1780,18 +1783,13 @@ def create_cli_agent(
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
         try:
-            if is_env_truthy(EXPERIMENTAL):
-                from deepagents_code.plugins import discover_plugins
-                from deepagents_code.plugins.adapters.skills import (
-                    plugin_skill_sources,
-                )
+            from deepagents_code.plugins import discover_plugins
+            from deepagents_code.plugins.adapters.skills import plugin_skill_sources
 
-                plugin_result = discover_plugins()
-                if plugin_result.warnings:
-                    logger.warning(
-                        "Plugin discovery warnings: %s", plugin_result.warnings
-                    )
-                sources.extend(plugin_skill_sources(plugin_result.plugins))
+            plugin_result = discover_plugins()
+            if plugin_result.warnings:
+                logger.warning("Plugin discovery warnings: %s", plugin_result.warnings)
+            sources.extend(plugin_skill_sources(plugin_result.plugins))
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
         sources.extend(
@@ -1991,6 +1989,40 @@ def create_cli_agent(
         composite_backend = CompositeBackend(
             default=backend,
             routes={},
+        )
+
+    if goal_criteria_tools is not None:
+        from deepagents_code.goal_rubric import (
+            GoalCriteriaMiddleware,
+            create_goal_criteria_agent,
+            create_goal_criteria_fallback_agent,
+        )
+
+        if sandbox is not None:
+            if sandbox_type is not None:
+                criteria_backend = sandbox
+                criteria_root = get_default_working_dir(sandbox_type)
+            else:
+                criteria_backend = None
+                criteria_root = "/"
+        elif project_context is not None and project_context.project_root is not None:
+            criteria_backend = FilesystemBackend(
+                root_dir=project_context.project_root,
+                virtual_mode=True,
+            )
+            criteria_root = "/"
+        else:
+            criteria_backend = None
+            criteria_root = "/"
+        criteria_agent = create_goal_criteria_agent(
+            model=model,
+            repository_backend=criteria_backend,
+            repository_root=criteria_root,
+            context_tools=goal_criteria_tools,
+        )
+        criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
+        agent_middleware.append(
+            GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
     agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
@@ -170,6 +171,24 @@ def derive_pool(
     inner = max(1, min(per_model // n_branches, n_shards))
     outer = max(1, min(MAX_RUNNERS // inner, n_groups))
     return inner, outer
+
+
+def _load_tasks_json(path: str) -> dict[str, list[str]]:
+    """Load the full-profile task mapping from an enumerated JSON file."""
+    msg = "UNIFIED_TASKS_JSON must be a JSON object mapping category names to lists of task strings"
+    try:
+        with open(path) as f:
+            raw: object = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(msg) from exc
+    if not isinstance(raw, dict) or not all(
+        isinstance(category, str)
+        and isinstance(tasks, list)
+        and all(isinstance(task, str) for task in tasks)
+        for category, tasks in raw.items()
+    ):
+        raise SystemExit(msg)
+    return cast(dict[str, list[str]], raw)
 
 
 def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
@@ -341,8 +360,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(
                 "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
             )
-        with open(tasks_json) as f:
-            tasks_by_cat = json.load(f)
+        tasks_by_cat = _load_tasks_json(tasks_json)
 
     n_models = len(model_specs)
 

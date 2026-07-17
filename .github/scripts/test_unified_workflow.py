@@ -443,8 +443,8 @@ def test_aggregate_runs_per_category() -> None:
     upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
     assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
     assert (
-        "format('harbor-combined-{0}-{1}-{2}-{3}', inputs.branch, matrix.agent_impl, "
-        "matrix.category, steps.slug.outputs.slug)" in upload
+        "format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, "
+        "matrix.agent_impl, matrix.category, steps.slug.outputs.slug)" in upload
     )
 
 

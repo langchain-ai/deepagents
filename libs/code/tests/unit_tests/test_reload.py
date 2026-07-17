@@ -1416,7 +1416,9 @@ class TestReloadPluginsViaReload:
 
         assert labels == ("Login", "nameless")
 
-    @pytest.mark.parametrize("change", ["none", "fingerprint", "enabled"])
+    @pytest.mark.parametrize(
+        "change", ["none", "fingerprint", "fingerprint_key_added", "enabled"]
+    )
     async def test_plugin_manager_reminder_compares_actual_state(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1427,16 +1429,20 @@ class TestReloadPluginsViaReload:
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
-        before = (
-            {"demo@tools": _test_plugin_fingerprint("before")}
-            if change == "fingerprint"
-            else {}
-        )
-        after = (
-            {"demo@tools": _test_plugin_fingerprint("after")}
-            if change == "fingerprint"
-            else {}
-        )
+        if change == "fingerprint":
+            # Same plugin id, different fingerprint: exercises the intersection
+            # branch of _plugin_fingerprints_changed.
+            before = {"demo@tools": _test_plugin_fingerprint("before")}
+            after = {"demo@tools": _test_plugin_fingerprint("after")}
+        elif change == "fingerprint_key_added":
+            # A plugin appears (e.g. a marketplace added while the manager was
+            # open) with enabled ids unchanged: exercises the keys-differ branch,
+            # which is this PR's headline async-marketplace-add scenario.
+            before = {}
+            after = {"demo@tools": _test_plugin_fingerprint("after")}
+        else:
+            before = {}
+            after = {}
         fingerprints = iter((before, after))
         enabled_before = frozenset[str]()
         enabled_after = (

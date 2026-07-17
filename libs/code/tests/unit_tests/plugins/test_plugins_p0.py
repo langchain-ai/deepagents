@@ -921,6 +921,59 @@ async def test_plugin_manager_add_marketplace_success_refreshes_state(
         )
 
 
+async def test_plugin_manager_add_marketplace_recovers_from_unexpected_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception outside the expected set must still release the modal.
+
+    Without the worker's catch-all, an unexpected error would leave
+    `exit_on_error=False` to swallow the crash, so `_finish_marketplace_add`
+    never runs: the spinner would spin forever, the input stay disabled, and
+    Escape stay blocked, wedging the manager permanently.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+
+    def add_marketplace(source: str) -> PluginMarketplace:
+        assert source == "owner/repo"
+        # ValueError is not in the worker's (MarketplaceError, OSError,
+        # RuntimeError) tuple, so it exercises the catch-all path.
+        msg = "boom"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.add_marketplace_source",
+        add_marketplace,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("enter")
+        source_input = screen.query_one("#plugin-marketplace-source", Input)
+        source_input.value = "owner/repo"
+        await pilot.press("enter")
+
+        while screen._adding_marketplace:
+            await pilot.pause()
+
+        # Modal is recoverable: guard cleared, input re-enabled and focused,
+        # and the failure is surfaced rather than silently swallowed.
+        assert screen._adding_marketplace is False
+        assert screen._marketplace_spinner_timer is None
+        assert source_input.disabled is False
+        assert source_input.has_focus
+        assert "Could not add marketplace: Unexpected error: boom" in str(
+            screen.query_one("#plugin-manager-error").render()
+        )
+
+
 def test_plugin_mcp_config_namespaces_and_substitutes(
     tmp_path: Path, monkeypatch
 ) -> None:

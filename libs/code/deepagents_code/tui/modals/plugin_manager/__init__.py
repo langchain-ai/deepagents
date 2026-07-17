@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
@@ -63,12 +64,15 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
     PluginTabSelected,
 )
 
+logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
+
 
 class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    A reload prompt shown after this screen closes offers to apply plugin
-    changes via `/reload`.
+    When plugin state changed while the manager was open, a reload prompt is
+    shown after this screen closes offering to apply the changes via `/reload`;
+    an unchanged close shows nothing.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -924,24 +928,41 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         except (MarketplaceError, OSError, RuntimeError) as exc:
             self.app.call_from_thread(self._finish_marketplace_add, None, str(exc))
             return
+        except Exception as exc:
+            # Any exception outside the expected set must still route through
+            # _finish_marketplace_add: with exit_on_error=False the worker
+            # crash is otherwise swallowed, leaving _adding_marketplace latched
+            # (spinner running, input disabled, Escape blocked by action_cancel)
+            # and the manager permanently unrecoverable.
+            logger.exception("Unexpected error adding marketplace source")
+            self.app.call_from_thread(
+                self._finish_marketplace_add, None, f"Unexpected error: {exc}"
+            )
+            return
         self.app.call_from_thread(self._finish_marketplace_add, marketplace, None)
 
     async def _finish_marketplace_add(
         self, marketplace: PluginMarketplace | None, error: str | None
     ) -> None:
-        self._adding_marketplace = False
         if self._marketplace_spinner_timer is not None:
             self._marketplace_spinner_timer.stop()
             self._marketplace_spinner_timer = None
         source_input = self.query_one("#plugin-marketplace-source", Input)
-        source_input.disabled = False
+
+        def release_guard() -> None:
+            """Re-enable the input and unblock Escape now the add has settled."""
+            self._adding_marketplace = False
+            source_input.disabled = False
+
         if error is not None:
+            release_guard()
             self._status = None
             self._error = f"Could not add marketplace: {error}"
             self._refresh_view()
             source_input.focus()
             return
         if marketplace is None:
+            release_guard()
             return
         self._mode = "list"
         self._tab = "discover"
@@ -950,4 +971,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             f"({len(marketplace.plugins)} plugin(s))."
         )
         self._error = None
-        await self._refresh_state()
+        # Keep the guard set until the refresh finishes so Escape stays blocked
+        # while _refresh_state() runs.
+        try:
+            await self._refresh_state()
+        finally:
+            release_guard()

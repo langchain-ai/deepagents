@@ -1,5 +1,6 @@
 """Tests for the plugin manager modal structure."""
 
+import asyncio
 import inspect
 import re
 from pathlib import Path
@@ -12,6 +13,7 @@ from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.config import get_glyphs
+from deepagents_code.plugins.models import PluginMarketplace
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.content import (
     _installed_plugin_details_content,
@@ -631,6 +633,53 @@ async def test_tab_switch_ignored_during_add_marketplace() -> None:
         screen._select_tab("installed")
         assert screen._mode == "add_marketplace"
         assert screen._tab == "discover"
+
+
+async def test_marketplace_add_stays_locked_during_state_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful add cannot be submitted again while state is reloading."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def refresh_state() -> None:
+        refresh_started.set()
+        await release_refresh.wait()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._mode = "add_marketplace"
+        screen._adding_marketplace = True
+        screen._refresh_view()
+        source = screen.query_one("#plugin-marketplace-source", Input)
+        source.value = "owner/repo"
+        source.disabled = True
+        add_marketplace = MagicMock()
+        monkeypatch.setattr(screen, "_add_marketplace", add_marketplace)
+        monkeypatch.setattr(screen, "_refresh_state", refresh_state)
+        marketplace = PluginMarketplace(
+            name="official",
+            root=tmp_path,
+            manifest_path=tmp_path / "marketplace.json",
+            metadata={},
+            plugins=(),
+        )
+
+        finish = asyncio.create_task(screen._finish_marketplace_add(marketplace, None))
+        await refresh_started.wait()
+
+        assert screen._adding_marketplace is True
+        assert source.disabled is True
+        screen.on_input_submitted(Input.Submitted(source, source.value))
+        add_marketplace.assert_not_called()
+
+        release_refresh.set()
+        await finish
+        assert screen._adding_marketplace is False
+        assert source.disabled is False
 
 
 async def test_search_hidden_without_filterable_plugins() -> None:

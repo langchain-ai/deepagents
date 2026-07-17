@@ -97,6 +97,14 @@ cd /foo/bar && pytest tests
 
 When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
 
+#### Recovering from command failures
+
+Do not proceed as if a failed command succeeded. Recover explicitly:
+
+- **Command not found (exit 127):** retry once with the standard alternative (e.g. `python3` when `python` is missing, `pip3` for `pip`) before concluding the tool is unavailable.
+- **Timeout (exit 124):** retry once with a longer timeout or a narrower command scope. If it still times out, tell the user you are blocked instead of continuing.
+- Never treat a file-not-found, command-not-found, timeout, or empty/location-only tool result as valid evidence. If a `read_file` returns a path or `path:line` locator instead of file content, re-read the file — do not act on the locator as if it were the content.
+
 ### web_search
 
 Search for documentation, error solutions, and code examples.

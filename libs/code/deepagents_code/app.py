@@ -9845,8 +9845,19 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
-        active_request = state_values.get("goal_criteria_request")
-        pending_request_is_active = active_request is not None
+        criteria_request = state_values.get("goal_criteria_request")
+        completed_request_marker_is_stale = (
+            allow_pending_proposal
+            and proposal_request_id is not None
+            and payload.pending_goal_request_id == proposal_request_id
+            and isinstance(criteria_request, dict)
+            and criteria_request.get("request_id") == proposal_request_id
+        )
+        if completed_request_marker_is_stale:
+            # `_clear_submitted_goal_criteria_request` runs before this successful
+            # turn sync. Ignore its failed clear only here; restore and ordinary sync
+            # must keep matching markers active so failed partial drafts stay blocked.
+            payload = replace(payload, goal_criteria_request_active=False)
         discard_failed_proposal = (
             not allow_pending_proposal
             and payload.pending_goal_objective is not None
@@ -9861,7 +9872,7 @@ class DeepAgentsApp(App):
                 proposal_request_id is not None
                 and payload.pending_goal_request_id != proposal_request_id
             )
-            or pending_request_is_active
+            or payload.goal_criteria_request_active
             or not allow_pending_proposal
         ):
             payload = replace(

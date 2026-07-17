@@ -118,12 +118,25 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+        format_sdk_version_annotation,
+    )
 
-    sdk_version_value, status = resolve_sdk_version()
-    sdk_version = sdk_version_value if status == "resolved" else "unknown"
+    report = collect_version_report()
+    cli_annotation = format_cli_version_annotation(report.cli)
+    if report.sdk.status == "resolved":
+        sdk_version = report.sdk.primary_version
+        sdk_annotation = format_sdk_version_annotation(report)
+    else:
+        sdk_version = "unknown"
+        sdk_annotation = ""
 
-    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+    text = (
+        f"deepagents-code {__version__}{cli_annotation}\n"
+        f"deepagents (SDK) {sdk_version}{sdk_annotation}"
+    )
 
     editable = False
     try:
@@ -1419,25 +1432,13 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.plugins.commands_cli import setup_plugin_parser
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.plugins.commands_cli import setup_plugin_parser
-
-        setup_plugin_parser(
-            subparsers,
-            make_help_action=_make_help_action,
-            add_output_args=add_json_output_arg,
-        )
-    else:
-        plugin_parser = subparsers.add_parser(
-            "plugin",
-            aliases=["plugins"],
-            add_help=False,
-            help=argparse.SUPPRESS,
-        )
-        plugin_parser.add_argument("plugin_command", nargs="?")
-        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
+    setup_plugin_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     setup_config_parser(
         subparsers,
@@ -4082,15 +4083,6 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command in {"plugin", "plugins"}:
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                print(EXPERIMENTAL_HINT)  # noqa: T201
-                sys.exit(2)
             from deepagents_code.plugins.commands_cli import execute_plugin_command
 
             execute_plugin_command(args)

@@ -3313,6 +3313,9 @@ def _read_update_config_strict() -> dict[str, bool]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise _ConfigReadError from exc
     section = data.get("update", {})
+    if not isinstance(section, dict):
+        msg = "[update] config must be a table"
+        raise _ConfigReadError(msg)
     return {k: v for k, v in section.items() if isinstance(v, bool)}
 
 

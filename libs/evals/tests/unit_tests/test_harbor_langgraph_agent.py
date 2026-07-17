@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents_code.config import settings
+from langchain_core.messages import AIMessage, UsageMetadata
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from langchain_core.tools import BaseTool
 
 _MODEL_IDENTITY_FIELDS = (
     "model_name",
@@ -308,3 +311,62 @@ def test_mcp_connections_rejects_stdio_servers() -> None:
 def test_mcp_connections_requires_forwarded_servers() -> None:
     with pytest.raises(ValueError, match="mcp_servers"):
         langgraph_agent._mcp_connections({})
+
+
+def test_make_structured_graph_exposes_minimal_background_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The structured A/B must retain the prompt's process-management tools."""
+
+    captured_create: list[dict[str, object]] = []
+
+    class _Backend:
+        def __init__(self) -> None:
+            self._env: dict[str, str] = {}
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_kwargs: _Backend())
+    monkeypatch.setattr(
+        langgraph_agent, "_TerminusSummarizationMiddleware", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_agent",
+        lambda **kwargs: captured_create.append(kwargs) or object(),
+    )
+
+    langgraph_agent.make_structured_graph(
+        {"configurable": {"model": "test-provider:test-model", "cwd": str(tmp_path)}}
+    )
+
+    tools = cast("list[BaseTool]", captured_create[0]["tools"])
+    assert {tool.name for tool in tools} == {
+        "execute",
+        "run_background",
+        "poll",
+        "write_stdin",
+        "kill",
+    }
+
+
+def test_structured_turn_requires_explicit_completion_before_stopping() -> None:
+    middleware = langgraph_agent._StructuredTurnMiddleware()
+
+    response = middleware._to_response(langgraph_agent._Turn())
+
+    assert response is None
+
+
+def test_structured_turn_preserves_raw_usage_metadata() -> None:
+    middleware = langgraph_agent._StructuredTurnMiddleware()
+    usage: UsageMetadata = {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
+
+    response = middleware._to_response(
+        langgraph_agent._Turn(commands=["pwd"]),
+        usage_metadata=usage,
+    )
+
+    assert response is not None
+    message = response.result[0]
+    assert isinstance(message, AIMessage)
+    assert message.usage_metadata == usage

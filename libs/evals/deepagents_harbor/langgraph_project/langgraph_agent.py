@@ -21,14 +21,18 @@ from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.agents.middleware.types import ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+from langchain_core.messages import AIMessage, HumanMessage, UsageMetadata
+from langchain_core.messages.ai import add_usage
 from langchain_core.messages.utils import get_buffer_string
-from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
+
+    from langchain.agents.middleware.types import ModelCallResult, ModelRequest
+    from langchain_core.messages import AnyMessage
 
 _DEFAULT_WORKDIR = Path("/app")
 
@@ -364,9 +368,10 @@ def make_structured_graph(config: dict[str, object] | None = None) -> object:
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     workdir = _workdir(configurable)
     backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
+    manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     return create_agent(
         model=model,
-        tools=[_make_execute_tool(backend)],
+        tools=[_make_execute_tool(backend), *_make_background_tools(manager)],
         system_prompt=CODING_SYSTEM_PROMPT,
         middleware=[
             _StructuredTurnMiddleware(),
@@ -499,7 +504,7 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
 
     _MAX_SUMMARY_CHARS = 12000
 
-    def _augment(self, draft: str, questions: str, answers: str) -> str:
+    def _augment(self, draft: str, _questions: str, answers: str) -> str:
         return f"{draft}\n\n## ADDITIONAL DETAILS\n{answers}"[: self._MAX_SUMMARY_CHARS]
 
     def _create_summary(self, messages_to_summarize: list[Any]) -> str:
@@ -546,7 +551,9 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
 class _Turn(BaseModel):
     """One structured agent turn: reasoning is separated from the executed action."""
 
-    analysis: str = Field(default="", description="What the terminal state shows and what remains to do.")
+    analysis: str = Field(
+        default="", description="What the terminal state shows and what remains to do."
+    )
     plan: str = Field(default="", description="What you will do next this turn and why.")
     commands: list[str] = Field(
         default_factory=list,
@@ -578,15 +585,39 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         super().__init__()
         self._tool_name = tool_name
 
-    def _messages(self, request: Any) -> list[Any]:
+    def _messages(self, request: ModelRequest[None], *, retry: bool = False) -> list[AnyMessage]:
         msgs = list(request.messages)
         if request.system_message is not None:
-            return [request.system_message, *msgs]
+            msgs = [request.system_message, *msgs]
+        if retry:
+            msgs.append(
+                HumanMessage(
+                    content=(
+                        "Your previous structured turn was incomplete. Return at least one shell command, "
+                        "or set `task_complete` to true only after you have verified the task passes."
+                    )
+                )
+            )
         return msgs
 
-    def _to_response(self, turn: _Turn) -> ModelResponse:
-        content = f"Analysis: {turn.analysis}\nPlan: {turn.plan}".strip()
+    def _to_response(
+        self, turn: _Turn, *, usage_metadata: UsageMetadata | None = None
+    ) -> ModelResponse | None:
         commands = [c for c in turn.commands if c and c.strip()]
+        if not commands and not turn.task_complete:
+            return None
+
+        content = "\n".join(
+            part
+            for part in (
+                f"Analysis: {turn.analysis}" if turn.analysis else "",
+                f"Plan: {turn.plan}" if turn.plan else "",
+            )
+            if part
+        )
+        message_kwargs: dict[str, Any] = {"content": content or "Task complete."}
+        if usage_metadata is not None:
+            message_kwargs["usage_metadata"] = usage_metadata
         if commands:
             tool_calls = [
                 {
@@ -597,30 +628,125 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                 }
                 for c in commands
             ]
-            return ModelResponse(result=[AIMessage(content=content, tool_calls=tool_calls)], structured_response=None)
-        return ModelResponse(result=[AIMessage(content=content or "Task complete.")], structured_response=None)
+            message_kwargs["tool_calls"] = tool_calls
+        return ModelResponse(result=[AIMessage(**message_kwargs)], structured_response=None)
 
-    def wrap_model_call(self, request: Any, handler: Any) -> Any:
-        try:
-            result = request.model.with_structured_output(_Turn, include_raw=True).invoke(self._messages(request))
-            turn = result.get("parsed") if isinstance(result, dict) else result
-        except Exception:  # noqa: BLE001  # fall back to free-form on any structured-output failure
-            turn = None
-        if not isinstance(turn, _Turn):
-            return handler(request)
-        return self._to_response(turn)
+    @staticmethod
+    def _result_parts(result: object) -> tuple[_Turn | None, UsageMetadata | None]:
+        if isinstance(result, _Turn):
+            return result, None
+        if not isinstance(result, dict):
+            return None, None
+        raw = result.get("raw")
+        usage_metadata = raw.usage_metadata if isinstance(raw, AIMessage) else None
+        turn = result.get("parsed")
+        return (turn if isinstance(turn, _Turn) else None), usage_metadata
 
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        try:
-            result = await request.model.with_structured_output(_Turn, include_raw=True).ainvoke(
-                self._messages(request)
+    @staticmethod
+    def _add_fallback_metadata(
+        response: ModelResponse[object], usage_metadata: UsageMetadata | None, reason: str
+    ) -> ModelResponse[object]:
+        """Carry direct-call usage and a bounded fallback reason into the trace."""
+
+        def update_message(message: AIMessage) -> AIMessage:
+            metadata = {**message.response_metadata, "structured_turn_fallback": reason}
+            return message.model_copy(
+                update={
+                    "response_metadata": metadata,
+                    "usage_metadata": add_usage(message.usage_metadata, usage_metadata),
+                }
             )
-            turn = result.get("parsed") if isinstance(result, dict) else result
-        except Exception:  # noqa: BLE001  # fall back to free-form on any structured-output failure
-            turn = None
+
+        result = [
+            update_message(message) if isinstance(message, AIMessage) else message
+            for message in response.result
+        ]
+        return ModelResponse(result=result, structured_response=response.structured_response)
+
+    def _invoke_structured(
+        self, request: ModelRequest[None], *, retry: bool = False
+    ) -> tuple[_Turn | None, UsageMetadata | None]:
+        try:
+            result: object = request.model.with_structured_output(_Turn, include_raw=True).invoke(
+                self._messages(request, retry=retry),
+                config={
+                    "metadata": {
+                        "lc_source": "structured-turn-retry" if retry else "structured-turn"
+                    }
+                },
+            )
+        except Exception:  # noqa: BLE001  # preserve the existing graceful free-form fallback
+            return None, None
+        return self._result_parts(result)
+
+    async def _ainvoke_structured(
+        self, request: ModelRequest[None], *, retry: bool = False
+    ) -> tuple[_Turn | None, UsageMetadata | None]:
+        try:
+            result: object = await request.model.with_structured_output(
+                _Turn, include_raw=True
+            ).ainvoke(
+                self._messages(request, retry=retry),
+                config={
+                    "metadata": {
+                        "lc_source": "structured-turn-retry" if retry else "structured-turn"
+                    }
+                },
+            )
+        except Exception:  # noqa: BLE001  # preserve the existing graceful free-form fallback
+            return None, None
+        return self._result_parts(result)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], ModelResponse[object]],
+    ) -> ModelCallResult[object]:
+        turn, usage_metadata = self._invoke_structured(request)
         if not isinstance(turn, _Turn):
-            return await handler(request)
-        return self._to_response(turn)
+            return self._add_fallback_metadata(
+                handler(request), usage_metadata, "parse_or_invocation_failure"
+            )
+        response = self._to_response(turn, usage_metadata=usage_metadata)
+        if response is not None:
+            return response
+
+        retry_turn, retry_usage = self._invoke_structured(request, retry=True)
+        usage_metadata = add_usage(usage_metadata, retry_usage)
+        if not isinstance(retry_turn, _Turn):
+            return self._add_fallback_metadata(
+                handler(request), usage_metadata, "incomplete_retry_failure"
+            )
+        response = self._to_response(retry_turn, usage_metadata=usage_metadata)
+        if response is not None:
+            return response
+        return self._add_fallback_metadata(handler(request), usage_metadata, "incomplete_retry")
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[object]]],
+    ) -> ModelCallResult[object]:
+        turn, usage_metadata = await self._ainvoke_structured(request)
+        if not isinstance(turn, _Turn):
+            response = await handler(request)
+            return self._add_fallback_metadata(
+                response, usage_metadata, "parse_or_invocation_failure"
+            )
+        response = self._to_response(turn, usage_metadata=usage_metadata)
+        if response is not None:
+            return response
+
+        retry_turn, retry_usage = await self._ainvoke_structured(request, retry=True)
+        usage_metadata = add_usage(usage_metadata, retry_usage)
+        if not isinstance(retry_turn, _Turn):
+            response = await handler(request)
+            return self._add_fallback_metadata(response, usage_metadata, "incomplete_retry_failure")
+        response = self._to_response(retry_turn, usage_metadata=usage_metadata)
+        if response is not None:
+            return response
+        response = await handler(request)
+        return self._add_fallback_metadata(response, usage_metadata, "incomplete_retry")
 
 
 class _ProcessManager:

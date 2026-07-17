@@ -1,0 +1,26 @@
+libs/evals/tests/unit_tests/test_oolong_loader.py
+  s_b195f3b5b105d2::t_345e0b9604a01a 1-12,14-58,61-62,65-70
+  s_b195f3b5b105d2::t_b7c1dd6f8ceceb 13
+  s_b195f3b5b105d2::t_eb4957b74a9405 59-60,63-64
+libs/evals/harbor_adapters/oolong/loader.py
+  s_b195f3b5b105d2::t_566e73e76c791d 18
+  s_b195f3b5b105d2::t_653190136e5887 97-99,134-186
+  s_b195f3b5b105d2::t_ccd22744a230d8 52-75
+  s_b195f3b5b105d2::t_dfb002176b0930 187-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b85f873bf7060e009e18b98c2a97bef2b7a13cab",
+  "prompts": {},
+  "sessions": {
+    "s_b195f3b5b105d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7ca0130-86a3-4a6f-ae5e-41e316b0c8d9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+.github/workflows/harbor.yml
+  s_29b15f4502019c::t_4418b781006af5 340
+  s_29b15f4502019c::t_daa4f0adde45c9 341-342
+  s_29b15f4502019c::t_477514be82c129 280-284,287,291
+  s_29b15f4502019c::t_099418fcdf9be7 223-225
+  s_29b15f4502019c::t_3112df485170c7 187
+.github/scripts/validate_harbor_limits.py
+  s_29b15f4502019c::t_891b922e3f544d 90-98,100-101,104
+  s_29b15f4502019c::t_f2937d11e10d1a 9-12,16-21,39-41
+  s_29b15f4502019c::t_4f642331ce482b 35-36
+  s_29b15f4502019c::t_363eeb4ab22ece 13-14
+  s_29b15f4502019c::t_8c58f9f9f78dc0 60-75,85-86,89,99,102-103,105-106,116,121,126-127,130-131,133-138
+  s_29b15f4502019c::t_6b78733edbd699 15
+  s_29b15f4502019c::t_76b86d61edf47b 37
+.github/scripts/test_validate_harbor_limits.py
+  s_29b15f4502019c::t_6e3f960685096e 18,21-22,24,33-38
+  s_29b15f4502019c::t_a0b2ab2b835532 46-52,56,62,69,71-72,76,78,91-137,145,157,163,169-183,186-187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "866af28946c537258f92edff34e047639d8e3f15",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

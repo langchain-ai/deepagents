@@ -1,0 +1,22 @@
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_829befdd343105::t_45ebad2902d171 394,396-403,406-408,417-420,432-436,459,496
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_829befdd343105::t_2cefbf15202761 650,656,660-664,693,696-699,702-704,731-733,745,747-751,765-766,770,813-822,937,968
+  s_829befdd343105::t_178b8e335d2f8c 668,938-940,950-952,969-971,982-984
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "987e9cd2da5298bd8663f8a0867f82af62cccd14",
+  "prompts": {},
+  "sessions": {
+    "s_829befdd343105": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6cdc-fe6d-7793-8fd7-f5c454b44a40",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

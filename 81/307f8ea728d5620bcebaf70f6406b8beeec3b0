@@ -1,0 +1,197 @@
+.github/dependabot.yml
+  s_68a66b71966225::t_5a74945aa7ff42 51-83
+.github/workflows/_benchmark.yml
+  s_68a66b71966225::t_496c5280835801 60,68
+.github/workflows/ci.yml
+  s_68a66b71966225::t_0614143f50ba9a 53,452
+.github/workflows/dcode_release_notes.yml
+  s_68a66b71966225::t_5febce631d9b36 162
+libs/code/AGENTS.md
+  s_68a66b71966225::t_ce24ab1fea6570 54-65
+libs/code/COMMANDS.md
+  s_68a66b71966225::t_32b266c212696b 11,33
+libs/code/THREAT_MODEL.md
+  s_68a66b71966225::t_8e2e0b0a59ea80 19,128,202,234,307,332,412,437,456,496
+libs/code/deepagents_code/_env_vars.py
+  s_68a66b71966225::t_6ee559cbff7a59 54-75,131-139,206-212,261-266,404-406
+libs/code/deepagents_code/agent.py
+  s_68a66b71966225::t_6c71dc4e7f7b9b 22,29,47,79-83,85,198-214,216-220,222-236,238-239,247,276,1774,1777-1779,1782-1802,1816-1818,1820,1822,1956,1958-1967,1972-1983,1986-1987,2008-2010
+libs/code/deepagents_code/app.py
+  s_68a66b71966225::t_7bac5f4f952313 3387,3391,4016,4057,4079-4081,4085-4092,6797-6798,10816-10821,10823,11090-11101,11256-11302,13740-13750,14823,14864-14866,17037-17046,17230-17244,17257-17263,17641-17645
+libs/code/deepagents_code/client/commands/mcp.py
+  s_68a66b71966225::t_ed704af4882f54 94-100,115-119,139-163,269,271-275,277-282,284-299
+libs/code/deepagents_code/client/commands/tools.py
+  s_68a66b71966225::t_4296afd0dedde6 164
+libs/code/deepagents_code/client/non_interactive.py
+  s_68a66b71966225::t_2748c9bbfeb716 85,1454-1457,1464-1465,1467-1476
+libs/code/deepagents_code/command_registry.py
+  s_68a66b71966225::t_dc590b79630c6d 139-144,169-176,372-376,387-393,395-426,461-494,501-503,516
+libs/code/deepagents_code/config.py
+  s_68a66b71966225::t_1f317df7c1ccb7 24,166
+libs/code/deepagents_code/config_manifest.py
+  s_68a66b71966225::t_9b08ac8dd5d245 1239-1250,1255-1256,1405,1407-1410
+libs/code/deepagents_code/main.py
+  s_68a66b71966225::t_1556237678f9af 24,26,32-33,52-72,1184,1194-1198,1204,1222-1223,1422-1441,1839,2078-2080,2254-2255,2270-2280,2303-2308,2562-3022,3032-3042,3052-3055,3058,3062,3072-3075,3082-3096,3098-3100,3104,3117-3120,3125-3127,3130-3137,3142,3156,3162-3212,3214-3215,3218,4082-4094,4353-4356
+libs/code/deepagents_code/mcp_login_service.py
+  s_68a66b71966225::t_dee4874d8df54c 62,64-67,70-99,112-149,193-194,200-201,208-211,214,216,218,249-256,259,263-264,267-329,332-339,342,344-347,354-358,403-430,432,435,444-538,547-551
+libs/code/deepagents_code/mcp_tools.py
+  s_68a66b71966225::t_e64c8914c22fc6 22,24,28,810-837,907-964,1061-1082,1085-1086,1097,1099,1119,1140-1172,1176,1181-1243,2325,2338,2371,2391-2403,2406-2407,2450-2452,2457-2458,2460-2477,2479-2496,2498-2525,2530-2533,2536-2543,2545-2558,2560-2562,2564-2566,2568-2584
+libs/code/deepagents_code/model_config.py
+  s_68a66b71966225::t_7daaf9b6084ac7 10,30-40,3354-3546,3549,3553-3555,3557-3559,3563,3566,3580-3609,3611,3613-3616,3620-3629,3643-3682,3758-3811,3819,3829-3830,3833-3835,3841-3842,3860-3861,3863,3871-3875,3880-3887,3926,3928-3937,3939-3945,3947-3955,3957-3963,3967-4097
+libs/code/deepagents_code/offload.py
+  s_68a66b71966225::t_60ad84dd7405ba 9-10,14-44,48-50,70-150,188,196,200-206,234-298
+libs/code/deepagents_code/plugins/__init__.py
+  s_68a66b71966225::t_7d5dd2bbaeed11 1-28
+libs/code/deepagents_code/plugins/_json.py
+  s_68a66b71966225::t_e86487bd41f9a4 1-45
+libs/code/deepagents_code/plugins/adapters/__init__.py
+  s_68a66b71966225::t_cc528d57c0ef2c 1
+libs/code/deepagents_code/plugins/adapters/mcp.py
+  s_68a66b71966225::t_b3d0cb6a9cbb74 1,7-8,10,12-13,15-16,18-21,24-30,33-34,36-37,40-41,44,46-49,51-52,54-55,58,60,62-68,71-72,75,78-115,118,121-122,124-129,131-139,142-145,147-148,151-152,155,157-192
+libs/code/deepagents_code/plugins/adapters/skills.py
+  s_68a66b71966225::t_5fcb8a71ab36fe 1-121
+libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  s_68a66b71966225::t_25ba4b4acbaa1b 1-348
+libs/code/deepagents_code/plugins/commands_cli.py
+  s_68a66b71966225::t_2c71e41b5ee2ce 1,3,5-6,8-9,11-148,150-225
+libs/code/deepagents_code/plugins/discovery.py
+  s_68a66b71966225::t_b28ce99ac8c109 1-392
+libs/code/deepagents_code/plugins/manifest.py
+  s_68a66b71966225::t_99613e02b6765b 1-272
+libs/code/deepagents_code/plugins/marketplace.py
+  s_68a66b71966225::t_687dcf5c924c5e 1-805
+libs/code/deepagents_code/plugins/models.py
+  s_68a66b71966225::t_3b69f2e247bb94 1-227
+libs/code/deepagents_code/plugins/store.py
+  s_68a66b71966225::t_3af9271ed2f821 1-555
+libs/code/deepagents_code/plugins/substitution.py
+  s_68a66b71966225::t_d118eb0d96a65c 1-107
+libs/code/deepagents_code/server_graph.py
+  s_68a66b71966225::t_701642a8a50173 108-120,127
+libs/code/deepagents_code/sessions.py
+  s_68a66b71966225::t_196dec427718bb 1409-1415,1418,1420,1422-1436,1438-1441
+libs/code/deepagents_code/skills/invocation.py
+  s_68a66b71966225::t_f2d9c76989373d 30-32,38-40,51,63
+libs/code/deepagents_code/skills/load.py
+  s_68a66b71966225::t_92f55bde525690 40,50,65-71,77,91-102,106,112,117-129
+libs/code/deepagents_code/skills/trust.py
+  s_68a66b71966225::t_6ca551e5426dc9 9-13,94
+libs/code/deepagents_code/tool_catalog.py
+  s_68a66b71966225::t_e3a3d58bf1e037 431,442-446,455
+libs/code/deepagents_code/tui/modals/__init__.py
+  s_68a66b71966225::t_259a445ca44f0a 1
+libs/code/deepagents_code/tui/modals/plugin_manager/__init__.py
+  s_68a66b71966225::t_2fe6ab07956fa5 1-649
+libs/code/deepagents_code/tui/modals/plugin_manager/content.py
+  s_68a66b71966225::t_65253fcf90b7c3 1-193
+libs/code/deepagents_code/tui/modals/plugin_manager/models.py
+  s_68a66b71966225::t_e6fa3b797fe8ca 1-44
+libs/code/deepagents_code/tui/modals/plugin_manager/plugin_manager.tcss
+  s_68a66b71966225::t_28a2cf8e01dfb0 1-67
+libs/code/deepagents_code/tui/modals/plugin_manager/state.py
+  s_68a66b71966225::t_b53c1ab8af0fb6 1-210
+libs/code/deepagents_code/tui/screens/__init__.py
+  s_68a66b71966225::t_2afee5990c798b 1
+libs/code/deepagents_code/tui/widgets/autocomplete.py
+  s_68a66b71966225::t_bd33ad7cef59b3 133-137,165,246-248,250-251,253,263,265-269,328-329
+libs/code/deepagents_code/tui/widgets/chat_input.py
+  s_68a66b71966225::t_31da54e233b7f6 25,1658,1667
+libs/code/deepagents_code/tui/widgets/messages.py
+  s_68a66b71966225::t_61cce4176a6f68 3098-3123
+libs/code/deepagents_code/ui.py
+  s_68a66b71966225::t_b005ab6dd7d79e 385-408
+libs/code/deepagents_code/update_check.py
+  s_68a66b71966225::t_8264f0cdf008c3 28-29,79-116,334,351-429,433-438,441-442,444-447,477-478,486,489-490,495,569,578-580,582-583,588-590,592-595,603,613,617-625,632-634,638-640,642-646,649,654-672,675,684,687,700,704,708-711,713-730,1952-1957,1970-1978,1980-1985,1990-1992,1994-2052,2054-2076,2518-2519,2526-2528,2544-2553,2591-2596,2602-2678,2684-2685,2709-2713,2730-2731
+libs/code/tests/integration_tests/test_compact_resume.py
+  s_68a66b71966225::t_a85f7c07f39e74 244-250
+libs/code/tests/integration_tests/test_offload_server_side.py
+  s_68a66b71966225::t_b8580d1972d456 238-242
+libs/code/tests/integration_tests/test_sandbox_operations.py
+  s_68a66b71966225::t_9d6a173496a2b1 4,71-74,80,82
+libs/code/tests/unit_tests/client/commands/test_mcp.py
+  s_68a66b71966225::t_45bf2a72c26b1f 104-106,110-114,119,124,141-143,147-149,154,159,234-273,275-276,285-429
+libs/code/tests/unit_tests/client/commands/test_tools.py
+  s_68a66b71966225::t_658f694bab0b59 363-368
+libs/code/tests/unit_tests/conftest.py
+  s_68a66b71966225::t_94691624053d70 205-215
+libs/code/tests/unit_tests/plugins/__init__.py
+  s_68a66b71966225::t_7e866e003b5524 1
+libs/code/tests/unit_tests/plugins/test_marketplace.py
+  s_68a66b71966225::t_4b5e2ac6aec424 1-351
+libs/code/tests/unit_tests/plugins/test_plugins_p0.py
+  s_68a66b71966225::t_fbbe2ffc446ef1 1-1303
+libs/code/tests/unit_tests/plugins/test_store.py
+  s_68a66b71966225::t_bd881ced445cfd 1-68
+libs/code/tests/unit_tests/skills/test_load.py
+  s_68a66b71966225::t_72ef92a7c1aa7c 857-902
+libs/code/tests/unit_tests/skills/test_skill_trust.py
+  s_68a66b71966225::t_6594b50e2a23ec 179
+libs/code/tests/unit_tests/smoke_tests/snapshots/system_prompt_interactive_local.md
+  s_68a66b71966225::t_81926c73384e80 295,316-317
+libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py
+  s_68a66b71966225::t_ffd0bac592a008 23,139-144
+libs/code/tests/unit_tests/test_agent.py
+  s_68a66b71966225::t_f38e05ecf3edb6 50-54,133-137,145-234,1235,1299,1625,1727,1794,1974,2054,2130,2256,2717,2756,2802,2860,2913,2966,3040,3114,3167,3217,3271,3369,3604,3642,3703-3723,3733,3767,3797,3839,3883,3932
+libs/code/tests/unit_tests/test_app.py
+  s_68a66b71966225::t_32450edef6f479 12303-12306,12311,19206-19225,21580,21588,21591,22328-22369,25745-25783
+libs/code/tests/unit_tests/test_args.py
+  s_68a66b71966225::t_415001d102c1a9 11,53-82
+libs/code/tests/unit_tests/test_command_registry.py
+  s_68a66b71966225::t_3360e1bd219188 20,104,106-108,111,120,127-143,153,156,165,273-275,315,317-319,322-323,328-338,340-342
+libs/code/tests/unit_tests/test_config_manifest.py
+  s_68a66b71966225::t_15f925ca4d3ad0 124,127
+libs/code/tests/unit_tests/test_end_to_end.py
+  s_68a66b71966225::t_47632de869d368 84-90,240-246
+libs/code/tests/unit_tests/test_main.py
+  s_68a66b71966225::t_a2a224824cb19d 8,37,974-1021,2510,2513,2538,2553-2556,2558,2561,2586,2595-2634,2636-2637,2640-2641,2648-2651,2653,2659-2708,2723-2726,2742-2743,2748-2749,2752,2754-2755,2760-2764,2766-2784,2787-2819,2825,2840-2843,2859-2860,2866,2869-2870,2872-2873,2878-2889,2891-2892,2895,2901,2916-2919,2935-2936,2940-2943,2945,2947-2948,2954-2958,2960-2966,2968-2975,2977-2980,2982-2983,2985-2991,2993-3029,3032-4195
+libs/code/tests/unit_tests/test_main_acp_mode.py
+  s_68a66b71966225::t_b14b6d804f662e 13,59-64,71-72,77-78,100-107,135-136,138,206-245
+libs/code/tests/unit_tests/test_mcp_login_service.py
+  s_68a66b71966225::t_e92db4a2ca0c61 14,24-61,123,126,132-184,188-227,230-318,335-337,350,366-368,380,385-398,400-476,479-508,510-537,540-573,575-578,581-611,613-614,687-784
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_68a66b71966225::t_61b1e0a02f28fb 18-19,44,716-831,2007-2010,2030,2037,4152-4180,4220-4226,4228-4248,4250,4259,4262-4346,4349-4355,4357-4377,4380-4403,4431-4453,4480-4486,4489-4493,4495-4496,4505-4506,4509,4512-4583,4586,4588,4591-4624,4665-4668,4688-4689,4691,4707-4712,4714-4715,4725,4728,4737,4739,4745,4748,4751-4752,4754,4756,4777-4785,4787,4852-4855,4863-4988
+libs/code/tests/unit_tests/test_model_config.py
+  s_68a66b71966225::t_c65eb80174e49a 26,44,57,5645-5651,5660-6081,6085-6086,6088-6089,6092-6094,6101,6103-6111,6114-6117,6119-6120,6123-6148,6154-6155,6179-6186,6192,6222-6255,6259-6260,6265-6266,6274-6275,6278-6280,6284,6292,6300-6311,6316,6323-6330,6335-6344,6368-6369,6372-6374,6384-6393,6413-6414,6420-6450,6487,6489-6491,6494-6503,6508-6509,6893-7215
+libs/code/tests/unit_tests/test_offload.py
+  s_68a66b71966225::t_35660bbf2c541d 9,14,16,19-25,101-102,107,1082,1129,1196-1389
+libs/code/tests/unit_tests/test_reload.py
+  s_68a66b71966225::t_1fc3b08cb0bf2e 11-12,454,459,467,490,500,509-511,529-534,540,825,1043-1105
+libs/code/tests/unit_tests/test_server_graph.py
+  s_68a66b71966225::t_d0bce07727add4 373-452
+libs/code/tests/unit_tests/test_sessions.py
+  s_68a66b71966225::t_a8b2e6ebe478f7 10,354,356,362,364,369-414
+libs/code/tests/unit_tests/test_skill_invocation.py
+  s_68a66b71966225::t_8d1f873867e740 226-272
+libs/code/tests/unit_tests/test_tool_catalog.py
+  s_68a66b71966225::t_47dfbe89fdad69 464-497
+libs/code/tests/unit_tests/test_update_check.py
+  s_68a66b71966225::t_6bed4ba8be44df 10,13,17,38-39,94,371,377,383-385,387,559,563,574-577,602-611,616-649,652-659,661-732,734-739,741-764,767-768,770,774,778-779,781,785,789-858,860,867,870,875,884-885,888-889,893,897-898,900,903-904,909,911,2233,2236-2243,2247,2253-2264,2283-2337,2349-2356,2359,2363,2391-2408,2410-2431,2639-2662,3104-3150,5421-5548
+libs/code/tests/unit_tests/tui/modals/__init__.py
+  s_68a66b71966225::t_fc9341938efeed 1
+libs/code/tests/unit_tests/tui/modals/plugin_manager/__init__.py
+  s_68a66b71966225::t_ad92c83eaa2695 1
+libs/code/tests/unit_tests/tui/modals/plugin_manager/test_structure.py
+  s_68a66b71966225::t_2ae96c95c4683c 1-59
+libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  s_68a66b71966225::t_0e6d91149c7d5d 13,181,218,249,291-303,507,618-670
+libs/code/tests/unit_tests/tui/widgets/test_chat_input.py
+  s_68a66b71966225::t_5c0b80539a4477 17,1714,2601
+libs/code/tests/unit_tests/tui/widgets/test_messages.py
+  s_68a66b71966225::t_b24ee9bbf92255 4091-4134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "81307f8ea728d5620bcebaf70f6406b8beeec3b0",
+  "prompts": {},
+  "sessions": {
+    "s_68a66b71966225": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc039b1b-9eee-49ec-ab46-c277e1580e61",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

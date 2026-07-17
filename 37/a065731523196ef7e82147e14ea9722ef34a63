@@ -1,0 +1,49 @@
+libs/evals/UNIFIED_EVALS.md
+  s_9a8783df7af694::t_d26cd4a0c840c8 1-12,38-45,49-52,58-96,103-108,114-115,118,126,134-144,147,150,159,170,172,206-208,210-216
+  s_9a8783df7af694::t_9d34e08b05fe3d 97-102
+  s_9a8783df7af694::t_e1bed2110eebde 109-113,116-117,119-125,127-133
+  s_9a8783df7af694::t_c470688034f6a8 171,173-179,186-201
+  s_9a8783df7af694::t_7929c95edb3405 35
+  s_9a8783df7af694::t_d682896b7a9b8c 145-146
+  s_9a8783df7af694::t_d3fcf40bc11dd8 148-149,151-158,160-169
+  s_9a8783df7af694::t_9eb08abce230ad 46-48,53-57
+  s_9a8783df7af694::t_0e8176c9affa03 13-24,26-27,30-34,36-37
+  s_9a8783df7af694::t_3c3b69167faaf8 182-185
+  s_9a8783df7af694::t_61b91dc4af7218 202-205
+  s_9a8783df7af694::t_f0c40ba3e8a5f0 209
+  s_9a8783df7af694::t_e244b10d031d60 180-181
+  s_9a8783df7af694::t_c37108cd9c8f2f 25,28-29
+.github/scripts/unified_prep.py
+  s_9a8783df7af694::t_1af9ad49a9942b 211-215,223-226
+  s_9a8783df7af694::t_b3429fb65d47b1 45,57,64-68
+  s_9a8783df7af694::t_8a612a0296c684 134,141-147,154
+  s_9a8783df7af694::t_26707e23763cd1 250
+  s_9a8783df7af694::t_2f30f3c64747e5 69
+  s_9a8783df7af694::t_4cb5db43cfb8f5 227
+.github/scripts/test_unified_prep.py
+  s_9a8783df7af694::t_2a7900272a0b40 258-268
+  s_9a8783df7af694::t_cc9f1fe21e98a9 67
+  s_9a8783df7af694::t_d1cc5e71dcc099 75-105
+.github/scripts/test_unified_workflow.py
+  s_9a8783df7af694::t_588331a7e05aea 122,127-135,142-144
+.github/workflows/unified_evals.yml
+  s_9a8783df7af694::t_2fd0d84116dc04 101,109-148
+  s_9a8783df7af694::t_4e3788889f033b 14-20
+  s_9a8783df7af694::t_0dbc90ee8fb155 149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "37a065731523196ef7e82147e14ea9722ef34a63",
+  "prompts": {},
+  "sessions": {
+    "s_9a8783df7af694": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d2147bd3-fa23-46f6-8c2c-318b0d997cb5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

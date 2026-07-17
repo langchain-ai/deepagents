@@ -1,0 +1,35 @@
+.github/scripts/aggregate_shards.py
+  s_8628738eae6eaf::t_05d56a3d80bc9f 13-23,28-29
+  s_8628738eae6eaf::t_f19367ff2035f7 387-393
+  s_8628738eae6eaf::t_73bd42f85db0f0 475
+  s_8628738eae6eaf::t_3e5f0361c44163 522-527,531,558-564
+  s_8628738eae6eaf::t_68c6a997f65e5e 565
+.github/scripts/aggregate_unified.py
+  s_8628738eae6eaf::t_88ea615e281d6a 376-379,385-386
+.github/scripts/test_aggregate_shards.py
+  s_8628738eae6eaf::t_b3dbd4431b8de9 313-316,325-326
+  s_8628738eae6eaf::t_d3892e61c90963 152-154,157-161,179
+  s_8628738eae6eaf::t_d1316d2dca39c2 354
+  s_8628738eae6eaf::t_423340e53b30ea 369-371,373
+.github/scripts/test_aggregate_unified.py
+  s_8628738eae6eaf::t_3eab24c1c1f195 518,540,543-545
+  s_8628738eae6eaf::t_f35c3a99c2dee2 599
+  s_8628738eae6eaf::t_dd38c779bb9422 495,500-501,508,510-512
+  s_8628738eae6eaf::t_d1df9f5468af72 548,560-563
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "68fe22bd96aee033c3349ac5218212264ac72e70",
+  "prompts": {},
+  "sessions": {
+    "s_8628738eae6eaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4be119ee-665e-4c7c-897d-cb63deed7114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

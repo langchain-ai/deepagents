@@ -1,0 +1,27 @@
+.github/scripts/unified_prep.py
+  s_29b15f4502019c::t_5e7b23aeaa9a85 298
+  s_29b15f4502019c::t_8ef2c60f166b1f 150-171,180-190,193-201,206-207
+.github/scripts/test_unified_prep.py
+  s_29b15f4502019c::t_574150beb12269 172-205
+.github/workflows/_harbor_run.yml
+  s_29b15f4502019c::t_2724c89130c86c 110
+  s_29b15f4502019c::t_ad2575aadf5644 44
+.github/scripts/validate_harbor_limits.py
+  s_29b15f4502019c::t_d79b89f8635084 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "daf4c026e01b04b18696820c5859b40e74a51448",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

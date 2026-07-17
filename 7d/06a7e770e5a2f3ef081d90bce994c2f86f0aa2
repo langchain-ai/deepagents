@@ -1,0 +1,156 @@
+.github/scripts/unified_prep.py
+  s_8628738eae6eaf::t_01ea7ff3112dbe 343
+  s_8628738eae6eaf::t_b5dc88062be92e 62
+  s_8628738eae6eaf::t_8b34e13ad68f1c 70-85
+  s_8628738eae6eaf::t_c1a273f9638458 280-282,285
+  s_8628738eae6eaf::t_6777359fbc76bd 52
+  s_8628738eae6eaf::t_3408bbb8b5d84b 223-225
+  s_8628738eae6eaf::t_902e8e3f5fd7e9 221-222
+  s_8628738eae6eaf::t_1092fa8c036049 192
+.github/scripts/test_unified_prep.py
+  s_8628738eae6eaf::t_5247a23c6717e2 150,157-169
+  s_8628738eae6eaf::t_c6a98a594e7191 170-171
+  s_8628738eae6eaf::t_85553273fe862e 143,174,180,197,215
+.github/scripts/test_unified_workflow.py
+  s_8628738eae6eaf::t_446dc405bd60c5 94-99
+  s_8628738eae6eaf::t_27dcc2c0c79c0d 115-121
+.github/workflows/unified_evals.yml
+  s_8628738eae6eaf::t_420d82fa01e515 15,17,20
+  s_8628738eae6eaf::t_81ac1e79604000 180-240
+.github/RELEASING.md
+  s_8628738eae6eaf::t_9b0c53c1fc0865 47-48,55,57-60,62-94,134
+.github/scripts/dcode-release-notes.js
+  s_8628738eae6eaf::t_ae14a21f30f0be 1-1033
+.github/scripts/dcode-release-notes.test.js
+  s_8628738eae6eaf::t_405022bdb57fa2 1-1594
+.github/scripts/draft-dcode-release-notes.js
+  s_8628738eae6eaf::t_78dcf8606d8800 1-216
+.github/scripts/draft-dcode-release-notes.test.js
+  s_8628738eae6eaf::t_80fcfb23892d64 1-268
+.github/scripts/test_check_sdk_pin.py
+  s_8628738eae6eaf::t_d609bc71ec087c 263-272
+.github/scripts/test_dcode_release_notes.py
+  s_8628738eae6eaf::t_d3486336d43e69 1-193
+.github/workflows/check_sdk_pin.yml
+  s_8628738eae6eaf::t_5a6b92c5b5e9a2 91,110,163-164
+.github/workflows/ci.yml
+  s_8628738eae6eaf::t_004fe5d6e2d5c1 449-454
+.github/workflows/dcode_release_notes.yml
+  s_8628738eae6eaf::t_5658890db5c960 1-440
+.github/workflows/dcode_release_notes_check.yml
+  s_8628738eae6eaf::t_292396c464b09f 1-168
+.github/workflows/release-please.yml
+  s_8628738eae6eaf::t_18219fd434bb9e 705-764
+.release-please-manifest.json
+  s_8628738eae6eaf::t_64affe4d23a6fe 5
+libs/code/AGENTS.md
+  s_8628738eae6eaf::t_79ee3b29e48896 70-80,106
+libs/code/CHANGELOG.md
+  s_8628738eae6eaf::t_ece59396b33bde 5-11
+libs/code/deepagents_code/_cli_context.py
+  s_8628738eae6eaf::t_33d51cee2bd99c 38-41,50-51,70-75,109-115
+libs/code/deepagents_code/_debug_buffer.py
+  s_8628738eae6eaf::t_128026921545fd 3-9,18,23,27-37,43-47,65-75,78,81-82,93-94,98,101-103,110-118,151-164
+libs/code/deepagents_code/_version.py
+  s_8628738eae6eaf::t_fb88567069f884 5
+libs/code/deepagents_code/agent.py
+  s_8628738eae6eaf::t_e7e2549f31f2c0 41,90-91,1466-1468,1891-1895,1897-1906,1931,1948,1974
+libs/code/deepagents_code/app.py
+  s_8628738eae6eaf::t_53220a7e63f69c 152-156,292-455,542,937-940,943,1129-1132,1136,1230-1233,1236,1292-1295,1298,2764-2767,3373-3375,4304,6207,6965,6967,6969,6972-6977,6980-6981,6986,6988-6989,6994-7027,7057,7059-7060,7074,7086-7096,7103,7110,7133-7137,7205,7228-7232,7234,8589-8591,8601-8602,8621,8623,10917,10919,10926,11619-11629,11667-11671,11674-11695,11697-11952,11955-11968,11970-12049,12051-12056,12058-12060,12062,12064-12094,12097-12098,12100-12104,12107-12144,12146,12148-12154,12156-12173,12340-12391,12490-12493,12511,12513-12520,12543,12545-12552,13088,13096,13099-13101,13130,13138,13145,14434-14479,14484-14487,14514-14517,15868-15869,15871,15874-15878,19360,19414-19415
+libs/code/deepagents_code/app.tcss
+  s_8628738eae6eaf::t_d1896a728c22ec 266-267,275,281-298
+libs/code/deepagents_code/configurable_model.py
+  s_8628738eae6eaf::t_52ae44a79b4036 267-268
+libs/code/deepagents_code/model_config.py
+  s_8628738eae6eaf::t_fc4afc5dedfff4 789-806,2875-2876,2878-2899,2972-3046,3048,3053-3090,3093-3097,3099-3170,3172-3174,3177-3180,3249-3250,3252-3256,3258-3280,3307-3309,3311-3312,3314-3336,3737-3738,3740-3758,3803-3821,3925-3943,3970-3989,4181-4183,4185-4186,4188-4202
+libs/code/deepagents_code/offload.py
+  s_8628738eae6eaf::t_93adb65142581d 1,6-9,13-14,17-18,20-25,28-30,32-59,62-63,66-118,120-121,123-124,127-136,138-139,141-142,145-146
+libs/code/deepagents_code/offload_middleware.py
+  s_8628738eae6eaf::t_75b3f8cdd650a0 1,5-7,9-20,22,25-32,34-36,38,41-42,44-49,51-56,58-65,67-144,146-148,151-171,173-176,178-180,182-185,187-195,197-289,291-311,315-366,368-442,445-579,581-630,632-643
+libs/code/deepagents_code/system_prompt.md
+  s_8628738eae6eaf::t_cde45047826c0b 10-11,18-23,55-63
+libs/code/deepagents_code/tui/widgets/_inline_prompt.py
+  s_8628738eae6eaf::t_c5bc839457380d 1-258
+libs/code/deepagents_code/tui/widgets/_paste_textarea.py
+  s_8628738eae6eaf::t_b88e4adcee78de 1-568
+libs/code/deepagents_code/tui/widgets/ask_user.py
+  s_8628738eae6eaf::t_1411e3945ca1b6 12,26-32,60-61,63-65,68-69,86,136-140,145-147,152,163,183,187,252-257,270-271,292,295-296,301-308,377-381,383,386
+libs/code/deepagents_code/tui/widgets/chat_input.py
+  s_8628738eae6eaf::t_6e637afe50828c 41-44,134-135,137-139,458,559,897,916-917,930-932,1012-1015,1017,1022-1027,1102,1121-1125,1567,2385
+libs/code/deepagents_code/tui/widgets/debug_console.py
+  s_8628738eae6eaf::t_bda21a56ce28e3 37,69-72,793-798,803-812,814-822
+libs/code/deepagents_code/tui/widgets/goal_review.py
+  s_8628738eae6eaf::t_bfb36808eda650 19-26,77,80-82,148-151,164,176-179,183,195,209-216,223-226,231,271,276,283,288,295,306,308,330,336,346,371,374-375,379-383
+libs/code/deepagents_code/tui/widgets/message_store.py
+  s_8628738eae6eaf::t_91340b96f9dd9f 896-897,905-912,915,919-920
+libs/code/deepagents_code/tui/widgets/status.py
+  s_8628738eae6eaf::t_ae3bce1d7ad349 469
+libs/code/deepagents_code/update_check.py
+  s_8628738eae6eaf::t_8e8f53a1402453 1652-1663
+libs/code/pyproject.toml
+  s_8628738eae6eaf::t_857c1d906b839c 7
+libs/code/tests/integration_tests/test_compact_resume.py
+  s_8628738eae6eaf::t_6753fa32ebf66f 59-118,126-128,191-192,196,244-251,253-254,256-270
+libs/code/tests/integration_tests/test_offload_server_side.py
+  s_8628738eae6eaf::t_92d1c9f957de8f 1-256
+libs/code/tests/unit_tests/smoke_tests/snapshots/system_prompt_interactive_local.md
+  s_8628738eae6eaf::t_928483b5fbde9b 10-11,19-24,56-64,316
+libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py
+  s_8628738eae6eaf::t_a1782dfd9a949f 135-136,140-146
+libs/code/tests/unit_tests/test_agent.py
+  s_8628738eae6eaf::t_80837fc852085c 110-135,349-375,1165-1168,1171,1202-1204,1223-1227
+libs/code/tests/unit_tests/test_app.py
+  s_8628738eae6eaf::t_c84b2b44629c32 65,67-71,2211-2360,4374,4387,5330-5331,5334,5341,6724,6746-6761,16643-16671
+libs/code/tests/unit_tests/test_compact_tool.py
+  s_8628738eae6eaf::t_011735e9cf17d5 9-11,13-23,26-29,58-660
+libs/code/tests/unit_tests/test_debug_buffer.py
+  s_8628738eae6eaf::t_d1e748a8316719 158-266
+libs/code/tests/unit_tests/test_debug_console.py
+  s_8628738eae6eaf::t_91f669eb7245d8 179-228,523-565
+libs/code/tests/unit_tests/test_model_config.py
+  s_8628738eae6eaf::t_5c7c8ecba7bf89 5-6,8,42,49,56,2193-2326
+libs/code/tests/unit_tests/test_model_switch.py
+  s_8628738eae6eaf::t_3c6fe39449cb72 4,68-71,77,396-444
+libs/code/tests/unit_tests/test_offload.py
+  s_8628738eae6eaf::t_ac53e3102aed4e 5-9,18,53-59,64-71,74-75,77-79,81-84,87,142-147,151,153-167,174-176,222-223,227,229-232,235-247,252-254,256-294,301,303-304,306-318,324,326-327,330-341,345,347-369,374,381,383-384,387-395,397,416-417,421-453,455-466,473-483,485-486,490,492-506,513,516-517,519-520,522-524,528,530-532,535-543,545-546,551-553,555-556,560-570,572-585,589-599,610-613,618,622-634,639,651,653-667,678-686,690,692-694,697-709,714-724,726-727,731,733-751,757-761,763-764,768-779,781-793,798-805,807-808,812-825,828-830,832,835-839,844-847,849-850,852-855,859,861-869,871-881,886,888-889,892-893,895-904,906,908-929,931-1003,1005-1035,1037-1038,1040-1042,1044,1046-1049,1051-1054,1056-1069,1072-1074,1076,1078-1080,1082-1085,1087-1106,1108-1299,1334-1354,1356,1358-1363,1365,1367-1369,1371-1373,1375,1377-1387,1389,1391-1392,1394-1396,1398,1400-1405,1407,1409-1410,1413-1414,1416-1420,1422-1426,1430-1464,1468-1480,1482-1506,1508-1516,1518-1528,1531-1533,1535-1536,1538-1546,1548-1551,1553-1560,1562-1577,1579-1581,1583,1585,1587-1589,1591-1596,1598-1601,1603-1607,1609-1611,1613-1617,1619-1622,1624,1626-1671,1673-1677,1679-1681,1683-1699,1701,1703,1705-1722,1724-1727,1732-1733,1735-1737,1739-1760,1762-1771,1776-1777,1779-1781,1783-1790,1793-1815,1819-1824,1826-1830,1832-1843,1847-1863,1865-1867,1869,1871-1872,1876-1889,1891,1893-1909,1911-1913,1915,1917-1934,1936-1938,1940-1960,1962,1965-1966,1968-1969,1971-1972,1974-1975,1977-1978,1980-1981,1983-1984,1986-1987,1990-1991,1993-1994,1996,1998-1999,2001-2004,2006-2007,2009-2011,2013-2014,2016-2022,2024-2025,2027-2028,2030-2031,2033-2040,2042-2043,2045-2046,2048-2055,2057-2058,2060,2062-2065
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_8628738eae6eaf::t_0009efc85a62d0 5,13,31-34,37,326,330-388,419,424-474
+libs/code/tests/unit_tests/test_theme.py
+  s_8628738eae6eaf::t_def3a59ff95cf3 2225-2226
+libs/code/tests/unit_tests/test_update_check.py
+  s_8628738eae6eaf::t_d7bd9711845d6c 3939-3984
+libs/code/tests/unit_tests/tui/widgets/test_ask_user.py
+  s_8628738eae6eaf::t_70fb2b4a928772 24-25,236-267,406-450,1092,1116
+libs/code/tests/unit_tests/tui/widgets/test_chat_input.py
+  s_8628738eae6eaf::t_0d9dabaa1b4bea 20-23,235-251,3115-3118,3944-3963,4351,4353,4366,4376,4396,4398,4410,4413,4427,4429,4458,4460,4481,4597,4600,4604,4607,4610,4614,4964-4966,4970-4971,4979-4980,4987-5071,5073-5074,5081-5082,5090-5095
+libs/code/tests/unit_tests/tui/widgets/test_goal_review.py
+  s_8628738eae6eaf::t_c98ba45f253d13 7,14-21,46-55,98-145,159,164-165,185,190-191,198-262,293,344,362,383,404-409,413,415,432,454
+libs/code/tests/unit_tests/tui/widgets/test_inline_prompt.py
+  s_8628738eae6eaf::t_d9cc87f2c88868 1-357
+libs/code/tests/unit_tests/tui/widgets/test_message_store.py
+  s_8628738eae6eaf::t_966185af8ea36f 618-669
+libs/code/uv.lock
+  s_8628738eae6eaf::t_b77405151847db 1114
+libs/evals/UNIFIED_EVALS.md
+  s_8628738eae6eaf::t_f4a59a4e91bf21 1-103
+libs/evals/uv.lock
+  s_8628738eae6eaf::t_152da214d94a56 465
+libs/talon/uv.lock
+  s_8628738eae6eaf::t_87776660c116b2 815
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7d06a7e770e5a2f3ef081d90bce994c2f86f0aa2",
+  "prompts": {},
+  "sessions": {
+    "s_8628738eae6eaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4be119ee-665e-4c7c-897d-cb63deed7114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

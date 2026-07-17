@@ -1,0 +1,29 @@
+.github/workflows/unified_evals.yml
+  s_6274ebc5113090::t_e1413044e3e6ed 191-192
+  s_6274ebc5113090::t_7d22b04cdcf20d 64-65
+  s_6274ebc5113090::t_39bbac64af49f8 170
+  s_6274ebc5113090::t_80221c92613404 14-16
+  s_6274ebc5113090::t_de6a1081e93ec8 231
+  s_6274ebc5113090::t_6b85529d2c72d1 265
+  s_6274ebc5113090::t_a6684ffc7583c6 331-333
+.github/scripts/test_unified_workflow.py
+  s_6274ebc5113090::t_9a93b034569a9d 184
+  s_6274ebc5113090::t_498ec970cecb99 94-97
+  s_6274ebc5113090::t_46b6e25d0e2b7c 205-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "6d7a58ceff425c7fc681d5a7667dc735e7cea701",
+  "prompts": {},
+  "sessions": {
+    "s_6274ebc5113090": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89ad1fb5-d636-4578-8bd5-cdf9fb091409",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

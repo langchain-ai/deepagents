@@ -1,0 +1,25 @@
+.github/scripts/aggregate_shards.py
+  s_6274ebc5113090::t_6b5b9382b5ce8d 283,302
+  s_6274ebc5113090::t_4d37c737fd9851 543
+  s_6274ebc5113090::t_75c29ddcbd61c0 486
+  s_6274ebc5113090::t_c78f783120e817 437-440
+  s_6274ebc5113090::t_0cb7532f275836 436
+.github/scripts/test_aggregate_shards.py
+  s_6274ebc5113090::t_aa1088846c2935 486-535
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "dcb581592dad37a887613b0788d0a076b7a38957",
+  "prompts": {},
+  "sessions": {
+    "s_6274ebc5113090": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89ad1fb5-d636-4578-8bd5-cdf9fb091409",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+libs/evals/datasets/oolong-synth/README.md
+  s_b195f3b5b105d2::t_bc672cb8adfaaa 13-14,16-22,30
+  s_b195f3b5b105d2::t_990a9fad027b6e 43-59
+  s_b195f3b5b105d2::t_2a29f0dfd8a55c 1-12,15,23-29,31-42
+libs/evals/deepagents_harbor/langgraph_project/oolong_graph.py
+  s_b195f3b5b105d2::t_f7394e0369137d 141-142
+  s_b195f3b5b105d2::t_c7a3b9ac8379a1 1-3,7-9,12,16-140,143-191
+  s_b195f3b5b105d2::t_b917fcffa9c514 4-6,10-11,13-15
+libs/evals/harbor_adapters/oolong/official_scorer.py
+  s_b195f3b5b105d2::t_3daa4e2ce0b1d7 1-108
+libs/evals/harbor_adapters/oolong/generate_oolong_tasks.py
+  s_b195f3b5b105d2::t_9fcd17340db00f 1,4-8,13-17,20,39,43
+  s_b195f3b5b105d2::t_2ade806ed28d9d 306-328,330-385,387-410,414,447,454-455,460-465,467
+  s_b195f3b5b105d2::t_2091e5074fbf2f 2-3,9-12,18-19,21-38,40-42,44-305,329,386,411-413,415-446,448-453,456-459,466,468-471
+.github/workflows/harbor.yml
+  s_b195f3b5b105d2::t_d6ed54c18c1e48 137
+  s_b195f3b5b105d2::t_56da812e3e414d 49
+.github/workflows/_harbor_run.yml
+  s_b195f3b5b105d2::t_36ff3b4d5aae7b 533-538
+  s_b195f3b5b105d2::t_4882b0c7e8d675 277-280,285-292
+libs/evals/harbor_adapters/oolong/loader.py
+  s_b195f3b5b105d2::t_3daa4e2ce0b1d7 1-252
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_b195f3b5b105d2::t_149edd7b9ee119 23-24
+libs/evals/tests/unit_tests/test_oolong_adapter.py
+  s_b195f3b5b105d2::t_f7bdfe84debf24 98-100,109,114-116,118
+  s_b195f3b5b105d2::t_a9d8bcb9328b2a 45-47,50,55-56,80,83-84,97,121-122
+  s_b195f3b5b105d2::t_4ac9e28d070191 101-103
+  s_b195f3b5b105d2::t_c548f4aa4721f9 117
+  s_b195f3b5b105d2::t_66a2d9225a656d 1-44,48-49,51-54,57-79,81-82,85-96,104-108,110-113,119-120,123-130
+libs/evals/datasets/oolong-synth/dataset.toml
+  s_b195f3b5b105d2::t_e6a8bd1c3bdf10 1-12
+libs/evals/datasets/oolong-synth/bucket.toml
+  s_b195f3b5b105d2::t_897b187373a0d2 1-16
+libs/evals/harbor_adapters/oolong/__init__.py
+  s_b195f3b5b105d2::t_17f79627edd63c 1-9
+libs/evals/Makefile
+  s_b195f3b5b105d2::t_e5bde79264fa42 1
+  s_b195f3b5b105d2::t_c97b1a59159559 54-57
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_b195f3b5b105d2::t_cc82f59d852b22 23
+libs/evals/datasets/oolong-synth/metric.py
+  s_b195f3b5b105d2::t_a0390a1a31fba9 1-31
+libs/evals/harbor_adapters/oolong/main.py
+  s_b195f3b5b105d2::t_cfed8963f0ee9c 1-4,15-19,21-24,26-27,30,61,63-64,66-72,76-81,83-88,90-91,94-95,97-100
+  s_b195f3b5b105d2::t_1a27199b5b07a7 5-14,20,25,28-29,31-60,62,65,73-75,82,89,92-93,96
+libs/evals/datasets/oolong-synth/.gitignore
+  s_b195f3b5b105d2::t_222092a1e37e22 1-4
+libs/evals/harbor_adapters/oolong/.gitignore
+  s_b195f3b5b105d2::t_e849d39327528d 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "05848741ae5bab534f5c4c954a052120696ba278",
+  "prompts": {},
+  "sessions": {
+    "s_b195f3b5b105d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7ca0130-86a3-4a6f-ae5e-41e316b0c8d9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+libs/deepagents/deepagents/middleware/summarization.py
+  s_08d8f81ef5091b::t_dacedd4a13d6ed 1087
+  s_08d8f81ef5091b::t_626a2c095d2490 90
+  s_08d8f81ef5091b::t_3fe0c2eb672469 640-644
+  s_08d8f81ef5091b::t_59db0479003340 1056-1059,1063,1072,1076-1086
+  s_08d8f81ef5091b::t_3f9e1ebf87fdbe 69
+  s_08d8f81ef5091b::t_0f326b6e3c74fd 263-292
+  s_08d8f81ef5091b::t_9fd20f2d5cfdcf 645-646
+  s_08d8f81ef5091b::t_e7ff7f22ff2f6f 1088
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "105dd22011f15eeac1a2f551e69082e678e2b2d2",
+  "prompts": {},
+  "sessions": {
+    "s_08d8f81ef5091b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e6e7c2d4-6679-4790-8586-672b5f9b25fa",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

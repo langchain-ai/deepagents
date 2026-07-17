@@ -1,0 +1,32 @@
+.github/workflows/_harbor_run.yml
+  s_6274ebc5113090::t_359717803b14c3 227
+  s_6274ebc5113090::t_05d03cf41f86e0 1086
+  s_6274ebc5113090::t_440666c2d2baa7 179
+  s_6274ebc5113090::t_b70989f8f74227 196,199,204-207,211,216,220
+  s_6274ebc5113090::t_ae5d01c0fb78c1 1004
+  s_6274ebc5113090::t_e16cbe779dfb4b 1060
+  s_6274ebc5113090::t_23f501f60db913 1073
+  s_6274ebc5113090::t_0e2767fee80b73 896-906
+  s_6274ebc5113090::t_9164772002cbaf 1041
+  s_6274ebc5113090::t_4b4dea85196eed 983-997
+  s_6274ebc5113090::t_859b9a8f273f94 911-913
+.github/scripts/test_unified_workflow.py
+  s_6274ebc5113090::t_4247505f190742 434-435
+  s_6274ebc5113090::t_03f676926d7744 439-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "380979f881a326f889b044efbb2ab77e76506984",
+  "prompts": {},
+  "sessions": {
+    "s_6274ebc5113090": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89ad1fb5-d636-4578-8bd5-cdf9fb091409",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_7d027884b4835d::t_c93f37d9e1d4cf 193-194
+  s_7d027884b4835d::t_c2df2468c25326 186-190
+  s_7d027884b4835d::t_a04cff6fa745e6 195-205
+  s_7d027884b4835d::t_f86628b2877d75 118-165
+  s_7d027884b4835d::t_eaa79ca40a210b 14-15
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_7d027884b4835d::t_3044983328dd7e 7,14-38
+  s_7d027884b4835d::t_58ff2a846b2390 145-148
+  s_7d027884b4835d::t_fe0f6b0abf8cf2 151-191
+  s_7d027884b4835d::t_3d1a2a20676f91 10
+  s_7d027884b4835d::t_14fdc55c693cbe 135-139
+  s_7d027884b4835d::t_45384a655a1dca 39
+  s_7d027884b4835d::t_a13c5910f6b98c 149-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5ffa7b053751890323da0164fae82afe6719d2fa",
+  "prompts": {},
+  "sessions": {
+    "s_7d027884b4835d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72d2b1ca-bff3-4b3b-9f64-8d4b43b8ea3d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

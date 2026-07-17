@@ -1,0 +1,19 @@
+libs/evals/UNIFIED_EVALS.md
+  s_9a8783df7af694::t_6d4927b36ed51d 65-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "d9b3541b6c3b589e13d2dff7d645a78b813c4585",
+  "prompts": {},
+  "sessions": {
+    "s_9a8783df7af694": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d2147bd3-fa23-46f6-8c2c-318b0d997cb5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

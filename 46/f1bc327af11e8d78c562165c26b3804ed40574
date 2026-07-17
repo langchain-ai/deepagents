@@ -1,0 +1,24 @@
+.github/workflows/unified_evals.yml
+  s_f954b404768ed0::t_dfbb1391209062 49-52
+  s_f954b404768ed0::t_86ace86ddd9d71 208,234,260,286,312,338,364,390,416,442,468
+.github/workflows/_harbor_run.yml
+  s_f954b404768ed0::t_01f557ab54b880 556-564
+  s_f954b404768ed0::t_0dc6db31a90b2d 671
+  s_f954b404768ed0::t_9708319babc416 167,330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "46f1bc327af11e8d78c562165c26b3804ed40574",
+  "prompts": {},
+  "sessions": {
+    "s_f954b404768ed0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed9e6e3c-44f6-451f-86c7-f21e157c00e1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

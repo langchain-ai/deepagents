@@ -1,0 +1,19 @@
+libs/deepagents/deepagents/graph.py
+  s_3fd1e4de3ef058::t_d132f8c659b4a4 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "843b84c48715c538c05efdbf8b188c1255a550b8",
+  "prompts": {},
+  "sessions": {
+    "s_3fd1e4de3ef058": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f8dfccd-4260-4b3c-9b3d-f2bd14557bde",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

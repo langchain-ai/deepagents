@@ -1,0 +1,20 @@
+libs/evals/datasets/oolong-synth/README.md
+  s_b195f3b5b105d2::t_0a3276642da580 19-21,32-49
+  s_b195f3b5b105d2::t_a569c75645d2ec 50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "763784769d7cfeff2cb7b93f8ededdb502461364",
+  "prompts": {},
+  "sessions": {
+    "s_b195f3b5b105d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7ca0130-86a3-4a6f-ae5e-41e316b0c8d9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+.github/scripts/test_enumerate_tasks.py
+  s_29b15f4502019c::t_b50d495c93aaf4 1-19
+.github/scripts/enumerate_tasks.py
+  s_29b15f4502019c::t_0f4b1032092507 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "90fc00c0b7a3df2628bd02c4ea1627d2a4dd0bd2",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

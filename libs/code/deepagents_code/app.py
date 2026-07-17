@@ -9,6 +9,7 @@ import logging
 import os
 import shlex
 import signal
+import stat as stat_module
 import sys
 import threading
 import time
@@ -18,7 +19,16 @@ from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    NamedTuple,
+    TypeVar,
+    assert_never,
+    cast,
+)
 
 from textual import on
 from textual.app import App, ScreenStackError
@@ -559,7 +569,11 @@ if TYPE_CHECKING:
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
-    from deepagents_code.plugins.models import PluginDiscoveryResult, PluginInstance
+    from deepagents_code.plugins.models import (
+        PluginDiscoveryResult,
+        PluginInstance,
+        PluginManifest,
+    )
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
@@ -606,12 +620,40 @@ _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 Bounds command/worker handling against a modal that never resolves (compose
 crash, programmatic teardown that skips the dismiss callback). 10 minutes is
 well past any human latency but stops a genuinely broken modal from wedging
-the caller. Shared by the install-confirm, MCP-reconnect, and restart-prompt
-watchdogs so the three stay in lockstep.
+the caller. Shared by the install-confirm, MCP-reconnect, restart-prompt, and
+plugin-reload watchdogs so they stay in lockstep.
 """
 
 _PLUGIN_RELOAD_REMINDER = "Plugin changes are pending. Run /reload when ready."
 _PLUGIN_RELOAD_CHECK_FAILED = "Couldn't check plugin state. Run /reload to be safe."
+_MAX_PLUGIN_FINGERPRINT_ENTRIES = 10_000
+_TRUNCATED_PLUGIN_FINGERPRINT_STAT = -2
+
+
+class _PathStat(NamedTuple):
+    """Filesystem fingerprint entry for one component file.
+
+    `mtime_ns`/`size` are `-1` when a path cannot be inspected and `-2` when
+    the bounded scan is truncated. These sentinels keep incomplete scans from
+    being mistaken for complete, unchanged state.
+    """
+
+    path: str
+    mtime_ns: int
+    size: int
+
+
+class _PluginFingerprint(NamedTuple):
+    """Reload-comparison fingerprint for a single plugin.
+
+    Only ever compared with `==`/`!=` (never hashed), so `manifest` is held
+    directly — `PluginManifest` is a frozen dataclass that compares by value,
+    which avoids the key-order fragility of comparing `repr(manifest)`.
+    """
+
+    version: str | None
+    manifest: PluginManifest | None
+    components: tuple[_PathStat, ...]
 
 
 def _resolve_theme_name(value: object) -> str | None:
@@ -3288,12 +3330,15 @@ class DeepAgentsApp(App):
         every invocation.
         """
 
-        self._plugin_fingerprints: dict[str, tuple[object, ...]] | None = None
+        self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
-        Captured when the plugin manager opens (see `_show_plugin_manager`),
-        compared against on manager close (`_check_plugin_manager_changes`), and
-        refreshed after each `/reload`. `None` until first captured.
+        Captured when the plugin manager first opens (see
+        `_show_plugin_manager`) and preserved across manager reopens, then read
+        as the `old` baseline for the `/reload` change summary and refreshed
+        there. `None` until first captured. The manager-close check
+        (`_check_plugin_manager_changes`) compares a fresh read against its own
+        open-time snapshot, not this attribute.
         """
 
         self._skill_allowed_roots: list[Path] = []
@@ -11727,78 +11772,101 @@ class DeepAgentsApp(App):
             if is_env_truthy(EXPERIMENTAL):
                 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
-                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
-                    self._discover_plugins_with_fingerprints
-                )
-                old_plugin_fingerprints = self._plugin_fingerprints
-                self._plugin_fingerprints = new_plugin_fingerprints
-                discovered_plugin_ids = frozenset(
-                    plugin.plugin_id for plugin in plugin_result.plugins
-                )
-                plugin_count = len(plugin_result.plugins)
-                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
-                mcp_count = sum(
-                    len(servers)
-                    for config in mcp_configs
-                    if isinstance((servers := config.get("mcpServers")), dict)
-                )
-                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
-                report += (
-                    f"\nPlugins: {plugin_count} plugin"
-                    f"{'s' if plugin_count != 1 else ''} · "
-                    f"{plugin_skill_count} skill"
-                    f"{'s' if plugin_skill_count != 1 else ''} · "
-                    f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''}"
-                )
-                if old_plugin_fingerprints is not None:
-                    old_ids = set(old_plugin_fingerprints)
-                    new_ids = set(new_plugin_fingerprints)
-                    added_count = len(new_ids - old_ids)
-                    removed_count = len(old_ids - new_ids)
-                    changed_count = sum(
-                        old_plugin_fingerprints[plugin_id]
-                        != new_plugin_fingerprints[plugin_id]
-                        for plugin_id in old_ids & new_ids
+                try:
+                    plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                        self._discover_plugins_with_fingerprints
                     )
-                    change_parts = []
-                    for count, label in (
-                        (added_count, "added"),
-                        (removed_count, "removed"),
-                        (changed_count, "changed"),
-                    ):
-                        if count:
-                            noun = "plugin" if count == 1 else "plugins"
-                            change_parts.append(f"{count} {noun} {label}")
-                    if change_parts:
-                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
-                    else:
-                        report += "\nPlugin changes: no changes detected."
-                    for label in self._plugin_login_labels(
-                        plugin_result.plugins, new_ids - old_ids
-                    ):
-                        report += f"\nSign in to {label} via `/mcp`."
-                if plugin_result.warnings:
+                except Exception:
+                    # Discovery reads marketplace/plugin config from disk; if it
+                    # fails, keep the rest of the reload intact and point the
+                    # user at a manual retry rather than aborting the report.
+                    logger.exception("Failed to discover plugins during /reload")
+                    report += "\nCouldn't read plugin state; run /reload to be safe."
+                else:
+                    old_plugin_fingerprints = self._plugin_fingerprints
+                    self._plugin_fingerprints = new_plugin_fingerprints
+                    discovered_plugin_ids = frozenset(
+                        plugin.plugin_id for plugin in plugin_result.plugins
+                    )
+                    plugin_count = len(plugin_result.plugins)
+                    mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                    mcp_count = sum(
+                        len(servers)
+                        for config in mcp_configs
+                        if isinstance((servers := config.get("mcpServers")), dict)
+                    )
+                    plugin_skill_count = sum(
+                        1 for name in new_skill_names if ":" in name
+                    )
                     report += (
-                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
-                        "during load."
+                        f"\nPlugins: {plugin_count} plugin"
+                        f"{'s' if plugin_count != 1 else ''} · "
+                        f"{plugin_skill_count} skill"
+                        f"{'s' if plugin_skill_count != 1 else ''} · "
+                        f"{mcp_count} plugin MCP server"
+                        f"{'s' if mcp_count != 1 else ''}"
                     )
-
-                restarted = False
-                if self._server_proc is not None and self._server_kwargs is not None:
-                    if self._agent_running and self._agent_worker:
-                        self._cancel_worker(self._agent_worker)
-                        self._agent_running = False
-                    else:
-                        self._discard_queue()
-                    restarted = await self._restart_server_manual()
-                    if restarted:
-                        self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
-                    else:
-                        report += (
-                            "\nAgent server was not restarted; plugin MCP may be stale."
+                    if old_plugin_fingerprints is not None:
+                        old_ids = set(old_plugin_fingerprints)
+                        new_ids = set(new_plugin_fingerprints)
+                        added_count = len(new_ids - old_ids)
+                        removed_count = len(old_ids - new_ids)
+                        changed_count = sum(
+                            self._plugin_fingerprint_changed(
+                                old_plugin_fingerprints[plugin_id],
+                                new_plugin_fingerprints[plugin_id],
+                            )
+                            for plugin_id in old_ids & new_ids
                         )
+                        change_parts = []
+                        for count, label in (
+                            (added_count, "added"),
+                            (removed_count, "removed"),
+                            (changed_count, "changed"),
+                        ):
+                            if count:
+                                noun = "plugin" if count == 1 else "plugins"
+                                change_parts.append(f"{count} {noun} {label}")
+                        if change_parts:
+                            report += (
+                                "\nPlugin changes: " + ", ".join(change_parts) + "."
+                            )
+                        else:
+                            report += "\nPlugin changes: no changes detected."
+                        # Reads each added plugin's MCP config from disk; keep it
+                        # off the UI thread like the discovery scan above.
+                        login_labels = await asyncio.to_thread(
+                            self._plugin_login_labels,
+                            plugin_result.plugins,
+                            new_ids - old_ids,
+                        )
+                        for label in login_labels:
+                            report += f"\nSign in to {label} via `/mcp`."
+                    if plugin_result.warnings:
+                        report += (
+                            f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                            "during load."
+                        )
+
+                    restarted = False
+                    if (
+                        self._server_proc is not None
+                        and self._server_kwargs is not None
+                    ):
+                        if self._agent_running and self._agent_worker:
+                            self._cancel_worker(self._agent_worker)
+                            self._agent_running = False
+                        else:
+                            self._discard_queue()
+                        restarted = await self._restart_server_manual()
+                        if restarted:
+                            self._session_plugin_ids = discovered_plugin_ids
+                            report += "\nAgent server restarted for plugin MCP."
+                        else:
+                            report += (
+                                "\nAgent server was not restarted; plugin MCP may "
+                                "be stale."
+                            )
 
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
@@ -17762,69 +17830,197 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _fingerprint_component_paths(
+        plugin_root: Path,
         paths: tuple[Path, ...],
-    ) -> tuple[tuple[str, int, int], ...]:
-        """Collect path/mtime/size entries for files under component paths.
+    ) -> tuple[_PathStat, ...]:
+        """Collect bounded path/mtime/size entries under plugin component paths.
 
-        Directory components (e.g. `skills/`) are walked recursively so edits to
-        nested files like `SKILL.md` change the fingerprint even when the
-        directory's own mtime/size stay the same.
+        Directory components are scanned recursively without following symlinks.
+        Every directory is rechecked against the plugin root immediately before
+        traversal, and the scan stops after `_MAX_PLUGIN_FINGERPRINT_ENTRIES`.
+
+        Args:
+            plugin_root: Root that every traversed component must remain within.
+            paths: Component files or directories to fingerprint.
 
         Returns:
-            Deterministic fingerprint entries of `(path, mtime_ns, size)` (each
-            directory walked in sorted order).
+            Deterministic fingerprint entries. Inaccessible paths use `-1` stats;
+            a `-2` entry marks a scan truncated by the entry limit.
         """
-        entries: list[tuple[str, int, int]] = []
+        entries: list[_PathStat] = []
+        visited_entries = 0
+
+        def _record_unreadable(target: Path) -> None:
+            logger.warning("Unreadable component path %s", target)
+            entries.append(_PathStat(str(target), -1, -1))
+
+        def _consume_entry(target: Path) -> bool:
+            nonlocal visited_entries
+            if visited_entries >= _MAX_PLUGIN_FINGERPRINT_ENTRIES:
+                logger.warning(
+                    "Plugin component fingerprint exceeded %d entries at %s",
+                    _MAX_PLUGIN_FINGERPRINT_ENTRIES,
+                    target,
+                )
+                entries.append(
+                    _PathStat(
+                        str(target),
+                        _TRUNCATED_PLUGIN_FINGERPRINT_STAT,
+                        _TRUNCATED_PLUGIN_FINGERPRINT_STAT,
+                    )
+                )
+                return False
+            visited_entries += 1
+            return True
+
+        try:
+            resolved_root = plugin_root.resolve(strict=True)
+        except OSError:
+            _record_unreadable(plugin_root)
+            return tuple(entries)
+
+        def _scan_directory(directory: Path) -> bool:
+            stack = [directory]
+            while stack:
+                current = stack.pop()
+                try:
+                    current_stat = current.lstat()
+                    resolved = current.resolve(strict=True)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    _record_unreadable(current)
+                    continue
+                if stat_module.S_ISLNK(current_stat.st_mode):
+                    entries.append(
+                        _PathStat(
+                            str(current), current_stat.st_mtime_ns, current_stat.st_size
+                        )
+                    )
+                    continue
+                if not resolved.is_relative_to(resolved_root):
+                    logger.warning(
+                        "Ignoring plugin component outside plugin root: %s", current
+                    )
+                    entries.append(_PathStat(str(current), -1, -1))
+                    continue
+
+                children: list[tuple[str, Path, os.stat_result]] = []
+                try:
+                    with os.scandir(current) as iterator:
+                        for child in iterator:
+                            target = Path(child.path)
+                            if not _consume_entry(target):
+                                return False
+                            try:
+                                child_stat = child.stat(follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            except OSError:
+                                _record_unreadable(target)
+                                continue
+                            children.append((child.name, target, child_stat))
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    _record_unreadable(current)
+                    continue
+
+                directories: list[Path] = []
+                for _name, target, child_stat in sorted(children):
+                    if stat_module.S_ISDIR(child_stat.st_mode):
+                        directories.append(target)
+                    else:
+                        entries.append(
+                            _PathStat(
+                                str(target),
+                                child_stat.st_mtime_ns,
+                                child_stat.st_size,
+                            )
+                        )
+                stack.extend(reversed(directories))
+            return True
+
         for path in paths:
-            if not path.exists():
+            if not _consume_entry(path):
+                break
+            try:
+                resolved = path.resolve(strict=True)
+            except FileNotFoundError:
                 continue
-            if path.is_file():
-                try:
-                    stat = path.stat()
-                except OSError:
-                    logger.debug(
-                        "Skipping unreadable component path %s", path, exc_info=True
-                    )
-                    continue
-                entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                _record_unreadable(path)
                 continue
-            if not path.is_dir():
+            if not resolved.is_relative_to(resolved_root):
+                logger.warning(
+                    "Ignoring plugin component outside plugin root: %s", path
+                )
+                entries.append(_PathStat(str(path), -1, -1))
                 continue
-            for child in sorted(path.rglob("*")):
-                if not child.is_file():
-                    continue
-                try:
-                    stat = child.stat()
-                except OSError:
-                    logger.debug(
-                        "Skipping unreadable component path %s", child, exc_info=True
-                    )
-                    continue
-                entries.append((str(child), stat.st_mtime_ns, stat.st_size))
+            try:
+                path_stat = path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                _record_unreadable(path)
+                continue
+            if stat_module.S_ISDIR(path_stat.st_mode):
+                if not _scan_directory(path):
+                    break
+            else:
+                entries.append(
+                    _PathStat(str(path), path_stat.st_mtime_ns, path_stat.st_size)
+                )
         return tuple(entries)
+
+    @staticmethod
+    def _plugin_fingerprint_changed(
+        before: _PluginFingerprint, after: _PluginFingerprint
+    ) -> bool:
+        """Return whether a plugin changed or either scan was truncated."""
+        return (
+            before != after
+            or any(entry.mtime_ns < 0 for entry in before.components)
+            or any(entry.mtime_ns < 0 for entry in after.components)
+        )
+
+    @staticmethod
+    def _plugin_fingerprints_changed(
+        before: dict[str, _PluginFingerprint],
+        after: dict[str, _PluginFingerprint],
+    ) -> bool:
+        """Return whether plugin identities or any fingerprint changed."""
+        return before.keys() != after.keys() or any(
+            DeepAgentsApp._plugin_fingerprint_changed(
+                before[plugin_id], after[plugin_id]
+            )
+            for plugin_id in before.keys() & after.keys()
+        )
 
     @staticmethod
     def _fingerprint_plugins(
         plugins: tuple[PluginInstance, ...],
-    ) -> dict[str, tuple[object, ...]]:
+    ) -> dict[str, _PluginFingerprint]:
         """Build reload-comparison fingerprints for discovered plugins.
 
         Returns:
             Plugin fingerprints keyed by plugin id.
         """
-        fingerprints: dict[str, tuple[object, ...]] = {}
+        fingerprints: dict[str, _PluginFingerprint] = {}
         for plugin in plugins:
             paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
-            fingerprints[plugin.plugin_id] = (
-                plugin.version,
-                repr(plugin.manifest),
-                DeepAgentsApp._fingerprint_component_paths(paths),
+            fingerprints[plugin.plugin_id] = _PluginFingerprint(
+                version=plugin.version,
+                manifest=plugin.manifest,
+                components=DeepAgentsApp._fingerprint_component_paths(
+                    plugin.root, paths
+                ),
             )
         return fingerprints
 
     def _discover_plugins_with_fingerprints(
         self,
-    ) -> tuple[PluginDiscoveryResult, dict[str, tuple[object, ...]]]:
+    ) -> tuple[PluginDiscoveryResult, dict[str, _PluginFingerprint]]:
         """Discover plugins and fingerprint their reload-relevant files.
 
         This performs recursive filesystem scans and must be called off the UI
@@ -17870,7 +18066,7 @@ class DeepAgentsApp(App):
 
     def _snapshot_plugin_state(
         self,
-    ) -> tuple[frozenset[str], dict[str, tuple[object, ...]]]:
+    ) -> tuple[frozenset[str], dict[str, _PluginFingerprint]]:
         """Read enabled plugin ids and filesystem fingerprints.
 
         This performs recursive filesystem scans and must be called off the UI
@@ -17888,7 +18084,7 @@ class DeepAgentsApp(App):
     async def _check_plugin_manager_changes(
         self,
         enabled_plugin_ids: frozenset[str],
-        plugin_fingerprints: dict[str, tuple[object, ...]],
+        plugin_fingerprints: dict[str, _PluginFingerprint],
     ) -> None:
         """Offer a reload when plugin state changed while the manager was open.
 
@@ -17910,7 +18106,9 @@ class DeepAgentsApp(App):
 
         if (
             current_enabled_ids != enabled_plugin_ids
-            or current_fingerprints != plugin_fingerprints
+            or self._plugin_fingerprints_changed(
+                plugin_fingerprints, current_fingerprints
+            )
         ):
             await self._offer_plugin_reload()
 
@@ -17918,17 +18116,30 @@ class DeepAgentsApp(App):
         """Open the interactive plugin manager."""
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
-        enabled_plugin_ids, plugin_fingerprints = await asyncio.to_thread(
-            self._snapshot_plugin_state
-        )
-        self._plugin_fingerprints = plugin_fingerprints
+        try:
+            baseline = await asyncio.to_thread(self._snapshot_plugin_state)
+        except Exception:
+            # Still open the manager if the pre-open snapshot fails. Without a
+            # baseline, its close handler leaves a manual reload reminder.
+            logger.exception("Failed to snapshot plugin state before opening manager")
+            baseline = None
+        else:
+            if self._plugin_fingerprints is None:
+                self._plugin_fingerprints = baseline[1]
+
+        async def check_changes() -> None:
+            if baseline is None:
+                await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+                return
+            enabled_plugin_ids, plugin_fingerprints = baseline
+            await self._check_plugin_manager_changes(
+                enabled_plugin_ids, plugin_fingerprints
+            )
 
         def on_close(_result: None) -> None:
             self.call_after_refresh(
                 lambda: self.run_worker(
-                    self._check_plugin_manager_changes(
-                        enabled_plugin_ids, plugin_fingerprints
-                    ),
+                    check_changes(),
                     exclusive=True,
                     group="plugin-reload-prompt",
                 )

@@ -2084,6 +2084,7 @@ async def _load_tools_from_config(
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
+                format_login_failure,
             )
 
             status: MCPServerStatus
@@ -2114,7 +2115,11 @@ async def _load_tools_from_config(
                 # re-login. This is an expected, already-classified outcome, so
                 # the actionable WARNING says everything useful; the full
                 # traceback adds no diagnostic value, so keep the DEBUG log to a
-                # concise line (just the exception type as a breadcrumb).
+                # concise, token-safe breadcrumb. Use `format_login_failure`
+                # rather than `exc.__class__.__name__`: these failures usually
+                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
+                # class name would just read "ExceptionGroup"; the helper walks
+                # the group/cause chain to name the nested culprit instead.
                 status = "unauthenticated"
                 error = f"{reauth} (token refresh failed)"
                 logger.warning(
@@ -2125,7 +2130,7 @@ async def _load_tools_from_config(
                 logger.debug(
                     "MCP server '%s' skipped: token refresh failed (%s)",
                     server_name,
-                    exc.__class__.__name__,
+                    format_login_failure(exc),
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
@@ -2133,7 +2138,9 @@ async def _load_tools_from_config(
                 # typically a server not opted into OAuth in config. Surface it
                 # as unauthenticated so the user can log in, rather than as an
                 # opaque connection error. Like the reauth case, this is a
-                # recognized outcome: keep the DEBUG log to a concise line
+                # recognized outcome: keep the DEBUG log to a concise,
+                # token-safe breadcrumb (via `format_login_failure`, which
+                # names the nested culprit inside the anyio `ExceptionGroup`)
                 # rather than dumping the full challenge traceback.
                 status = "unauthenticated"
                 error = (
@@ -2148,7 +2155,7 @@ async def _load_tools_from_config(
                 logger.debug(
                     "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
                     server_name,
-                    exc.__class__.__name__,
+                    format_login_failure(exc),
                 )
             else:
                 status = "error"

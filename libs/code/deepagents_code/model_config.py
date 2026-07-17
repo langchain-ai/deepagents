@@ -566,6 +566,33 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
+    "anthropic": "max_retries",
+    "azure_openai": "max_retries",
+    "baseten": "max_retries",
+    "bedrock": "max_retries",
+    "deepseek": "max_retries",
+    "fireworks": "max_retries",
+    "google_genai": "max_retries",
+    "google_vertexai": "max_retries",
+    "groq": "max_retries",
+    "litellm": "max_retries",
+    "mistralai": "max_retries",
+    "openai": "max_retries",
+    "openai_codex": "max_retries",
+    "openrouter": "max_retries",
+    "perplexity": "max_retries",
+    "together": "max_retries",
+    "xai": "max_retries",
+}
+"""Constructor kwargs used to disable provider-owned retry loops.
+
+dcode's model-node middleware owns the retry budget, so integrations with a
+known retry-count parameter receive zero at construction time. Providers absent
+from this mapping either do not expose an integer retry-count parameter or must
+declare one with `[retries.<provider>].param` in `config.toml`.
+"""
+
 LANGSMITH_SERVICE = "langsmith"
 """Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
 

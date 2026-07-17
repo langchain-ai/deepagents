@@ -3082,8 +3082,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
+    @pytest.mark.parametrize("model_retries", [0, 3])
     def test_subagent_middleware_combines_model_retry_and_shell(
-        self, tmp_path: Path
+        self, tmp_path: Path, model_retries: int
     ) -> None:
         """Every subagent gets retries while model inheritance stays intact."""
         from deepagents_code.agent import ShellAllowListMiddleware
@@ -3134,10 +3135,16 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=True,
-                model_retries=3,
+                model_retries=model_retries,
             )
 
         _, kwargs = mock_create.call_args
+        main_retry = next(
+            middleware
+            for middleware in kwargs["middleware"]
+            if isinstance(middleware, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == model_retries
         subagents_by_name = {
             subagent["name"]: subagent for subagent in kwargs["subagents"]
         }
@@ -3153,7 +3160,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 CodeModelRetryMiddleware,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            assert subagents_by_name[name]["middleware"][1].max_retries == 3
+            assert subagents_by_name[name]["middleware"][1].max_retries == model_retries
 
         # The pinned subagent retries its fixed model without allowing runtime
         # model switches to replace it.
@@ -3163,7 +3170,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         retry_middleware = next(
             mw for mw in pinned_middleware if isinstance(mw, CodeModelRetryMiddleware)
         )
-        assert retry_middleware.max_retries == 3
+        assert retry_middleware.max_retries == model_retries
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"

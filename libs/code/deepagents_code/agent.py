@@ -1572,8 +1572,9 @@ def create_cli_agent(
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
         goal_criteria_tools: External read-only context tools available to server-side
             goal criteria generation. `None` disables goal criteria requests.
-        model_retries: Model-node retry attempts after the first call. `0`
-            disables retries. Resolved upstream from config/CLI.
+        model_retries: Startup model-node retry attempts after the first call.
+            Runtime-selected models may carry a different provider-specific
+            count. Resolved upstream from config/CLI.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1657,10 +1658,9 @@ def create_cli_agent(
         middleware.extend(_todo_list_middleware_override())
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        if model_retries > 0:
-            from deepagents_code.model_retry import CodeModelRetryMiddleware
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-            middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+        middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1726,11 +1726,12 @@ def create_cli_agent(
     ]
 
     # Model-node retry: wraps only the model call so transient connection
-    # failures are retried without replaying completed tool calls. `0` disables.
-    if model_retries > 0:
-        from deepagents_code.model_retry import CodeModelRetryMiddleware
+    # failures are retried without replaying completed tool calls. Keep it in
+    # the stack when the startup budget is zero because a runtime `/model`
+    # switch may select a provider with a non-zero request-time budget.
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-        agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

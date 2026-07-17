@@ -3352,9 +3352,9 @@ def cli_main() -> None:
 
             if model_params is None:
                 model_params = {}
-            # Carry the flag value under an internal key; `create_model` folds it
-            # under the resolved provider's retry-param name (which may not be
-            # `max_retries` for custom providers) with top precedence.
+            # Carry the flag value under an internal key; `create_model` uses it
+            # as dcode's middleware budget while independently forcing the
+            # resolved provider's internal retry count to zero.
             model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None

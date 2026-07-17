@@ -2,9 +2,10 @@
 
 Wraps only the agent model node (not the whole agent turn) so transient model
 connection failures are retried without re-running completed tool calls. Retry
-count is resolved from config/CLI upstream (see `config.resolve_model_retries`);
-this module owns the retry policy: which errors are transient, the backoff
-curve, and the user-facing status surfaced while retrying.
+counts are attached to constructed models upstream so runtime model switches
+carry their provider-specific budget into each request. This module owns the
+retry policy: which errors are transient, the backoff curve, and the user-facing
+status surfaced while retrying.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
 
-from deepagents_code.config import DEFAULT_MODEL_RETRIES, get_glyphs
+from deepagents_code.config import DEFAULT_MODEL_RETRIES, MODEL_RETRIES_ATTR, get_glyphs
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -53,6 +54,10 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
         "APITimeoutError",
         "APIConnectionError",
         "APIConnectionTimeoutError",
+        "ConnectTimeoutError",
+        "ConnectionClosedError",
+        "EndpointConnectionError",
+        "ReadTimeoutError",
     }
 )
 """Provider SDK exception class names that signal a transient network fault.
@@ -70,8 +75,9 @@ def _extract_status_code(exc: Exception) -> int | None:
     """Return an HTTP status code carried by a provider error, if any.
 
     Inspects the common attributes used across SDKs (`status_code`,
-    `response.status_code`, `http_status`) defensively so a missing or
-    non-integer attribute simply yields `None`.
+    `response.status_code`, `http_status`) plus botocore's
+    `response["ResponseMetadata"]["HTTPStatusCode"]` mapping defensively, so a
+    missing or non-integer value simply yields `None`.
 
     Args:
         exc: The exception raised by the model call.
@@ -90,6 +96,14 @@ def _extract_status_code(exc: Exception) -> int | None:
         response_status = getattr(response, "status_code", None)
         if isinstance(response_status, int) and not isinstance(response_status, bool):
             return response_status
+        if isinstance(response, dict):
+            metadata = response.get("ResponseMetadata")
+            if isinstance(metadata, dict):
+                response_status = metadata.get("HTTPStatusCode")
+                if isinstance(response_status, int) and not isinstance(
+                    response_status, bool
+                ):
+                    return response_status
 
     http_status = getattr(exc, "http_status", None)
     if isinstance(http_status, int) and not isinstance(http_status, bool):
@@ -204,8 +218,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         """Initialize the middleware with the resolved retry count.
 
         Args:
-            max_retries: Retry attempts after the initial call. ``0`` disables
-                retries. Resolved upstream from config/CLI.
+            max_retries: Startup fallback for retry attempts after the initial
+                call. `0` disables retries unless the request's runtime-selected
+                model carries a different provider-specific budget.
         """
         super().__init__(
             max_retries=max_retries,
@@ -233,14 +248,18 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             delay = max(0.0, delay + random.uniform(-jitter_amount, jitter_amount))  # noqa: S311  # backoff jitter, not security-sensitive
         return delay
 
-    def _emit_retry_status(self, request: ModelRequest, attempt: int) -> None:
+    @staticmethod
+    def _emit_retry_status(
+        request: ModelRequest, attempt: int, max_retries: int
+    ) -> None:
         """Surface a concise retry status without leaking a stack trace.
 
         Args:
             request: The in-flight model request (carries the runtime writer).
             attempt: The 1-indexed retry number about to be attempted.
+            max_retries: Retry budget resolved for this model request.
         """
-        event = build_retry_event(attempt, self.max_retries)
+        event = build_retry_event(attempt, max_retries)
         logger.warning("Model call failed; %s", event["message"])
         writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
         if writer is None:
@@ -250,6 +269,25 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         except Exception:
             # A UI status must never break the retry/stream loop.
             logger.debug("Failed to emit model_retry stream event", exc_info=True)
+
+    def _request_max_retries(self, request: ModelRequest) -> int:
+        """Resolve the retry budget attached to this request's model.
+
+        Args:
+            request: Model request after runtime model selection.
+
+        Returns:
+            The model-specific non-negative retry count, or the middleware's
+            startup fallback when the model carries no valid metadata.
+        """
+        raw_retries = getattr(request.model, MODEL_RETRIES_ATTR, None)
+        if (
+            isinstance(raw_retries, int)
+            and not isinstance(raw_retries, bool)
+            and raw_retries >= 0
+        ):
+            return raw_retries
+        return self.max_retries
 
     def wrap_model_call(
         self,
@@ -270,13 +308,14 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 in practice). Exhausted or non-transient errors are re-raised by
                 the inherited `on_failure="error"` handling.
         """
-        for attempt in range(self.max_retries + 1):
+        max_retries = self._request_max_retries(request)
+        for attempt in range(max_retries + 1):
             try:
                 return handler(request)
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
-                if not _is_retryable_model_error(exc) or attempt >= self.max_retries:
+                if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     return self._handle_failure(exc, attempt + 1)
-                self._emit_retry_status(request, attempt + 1)
+                self._emit_retry_status(request, attempt + 1, max_retries)
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     time.sleep(delay)
@@ -304,13 +343,14 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         """
         import asyncio
 
-        for attempt in range(self.max_retries + 1):
+        max_retries = self._request_max_retries(request)
+        for attempt in range(max_retries + 1):
             try:
                 return await handler(request)
             except Exception as exc:  # noqa: BLE001  # classified by _is_retryable_model_error
-                if not _is_retryable_model_error(exc) or attempt >= self.max_retries:
+                if not _is_retryable_model_error(exc) or attempt >= max_retries:
                     return self._handle_failure(exc, attempt + 1)
-                self._emit_retry_status(request, attempt + 1)
+                self._emit_retry_status(request, attempt + 1, max_retries)
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     await asyncio.sleep(delay)

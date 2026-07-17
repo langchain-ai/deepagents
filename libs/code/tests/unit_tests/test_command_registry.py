@@ -129,16 +129,7 @@ class TestSlashCommands:
         command_entries = {command.to_entry() for command in COMMANDS}
         assert set(get_slash_commands()) <= command_entries
 
-    def test_experimental_plugin_commands_hidden_by_default(self) -> None:
-        names = {entry.name for entry in get_slash_commands()}
-        assert "/plugins" not in names
-
-    def test_experimental_plugin_commands_visible_when_enabled(
-        self, monkeypatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
+    def test_plugin_commands_visible_by_default(self) -> None:
         names = {entry.name for entry in get_slash_commands()}
         assert "/plugins" in names
 

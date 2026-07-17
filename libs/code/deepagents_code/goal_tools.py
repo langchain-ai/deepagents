@@ -47,7 +47,9 @@ Use `get_rubric` to inspect active acceptance criteria before deciding whether w
 complete.
 When a goal is active, use `get_goal` to inspect the objective and current status.
 A paused goal is persisted for later but must not drive work until the user resumes it.
-Use `update_goal` only when you have evidence that the goal is complete or blocked."""
+A goal is marked complete automatically when its current grading turn satisfies the
+accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains
+available for optional completion evidence but is not required."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
@@ -115,7 +117,7 @@ class GoalSnapshot(TypedDict):
     """Persisted goal criteria, or shared rubric criteria when no goal rubric exists."""
 
     note: str | None
-    """Latest evidence or blocker note recorded by `update_goal`."""
+    """Persisted completion evidence or blocker note for the goal."""
 
 
 class GoalToolState(GoalRubricChannels):
@@ -375,18 +377,18 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             tool_call_id: Annotated[str, InjectedToolCallId],
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
-            """Mark the current goal complete or blocked with evidence.
+            """Report a blocked goal or attach optional completion evidence.
 
-            Use `complete` only when the accepted criteria are satisfied; use
-            `blocked` when you cannot proceed without user input. Completion is
-            rejected unless the latest rubric result is satisfied. Do not create,
+            Use `blocked` when you cannot proceed without user input. Goals complete
+            automatically after a satisfied goal-backed grading turn, so `complete`
+            is optional and only stages its evidence for that result. Do not create,
             pause, resume, clear, or replace goals — those are user-controlled.
 
             Args:
-                status: `complete` when the criteria are met, `blocked` when you
-                    are stuck and need the user.
+                status: `complete` to attach completion evidence, or `blocked` when
+                    you are stuck and need the user.
                 note: Evidence the criteria are satisfied, or the specific
-                    blocker. Required — the status is not recorded without it.
+                    blocker. Required when calling this tool.
                 tool_call_id: Injected tool call ID for the tool response.
                 state: Injected graph state holding the current goal.
 

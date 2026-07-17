@@ -30,6 +30,7 @@ from deepagents_code.client.non_interactive import (
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.tui.textual_adapter import (
+    RubricEvaluationEnd,
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
@@ -1208,6 +1209,21 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default", assistant_id=None)
         assert "dcode_experimental" not in config["metadata"]
 
+    def test_auto_approve_included_when_active(self) -> None:
+        """YOLO (auto-approve) runs should be identifiable in trace metadata."""
+        config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
+        assert config["metadata"]["dcode_auto_approve"] is True
+
+    def test_auto_approve_absent_when_inactive(self) -> None:
+        """Manual-approval runs should not carry the auto-approve label."""
+        config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
+        assert "dcode_auto_approve" not in config["metadata"]
+
+    def test_auto_approve_absent_by_default(self) -> None:
+        """The default (param omitted) is not labeled auto-approve."""
+        config = build_stream_config("t-default-approve", assistant_id=None)
+        assert "dcode_auto_approve" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -1714,8 +1730,43 @@ class TestExecuteTaskTextualTurnMarkers:
         assert first_meta["turn_id"]
         assert second_meta["turn_id"]
         assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session's auto-approve mode is labeled onto every turn's trace.
+        assert first_meta["dcode_auto_approve"] is True
+        assert second_meta["dcode_auto_approve"] is True
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
+
+    async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
+        """A manual-approval session must not label its trace as auto-approve.
+
+        Complements the positive case above: guards the TUI call site
+        (`bool(session_state.auto_approve)` -> `build_stream_config`) against
+        wiring that would stamp `dcode_auto_approve` regardless of the mode.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -7092,8 +7143,9 @@ class TestExecuteTaskTextualRubricEvents:
     """Rubric custom-stream events surface only for the main agent."""
 
     async def test_main_agent_rubric_event_mounts_message(self) -> None:
-        """A main-agent rubric verdict is rendered in the transcript."""
+        """A main-agent rubric verdict is rendered and forwarded with its run ID."""
         mounted: list[object] = []
+        evaluations: list[tuple[str, str]] = []
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -7101,44 +7153,14 @@ class TestExecuteTaskTextualRubricEvents:
 
         # (namespace, stream_mode, data); empty namespace == main agent.
         chunks = [
-            ((), "custom", {"type": "rubric_evaluation_end", "result": "satisfied"}),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
-            adapter=adapter,
-        )
-
-        rubric_msgs = [
-            m
-            for m in mounted
-            if isinstance(m, AppMessage)
-            and "Acceptance criteria satisfied" in str(m._content)
-        ]
-        assert len(rubric_msgs) == 1
-
-    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
-        """A rubric event from a subagent namespace must not reach the transcript."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> None:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-
-        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
-        chunks = [
             (
-                ("subagent",),
+                (),
                 "custom",
-                {"type": "rubric_evaluation_end", "result": "satisfied"},
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "satisfied",
+                    "grading_run_id": "grade-current",
+                },
             ),
         ]
         adapter = TextualUIAdapter(
@@ -7153,10 +7175,155 @@ class TestExecuteTaskTextualRubricEvents:
             assistant_id="assistant",
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
             adapter=adapter,
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
+            ),
         )
 
+        rubric_msgs = [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
+        ]
+        assert len(rubric_msgs) == 1
+        assert evaluations == [("grade-current", "satisfied")]
+
+    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
+        """A rubric event from a subagent namespace must not reach the transcript."""
+        mounted: list[object] = []
+        evaluations: list[tuple[str, str]] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
+        chunks = [
+            (
+                ("subagent",),
+                "custom",
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "satisfied",
+                    "grading_run_id": "grade-subagent",
+                },
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
+            ),
+        )
+
+        assert evaluations == []
         assert not [
             m
             for m in mounted
             if isinstance(m, AppMessage) and "Rubric" in str(m._content)
         ]
+
+    async def test_rubric_event_without_run_id_is_not_forwarded(self) -> None:
+        """A verdict without correlation metadata cannot authorize completion."""
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {"type": "rubric_evaluation_end", "result": "satisfied"},
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_not_called()
+
+    async def test_rubric_event_with_blank_run_id_is_not_forwarded(self) -> None:
+        """A whitespace-only run ID is treated as missing correlation metadata."""
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "rubric_evaluation_end",
+                            "result": "satisfied",
+                            "grading_run_id": "   ",
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_not_called()
+
+    async def test_rubric_callback_failure_does_not_abort_stream(self) -> None:
+        """Completion bookkeeping cannot break an otherwise successful turn."""
+        callback = MagicMock(side_effect=RuntimeError("boom"))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "rubric_evaluation_end",
+                            "result": "satisfied",
+                            "grading_run_id": "grade-current",
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_called_once_with(
+            RubricEvaluationEnd("grade-current", "satisfied")
+        )

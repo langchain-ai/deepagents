@@ -67,6 +67,20 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
     assert options[1].disabled
 
 
+async def test_plugin_manager_closes_without_mcp_reconnect() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    on_close = MagicMock()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, on_close)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    on_close.assert_called_once_with(None)
+
+
 async def test_plugin_search_filters_and_clears() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()
@@ -1052,10 +1066,9 @@ def test_plugin_prompt_pending_reload_keeps_connected_when_still_loaded() -> Non
     assert f"{checkmark} connected" in prompt
 
 
-async def test_install_dismisses_reconnect_from_installed_instance(
+async def test_install_keeps_manager_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Discover rows lack MCP metadata; install must inspect the returned instance."""
     screen = PluginManagerScreen()
     screen._selected_plugin = _PluginRow(
         plugin_id="linear@tools",
@@ -1065,39 +1078,6 @@ async def test_install_dismisses_reconnect_from_installed_instance(
         author=None,
         display_name="Linear",
     )
-    assert screen._selected_plugin.mcp_server_names == ()
-
-    monkeypatch.setattr(
-        "deepagents_code.tui.modals.plugin_manager.install_plugin",
-        lambda _plugin_id: object(),
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
-        lambda _instance: (("linear", "linear__linear@tools", True),),
-    )
-    monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
-    monkeypatch.setattr(screen, "notify", MagicMock())
-    dismiss = MagicMock()
-    monkeypatch.setattr(screen, "dismiss", dismiss)
-
-    await screen._install_selected_plugin()
-
-    dismiss.assert_called_once_with(("Linear", True))
-
-
-async def test_install_keeps_manager_open_without_mcp(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    screen = PluginManagerScreen()
-    screen._selected_plugin = _PluginRow(
-        plugin_id="skills@tools",
-        description="Skills only",
-        enabled=False,
-        version=None,
-        author=None,
-        display_name="Skills",
-    )
-
     monkeypatch.setattr(
         "deepagents_code.tui.modals.plugin_manager.install_plugin",
         lambda _plugin_id: object(),
@@ -1114,6 +1094,67 @@ async def test_install_keeps_manager_open_without_mcp(
     await screen._install_selected_plugin()
 
     dismiss.assert_not_called()
+
+
+async def test_install_preserves_mcp_login_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screen = PluginManagerScreen()
+    screen._selected_plugin = _PluginRow(
+        plugin_id="linear@tools",
+        description="Linear plugin",
+        enabled=False,
+        version=None,
+        author=None,
+        display_name="Linear",
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.install_plugin",
+        lambda _plugin_id: object(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
+        lambda _instance: (("linear", "plugin__linear_tools__linear", True),),
+    )
+    monkeypatch.setattr(screen, "_refresh_state", AsyncMock())
+    monkeypatch.setattr(screen, "notify", MagicMock())
+
+    await screen._install_selected_plugin()
+
+    assert screen._status is not None
+    assert "After reload, sign in to Linear via /mcp." in screen._status
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_option_id"),
+    [("right", "action:install"), ("left", "details-back")],
+)
+async def test_details_navigation_starts_at_matching_edge(
+    key: str, expected_option_id: str
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+
+        screen._selected_plugin = _PluginRow(
+            plugin_id="linear@tools",
+            description="Linear plugin",
+            enabled=False,
+            version=None,
+            author=None,
+        )
+        screen._mode = "plugin_details"
+        screen._refresh_view()
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        options.highlighted = None
+
+        await pilot.press(key)
+
+        highlighted = options.highlighted
+        assert highlighted is not None
+        assert options.get_option_at_index(highlighted).id == expected_option_id
 
 
 async def test_marketplace_divider_refits_on_resize() -> None:

@@ -1,0 +1,19 @@
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_53148de8b11b40::t_764621ba22b051 1-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "8ed6b4ee4e9e97ec30a9c375988e3c778459014f",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

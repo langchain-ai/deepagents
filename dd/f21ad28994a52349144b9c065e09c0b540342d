@@ -1,0 +1,33 @@
+.github/scripts/test_validate_harbor_limits.py
+  s_433a3ff78cd19b::t_58e8cae3287847 1-110
+.github/workflows/harbor.yml
+  s_433a3ff78cd19b::t_e635fd4029148c 831
+  s_433a3ff78cd19b::t_c421438cb1cbae 30,39,46-48,108,140,142,145,147,160,162,235-248,741-743,747-830,832-843
+.github/scripts/aggregate_shards.py
+  s_433a3ff78cd19b::t_58e8cae3287847 1-515
+.github/scripts/validate_harbor_limits.py
+  s_433a3ff78cd19b::t_58e8cae3287847 1-84
+.github/scripts/test_aggregate_shards.py
+  s_433a3ff78cd19b::t_58e8cae3287847 1-344
+.github/scripts/test_models.py
+  s_433a3ff78cd19b::t_c421438cb1cbae 443-454,457,460,463
+  s_433a3ff78cd19b::t_d924ac61efdf39 442
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_433a3ff78cd19b::t_c421438cb1cbae 74-83,86,89-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "ddf21ad28994a52349144b9c065e09c0b540342d",
+  "prompts": {},
+  "sessions": {
+    "s_433a3ff78cd19b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "625c7c60-9d7d-4679-8118-19a1ddde1a08",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

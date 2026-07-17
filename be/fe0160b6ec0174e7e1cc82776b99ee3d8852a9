@@ -1,0 +1,19 @@
+.github/scripts/lite_tasks.py
+  s_8628738eae6eaf::t_f98caba4601876 23-27,29,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "befe0160b6ec0174e7e1cc82776b99ee3d8852a9",
+  "prompts": {},
+  "sessions": {
+    "s_8628738eae6eaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4be119ee-665e-4c7c-897d-cb63deed7114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

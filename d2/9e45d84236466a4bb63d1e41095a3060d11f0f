@@ -1,0 +1,127 @@
+libs/evals/harbor_adapters/odysseybench/vendor/LICENSE
+  s_53148de8b11b40::t_064353f520a171 1-21
+libs/evals/harbor_adapters/odysseybench/vendor/NOTICE.txt
+  s_53148de8b11b40::t_297a466005febc 1-214
+libs/evals/harbor_adapters/odysseybench/vendor/apps/__init__.py
+  s_53148de8b11b40::t_63dfb0df4f8add 1-4
+libs/evals/harbor_adapters/odysseybench/vendor/apps/email_app/__init__.py
+  s_53148de8b11b40::t_8ec2d9eeffef28 1
+libs/evals/harbor_adapters/odysseybench/vendor/apps/email_app/email_info.py
+  s_53148de8b11b40::t_2b092ceea97180 1-16
+libs/evals/harbor_adapters/odysseybench/vendor/apps/email_app/email_list_emails.py
+  s_53148de8b11b40::t_2740fd581975fe 1-76
+libs/evals/harbor_adapters/odysseybench/vendor/apps/email_app/email_read_email.py
+  s_53148de8b11b40::t_f0e3d710e69bcd 1-64
+libs/evals/harbor_adapters/odysseybench/vendor/apps/email_app/email_send_email.py
+  s_53148de8b11b40::t_c49ee628e5773f 1-62
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/__init__.py
+  s_53148de8b11b40::t_285552015e2b2a 1
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_convert_to_pdf.py
+  s_53148de8b11b40::t_a106392f5c9be8 1-48
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_create_new_file.py
+  s_53148de8b11b40::t_3a1cf1529ee189 1-34
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_delete_cell.py
+  s_53148de8b11b40::t_9820b4a80fbd65 1-75
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_info.py
+  s_53148de8b11b40::t_ca2c7234daaa0f 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_read_file.py
+  s_53148de8b11b40::t_4c636dfee84eee 1-64
+libs/evals/harbor_adapters/odysseybench/vendor/apps/excel_app/excel_set_cell.py
+  s_53148de8b11b40::t_da16c247cc8391 1-86
+libs/evals/harbor_adapters/odysseybench/vendor/apps/pdf_app/__init__.py
+  s_53148de8b11b40::t_6303f926e9beaa 1
+libs/evals/harbor_adapters/odysseybench/vendor/apps/pdf_app/pdf_convert_to_image.py
+  s_53148de8b11b40::t_eabd5651146564 1-52
+libs/evals/harbor_adapters/odysseybench/vendor/apps/pdf_app/pdf_convert_to_word.py
+  s_53148de8b11b40::t_e52c643fbe5fab 1-48
+libs/evals/harbor_adapters/odysseybench/vendor/apps/pdf_app/pdf_info.py
+  s_53148de8b11b40::t_ca877002a7181d 1-18
+libs/evals/harbor_adapters/odysseybench/vendor/apps/pdf_app/pdf_read_file.py
+  s_53148de8b11b40::t_e454de27c67576 1-57
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/__init__.py
+  s_53148de8b11b40::t_862b958109be81 1
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/word_convert_to_pdf.py
+  s_53148de8b11b40::t_de631e7773a07d 1-77
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/word_create_new_file.py
+  s_53148de8b11b40::t_9d543469d5ee55 1-39
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/word_info.py
+  s_53148de8b11b40::t_c5945838e5a8c1 1-18
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/word_read_file.py
+  s_53148de8b11b40::t_b276add90b8a4f 1-47
+libs/evals/harbor_adapters/odysseybench/vendor/apps/word_app/word_write_to_file.py
+  s_53148de8b11b40::t_bbd4eaafa96569 1-66
+libs/evals/harbor_adapters/odysseybench/vendor/evaluate.py
+  s_53148de8b11b40::t_38ead513bc27cb 1-282
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-1/chat_histories_neo/0_day_session.json
+  s_53148de8b11b40::t_35a843b4edc7eb 1-1991
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-1/chat_histories_plus/0_day_session.json
+  s_53148de8b11b40::t_350c59370a467a 1-1263
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-1/subtasks_neo/0.json
+  s_53148de8b11b40::t_8a46a7c29be3fd 1-36
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-1/subtasks_plus/0.json
+  s_53148de8b11b40::t_953dd4d02480e3 1-22
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-13/chat_histories_neo/9_day_session.json
+  s_53148de8b11b40::t_e5fec7a4db8491 1-1921
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-13/chat_histories_plus/0_day_session.json
+  s_53148de8b11b40::t_3f3d3e261737f8 1-771
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-13/subtasks_neo/9.json
+  s_53148de8b11b40::t_15b6d3cdddd9df 1-34
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-13/subtasks_plus/0.json
+  s_53148de8b11b40::t_b8d5ff91e17e52 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-2/chat_histories_plus/3_day_session.json
+  s_53148de8b11b40::t_742d052d23e7e1 1-1489
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-2/subtasks_plus/3.json
+  s_53148de8b11b40::t_b8196e656e4582 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-20/chat_histories_neo/9_day_session.json
+  s_53148de8b11b40::t_79d23716ae4c3f 1-1081
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-20/chat_histories_plus/3_day_session.json
+  s_53148de8b11b40::t_69ec4882be9dec 1-1284
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-20/subtasks_neo/9.json
+  s_53148de8b11b40::t_2edde493ca2b13 1-35
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-20/subtasks_plus/3.json
+  s_53148de8b11b40::t_1587d7f57d8904 1-21
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-22/chat_histories_plus/2_day_session.json
+  s_53148de8b11b40::t_33fceafb9aa0bc 1-1393
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/1-22/subtasks_plus/2.json
+  s_53148de8b11b40::t_accb467664d56f 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-27/chat_histories_neo/9_day_session.json
+  s_53148de8b11b40::t_4f880357360650 1-2001
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-27/subtasks_neo/9.json
+  s_53148de8b11b40::t_98297e30d48840 1-86
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-34/chat_histories_neo/1_day_session.json
+  s_53148de8b11b40::t_24b2211941f979 1-2326
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-34/subtasks_neo/1.json
+  s_53148de8b11b40::t_d7643cce19b67b 1-39
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-37/chat_histories_plus/1_day_session.json
+  s_53148de8b11b40::t_1f430ef016fb50 1-724
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-37/subtasks_plus/1.json
+  s_53148de8b11b40::t_5fe858a6607f9c 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-5/chat_histories_neo/9_day_session.json
+  s_53148de8b11b40::t_5c8ec09e7edfce 1-2061
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-5/chat_histories_plus/0_day_session.json
+  s_53148de8b11b40::t_fe0576cf022788 1-1624
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-5/subtasks_neo/9.json
+  s_53148de8b11b40::t_25a17cbfc81187 1-33
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/2-5/subtasks_plus/0.json
+  s_53148de8b11b40::t_95da0bb12fc15c 1-20
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/3-79/chat_histories_plus/0_day_session.json
+  s_53148de8b11b40::t_2891d9179ed75a 1-1293
+libs/evals/harbor_adapters/odysseybench/vendor/tasks/3-79/subtasks_plus/0.json
+  s_53148de8b11b40::t_381daaad998a18 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d29e45d84236466a4bb63d1e41095a3060d11f0f",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

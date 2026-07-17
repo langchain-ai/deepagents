@@ -1,0 +1,32 @@
+.github/scripts/test_aggregate_unified.py
+  s_09801fcd8c0b85::t_d166d276c1cdf9 76-91,96-137
+.github/workflows/_harbor_run.yml
+  s_09801fcd8c0b85::t_4aa19fe54b491b 767-770,773,776
+.github/scripts/test_unified_prep.py
+  s_09801fcd8c0b85::t_310fc59b43af46 98-119
+.github/workflows/unified_evals.yml
+  s_09801fcd8c0b85::t_7ee9c04bba732d 338
+  s_09801fcd8c0b85::t_16e9a6155a2329 364-370,377-381,384-399
+  s_09801fcd8c0b85::t_d383ecc6c9ed20 75-76
+.github/scripts/aggregate_unified.py
+  s_09801fcd8c0b85::t_19aa7f795ac4bd 4,6-12,25-26,30,40,45-56,61-79,89-92,97-98,115,117,127-136,150-155,161-165,176-181,193-197
+.github/scripts/unified_prep.py
+  s_09801fcd8c0b85::t_e915cf8d1e36c8 139-140
+  s_09801fcd8c0b85::t_2310e5982151eb 171-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "055b384894270b43bd5dac67ec9b42a4a7aa908a",
+  "prompts": {},
+  "sessions": {
+    "s_09801fcd8c0b85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53b777ce-508f-4b08-86a6-258f3eb988c5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

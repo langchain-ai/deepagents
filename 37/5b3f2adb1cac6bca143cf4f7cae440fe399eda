@@ -1,0 +1,20 @@
+.github/workflows/_harbor_run.yml
+  s_29b15f4502019c::t_f7a063458907e4 437,440
+  s_29b15f4502019c::t_d04302e6e2b782 296-298,460-462
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "375b3f2adb1cac6bca143cf4f7cae440fe399eda",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

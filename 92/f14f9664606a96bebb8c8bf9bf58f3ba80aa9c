@@ -1,0 +1,21 @@
+.github/workflows/_harbor_run.yml
+  s_ff9663a0d20093::t_8423c5e5c09b10 221-230
+.github/workflows/unified_evals.yml
+  s_ff9663a0d20093::t_dfb54b9733e8c9 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "92f14f9664606a96bebb8c8bf9bf58f3ba80aa9c",
+  "prompts": {},
+  "sessions": {
+    "s_ff9663a0d20093": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76ce645e-d1e8-4c01-8274-1c9de67977c8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

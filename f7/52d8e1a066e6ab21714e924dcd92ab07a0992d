@@ -1,0 +1,31 @@
+libs/evals/harbor_adapters/contextbench/main.py
+  s_53148de8b11b40::t_5787cb60c66a55 77-85
+  s_53148de8b11b40::t_7755fa091be560 23-26
+  s_53148de8b11b40::t_aaff5087cb0db1 86-88
+  s_53148de8b11b40::t_9d7dcd426cf17e 35-44
+  s_53148de8b11b40::t_b3ba637e309a61 34
+.github/workflows/harbor.yml
+  s_53148de8b11b40::t_8140f513d23905 408-421
+libs/evals/datasets/context-retrieval-evals/.gitignore
+  s_53148de8b11b40::t_42222da93a9746 1-3
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_53148de8b11b40::t_ac214534df1632 119-157
+libs/evals/tests/unit_tests/test_contextbench_main.py
+  s_53148de8b11b40::t_30a5cdbe5bc3a7 82-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "f752d8e1a066e6ab21714e924dcd92ab07a0992d",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

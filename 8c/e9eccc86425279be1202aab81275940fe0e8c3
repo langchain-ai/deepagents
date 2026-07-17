@@ -1,0 +1,20 @@
+.github/scripts/test_models.py
+  s_10479b16728ab1::t_a1669aa4e06893 443-454,457,460,463
+  s_10479b16728ab1::t_ed5f87eb5e554c 442
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "8ce9eccc86425279be1202aab81275940fe0e8c3",
+  "prompts": {},
+  "sessions": {
+    "s_10479b16728ab1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79b4670e-d763-4f74-9a3c-be7c4233f971",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

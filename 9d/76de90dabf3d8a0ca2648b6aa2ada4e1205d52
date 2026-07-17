@@ -1,0 +1,33 @@
+.github/workflows/_harbor_run.yml
+  s_29b15f4502019c::t_eab02f14a552dc 169-171,173-236
+  s_29b15f4502019c::t_93184db2195fc9 900-903
+  s_29b15f4502019c::t_5c73f0c2bec526 904-906,933-950,957
+  s_29b15f4502019c::t_28454294a36dc3 506-509
+  s_29b15f4502019c::t_65c24abea5961d 859-861,872-877,882-884
+  s_29b15f4502019c::t_5d0fe78089672c 117
+  s_29b15f4502019c::t_0e404e8ecf7557 1017,1019,1022,1035
+  s_29b15f4502019c::t_d4ce3f78065f14 113-116
+  s_29b15f4502019c::t_0af6e625cd12b2 1018
+  s_29b15f4502019c::t_a6306c5e147f9b 658-660
+  s_29b15f4502019c::t_a6d3f353794eea 172
+  s_29b15f4502019c::t_fc84b3a859c360 985-988,990,993-994
+.github/scripts/test_unified_workflow.py
+  s_29b15f4502019c::t_17aa58b1317767 300,303-305,307-308,311-318,324-359
+  s_29b15f4502019c::t_f87e2ea6c9a196 360-361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "9d76de90dabf3d8a0ca2648b6aa2ada4e1205d52",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

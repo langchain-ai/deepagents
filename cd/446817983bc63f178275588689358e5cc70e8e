@@ -1,0 +1,21 @@
+.github/scripts/test_shard_matrix.py
+  s_29b15f4502019c::t_9edd2a531c0d2a 90-104,106
+.github/scripts/shard_matrix.py
+  s_29b15f4502019c::t_b05c94a26c10f8 36-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "cd446817983bc63f178275588689358e5cc70e8e",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

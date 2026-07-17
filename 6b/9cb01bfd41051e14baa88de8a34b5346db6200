@@ -1,0 +1,22 @@
+libs/evals/Makefile
+  s_b195f3b5b105d2::t_5cb48cc563f395 1
+libs/evals/datasets/oolong-synth/README.md
+  s_b195f3b5b105d2::t_9e7dcdbe664919 35-36
+  s_b195f3b5b105d2::t_28c88c17666d05 55-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "6b9cb01bfd41051e14baa88de8a34b5346db6200",
+  "prompts": {},
+  "sessions": {
+    "s_b195f3b5b105d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7ca0130-86a3-4a6f-ae5e-41e316b0c8d9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

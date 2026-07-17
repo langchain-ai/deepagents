@@ -1,0 +1,24 @@
+libs/deepagents/deepagents/graph.py
+  s_3f3bfae4d5de17::t_f0efb9453458ec 872-875,877,880,886
+  s_3f3bfae4d5de17::t_36002bd505ab93 975-978
+  s_3f3bfae4d5de17::t_5769504294678c 984
+  s_3f3bfae4d5de17::t_6030e6334b6813 914
+  s_3f3bfae4d5de17::t_87a6cb4f9fd7e9 932
+  s_3f3bfae4d5de17::t_228e8c485a0990 894
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "62839289fa90bc882b364a08921960e705ef6be1",
+  "prompts": {},
+  "sessions": {
+    "s_3f3bfae4d5de17": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e442b07-8700-4e6b-bfe7-697265a8a96f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+libs/code/tests/unit_tests/test_glm_5p2_profile.py
+  s_929b263abfaa1f::t_e9c632b05d2320 60
+  s_929b263abfaa1f::t_0dd6c04d287523 238-267
+  s_929b263abfaa1f::t_b78bbaf3d47952 47-59,61-63
+libs/code/deepagents_code/_glm_5p2_profile.py
+  s_929b263abfaa1f::t_c1f62814bfd8ea 143-159,163-164
+  s_929b263abfaa1f::t_e9c632b05d2320 160-162
+  s_929b263abfaa1f::t_a1312c4b37531e 40-44
+  s_929b263abfaa1f::t_6d380c5c21876b 231-236,241,243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "1db55f80ff40fd13649c60fa52791e399061e86a",
+  "prompts": {},
+  "sessions": {
+    "s_929b263abfaa1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed6b94c6-592a-4233-a69b-b5d57357062e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

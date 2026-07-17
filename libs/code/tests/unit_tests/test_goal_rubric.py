@@ -29,6 +29,13 @@ from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from deepagents_code._repository_bounds import (
+    REPOSITORY_DIRECTORY_ENTRY_LIMIT as _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
+    REPOSITORY_GLOB_MATCH_LIMIT as _REPOSITORY_GLOB_MATCH_LIMIT,
+    REPOSITORY_READ_BYTE_LIMIT as _REPOSITORY_READ_BYTE_LIMIT,
+    REPOSITORY_READ_LINE_LIMIT as _REPOSITORY_READ_LINE_LIMIT,
+    REPOSITORY_TOOL_RESULT_LIMIT as _REPOSITORY_TOOL_RESULT_LIMIT,
+)
 from deepagents_code._testing_models import GoalCriteriaIntegrationChatModel
 from deepagents_code.goal_rubric import (
     _CONVERSATION_CONTEXT_MESSAGE_LIMIT,
@@ -36,14 +43,9 @@ from deepagents_code.goal_rubric import (
     _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT,
     _CRITERIA_OBJECTIVE_DISPLAY_LIMIT,
     _CRITERIA_RESULT_LOG_LIMIT,
-    _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
-    _REPOSITORY_GLOB_MATCH_LIMIT,
     _REPOSITORY_GREP_MATCH_LIMIT,
     _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT,
-    _REPOSITORY_READ_BYTE_LIMIT,
-    _REPOSITORY_READ_LINE_LIMIT,
     _REPOSITORY_TOOL_CALL_LIMIT,
-    _REPOSITORY_TOOL_RESULT_LIMIT,
     _WEB_SEARCH_CALL_LIMIT,
     GOAL_RUBRIC_SYSTEM_PROMPT,
     GoalCriteriaAgentState,
@@ -995,7 +997,7 @@ class TestCreateGoalCriteriaAgent:
             for item in kwargs["middleware"]
             if isinstance(item, _RepositoryToolBudgetMiddleware)
         )
-        assert budget._root == "/workspace"
+        assert budget._bounds.root == "/workspace"
         assert any(
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]

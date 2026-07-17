@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._env_vars import EXPERIMENTAL
+from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code.agent import (
     _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
@@ -40,6 +41,7 @@ from deepagents_code.agent import (
     _format_write_file_description,
     _interrupt_predicate,
     _reserved_agent_dir_names,
+    _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
     build_model_identity_section,
@@ -4253,7 +4255,15 @@ class TestCreateCliAgentInterpreterWiring:
         assert rubrics[0]._model == "custom-grader-model"
         assert rubrics[0].max_iterations == 5
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
-        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+        assert "read-only `ls`, `read_file`, `glob`, and `grep`" in (
+            rubrics[0]._system_prompt
+        )
+        assert [tool.name for tool in rubrics[0]._tools] == [
+            "read_file",
+            "ls",
+            "glob",
+            "grep",
+        ]
 
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)
@@ -4343,6 +4353,82 @@ class TestCreateCliAgentInterpreterWiring:
         denied = read_tool.func(file_path="/large_tool_results/x", runtime=runtime)
 
         assert "can only read files under /srv/art/large_tool_results/" in denied
+
+    @staticmethod
+    def _grader_repo_tools(tmp_path: Path) -> tuple[dict[str, Any], Path]:
+        """Build grader tools wired to a real working-directory backend.
+
+        Returns:
+            A `(tools_by_name, repo_root)` pair for exercising working-directory
+            inspection.
+        """
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.local_shell import LocalShellBackend
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("print('hello world')\n")
+        backend = LocalShellBackend(root_dir=tmp_path, virtual_mode=False)
+        composite = CompositeBackend(default=backend, routes={})
+        tools = {
+            tool.name: cast("Any", tool)
+            for tool in _create_rubric_grader_tools(
+                composite,
+                repository_backend=backend,
+                repository_root=str(repo),
+            )
+        }
+        return tools, repo
+
+    def test_rubric_grader_inspects_working_directory(self, tmp_path: Path) -> None:
+        tools, repo = self._grader_repo_tools(tmp_path)
+
+        assert set(tools) == {"read_file", "ls", "glob", "grep"}
+
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+        read = tools["read_file"].func(file_path=str(repo / "app.py"), runtime=runtime)
+        listing = tools["ls"].func(path=str(repo), runtime=runtime)
+
+        assert "print('hello world')" in read.content
+        assert "app.py" in listing.content
+
+    def test_rubric_grader_rejects_paths_outside_working_root(
+        self, tmp_path: Path
+    ) -> None:
+        tools, _ = self._grader_repo_tools(tmp_path)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+        denied = tools["read_file"].func(file_path=str(secret), runtime=runtime)
+
+        assert "unavailable" in denied
+
+    def test_rubric_grader_enforces_repository_call_budget(
+        self, tmp_path: Path
+    ) -> None:
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        tools, repo = self._grader_repo_tools(tmp_path)
+        spent = [
+            LCToolMessage(content="x", tool_call_id=str(index), name="read_file")
+            for index in range(REPOSITORY_TOOL_CALL_LIMIT)
+        ]
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": spent})
+
+        result = tools["read_file"].func(
+            file_path=str(repo / "app.py"), runtime=runtime
+        )
+
+        assert "inspection limit reached" in result
+
+    def test_rubric_grader_prompt_mentions_working_directory(self) -> None:
+        with_repo = _rubric_grader_system_prompt("/large_tool_results/", "/repo")
+        without_repo = _rubric_grader_system_prompt("/large_tool_results/")
+
+        assert "read-only `ls`, `read_file`, `glob`, and `grep`" in with_repo
+        assert "`/repo`" in with_repo
+        assert "read-only `ls`" not in without_repo
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware

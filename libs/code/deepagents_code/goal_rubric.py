@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import ast
-import base64
 import inspect
 import json
 import logging
 import threading
 from collections import OrderedDict
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
-from deepagents.backends.protocol import (
-    BackendProtocol,
-    SandboxBackendProtocol,
-)
 from deepagents.middleware.filesystem import FilesystemState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -35,12 +28,18 @@ from langchain_core.messages import (
 from langgraph.errors import GraphRecursionError
 from typing_extensions import TypedDict, override
 
+from deepagents_code._repository_bounds import (
+    REPOSITORY_GREP_MATCH_LIMIT as _REPOSITORY_GREP_MATCH_LIMIT,
+    REPOSITORY_TOOL_CALL_LIMIT as _REPOSITORY_TOOL_CALL_LIMIT,
+    REPOSITORY_TOOL_NAMES as _REPOSITORY_TOOL_NAMES,
+    RepositoryBounds,
+)
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from deepagents.backends.protocol import FileInfo
+    from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.language_models import BaseChatModel
@@ -51,16 +50,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_REPOSITORY_TOOL_CALL_LIMIT = 25
-_REPOSITORY_READ_LINE_LIMIT = 120
-_REPOSITORY_READ_BYTE_LIMIT = 256_000
-_REPOSITORY_DIRECTORY_ENTRY_LIMIT = 200
-_REPOSITORY_GLOB_MATCH_LIMIT = 200
-_REPOSITORY_GREP_MATCH_LIMIT = 100
-_REPOSITORY_TOOL_RESULT_LIMIT = 12_000
+# Repository-inspection limits and path rules are shared with the rubric grader;
+# see `deepagents_code._repository_bounds` for the canonical definitions
+# (imported above as `_REPOSITORY_*` for backward compatibility).
 _REPOSITORY_RECURSION_LIMIT = _REPOSITORY_TOOL_CALL_LIMIT * 2 + 2
 _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT = 128
-_REPOSITORY_TOOL_NAMES = frozenset({"ls", "read_file", "glob", "grep"})
 _STRUCTURED_OUTPUT_TOOL_NAME = "GoalProposal"
 _WEB_SEARCH_CALL_LIMIT = 3
 _CONVERSATION_CONTEXT_MESSAGE_LIMIT = 8
@@ -70,8 +64,6 @@ _CONVERSATION_CONTEXT_SERIALIZED_LIMIT = 12_000
 _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT = 32_000
 _CRITERIA_OBJECTIVE_DISPLAY_LIMIT = 160
 _CRITERIA_RESULT_LOG_LIMIT = 500
-_REPOSITORY_PATH_RESULT_PREFIX = "__DEEPAGENTS_REPOSITORY_PATH__"
-_REPOSITORY_PATH_ERROR = "Repository path is unavailable."
 # Goal-only fallback recursion budget: the fallback agent has no context tools,
 # so it needs only a model step and the forced structured-output tool call.
 _FALLBACK_RECURSION_LIMIT = 8
@@ -367,19 +359,9 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         Args:
             backend: Server-side repository backend used by filesystem tools.
             root: Absolute backend path that bounds repository reads.
-
-        Raises:
-            ValueError: If `root` is not a safe absolute path.
         """
         super().__init__()
-        normalized = root.replace("\\", "/")
-        path = PurePosixPath(normalized)
-        if not normalized.startswith("/") or ".." in path.parts or "~" in root:
-            msg = f"Repository root must be an absolute contained path: {root!r}"
-            raise ValueError(msg)
-        self._backend = backend
-        self._root = str(path)
-        self._sandbox = backend if isinstance(backend, SandboxBackendProtocol) else None
+        self._bounds = RepositoryBounds(backend, root=root)
         self._calls: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -416,125 +398,6 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             status="error",
         )
 
-    def _safe_path(self, raw_path: str) -> bool:
-        """Return whether an explicit repository path is absolute and contained."""
-        path = PurePosixPath(raw_path.replace("\\", "/"))
-        root = PurePosixPath(self._root)
-        return (
-            raw_path.startswith("/")
-            and ".." not in path.parts
-            and "~" not in raw_path
-            and (root == PurePosixPath("/") or path == root or root in path.parents)
-        )
-
-    def _containment_command(self, raw_path: str) -> str:
-        """Build a sandbox command that checks the canonical repository boundary.
-
-        Returns:
-            A command that emits a private success marker only for contained paths.
-        """
-        payload = base64.b64encode(json.dumps([self._root, raw_path]).encode()).decode()
-        return (
-            'python3 -c "import base64,json,os;'
-            f"values=json.loads(base64.b64decode('{payload}'));"
-            "root=os.path.realpath(values[0]);path=os.path.realpath(values[1]);"
-            "contained=os.path.commonpath([root,path])==root;"
-            f"print('{_REPOSITORY_PATH_RESULT_PREFIX}'+str(int(contained)))\""
-        )
-
-    def _sandbox_contains(self, raw_path: str) -> bool:
-        """Return whether the sandbox resolves a path below the repository root."""
-        if self._sandbox is None:
-            return True
-        try:
-            result = self._sandbox.execute(self._containment_command(raw_path))
-        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            logger.warning(
-                "Repository containment check failed; treating the path as unavailable",
-                exc_info=True,
-            )
-            return False
-        return result.exit_code in {None, 0} and any(
-            line == f"{_REPOSITORY_PATH_RESULT_PREFIX}1"
-            for line in result.output.splitlines()
-        )
-
-    async def _asandbox_contains(self, raw_path: str) -> bool:
-        """Asynchronously check canonical sandbox repository containment.
-
-        Returns:
-            `True` when the sandbox resolves the path below the repository root.
-        """
-        if self._sandbox is None:
-            return True
-        try:
-            result = await self._sandbox.aexecute(self._containment_command(raw_path))
-        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            logger.warning(
-                "Repository containment check failed; treating the path as unavailable",
-                exc_info=True,
-            )
-            return False
-        return result.exit_code in {None, 0} and any(
-            line == f"{_REPOSITORY_PATH_RESULT_PREFIX}1"
-            for line in result.output.splitlines()
-        )
-
-    @staticmethod
-    def _safe_pattern(pattern: str) -> bool:
-        """Return whether a relative or absolute glob pattern cannot traverse."""
-        path = PurePosixPath(pattern.replace("\\", "/"))
-        return ".." not in path.parts and "~" not in pattern
-
-    def _validate_search_paths(
-        self,
-        request: ToolCallRequest,
-        args: dict[str, Any],
-    ) -> ToolMessage | None:
-        """Validate optional paths and path-like patterns for search tools.
-
-        Returns:
-            A path error, or `None` when every explicit path is contained.
-        """
-        path = args.get("path")
-        if path is not None and (
-            not isinstance(path, str) or not self._safe_path(path)
-        ):
-            return self._error(request, "Repository path is unavailable.")
-
-        name = request.tool_call["name"]
-        patterns = [args.get("pattern")] if name == "glob" else [args.get("glob")]
-        if any(
-            pattern is not None
-            and (not isinstance(pattern, str) or not self._safe_pattern(pattern))
-            for pattern in patterns
-        ):
-            return self._error(request, "Repository path is unavailable.")
-        return None
-
-    @staticmethod
-    def _entry_size(
-        entries: Sequence[FileInfo] | None,
-        normalized_path: str,
-    ) -> int | None:
-        """Return the reported byte size of a backend entry, if present.
-
-        Malformed entries (not a mapping, or missing/non-string `path`) are
-        skipped rather than raising, so a single bad entry cannot fail an
-        otherwise valid preflight.
-
-        Returns:
-            The entry's integer size, or `None` when unknown.
-        """
-        for item in entries or []:
-            raw = item.get("path") if isinstance(item, dict) else None
-            if not isinstance(raw, str):
-                continue
-            if str(PurePosixPath(raw)) == normalized_path:
-                size = item.get("size")
-                return size if isinstance(size, int) else None
-        return None
-
     def _preflight(self, request: ToolCallRequest) -> ToolMessage | None:
         """Reject malformed paths and backend entries that exceed hard limits.
 
@@ -543,57 +406,8 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         """
         name = request.tool_call["name"]
         args = request.tool_call.get("args") or {}
-        if name in {"glob", "grep"}:
-            error = self._validate_search_paths(request, args)
-            if error is not None:
-                return error
-            raw_path = args.get("path", self._root)
-            if isinstance(raw_path, str) and not self._sandbox_contains(raw_path):
-                return self._error(request, _REPOSITORY_PATH_ERROR)
-            return None
-
-        key = "file_path" if name == "read_file" else "path"
-        raw_path = args.get(key)
-        if not isinstance(raw_path, str):
-            return None
-
-        path = PurePosixPath(raw_path.replace("\\", "/"))
-        if not self._safe_path(raw_path):
-            return self._error(request, _REPOSITORY_PATH_ERROR)
-        if not self._sandbox_contains(raw_path):
-            return self._error(request, _REPOSITORY_PATH_ERROR)
-
-        # Scope the guard to the backend call itself: a backend that raises
-        # (outage, serialization fault) is otherwise indistinguishable from a
-        # genuinely absent path. The size/entry bookkeeping below is deliberately
-        # left outside the guard so a defect there surfaces as a real crash
-        # rather than silently degrading every run.
-        try:
-            result = self._backend.ls(raw_path if name == "ls" else str(path.parent))
-        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            logger.warning(
-                "Repository preflight failed for criteria tool %r; treating the "
-                "path as unavailable",
-                request.tool_call["name"],
-                exc_info=True,
-            )
-            return self._error(request, "Repository path is unavailable.")
-        if result.error is not None:
-            return self._error(request, "Repository path is unavailable.")
-        if name == "ls":
-            if len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT:
-                return self._error(
-                    request,
-                    "Repository directory exceeds the listing limit.",
-                )
-        else:  # read_file
-            size = self._entry_size(result.entries, str(path))
-            if size is not None and size > _REPOSITORY_READ_BYTE_LIMIT:
-                return self._error(
-                    request,
-                    "Repository file exceeds the criteria context size limit.",
-                )
-        return None
+        error = self._bounds.preflight(name, args)
+        return self._error(request, error) if error is not None else None
 
     async def _apreflight(self, request: ToolCallRequest) -> ToolMessage | None:
         """Asynchronously enforce repository path and metadata limits.
@@ -603,86 +417,8 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         """
         name = request.tool_call["name"]
         args = request.tool_call.get("args") or {}
-        if name in {"glob", "grep"}:
-            error = self._validate_search_paths(request, args)
-            if error is not None:
-                return error
-            raw_path = args.get("path", self._root)
-            if isinstance(raw_path, str) and not await self._asandbox_contains(
-                raw_path
-            ):
-                return self._error(request, _REPOSITORY_PATH_ERROR)
-            return None
-
-        key = "file_path" if name == "read_file" else "path"
-        raw_path = args.get(key)
-        if not isinstance(raw_path, str):
-            return None
-
-        path = PurePosixPath(raw_path.replace("\\", "/"))
-        if not self._safe_path(raw_path):
-            return self._error(request, _REPOSITORY_PATH_ERROR)
-        if not await self._asandbox_contains(raw_path):
-            return self._error(request, _REPOSITORY_PATH_ERROR)
-
-        # Scope the guard to the backend call itself (see `_preflight`): a
-        # backend that raises is indistinguishable from an absent path, while the
-        # size/entry bookkeeping stays outside the guard so a defect there
-        # surfaces rather than silently degrading every run.
-        try:
-            result = await self._backend.als(
-                raw_path if name == "ls" else str(path.parent)
-            )
-        except (NotImplementedError, OSError, RuntimeError, TypeError, ValueError):
-            logger.warning(
-                "Repository preflight failed for criteria tool %r; treating the "
-                "path as unavailable",
-                request.tool_call["name"],
-                exc_info=True,
-            )
-            return self._error(request, "Repository path is unavailable.")
-        if result.error is not None:
-            return self._error(request, "Repository path is unavailable.")
-        if name == "ls":
-            if len(result.entries or []) > _REPOSITORY_DIRECTORY_ENTRY_LIMIT:
-                return self._error(
-                    request,
-                    "Repository directory exceeds the listing limit.",
-                )
-        elif name == "read_file":
-            size = self._entry_size(result.entries, str(path))
-            if size is not None and size > _REPOSITORY_READ_BYTE_LIMIT:
-                return self._error(
-                    request,
-                    "Repository file exceeds the criteria context size limit.",
-                )
-        return None
-
-    @staticmethod
-    def _bounded_glob_content(content: str) -> str:
-        """Limit a filesystem glob's rendered path count when it is parseable.
-
-        Returns:
-            Glob output containing no more than the configured number of paths.
-        """
-        body, separator, notes = content.partition("\n\n")
-        try:
-            paths = ast.literal_eval(body)
-        except (SyntaxError, ValueError):
-            return content
-        if not isinstance(paths, list) or not all(
-            isinstance(path, str) for path in paths
-        ):
-            return content
-        if len(paths) <= _REPOSITORY_GLOB_MATCH_LIMIT:
-            return content
-        marker = (
-            "[Glob results limited to the first "
-            f"{_REPOSITORY_GLOB_MATCH_LIMIT} matches.]"
-        )
-        bounded = str(paths[:_REPOSITORY_GLOB_MATCH_LIMIT])
-        suffix = f"\n\n{notes}" if separator and notes else ""
-        return f"{bounded}\n\n{marker}{suffix}"
+        error = await self._bounds.apreflight(name, args)
+        return self._error(request, error) if error is not None else None
 
     def _bound_result(
         self,
@@ -690,25 +426,14 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
         result: ToolMessage | Command[Any],
     ) -> ToolMessage:
         """Return a text-only, size-bounded repository tool result."""
-        if not isinstance(result, ToolMessage):
-            return self._error(
-                request,
-                "Non-text repository content omitted; criteria drafting supports "
-                "text results only.",
-            )
-
-        content = result.content
-        if not isinstance(content, str):
-            content = (
-                "Non-text repository content omitted; criteria drafting supports "
-                "text results only."
-            )
-        elif request.tool_call["name"] == "glob":
-            content = self._bounded_glob_content(content)
-        if len(content) > _REPOSITORY_TOOL_RESULT_LIMIT:
-            marker = "\n[Repository tool result shortened to the context limit.]"
-            content = content[: _REPOSITORY_TOOL_RESULT_LIMIT - len(marker)] + marker
-        return result.model_copy(update={"content": content})
+        non_text = (
+            "Non-text repository content omitted; criteria drafting supports "
+            "text results only."
+        )
+        if not isinstance(result, ToolMessage) or not isinstance(result.content, str):
+            return self._error(request, non_text)
+        bounded = self._bounds.bound_text(request.tool_call["name"], result.content)
+        return result.model_copy(update={"content": bounded})
 
     def _bounded_request(self, request: ToolCallRequest) -> ToolCallRequest:
         """Clamp repository-tool arguments that directly control result size.
@@ -717,19 +442,7 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
             A request with bounded read lines or grep matches.
         """
         name = request.tool_call["name"]
-        args = dict(request.tool_call.get("args") or {})
-        if name == "read_file":
-            limit = args.get("limit", _REPOSITORY_READ_LINE_LIMIT)
-            if not isinstance(limit, int) or isinstance(limit, bool):
-                limit = _REPOSITORY_READ_LINE_LIMIT
-            args["limit"] = max(1, min(limit, _REPOSITORY_READ_LINE_LIMIT))
-        elif name in {"glob", "grep"}:
-            args.setdefault("path", self._root)
-        if name == "grep":
-            count = args.get("max_count", _REPOSITORY_GREP_MATCH_LIMIT)
-            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
-                count = _REPOSITORY_GREP_MATCH_LIMIT
-            args["max_count"] = min(count, _REPOSITORY_GREP_MATCH_LIMIT)
+        args = self._bounds.clamp_args(name, request.tool_call.get("args") or {})
         return request.override(tool_call={**request.tool_call, "args": args})
 
     @override

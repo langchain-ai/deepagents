@@ -1,17 +1,17 @@
-"""Tests for transient rubric grader transport retries."""
+"""Tests for rubric grader model retries."""
 
+from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_code.reliable_rubric import (
-    ReliableRubricMiddleware,
-    _is_transient_grader_transport_error,
-)
+from deepagents_code.config import CLI_MAX_RETRIES_KEY
+from deepagents_code.model_retry import CodeModelRetryMiddleware
+from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 
 
 def _read_error() -> httpx.ReadError:
@@ -21,23 +21,17 @@ def _read_error() -> httpx.ReadError:
     )
 
 
-def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
-    """Build an exception whose type mimics an external library's error class."""
-    error_type = type(name, (Exception,), {"__module__": module})
-    return error_type(message)
-
-
-def _state() -> RubricState:
-    return cast(
-        "RubricState",
-        {
-            "rubric": "tests pass",
-            "messages": [
-                HumanMessage(content="implement it"),
-                AIMessage(content="implementation complete"),
-            ],
-        },
-    )
+def _state(*, retries: int | None = None) -> RubricState:
+    state: dict[str, Any] = {
+        "rubric": "tests pass",
+        "messages": [
+            HumanMessage(content="implement it"),
+            AIMessage(content="implementation complete"),
+        ],
+    }
+    if retries is not None:
+        state["_model_params"] = {CLI_MAX_RETRIES_KEY: retries}
+    return cast("RubricState", state)
 
 
 def _satisfied_result() -> dict[str, Any]:
@@ -50,118 +44,151 @@ def _satisfied_result() -> dict[str, Any]:
     }
 
 
-class TestTransientGraderTransportClassification:
-    def test_read_error_is_transient(self) -> None:
-        assert _is_transient_grader_transport_error(_read_error()) is True
-
-    def test_remote_protocol_error_is_transient(self) -> None:
-        assert (
-            _is_transient_grader_transport_error(httpx.RemoteProtocolError("boom"))
-            is True
+class TestGraderConstruction:
+    def test_string_model_uses_dcode_retry_configuration(self) -> None:
+        middleware = ReliableRubricMiddleware(
+            model="openai:gpt-5.5",
+            model_retry_override=0,
         )
+        model = MagicMock()
+        grader = MagicMock()
 
-    def test_httpcore_read_error_is_transient(self) -> None:
-        # httpcore errors cannot be caught via a stable isinstance, so the
-        # classifier matches them by module/name; exercise that path directly.
-        error = _typed_error("httpcore", "ReadError")
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=model),
+            ) as create_model,
+            patch("langchain.agents.create_agent", return_value=grader) as create_agent,
+        ):
+            assert middleware._ensure_grader() is grader
 
-        assert _is_transient_grader_transport_error(error) is True
-
-    def test_httpcore_remote_protocol_error_is_transient(self) -> None:
-        error = _typed_error("httpcore._exceptions", "RemoteProtocolError")
-
-        assert _is_transient_grader_transport_error(error) is True
-
-    def test_read_error_in_exception_group_is_transient(self) -> None:
-        group = ExceptionGroup(
-            "grading failed", [ValueError("unrelated"), _read_error()]
+        create_model.assert_called_once_with(
+            "openai:gpt-5.5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 0},
         )
+        kwargs = create_agent.call_args.kwargs
+        assert kwargs["model"] is model
+        retries = kwargs["middleware"]
+        assert len(retries) == 1
+        assert isinstance(retries[0], CodeModelRetryMiddleware)
+        assert retries[0].max_retries == 0
+        assert kwargs["context_schema"].__name__ == "CLIContextSchema"
 
-        assert _is_transient_grader_transport_error(group) is True
-
-    def test_read_error_in_context_chain_is_transient(self) -> None:
-        wrapper = RuntimeError("grader request failed")
-        wrapper.__context__ = _read_error()
-
-        assert _is_transient_grader_transport_error(wrapper) is True
-
-    def test_transfer_encoding_error_in_cause_chain_is_transient(self) -> None:
-        error_type = type(
-            "TransferEncodingError",
-            (Exception,),
-            {"__module__": "aiohttp.http_exceptions"},
+    def test_string_model_honors_public_caller_fallback(self) -> None:
+        middleware = ReliableRubricMiddleware(
+            model="openai:gpt-5.5",
+            model_retry_fallback=0,
         )
-        cause = error_type("Not enough data to satisfy transfer length header")
-        wrapper = RuntimeError("grader request failed")
-        wrapper.__cause__ = cause
+        model = MagicMock()
+        grader = MagicMock()
 
-        assert _is_transient_grader_transport_error(wrapper) is True
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=model),
+            ) as create_model,
+            patch("langchain.agents.create_agent", return_value=grader) as create_agent,
+        ):
+            middleware._ensure_grader()
 
-    def test_unrelated_exception_is_not_transient(self) -> None:
-        assert _is_transient_grader_transport_error(RuntimeError("bug")) is False
+        create_model.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
+        retry = create_agent.call_args.kwargs["middleware"][0]
+        assert retry.max_retries == 0
+        assert model._deepagents_model_retries == 0
 
+    def test_concrete_model_is_reused(self) -> None:
+        model = MagicMock()
+        grader = MagicMock()
+        middleware = ReliableRubricMiddleware(model=cast("Any", model))
 
-class TestReliableRubricMiddleware:
-    async def test_retries_only_grading_without_mutating_agent_transcript(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
-        error = httpx.ReadError(
-            "connection closed while reading",
-            request=httpx.Request("POST", "https://grader.test"),
-        )
-        grader = AsyncMock()
-        grader.ainvoke.side_effect = [error, _satisfied_result()]
-        middleware._grader = grader
-        state = _state()
-        messages_before = list(state["messages"])
+        with (
+            patch("deepagents_code.config.create_model") as create_model,
+            patch("langchain.agents.create_agent", return_value=grader) as create_agent,
+        ):
+            assert middleware._ensure_grader() is grader
 
-        result = await middleware._agrade(state, 0)
+        create_model.assert_not_called()
+        assert create_agent.call_args.kwargs["model"] is model
 
-        assert result.result == "satisfied"
-        assert grader.ainvoke.await_count == 2
-        assert state["messages"] == messages_before
-
-    async def test_does_not_retry_unrelated_exception(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
-        grader = AsyncMock()
-        grader.ainvoke.side_effect = RuntimeError("programming error")
-        middleware._grader = grader
-
-        with pytest.raises(RuntimeError, match="programming error"):
-            await middleware._agrade(_state(), 0)
-
-        grader.ainvoke.assert_awaited_once()
-
-    def test_sync_grade_retries_transient_transport_failure(self) -> None:
+    def test_grader_agent_is_cached(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = MagicMock()
-        grader.invoke.side_effect = [_read_error(), _satisfied_result()]
         middleware._grader = grader
 
-        result = middleware._grade(_state(), 0)
+        with patch("langchain.agents.create_agent") as create_agent:
+            assert middleware._ensure_grader() is grader
 
-        assert result.result == "satisfied"
-        assert grader.invoke.call_count == 2
+        create_agent.assert_not_called()
 
-    async def test_second_transient_failure_propagates_async(self) -> None:
-        # The retry is bounded to one attempt: a second transient failure must
-        # surface so the base middleware can report it as a grader_error.
-        middleware = ReliableRubricMiddleware(model="fake-model")
-        grader = AsyncMock()
-        grader.ainvoke.side_effect = [_read_error(), _read_error()]
-        middleware._grader = grader
+    @pytest.mark.parametrize("value", [True, -1, 1.5])
+    def test_invalid_retry_override_is_rejected(self, value: object) -> None:
+        error = ValueError if value == -1 else TypeError
+        with pytest.raises(error):
+            ReliableRubricMiddleware(
+                model="fake-model",
+                model_retry_override=cast("Any", value),
+            )
 
-        with pytest.raises(httpx.ReadError):
-            await middleware._agrade(_state(), 0)
 
-        assert grader.ainvoke.await_count == 2
-
-    def test_second_transient_failure_propagates_sync(self) -> None:
+class TestRubricRetryContext:
+    def test_checkpoint_retry_override_reaches_nested_grader(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = MagicMock()
-        grader.invoke.side_effect = [_read_error(), _read_error()]
+        grader.invoke.return_value = _satisfied_result()
+        middleware._grader = grader
+
+        result = middleware._grade(_state(retries=2), 0)
+
+        assert result.result == "satisfied"
+        context = grader.invoke.call_args.kwargs["context"]
+        assert context.model_params == {CLI_MAX_RETRIES_KEY: 2}
+
+    def test_launch_override_wins_over_checkpoint_value(self) -> None:
+        middleware = ReliableRubricMiddleware(
+            model="fake-model",
+            model_retry_override=0,
+        )
+        grader = MagicMock()
+        grader.invoke.return_value = _satisfied_result()
+        middleware._grader = grader
+
+        middleware._grade(_state(retries=3), 0)
+
+        context = grader.invoke.call_args.kwargs["context"]
+        assert context.model_params == {CLI_MAX_RETRIES_KEY: 0}
+
+    async def test_async_checkpoint_override_reaches_nested_grader(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.ainvoke = AsyncMock(return_value=_satisfied_result())
+        middleware._grader = grader
+
+        result = await middleware._agrade(_state(retries=1), 0)
+
+        assert result.result == "satisfied"
+        context = grader.ainvoke.call_args.kwargs["context"]
+        assert context.model_params == {CLI_MAX_RETRIES_KEY: 1}
+
+    def test_retryable_error_is_not_replayed_above_model_budget(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.invoke.side_effect = _read_error()
         middleware._grader = grader
 
         with pytest.raises(httpx.ReadError):
             middleware._grade(_state(), 0)
 
-        assert grader.invoke.call_count == 2
+        grader.invoke.assert_called_once()
+
+    def test_wrapped_retryable_error_is_not_replayed(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        wrapper = RuntimeError("grader graph failed")
+        wrapper.__cause__ = _read_error()
+        grader = MagicMock()
+        grader.invoke.side_effect = wrapper
+        middleware._grader = grader
+
+        with pytest.raises(RuntimeError, match="grader graph failed"):
+            middleware._grade(_state(), 0)
+
+        grader.invoke.assert_called_once()

@@ -3727,10 +3727,15 @@ class TestCreateCliAgentInterpreterWiring:
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
 
+        from deepagents_code.config import MODEL_RETRY_OVERRIDE_ATTR
+
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         fake_model = _make_fake_chat_model()
+        object.__setattr__(  # noqa: PLC2801  # Pydantic rejects unknown fields through normal setattr
+            fake_model, MODEL_RETRY_OVERRIDE_ATTR, 2
+        )
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
@@ -3745,7 +3750,7 @@ class TestCreateCliAgentInterpreterWiring:
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 enable_memory=False,
                 enable_skills=False,
@@ -3760,6 +3765,7 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert len(rubrics) == 1
         assert rubrics[0]._model == "custom-grader-model"
+        assert rubrics[0]._model_retry_override == 2
         assert rubrics[0].max_iterations == 5
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]

@@ -13,18 +13,34 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar
 
 from langchain.agents.middleware import ModelRetryMiddleware
+from langchain_core.callbacks import (
+    AsyncCallbackManager,
+    BaseCallbackHandler,
+    CallbackManager,
+)
+from langchain_core.runnables import ensure_config, patch_config
+from langchain_core.runnables.config import set_config_context
 
-from deepagents_code.config import DEFAULT_MODEL_RETRIES, MODEL_RETRIES_ATTR, get_glyphs
+from deepagents_code.config import (
+    CLI_MAX_RETRIES_KEY,
+    DEFAULT_MODEL_RETRIES,
+    get_glyphs,
+    get_model_retries,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
+    from typing import Any
+    from uuid import UUID
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGenerationChunk, GenerationChunk
+    from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +68,100 @@ class ModelRetryEvent(TypedDict):
     message: str
 
 
+class _StreamOutputTracker(BaseCallbackHandler):
+    """Record whether a model attempt emitted any streamed output."""
+
+    run_inline = True
+
+    def __init__(self) -> None:
+        """Initialize request-local streaming state."""
+        self.emitted = False
+
+    def on_llm_new_token(
+        self,
+        token: str | list[str | dict[str, Any]],
+        *,
+        chunk: GenerationChunk | ChatGenerationChunk | None = None,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Mark a legacy chunk as externally visible, including empty chunks."""
+        del token, chunk, run_id, parent_run_id, tags, kwargs
+        self.emitted = True
+
+    def on_stream_event(
+        self,
+        event: object,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Mark a protocol-stream event as externally visible."""
+        del event, run_id, parent_run_id, tags, kwargs
+        self.emitted = True
+
+
+def _stream_tracking_config(
+    tracker: _StreamOutputTracker,
+    *,
+    asynchronous: bool = False,
+) -> RunnableConfig:
+    """Add `tracker` to a request-local copy of the active callback config.
+
+    The model itself must remain unchanged: model clients can carry mutable
+    provider or test state that a shallow Pydantic copy would fail to preserve.
+
+    Args:
+        tracker: Per-request output tracker.
+        asynchronous: Whether the request uses the asynchronous callback path.
+
+    Returns:
+        A runnable config that preserves existing handlers and adds `tracker`.
+    """
+    config = ensure_config()
+    manager = AsyncCallbackManager if asynchronous else CallbackManager
+    callbacks = manager.configure(inheritable_callbacks=config.get("callbacks"))
+    callbacks.add_handler(tracker)
+    return patch_config(config, callbacks=callbacks)
+
+
+def _runtime_model_retry_override(runtime: object) -> int | None:
+    """Return the validated retry carrier from a model or tool runtime.
+
+    Args:
+        runtime: Runtime whose context may be a schema object or mapping.
+
+    Returns:
+        The non-negative retry override, or `None` when absent or invalid.
+    """
+    context = getattr(runtime, "context", None)
+    if isinstance(context, Mapping):
+        params = context.get("model_params")
+    else:
+        params = getattr(context, "model_params", None)
+    if not isinstance(params, Mapping):
+        return None
+    raw = params.get(CLI_MAX_RETRIES_KEY)
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    return None
+
+
 _INITIAL_DELAY_SECONDS = 0.2
-"""First backoff delay, matching Codex's 200ms initial retry wait."""
+"""First backoff delay, 200ms (mirrors Codex's initial wait as of 2026-01)."""
 
 _BACKOFF_FACTOR = 2.0
-"""Exponential backoff multiplier (Codex uses 2.0)."""
+"""Exponential backoff multiplier (2.0; mirrors Codex as of 2026-01)."""
 
 _MAX_DELAY_SECONDS = 10.0
 """Cap on a single backoff delay so exponential growth stays bounded."""
 
 _JITTER_FRACTION = 0.1
-"""Multiplicative jitter of +-10%, matching Codex's 0.9..1.1 range."""
+"""Multiplicative jitter of +-10% (0.9..1.1; mirrors Codex as of 2026-01)."""
 
 _RETRYABLE_STATUS_CODES = frozenset({408, 429})
 """Non-5xx HTTP status codes worth retrying (request timeout, rate limit)."""
@@ -76,6 +175,14 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
         "ConnectionClosedError",
         "EndpointConnectionError",
         "ReadTimeoutError",
+        # Google api_core exceptions whose HTTP status is unavailable over a gRPC
+        # transport (`.code` is a `grpc.StatusCode` enum, not an int), so the
+        # status-code path cannot classify them. Match by name instead.
+        "ResourceExhausted",
+        "ServiceUnavailable",
+        "DeadlineExceeded",
+        "Aborted",
+        "InternalServerError",
     }
 )
 """Provider SDK exception class names that signal a transient network fault.
@@ -96,12 +203,15 @@ _NONRETRYABLE_ERROR_CODES = frozenset(
         "account_deactivated",
     }
 )
-"""Provider error codes that are permanent despite a retryable HTTP status.
+"""Provider error codes that are permanent regardless of the HTTP status.
 
 OpenAI and compatible providers return HTTP 429 for exhausted billing/quota
 (`insufficient_quota`), which no amount of retrying will clear. Classifying
 these by their string error code surfaces the actionable failure immediately
-instead of after the full retry budget and its backoff sleeps.
+instead of after the full retry budget and its backoff sleeps. The remaining
+codes (hard billing limits, inactive billing, deactivated accounts) are equally
+permanent; they usually arrive with an already-fatal 401/403, so matching them
+here is a safety net that holds regardless of the status the provider attaches.
 """
 
 _THROTTLING_ERROR_CODES = frozenset(
@@ -271,6 +381,19 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     if isinstance(exc, httpx_transient):
         return True
 
+    error_type = type(exc)
+    if error_type.__module__.startswith("httpcore") and error_type.__name__ in {
+        "ReadError",
+        "RemoteProtocolError",
+    }:
+        return True
+    if (
+        error_type.__module__ == "aiohttp.http_exceptions"
+        and error_type.__name__ == "TransferEncodingError"
+        and "Not enough data to satisfy transfer length header" in str(exc)
+    ):
+        return True
+
     # AWS throttling arrives as an HTTP 400 body; the error code is the only
     # signal that this 4xx is actually a rate limit worth retrying.
     if error_code in _THROTTLING_ERROR_CODES:
@@ -290,6 +413,32 @@ def _is_retryable_model_error(exc: Exception) -> bool:
 
     # Stdlib transport faults raised directly (rare, but cheap to cover).
     return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield an exception, its causes, contexts, and group members once."""
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+
+
+def _contains_retryable_model_error(exc: BaseException) -> bool:
+    """Return whether an exception chain contains a transient model failure."""
+    return any(
+        isinstance(current, Exception) and _is_retryable_model_error(current)
+        for current in _exception_chain(exc)
+    )
 
 
 def format_retry_status(attempt: int, max_retries: int) -> str:
@@ -415,14 +564,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The model-specific non-negative retry count, or the middleware's
             startup fallback when the model carries no valid metadata.
         """
-        raw_retries = getattr(model, MODEL_RETRIES_ATTR, None)
-        if (
-            isinstance(raw_retries, int)
-            and not isinstance(raw_retries, bool)
-            and raw_retries >= 0
-        ):
-            return raw_retries
-        return self.max_retries
+        return get_model_retries(model, self.max_retries)
 
     def run_with_retry(
         self,
@@ -430,32 +572,45 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         handler: Callable[[], _T],
         *,
         writer: Callable[[ModelRetryEvent], object] | None = None,
+        retry_if: Callable[[], bool] | None = None,
+        max_retries: int | None = None,
     ) -> _T:
         """Run a direct model call with the model's attached retry budget.
 
         This is used by model calls that do not pass through LangChain's model
-        node, such as forced conversation summaries.
+        node, such as forced conversation summaries. On exhaustion, a
+        non-transient error, or a `retry_if` veto, the original model error is
+        re-raised with its traceback intact (never wrapped or swallowed).
 
         Args:
             model: Concrete model used by `handler`.
             handler: Zero-argument callable that performs the model call.
             writer: Optional custom-stream writer for retry status events.
+            retry_if: Optional guard checked after a retryable failure. Returning
+                `False` prevents another attempt after output becomes visible.
+            max_retries: Request-local retry budget, or `None` to use model metadata.
 
         Returns:
             The successful handler result.
 
         Raises:
             RuntimeError: If the retry loop exits without returning (unreachable
-                in practice).
+                in practice; present only as a fail-loud type-checker guard).
         """
-        max_retries = self._model_max_retries(model)
-        for attempt in range(max_retries + 1):
+        resolved_retries = (
+            max_retries if max_retries is not None else self._model_max_retries(model)
+        )
+        for attempt in range(resolved_retries + 1):
             try:
                 return handler()
             except Exception as exc:  # classified by _is_retryable_model_error
-                if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                if (
+                    not _contains_retryable_model_error(exc)
+                    or attempt >= resolved_retries
+                    or (retry_if is not None and not retry_if())
+                ):
                     raise
-                self._emit_retry_status(writer, attempt + 1, max_retries, exc)
+                self._emit_retry_status(writer, attempt + 1, resolved_retries, exc)
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     time.sleep(delay)
@@ -468,31 +623,46 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         handler: Callable[[], Awaitable[_T]],
         *,
         writer: Callable[[ModelRetryEvent], object] | None = None,
+        retry_if: Callable[[], bool] | None = None,
+        max_retries: int | None = None,
     ) -> _T:
         """Asynchronously run a direct model call with attached retry metadata.
+
+        On exhaustion, a non-transient error, or a `retry_if` veto, the original
+        model error is re-raised with its traceback intact (never wrapped or
+        swallowed).
 
         Args:
             model: Concrete model used by `handler`.
             handler: Zero-argument async callable that performs the model call.
             writer: Optional custom-stream writer for retry status events.
+            retry_if: Optional guard checked after a retryable failure. Returning
+                `False` prevents another attempt after output becomes visible.
+            max_retries: Request-local retry budget, or `None` to use model metadata.
 
         Returns:
             The successful handler result.
 
         Raises:
             RuntimeError: If the retry loop exits without returning (unreachable
-                in practice).
+                in practice; present only as a fail-loud type-checker guard).
         """
         import asyncio
 
-        max_retries = self._model_max_retries(model)
-        for attempt in range(max_retries + 1):
+        resolved_retries = (
+            max_retries if max_retries is not None else self._model_max_retries(model)
+        )
+        for attempt in range(resolved_retries + 1):
             try:
                 return await handler()
             except Exception as exc:  # classified by _is_retryable_model_error
-                if not _is_retryable_model_error(exc) or attempt >= max_retries:
+                if (
+                    not _contains_retryable_model_error(exc)
+                    or attempt >= resolved_retries
+                    or (retry_if is not None and not retry_if())
+                ):
                     raise
-                self._emit_retry_status(writer, attempt + 1, max_retries, exc)
+                self._emit_retry_status(writer, attempt + 1, resolved_retries, exc)
                 delay = self._compute_delay(attempt)
                 if delay > 0:
                     await asyncio.sleep(delay)
@@ -503,7 +673,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse | AIMessage:
+    ) -> ModelResponse:
         """Retry the model node on transient errors, surfacing status per retry.
 
         Args:
@@ -511,20 +681,30 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             handler: Callable that executes the model node.
 
         Returns:
-            The successful `ModelResponse`.
+            The successful `ModelResponse`. Never an error `AIMessage`: failures
+                propagate from `run_with_retry` with the original traceback.
         """
         writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
+        tracker = _StreamOutputTracker()
+        config = _stream_tracking_config(tracker)
+
+        def tracked_handler() -> ModelResponse:
+            with set_config_context(config) as context:
+                return context.run(handler, request)
+
         return self.run_with_retry(
             request.model,
-            lambda: handler(request),
+            tracked_handler,
             writer=writer,
+            retry_if=lambda: not tracker.emitted,
+            max_retries=_runtime_model_retry_override(request.runtime),
         )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse | AIMessage:
+    ) -> ModelResponse:
         """Async variant of `wrap_model_call`.
 
         Args:
@@ -532,11 +712,27 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             handler: Async callable that executes the model node.
 
         Returns:
-            The successful `ModelResponse`.
+            The successful `ModelResponse`. Never an error `AIMessage`: failures
+                propagate from `arun_with_retry` with the original traceback.
         """
+        import asyncio
+
         writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
+        tracker = _StreamOutputTracker()
+        config = _stream_tracking_config(tracker, asynchronous=True)
+
+        async def tracked_handler() -> ModelResponse:
+            async def invoke_handler() -> ModelResponse:
+                return await handler(request)
+
+            with set_config_context(config) as context:
+                task = context.run(lambda: asyncio.create_task(invoke_handler()))
+                return await task
+
         return await self.arun_with_retry(
             request.model,
-            lambda: handler(request),
+            tracked_handler,
             writer=writer,
+            retry_if=lambda: not tracker.emitted,
+            max_retries=_runtime_model_retry_override(request.runtime),
         )

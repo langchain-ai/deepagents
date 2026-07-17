@@ -12,6 +12,7 @@ import httpx
 import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ from deepagents_code.config import (
     MODEL_RETRIES_ATTR,
     MODEL_RETRY_OVERRIDE_ATTR,
     ModelResult,
+    _provider_retry_disable_kwargs,
     _resolve_config_retry_count,
     create_model,
     reset_glyphs_cache,
@@ -110,6 +112,32 @@ class _ThrottlingError(Exception):
         }
 
 
+class ResourceExhausted(Exception):  # noqa: N818  # mirrors Google's real class name
+    """Google api_core transient error over gRPC (`.code` is a non-int enum)."""
+
+    def __init__(self) -> None:
+        super().__init__("resource exhausted")
+        # `grpc.StatusCode` enum member: truthy, non-int, carries a `name`.
+        self.code = SimpleNamespace(name="RESOURCE_EXHAUSTED")
+
+
+class ServiceUnavailable(Exception):  # noqa: N818  # mirrors Google's real class name
+    """Google api_core transient error over gRPC (`.code` is a non-int enum)."""
+
+    def __init__(self) -> None:
+        super().__init__("service unavailable")
+        self.code = SimpleNamespace(name="UNAVAILABLE")
+
+
+class _SubclassedConnectionError(APIConnectionError):
+    """Own name is absent from the transient set; a base name matches via MRO."""
+
+
+def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
+    error_type = type(name, (Exception,), {"__module__": module})
+    return error_type(message)
+
+
 def _write_config(tmp_path: Path, text: str) -> Path:
     p = tmp_path / "config.toml"
     p.write_text(text)
@@ -120,9 +148,15 @@ def _req(
     events: list[dict] | None = None,
     *,
     model_retries: int | None = None,
+    runtime_retries: int | None = None,
 ) -> ModelRequest:
     writer = (lambda event: events.append(event)) if events is not None else None
-    runtime = SimpleNamespace(stream_writer=writer)
+    context = (
+        CLIContext(model_params={CLI_MAX_RETRIES_KEY: runtime_retries})
+        if runtime_retries is not None
+        else None
+    )
+    runtime = SimpleNamespace(stream_writer=writer, context=context)
     model = MagicMock(spec=BaseChatModel)
     if model_retries is not None:
         setattr(model, MODEL_RETRIES_ATTR, model_retries)
@@ -284,6 +318,104 @@ def test_resolve_config_retry_count_direct() -> None:
     assert _resolve_config_retry_count({"max_retries": 0}, "openai") == 0
 
 
+@pytest.mark.parametrize("bad", [-1, 1.5, True, False, "3"])
+def test_resolve_config_retry_count_drops_invalid_global(
+    caplog: pytest.LogCaptureFixture, bad: object
+) -> None:
+    """A malformed global `max_retries` is dropped with a warning."""
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+        assert _resolve_config_retry_count({"max_retries": bad}, "openai") is None
+    assert "expected int >= 0" in caplog.text
+
+
+def test_resolve_config_retry_count_provider_overrides_global() -> None:
+    """A provider `max_retries` overrides the global value."""
+    section = {"max_retries": 2, "openai": {"max_retries": 7}}
+    assert _resolve_config_retry_count(section, "openai") == 7
+    assert _resolve_config_retry_count(section, "anthropic") == 2
+
+
+def test_resolve_config_retry_count_warns_unknown_keys(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Scalar junk keys are ignored with a warning; `param` is not."""
+    section = {"bogus": 9, "openai": {"max_retries": 3, "param": "num_retries"}}
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+        assert _resolve_config_retry_count(section, "openai") == 3
+    assert "Ignoring [retries].bogus" in caplog.text
+    assert "param" not in caplog.text
+
+
+def test_read_config_toml_retries_warns_on_mistyped_provider(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A mistyped provider sub-table surfaces a 'not a known provider' warning."""
+    from deepagents_code.config import _read_config_toml_retries
+
+    cfg = _write_config(tmp_path, "[retries.fireorks]\nmax_retries = 4\n")
+    with (
+        patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+    ):
+        _read_config_toml_retries()
+    assert "not a known provider" in caplog.text
+
+
+def test_read_config_toml_retries_warns_on_malformed_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Malformed TOML yields None and a 'Could not read' warning."""
+    from deepagents_code.config import _read_config_toml_retries
+
+    cfg = _write_config(tmp_path, "[retries]\nthis is not = = valid toml\n")
+    with (
+        patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+    ):
+        assert _read_config_toml_retries() is None
+    assert "Could not read retries config" in caplog.text
+
+
+def test_read_config_toml_retries_ignores_scalar_section(tmp_path: Path) -> None:
+    """A scalar `retries = 5` (not a table) is treated as absent."""
+    from deepagents_code.config import _read_config_toml_retries
+
+    cfg = _write_config(tmp_path, "retries = 5\n")
+    with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
+        assert _read_config_toml_retries() is None
+
+
+def test_disable_kwargs_registered_provider() -> None:
+    """A registered provider disables its own SDK retries."""
+    assert _provider_retry_disable_kwargs(None, "anthropic", {}) == {"max_retries": 0}
+
+
+def test_disable_kwargs_configured_param() -> None:
+    """A `[retries.<provider>].param` names the kwarg to zero out."""
+    section = {"custom": {"param": "num_retries"}}
+    assert _provider_retry_disable_kwargs(section, "custom", {}) == {"num_retries": 0}
+
+
+def test_disable_kwargs_falls_back_to_max_retries_in_kwargs() -> None:
+    """An unregistered provider that already passes `max_retries` is disabled."""
+    assert _provider_retry_disable_kwargs(None, "custom", {"max_retries": 4}) == {
+        "max_retries": 0
+    }
+
+
+def test_disable_kwargs_unidentifiable_provider_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unidentifiable provider yields no disable kwarg and a visible warning.
+
+    This is the branch where the provider's own SDK retry loop stays active and
+    can multiply the middleware's budget, so the warning must be surfaced.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+        assert _provider_retry_disable_kwargs(None, "mystery", {}) == {}
+    assert "SDK retries stay active" in caplog.text
+
+
 # --- retry predicate ---
 
 
@@ -311,6 +443,19 @@ def test_resolve_config_retry_count_direct() -> None:
         ReadTimeoutError("x"),
         TimeoutError("x"),
         ConnectionError("x"),
+        _typed_error("httpcore._exceptions", "ReadError"),
+        _typed_error(
+            "aiohttp.http_exceptions",
+            "TransferEncodingError",
+            "Not enough data to satisfy transfer length header",
+        ),
+        # Google gRPC transient errors whose `.code` is a non-int enum, so they
+        # can only be classified by name across the MRO.
+        ResourceExhausted(),
+        ServiceUnavailable(),
+        # A subclass whose own name is not in the transient set matches via a
+        # base class name in its MRO.
+        _SubclassedConnectionError("x"),
     ],
 )
 def test_predicate_retryable(exc: Exception) -> None:
@@ -366,6 +511,92 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 3
     assert [e["type"] for e in events] == ["model_retry", "model_retry"]
     assert "retrying 1/5" in events[0]["message"]
+
+
+def test_wrapped_transient_error_retries_within_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            wrapped = RuntimeError("model graph failed")
+            wrapped.__cause__ = _READ_ERROR
+            raise wrapped
+        return _response()
+
+    result = CodeModelRetryMiddleware(max_retries=1).wrap_model_call(_req(), handler)
+
+    assert result.result[0].text == "OK"
+    assert calls["n"] == 2
+
+
+def test_exception_group_transient_error_retries_within_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            group = ExceptionGroup("model graph failed", [ValueError("x"), _READ_ERROR])
+            raise group
+        return _response()
+
+    CodeModelRetryMiddleware(max_retries=1).wrap_model_call(_req(), handler)
+
+    assert calls["n"] == 2
+
+
+def test_does_not_retry_after_streamed_output() -> None:
+    """A partial streamed attempt must never be replayed into the client."""
+    events: list[dict] = []
+    calls = {"n": 0}
+    model = FakeListChatModel(responses=["first", "second"])
+    setattr(model, MODEL_RETRIES_ATTR, 3)
+    request = _req(events).override(model=model)
+
+    def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        stream = selected.model.stream(selected.messages)
+        assert next(stream).text == "f"
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with pytest.raises(httpx.ReadError):
+        middleware.wrap_model_call(request, handler)
+
+    assert calls["n"] == 1
+    assert model.i == 1
+    assert events == []
+
+
+async def test_async_does_not_retry_after_streamed_output() -> None:
+    """The async path tracks output without copying the stateful model."""
+    events: list[dict] = []
+    calls = {"n": 0}
+    model = FakeListChatModel(responses=["first", "second"])
+    setattr(model, MODEL_RETRIES_ATTR, 3)
+    request = _req(events).override(model=model)
+
+    async def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        stream = selected.model.astream(selected.messages)
+        assert (await anext(stream)).text == "f"
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with pytest.raises(httpx.ReadError):
+        await middleware.awrap_model_call(request, handler)
+
+    assert calls["n"] == 1
+    assert model.i == 1
+    assert events == []
 
 
 def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -427,6 +658,26 @@ def test_request_model_overrides_startup_retry_count(
 
     assert calls["n"] == 4
     assert [event["max_retries"] for event in events] == [3, 3, 3]
+
+
+def test_runtime_context_overrides_same_models_attached_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(httpx.ReadError):
+        middleware.wrap_model_call(
+            _req(model_retries=4, runtime_retries=1),
+            handler,
+        )
+
+    assert calls["n"] == 2
 
 
 def test_runtime_model_switch_uses_selected_models_retry_count(

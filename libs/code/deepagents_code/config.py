@@ -2116,10 +2116,13 @@ def _provider_retry_disable_kwargs(
         retry_param = "max_retries"
     if retry_param is None:
         # The provider's own SDK retry loop can't be identified, so it stays
-        # active and may multiply the middleware's attempts. Register the
-        # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
-        logger.debug(
-            "No retry-disable kwarg for provider %r; its SDK retries stay active",
+        # active and may multiply the middleware's attempts. Surface this at
+        # `warning` so a configured budget silently amplifying is diagnosable;
+        # register the provider in `RETRY_PARAM_BY_PROVIDER` or set
+        # `[retries.<provider>].param` to fix it.
+        logger.warning(
+            "No retry-disable kwarg for provider %r; its SDK retries stay active "
+            "and may multiply the configured retry budget",
             provider,
         )
         return {}
@@ -2135,9 +2138,10 @@ model-node retry count (see `resolve_model_retries`). This lets the CLI value
 ride the existing `model_params`/`extra_kwargs` carrier to the one place that
 authoritatively resolves the provider.
 
-The key is internal-only: it is popped before reaching any model constructor and
-is never serialized or surfaced to users. It is deliberately unlikely to collide
-with a real constructor kwarg name.
+The key is internal-only: it may be persisted in the private `_model_params`
+checkpoint channel so a resumed thread keeps the same explicit override, but it is
+filtered before reaching model constructors, invocation settings, logs, or user
+messages. It is deliberately unlikely to collide with a real constructor kwarg name.
 """
 
 
@@ -2153,6 +2157,58 @@ MODEL_RETRIES_ATTR = "_deepagents_model_retries"
 
 MODEL_RETRY_OVERRIDE_ATTR = "_deepagents_model_retry_override"
 """Private model attribute carrying an explicit CLI retry override, if any."""
+
+
+def set_model_retry_metadata(
+    model: BaseChatModel, *, retries: int, cli_override: int | None
+) -> None:
+    """Attach the retry budget and CLI override to a constructed model.
+
+    Uses `object.__setattr__` because Pydantic `BaseChatModel` instances reject
+    unknown fields through normal attribute assignment. This is the single write
+    site for both attributes; readers go through `get_model_retries` /
+    `get_model_retry_override` so the int/bool/non-negative invariant lives in
+    one place.
+
+    Args:
+        model: The concrete model selected for the request.
+        retries: Resolved non-negative retry budget for this model.
+        cli_override: Explicit `--max-retries` value, or `None` when unset.
+    """
+    object.__setattr__(model, MODEL_RETRIES_ATTR, retries)  # noqa: PLC2801
+    object.__setattr__(model, MODEL_RETRY_OVERRIDE_ATTR, cli_override)  # noqa: PLC2801
+
+
+def get_model_retries(model: BaseChatModel, fallback: int) -> int:
+    """Return the validated retry budget attached to `model`, else `fallback`.
+
+    Args:
+        model: The concrete model to read metadata from.
+        fallback: Value returned when the model carries no valid budget.
+
+    Returns:
+        The model's non-negative retry budget, or `fallback` when the attribute
+            is missing, non-integer, boolean, or negative.
+    """
+    raw = getattr(model, MODEL_RETRIES_ATTR, None)
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    return fallback
+
+
+def get_model_retry_override(model: BaseChatModel) -> int | None:
+    """Return the explicit CLI retry override attached to `model`, if valid.
+
+    Args:
+        model: The concrete model to read metadata from.
+
+    Returns:
+        The non-negative integer override, or `None` when absent or invalid.
+    """
+    raw = getattr(model, MODEL_RETRY_OVERRIDE_ATTR, None)
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    return None
 
 
 def _resolve_model_retries_from_section(
@@ -4752,12 +4808,7 @@ def create_model(
     # Runtime `/model` switches replace `request.model`, so the downstream retry
     # middleware can read the matching budget without mutating shared middleware
     # state or forwarding an internal key to a provider API.
-    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
-        model, MODEL_RETRIES_ATTR, model_retries
-    )
-    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
-        model, MODEL_RETRY_OVERRIDE_ATTR, cli_max_retries
-    )
+    set_model_retry_metadata(model, retries=model_retries, cli_override=cli_max_retries)
 
     # Extract context limit and modality support from model profile
     context_limit: int | None = None

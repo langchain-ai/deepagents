@@ -1697,15 +1697,16 @@ def create_cli_agent(
         if model_spec:
             from deepagents_code.config import (
                 CLI_MAX_RETRIES_KEY,
-                MODEL_RETRY_OVERRIDE_ATTR,
                 create_model,
+                get_model_retry_override,
             )
 
-            retry_override = getattr(model, MODEL_RETRY_OVERRIDE_ATTR, None)
+            retry_override = (
+                None if isinstance(model, str) else get_model_retry_override(model)
+            )
             retry_kwargs = (
                 {CLI_MAX_RETRIES_KEY: retry_override}
-                if isinstance(retry_override, int)
-                and not isinstance(retry_override, bool)
+                if retry_override is not None
                 else None
             )
             model_result = create_model(model_spec, extra_kwargs=retry_kwargs)
@@ -2061,13 +2062,23 @@ def create_cli_agent(
             repository_backend=criteria_backend,
             repository_root=criteria_root,
             context_tools=goal_criteria_tools,
+            retry_fallback=model_retries,
         )
-        criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
+        criteria_fallback_agent = create_goal_criteria_fallback_agent(
+            model=model,
+            retry_fallback=model_retries,
+        )
         agent_middleware.append(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
-    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
+    agent_middleware.append(
+        _create_cli_compaction_middleware(
+            model,
+            composite_backend,
+            model_retries=model_retries,
+        )
+    )
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.
@@ -2077,12 +2088,23 @@ def create_cli_agent(
             message="The middleware `RubricMiddleware` is in beta",
             category=Warning,
         )
+        from deepagents_code.config import get_model_retry_override
+
         rubric_kwargs: dict[str, Any] = {
             "model": rubric_model if rubric_model is not None else model,
             "system_prompt": _rubric_grader_system_prompt(
                 _rubric_grader_read_file_prefix(composite_backend)
             ),
             "tools": _create_rubric_grader_tools(composite_backend),
+            "model_retry_override": (
+                None if isinstance(model, str) else get_model_retry_override(model)
+            ),
+            "model_retry_fallback": (
+                model_retries
+                if isinstance(model, str)
+                or (rubric_model is not None and not isinstance(rubric_model, str))
+                else None
+            ),
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations

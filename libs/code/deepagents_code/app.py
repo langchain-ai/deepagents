@@ -1440,6 +1440,24 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
     return remaining, params
 
 
+def _visible_model_params(
+    extra_kwargs: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return model params safe to show in messages and logs.
+
+    Returns:
+        User-supplied model params without internal transport keys, or `None`.
+    """
+    if not extra_kwargs:
+        return None
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+    visible = {
+        key: value for key, value in extra_kwargs.items() if key != CLI_MAX_RETRIES_KEY
+    }
+    return visible or None
+
+
 def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     """Render `--model-params` as a stable, key-sorted JSON suffix.
 
@@ -1447,12 +1465,61 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
         extra_kwargs: The parsed `--model-params` payload, or `None`.
 
     Returns:
-        ` with model params {json}` when `extra_kwargs` is non-empty;
+        ` with model params {json}` when user-visible params are non-empty;
         otherwise an empty string so callers can unconditionally concatenate.
     """
-    if not extra_kwargs:
+    visible = _visible_model_params(extra_kwargs)
+    if visible is None:
         return ""
-    return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
+    return f" with model params {json.dumps(visible, sort_keys=True)}"
+
+
+def _model_retry_override(params: dict[str, Any] | None) -> int | None:
+    """Return a validated retry carrier from model params, if present."""
+    if not params:
+        return None
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+    value = params.get(CLI_MAX_RETRIES_KEY)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _carry_cli_retry_override(
+    incoming: dict[str, Any] | None,
+    *,
+    active: dict[str, Any] | None,
+    launch_override: int | None,
+    from_resume: bool,
+) -> dict[str, Any] | None:
+    """Carry the correct explicit retry override into a model switch.
+
+    Args:
+        incoming: Params supplied by the requested switch or resumed checkpoint.
+        active: Params active on the current thread.
+        launch_override: Immutable override from this process's CLI invocation.
+        from_resume: Whether `incoming` belongs to a newly selected checkpoint.
+
+    Returns:
+        A defensive copy with launch-time precedence and no cross-thread leakage.
+    """
+    merged = dict(incoming) if incoming is not None else None
+    retry_override = launch_override
+    if (
+        retry_override is None
+        and not from_resume
+        and _model_retry_override(merged) is None
+    ):
+        retry_override = _model_retry_override(active)
+    if retry_override is None:
+        return merged
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+    if merged is None:
+        merged = {}
+    merged[CLI_MAX_RETRIES_KEY] = retry_override
+    return merged
 
 
 def _display_model_label(spec: str | None) -> str | None:
@@ -2834,8 +2901,14 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
 
-        self._model_params_override: dict[str, Any] | None = (
+        initial_model_params = (
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
+        )
+        self._cli_retry_override = _model_retry_override(initial_model_params)
+        """Immutable explicit retry override supplied when this process launched."""
+
+        self._model_params_override: dict[str, Any] | None = (
+            dict(initial_model_params) if initial_model_params is not None else None
         )
         """Per-turn model params override set via startup or `/model` params."""
 
@@ -20090,6 +20163,12 @@ class DeepAgentsApp(App):
             touch_recent_model,
         )
 
+        extra_kwargs = _carry_cli_retry_override(
+            extra_kwargs,
+            active=self._model_params_override,
+            launch_override=self._cli_retry_override,
+            from_resume=from_resume,
+        )
         logger.info("Switching model to %s", model_spec)
 
         if self._model_switching:
@@ -20199,7 +20278,7 @@ class DeepAgentsApp(App):
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
-                    extra_kwargs,
+                    _visible_model_params(extra_kwargs),
                 )
                 return
 
@@ -20277,7 +20356,7 @@ class DeepAgentsApp(App):
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",
                 display,
-                extra_kwargs,
+                _visible_model_params(extra_kwargs),
             )
 
             # Anchor to bottom so the confirmation message is visible

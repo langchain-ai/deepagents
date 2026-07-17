@@ -3923,6 +3923,89 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         assert execute_row_holder[0]._status == "running"
         assert execute_row_holder[0]._start_time is not None
 
+    async def test_main_checkpoint_pauses_and_resumes_ungated_sibling(self) -> None:
+        """A main-agent checkpoint blocks every tool in its parallel batch."""
+        snapshot: dict[str, tuple[str, float | None]] = {}
+        rows: dict[str, ToolCallMessage] = {}
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                rows[widget.tool_name] = widget
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            for tool_id in ("exec-1", "read-1"):
+                row = adapter._current_tool_messages[tool_id]
+                snapshot[tool_id] = (row._status, row._start_time)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "exec-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "read_file", {"path": "notes.txt"}, "read-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot == {
+            "exec-1": ("pending", None),
+            "read-1": ("pending", None),
+        }
+        assert rows["execute"]._status == "running"
+        assert rows["read_file"]._status == "running"
+
     async def test_completed_task_duration_spans_full_execution(self) -> None:
         """A task's `Took …` covers full run time, not just post-approval.
 
@@ -4001,6 +4084,65 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         assert task_row._duration is not None
         # Full span (~100s), not the near-zero interval since the approval.
         assert task_row._duration >= 99.0
+
+    async def test_child_reasoned_reject_leaves_outer_task_running(self) -> None:
+        """A reasoned reject of a nested child does not reject the outer task.
+
+        A reject *with a reason* resumes the run rather than aborting it (the
+        bare-reject abort path is the only one that marks every row rejected and
+        clears the turn). The rejected child tool is untracked, so the
+        still-running outer `task` row must stay `running` — before the reject
+        path was scoped it was marked `rejected` on the resuming turn and, since
+        `set_success` ignores an already-rejected row, stuck there permanently
+        even after the task later completed.
+        """
+        task_row_holder: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                task_row_holder.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "try a different url"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    self._task_chunk("task-1", "research the repo"),
+                    self._child_interrupt_chunk(
+                        ("task:task-1:0",),
+                        "fetch_url",
+                        {"url": "http://example.com"},
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert task_row_holder
+        task_row = task_row_holder[0]
+        assert task_row._status == "running"
+        assert task_row._start_time is not None
 
 
 class TestExecuteTaskTextualAskUser:

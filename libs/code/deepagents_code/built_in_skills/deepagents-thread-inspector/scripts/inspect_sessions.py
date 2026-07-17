@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import importlib
 import json
 import os
 import shutil
@@ -19,17 +19,24 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from langchain_core.messages import MessageLikeRepresentation
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
+
+_RUNTIME_IMPORTS = (
+    ("langgraph.checkpoint.serde.jsonplus", "JsonPlusSerializer"),
+    ("langgraph.graph.message", "add_messages"),
+    ("langgraph.types", "Overwrite"),
+)
 
 
 def _has_runtime() -> bool:
     try:
-        return (
-            importlib.util.find_spec("langgraph.checkpoint.serde.jsonplus") is not None
-        )
-    except ModuleNotFoundError:
+        for module, symbol in _RUNTIME_IMPORTS:
+            getattr(importlib.import_module(module), symbol)
+    except (AttributeError, ImportError):
         return False
+    return True
 
 
 def _ensure_runtime() -> None:
@@ -62,17 +69,25 @@ def _ensure_runtime() -> None:
         if candidate_key in seen or not candidate.is_file():
             continue
         seen.add(candidate_key)
-        check = subprocess.run(  # noqa: S603  # Runs a resolved dcode interpreter.
-            [
-                str(candidate),
-                "-c",
-                "from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=10,
-        )
+        try:
+            check = subprocess.run(  # noqa: S603  # Runs a resolved dcode interpreter.
+                [
+                    str(candidate),
+                    "-c",
+                    "; ".join(
+                        f"from {module} import {symbol}"
+                        for module, symbol in _RUNTIME_IMPORTS
+                    ),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            # A hung or non-executable candidate must not abort the search;
+            # skip it and fall through to the next one (or the clear error below).
+            continue
         if check.returncode == 0:
             env = os.environ.copy()
             env["DEEPAGENTS_THREAD_INSPECTOR_REEXEC"] = "1"
@@ -140,12 +155,24 @@ def _resolve_thread_id(conn: sqlite3.Connection, value: str) -> str:
     return matches[0]
 
 
-def _decode_metadata(value: object) -> dict[str, object]:
+def _decode_metadata(
+    value: object, warnings: list[str] | None = None
+) -> dict[str, object]:
     if isinstance(value, bytes):
-        value = value.decode("utf-8")
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            if warnings is not None:
+                warnings.append("Checkpoint metadata was not valid UTF-8.")
+            return {}
     if not isinstance(value, str) or not value:
         return {}
-    decoded = json.loads(value)
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        if warnings is not None:
+            warnings.append("Checkpoint metadata was not valid JSON.")
+        return {}
     if not isinstance(decoded, dict):
         return {}
     return {str(key): item for key, item in decoded.items()}
@@ -155,6 +182,7 @@ def _thread_summary(
     conn: sqlite3.Connection,
     thread_id: str,
     message_count: int | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     aggregate = conn.execute(
         "SELECT COUNT(*) AS checkpoint_count, "
@@ -170,7 +198,7 @@ def _thread_summary(
         "ORDER BY checkpoint_id DESC LIMIT 1",
         (thread_id,),
     ).fetchone()
-    metadata = _decode_metadata(latest[0] if latest else None)
+    metadata = _decode_metadata(latest[0] if latest else None, warnings)
     writes_count = conn.execute(
         "SELECT COUNT(*) FROM writes WHERE thread_id = ? AND checkpoint_ns = ''",
         (thread_id,),
@@ -210,12 +238,68 @@ def _list_threads(conn: sqlite3.Connection, limit: int) -> list[dict[str, object
     return [dict(row) for row in rows]
 
 
+def _load_inline_messages(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+    warnings: list[str] | None = None,
+) -> list[MessageLikeRepresentation] | None:
+    checkpoint_row = conn.execute(
+        "SELECT type, checkpoint FROM checkpoints "
+        "WHERE thread_id = ? AND checkpoint_ns = '' "
+        "ORDER BY checkpoint_id DESC LIMIT 1",
+        (thread_id,),
+    ).fetchone()
+    if (
+        not checkpoint_row
+        or not checkpoint_row["type"]
+        or not checkpoint_row["checkpoint"]
+    ):
+        return None
+    try:
+        checkpoint = serde.loads_typed(
+            (checkpoint_row["type"], checkpoint_row["checkpoint"])
+        )
+    except Exception as exc:
+        # Corrupt latest checkpoint: fall back to replaying the writes table
+        # rather than aborting, and record why the fast path was skipped.
+        if warnings is not None:
+            warnings.append(
+                f"Could not deserialize the latest checkpoint ({exc}); "
+                "falling back to the writes table."
+            )
+        return None
+    if not isinstance(checkpoint, dict):
+        return None
+    channel_values = checkpoint.get("channel_values")
+    if not isinstance(channel_values, dict) or "messages" not in channel_values:
+        return None
+    inline = channel_values["messages"]
+    if not isinstance(inline, list):
+        # Present but malformed: force the writes fallback instead of reporting
+        # an empty conversation for a thread that may hold real messages.
+        if warnings is not None:
+            warnings.append(
+                "Inline checkpoint messages were malformed; "
+                "falling back to the writes table."
+            )
+        return None
+    return list(cast("list[MessageLikeRepresentation]", inline))
+
+
 def _reconstruct_messages(
-    conn: sqlite3.Connection, thread_id: str
+    conn: sqlite3.Connection,
+    thread_id: str,
+    warnings: list[str] | None = None,
 ) -> list[MessageLikeRepresentation]:
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.graph.message import add_messages
     from langgraph.types import Overwrite
+
+    serde = JsonPlusSerializer()
+    inline = _load_inline_messages(conn, thread_id, serde, warnings)
+    if inline is not None:
+        return inline
 
     rows = conn.execute(
         "SELECT checkpoint_id, task_id, idx, type, value FROM writes "
@@ -223,21 +307,33 @@ def _reconstruct_messages(
         "ORDER BY checkpoint_id ASC, task_id ASC, idx ASC",
         (thread_id,),
     ).fetchall()
-    serde = JsonPlusSerializer()
     messages: list[MessageLikeRepresentation] = []
     for row in rows:
         type_name = row["type"]
         value = row["value"]
         if not type_name or value is None:
             continue
-        delta = serde.loads_typed((type_name, value))
+        try:
+            delta = serde.loads_typed((type_name, value))
+        except Exception as exc:
+            # Skip a single undecodable write and keep replaying the rest.
+            if warnings is not None:
+                warnings.append(
+                    f"Skipped an undecodable write for checkpoint "
+                    f"{row['checkpoint_id']} ({exc})."
+                )
+            continue
         if isinstance(delta, Overwrite):
-            # Message-channel overwrites contain a list; ignore malformed values.
-            messages = (
-                list(cast("list[MessageLikeRepresentation]", delta.value))
-                if isinstance(delta.value, list)
-                else []
-            )
+            if isinstance(delta.value, list):
+                # Overwrite replaces the whole channel with its list payload.
+                messages = list(cast("list[MessageLikeRepresentation]", delta.value))
+            elif warnings is not None:
+                # A non-list payload is malformed; preserve accumulated messages
+                # rather than silently discarding earlier history.
+                warnings.append(
+                    f"Ignored a malformed channel overwrite for checkpoint "
+                    f"{row['checkpoint_id']}."
+                )
         else:
             # `add_messages` normalizes both inputs to a list despite its broad alias.
             messages = cast(
@@ -293,18 +389,23 @@ def _bounded_value(value: object, limit: int) -> tuple[object, bool]:
     return rendered[:limit] + "…", True
 
 
+_ROLE_ALIASES = {"human": "user", "ai": "assistant", "tool": "tool"}
+
+
 def _message_role(message: object) -> str:
     if isinstance(message, dict):
-        return str(message.get("role") or message.get("type") or "unknown")
-    type_name = getattr(message, "type", type(message).__name__)
-    return {
-        "human": "user",
-        "ai": "assistant",
-        "tool": "tool",
-    }.get(type_name, str(type_name))
+        raw = message.get("role") or message.get("type") or "unknown"
+    else:
+        raw = getattr(message, "type", type(message).__name__)
+    return _ROLE_ALIASES.get(str(raw), str(raw))
 
 
-def _message_record(index: int, message: object, max_content: int) -> dict[str, object]:
+def _message_record(
+    index: int,
+    message: object,
+    max_content: int,
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
     if isinstance(message, dict):
         content = message.get("content")
         name = message.get("name")
@@ -320,6 +421,11 @@ def _message_record(index: int, message: object, max_content: int) -> dict[str, 
         tool_call_id = getattr(message, "tool_call_id", None)
         status = getattr(message, "status", None)
     tool_calls = raw_tool_calls if isinstance(raw_tool_calls, list) else []
+    malformed_tool_calls = (
+        raw_tool_calls
+        if raw_tool_calls and not isinstance(raw_tool_calls, list)
+        else None
+    )
 
     text = _content_text(content)
     bounded_text, content_truncated = _truncate(text, max_content)
@@ -348,6 +454,14 @@ def _message_record(index: int, message: object, max_content: int) -> dict[str, 
             else:
                 rendered_calls.append({"value": str(call)})
         record["tool_calls"] = rendered_calls
+    if malformed_tool_calls is not None:
+        # Present but not a list: preserve it as text rather than hiding tool
+        # activity, and flag it for the summarizing agent.
+        record["tool_calls_malformed"] = str(malformed_tool_calls)
+        if warnings is not None:
+            warnings.append(
+                f"Message {index} had non-list tool_calls; preserved as raw text."
+            )
     if tool_call_id:
         record["tool_call_id"] = tool_call_id
     if status:
@@ -368,18 +482,20 @@ def _is_user_message(message: object) -> bool:
 
 
 def _turns(
-    messages: Sequence[object], max_content: int
+    messages: Sequence[object],
+    max_content: int,
+    warnings: list[str] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     starts = [
         index for index, message in enumerate(messages) if _is_user_message(message)
     ]
     if not starts:
         return [], [
-            _message_record(index, message, max_content)
+            _message_record(index, message, max_content, warnings)
             for index, message in enumerate(messages)
         ]
     preamble = [
-        _message_record(index, message, max_content)
+        _message_record(index, message, max_content, warnings)
         for index, message in enumerate(messages[: starts[0]])
     ]
     turns: list[dict[str, object]] = []
@@ -391,7 +507,7 @@ def _turns(
                 "start_message_index": start,
                 "end_message_index": end - 1,
                 "messages": [
-                    _message_record(index, messages[index], max_content)
+                    _message_record(index, messages[index], max_content, warnings)
                     for index in range(start, end)
                 ],
             }
@@ -415,7 +531,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="latest-turn",
     )
     parser.add_argument(
-        "--list", type=int, metavar="N", dest="list_limit", help="List recent threads"
+        "--list",
+        type=int,
+        metavar="N",
+        dest="list_limit",
+        help="List recent threads (ignores --mode/--max-content/--include-metadata)",
     )
     parser.add_argument(
         "--max-content",
@@ -435,7 +555,9 @@ def main() -> None:
     """Parse arguments, inspect the session store, and write JSON to stdout.
 
     Raises:
-        SystemExit: If arguments or the local session store are invalid.
+        SystemExit: If the command-line arguments are invalid, the local session
+            store is missing or unsupported, or the Deep Agents Code runtime
+            cannot be located.
     """
     args = _build_parser().parse_args()
     if args.max_content < 1:
@@ -459,17 +581,25 @@ def main() -> None:
             "or greater.*"
         ),
     )
+    collected_warnings: list[str] = []
+    result: dict[str, object]
     conn = _connect_read_only(args.db)
     try:
         if args.list_limit is not None:
-            result: dict[str, object] = {
+            if args.include_metadata or args.mode != "latest-turn":
+                collected_warnings.append(
+                    "--mode and --include-metadata are ignored when listing threads."
+                )
+            result = {
                 "database": str(args.db.expanduser().resolve()),
                 "threads": _list_threads(conn, args.list_limit),
             }
         else:
             thread_id = _resolve_thread_id(conn, args.thread_id)
-            messages = _reconstruct_messages(conn, thread_id)
-            summary, metadata = _thread_summary(conn, thread_id, len(messages))
+            messages = _reconstruct_messages(conn, thread_id, collected_warnings)
+            summary, metadata = _thread_summary(
+                conn, thread_id, len(messages), collected_warnings
+            )
             result = {
                 "database": str(args.db.expanduser().resolve()),
                 "thread": summary,
@@ -477,7 +607,7 @@ def main() -> None:
             if args.include_metadata:
                 result["latest_metadata"] = metadata
             if args.mode != "summary":
-                turns, preamble = _turns(messages, args.max_content)
+                turns, preamble = _turns(messages, args.max_content, collected_warnings)
                 result["turn_count"] = len(turns)
                 if args.mode == "latest-turn":
                     latest_turn = turns[-1] if turns else None
@@ -488,6 +618,8 @@ def main() -> None:
                 else:
                     result["preamble"] = preamble
                     result["turns"] = turns
+        if collected_warnings:
+            result["warnings"] = collected_warnings
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     finally:
         conn.close()

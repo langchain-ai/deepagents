@@ -7,7 +7,7 @@ compatibility: designed for deepagents-code
 
 # Deep Agents Thread Inspector
 
-Use `scripts/inspect_sessions.py` instead of manually decoding database blobs. It opens the database read-only, deserializes the root message channel with LangGraph's strict MsgPack loader, replays writes in checkpoint order, and emits JSON.
+Use `scripts/inspect_sessions.py` instead of manually decoding database blobs. It opens the database read-only and deserializes the root message channel with LangGraph's strict MsgPack loader — reading the materialized messages from the latest checkpoint, or replaying writes in checkpoint order when that fast path is unavailable — and emits JSON.
 
 ## Inspect a thread
 
@@ -42,6 +42,7 @@ Synthesize the JSON rather than pasting it verbatim.
 - Distinguish stored facts from your interpretation.
 - For the latest turn, describe only the final user message and subsequent activity unless earlier context is required to make it understandable.
 - Mention truncation when a relevant record has `content_truncated` or `args_truncated` set.
+- Surface reconstruction problems when the result includes a top-level `warnings` array (for example, a corrupt checkpoint, a skipped write, or malformed metadata) so conclusions are appropriately hedged.
 - Do not expose unrelated credentials, tokens, personal data, or hidden reasoning that may appear in local records.
 
 ## Safety

@@ -21,8 +21,8 @@ from urllib.parse import unquote, urlparse
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
+    DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
-    ENABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     is_env_truthy,
 )
@@ -163,7 +163,7 @@ that some consumer reads case-insensitively would need a different check.
 
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
-        ENABLED_PROJECT_MCP_SERVERS,
+        DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
     }
 )
@@ -1542,9 +1542,9 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
     return repo
 
 
-# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
-CODING_AGENT_KIND = "coding_agent"
-"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+# coding-agent-v1 contract literals. See `build_coding_agent_metadata`.
+CODING_AGENT_PURPOSE = "coding"
+"""Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
 CODING_AGENT_INTEGRATION = "deepagents-code"
 """Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
@@ -1568,9 +1568,9 @@ def build_coding_agent_metadata(
 ) -> dict[str, Any]:
     """Build the shared coding-agent-v1 trace-metadata block.
 
-    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    Implements the `coding-agent-v1` contract for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
-    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    markers, and repo/git/cwd attribution. The six identity/version keys and
     `thread_id` are always present; the optional keys whose value is unknown are
     omitted (per the contract), so callers can pass `None` for any of them.
 
@@ -1603,7 +1603,7 @@ def build_coding_agent_metadata(
         The contract metadata dict with unknown keys omitted.
     """
     metadata: dict[str, Any] = {
-        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_agent_purpose": CODING_AGENT_PURPOSE,
         "ls_integration": CODING_AGENT_INTEGRATION,
         "ls_agent_runtime": CODING_AGENT_RUNTIME,
         "thread_id": thread_id,
@@ -1647,10 +1647,11 @@ def build_stream_config(
     sandbox_type: str | None = None,
     turn_id: str | None = None,
     turn_number: int | None = None,
+    auto_approve: bool = False,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    Stamps the shared `coding-agent-v1` trace-metadata contract via
     `build_coding_agent_metadata` — identity block, plugin/runtime versions,
     turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
     here propagates trace-wide to every run in the graph (root, llm, tool, and
@@ -1676,6 +1677,14 @@ def build_stream_config(
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
+    Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
+    is enabled, so experimental runs are filterable in trace metadata.
+
+    Also records `dcode_auto_approve=True` when auto-approve ("YOLO") mode is
+    active, so runs that ran tools without HITL approval are filterable in trace
+    metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
+    key (see above), so it is safe to stamp trace-wide.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1687,6 +1696,8 @@ def build_stream_config(
             sandbox is active.
         turn_id: Stable per-turn id for the current user prompt, or `None`.
         turn_number: 1-based per-thread turn index, or `None`.
+        auto_approve: Whether auto-approve ("YOLO") mode is active for this turn.
+            When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -1699,7 +1710,7 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    from deepagents_code._env_vars import USER_ID
+    from deepagents_code._env_vars import EXPERIMENTAL, USER_ID
 
     metadata: dict[str, Any] = build_coding_agent_metadata(
         thread_id=thread_id,
@@ -1710,6 +1721,14 @@ def build_stream_config(
         sandbox_type=sandbox_type,
         user_id=os.environ.get(USER_ID) or None,
     )
+
+    # Mark experimental runs so they are filterable in trace metadata.
+    if is_env_truthy(EXPERIMENTAL):
+        metadata["dcode_experimental"] = True
+
+    # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
+    if auto_approve:
+        metadata["dcode_auto_approve"] = True
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
@@ -3073,6 +3092,26 @@ def is_langsmith_redaction_enabled() -> bool:
     return bool(value)
 
 
+def is_memory_auto_save_enabled() -> bool:
+    """Return whether the agent should proactively save learnings to memory.
+
+    Resolves the `memory.auto_save` option from env/`config.toml`, defaulting to
+    enabled. When disabled, memory is still loaded into context but the agent is
+    told not to auto-save.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("memory.auto_save")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def configure_langsmith_secret_redaction() -> bool:
     """Install the LangSmith SDK secret anonymizer for active agent tracing.
 
@@ -3763,6 +3802,29 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
         return None
 
     return _assemble_langsmith_thread_url(project_url, thread_id)
+
+
+def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
+    """Build a LangSmith thread URL only when its project URL is cached.
+
+    This non-blocking variant lets transient UI surfaces render a previously
+    resolved link immediately without repeating or scheduling another lookup.
+
+    Args:
+        thread_id: Thread identifier to build the URL for.
+
+    Returns:
+        Full thread URL string when the active project's URL is already cached,
+        otherwise `None`.
+    """
+    project_name = get_langsmith_project_name()
+    if not project_name or _langsmith_url_cache is None:
+        return None
+
+    cached_name, cached_url = _langsmith_url_cache
+    if cached_name != project_name:
+        return None
+    return _assemble_langsmith_thread_url(cached_url, thread_id)
 
 
 def reset_langsmith_url_cache() -> None:

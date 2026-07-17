@@ -173,7 +173,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config`."""
 
     summary: str
     """One-line description of what the option controls."""
@@ -194,7 +194,7 @@ class ConfigOption:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
     mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
     `LANGSMITH_PROJECT`.
     """
@@ -209,7 +209,7 @@ class ConfigOption:
     """Representative CLI flag that sets the option, or `None`."""
 
     redacted: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value.
+    """Whether `config` reports only set/not-set, never the raw value.
 
     Named `redacted` rather than `secret` so the value (and the JSON field it
     populates) carries no credential-suggesting identifier — the flag is
@@ -238,9 +238,12 @@ class ConfigOption:
     Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
     where it is the key `/auth` stores the credential under and the name passed
     to `model_config.is_service`. Carrying it as a structured field lets
-    `config show`/`get` look up the stored credential without re-parsing it out
+    `config`/`config get` look up the stored credential without re-parsing it out
     of `key`. `None` for every other option.
     """
+
+    empty_env_is_false: bool = False
+    """Whether an explicitly present empty env value disables a bool option."""
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -254,8 +257,9 @@ class ConfigOption:
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
-                strings, `default` is mutable, a `STRUCTURED` option declares a
-                default, or a scalar option's default has the wrong type.
+                strings, `empty_env_is_false` is set on a non-bool option,
+                `default` is mutable, a `STRUCTURED` option declares a default,
+                or a scalar option's default has the wrong type.
         """
         # Guard `fallback_env_vars` independently of `default` (which has its own
         # early-return path below): like `default`, it is shared by reference
@@ -269,6 +273,9 @@ class ConfigOption:
                 f"{self.key}: fallback_env_vars must be a tuple of non-empty "
                 f"strings, got {self.fallback_env_vars!r}"
             )
+            raise TypeError(msg)
+        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+            msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
         default = self.default
@@ -389,7 +396,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config show` reports the real source
+            # malformed scalar, so `config` reports the real source
             # (config.toml/default) instead of crediting the env var with a
             # value it did not actually supply.
             logger.warning("Ignoring %s=%r (expected bool)", name, raw)
@@ -617,10 +624,11 @@ def resolve_scalar(
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
-        treated as unset (mirroring `resolve_env_var`), so it falls through to
-        the next env var, then `config.toml`/`default`, rather than counting as
-        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
-        `config.toml [ui.*]` sources.
+        normally treated as unset (mirroring `resolve_env_var`), so it falls
+        through to the next env var, then `config.toml`/`default`, rather than
+        counting as set. Options declaring `empty_env_is_false` instead resolve
+        an explicitly present empty value to `False`. Theme resolution
+        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -632,15 +640,18 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string counts as unset, matching `resolve_env_var`, so it is
-        # skipped and the loop continues to the next name. This keeps
-        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
-        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
-        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
-        # tried in order, so the primary `env_var` wins over any fallback.
+        # An empty string normally counts as unset, matching `resolve_env_var`,
+        # so it is skipped and the loop continues to the next name. Options
+        # with an explicitly documented empty-value opt-out declare
+        # `empty_env_is_false`. Names are tried in order, so the primary
+        # `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
+            if raw is None:
+                continue
             if not raw:
+                if option.empty_env_is_false:
+                    return False, f"env ({name})"
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -1076,6 +1087,27 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="memory.auto_save",
+        group="Tools",
+        summary=(
+            "Let the agent proactively save learnings to memory (AGENTS.md); "
+            "disable to keep loading memory but stop auto-saving."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.MEMORY_AUTO_SAVE,
+        empty_env_is_false=True,
+        toml_keys=("memory", "auto_save"),
+    ),
+    ConfigOption(
+        key="features.experimental",
+        group="Tools",
+        summary="Opt into experimental, unstable dcode behavior.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",
@@ -1205,12 +1237,23 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # env overrides are named in the summaries instead of `env_var` because the
     # scalar resolver rejects env-backed STRUCTURED options by design.
     ConfigOption(
+        key="mcp.enabled_project_server_approvals",
+        group="MCP",
+        summary=(
+            "Project MCP server approvals saved by project root, server name, and "
+            "server fingerprint; edited commands/URLs require re-approval. Env-only "
+            "global override (bypasses project/fingerprint binding): "
+            "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_server_approvals"),
+    ),
+    ConfigOption(
         key="mcp.enabled_project_servers",
         group="MCP",
         summary=(
-            "Project MCP server names to pre-approve by name from an untrusted "
-            ".mcp.json; command/URL changes under the same name still match "
-            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+            "Deprecated legacy flat project MCP server-name allowlist; ignored in "
+            "config.toml. Use enabled_project_server_approvals instead."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),
@@ -1359,8 +1402,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
-        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Detection-only migration sentinel; the removed env var is not an option.
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

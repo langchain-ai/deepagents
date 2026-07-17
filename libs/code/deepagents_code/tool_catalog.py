@@ -462,6 +462,7 @@ async def _load_mcp_server_info(
         Discovered MCP server metadata, or an empty list when none load.
     """
     from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
     from deepagents_code.project_utils import ProjectContext
 
     try:
@@ -472,6 +473,11 @@ async def _load_mcp_server_info(
         # convention in `project_utils` and fall back to no project context.
         logger.warning("Could not determine working directory for MCP discovery")
         project_context = None
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
 
     session_manager = None
     try:
@@ -480,6 +486,7 @@ async def _load_mcp_server_info(
             no_mcp=False,
             trust_project_mcp=trust_project_mcp,
             project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
         return server_info or []
     finally:

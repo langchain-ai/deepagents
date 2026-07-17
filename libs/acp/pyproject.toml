@@ -61,6 +61,9 @@ package = true
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_acp"]
+
 [tool.ty.environment]
 python-version = "3.11"
 extra-paths = ["../deepagents"]
@@ -100,10 +103,6 @@ convention = "google"
 ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
 
 [tool.ruff.lint.per-file-ignores]
-"deepagents_acp/py.typed.py" = [
-    "D100",   # py.typed marker file does not need a docstring
-    "N999",   # py.typed is a PEP 561 convention, not a normal module name
-]
 "tests/**" = [
     "ANN001",   # Missing type annotation for function argument — not needed in tests
     "ANN201",   # Missing return type annotation — not needed in tests

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
@@ -20,7 +21,9 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
+    _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
@@ -44,6 +47,11 @@ from deepagents_code.agent import (
 )
 from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
+from deepagents_code.offload import (
+    _FALLBACK_ARTIFACTS_ROOT,
+    _ArtifactsStorage,
+    _filesystem_tool_path,
+)
 from deepagents_code.project_utils import ProjectContext
 
 
@@ -102,6 +110,205 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
     assert interrupt_on
     for config in interrupt_on.values():
         assert config.get("when") is _should_interrupt_tool_call
+
+
+def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
+    """Local archives use the stable user data directory across server restarts."""
+    history_root = tmp_path / ".deepagents"
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._offload_fallback_root", return_value=history_root
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    # Conversation history is addressed under the backend's `artifacts_root`
+    # (a per-session temp dir in local mode) and routed to persistent storage.
+    result = backend.write(
+        f"{backend.artifacts_root}/conversation_history/thread.md", "archived"
+    )
+
+    assert result.error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "archived"
+
+
+def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> None:
+    """Offloaded large results write to the real default fs, not a virtual mount.
+
+    `<artifacts_root>/large_tool_results/` has no composite route, so writes fall
+    through to the default backend at a real path the agent can inspect with
+    `execute` -- the whole point of the local-mode rewire.
+    """
+    artifacts_root = tmp_path / "artifacts"
+    tool_root = _filesystem_tool_path(artifacts_root)
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._artifacts_root",
+        return_value=_ArtifactsStorage(root=tool_root),
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert backend.artifacts_root == tool_root
+    result = backend.write(f"{tool_root}/large_tool_results/call-1", "payload")
+
+    assert result.error is None
+    # The bytes are on the real filesystem at the advertised path.
+    assert (artifacts_root / "large_tool_results" / "call-1").read_text() == "payload"
+
+
+def test_fallback_artifacts_root_keeps_archive_path_resolvable(
+    tmp_path: Path,
+) -> None:
+    """A resumed archive path keeps matching after fallback storage changes."""
+    history_root = tmp_path / ".deepagents"
+    first_results = tmp_path / "large-results-1"
+    recovered_root = _filesystem_tool_path(tmp_path / "recovered-artifacts")
+    model = _make_fake_chat_model()
+
+    with (
+        patch(
+            "deepagents_code.agent._artifacts_root",
+            side_effect=[
+                _ArtifactsStorage(
+                    root=_FALLBACK_ARTIFACTS_ROOT,
+                    large_results_dir=first_results,
+                ),
+                _ArtifactsStorage(root=recovered_root),
+            ],
+        ),
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=history_root,
+        ),
+    ):
+        _first_agent, first_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+        _second_agent, second_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert second_backend.artifacts_root == recovered_root
+    archive_path = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/thread.md"
+    assert first_backend.write(archive_path, "initial").error is None
+    assert second_backend.write(archive_path, "resumed").error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "resumed"
+
+    result_path = f"{_FALLBACK_ARTIFACTS_ROOT}/large_tool_results/call-1"
+    assert first_backend.write(result_path, "payload").error is None
+    assert (first_results / "call-1").read_text() == "payload"
+
+
+def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> None:
+    """Enabling goal criteria wires a fallback agent and a None repo backend."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock(return_value="criteria-agent")
+    make_fallback = Mock(return_value="fallback-agent")
+    make_middleware = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric.create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+        patch("deepagents_code.goal_rubric.GoalCriteriaMiddleware", make_middleware),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            goal_criteria_tools=[],
+        )
+
+    make_criteria.assert_called_once()
+    assert make_criteria.call_args.kwargs["repository_backend"] is None
+    make_fallback.assert_called_once()
+    # Primary and fallback agents share one model, and the middleware receives
+    # both so graph-level failures can degrade to goal-only generation.
+    assert (
+        make_fallback.call_args.kwargs["model"]
+        is make_criteria.call_args.kwargs["model"]
+    )
+    make_middleware.assert_called_once_with("criteria-agent", "fallback-agent")
+
+
+def test_goal_criteria_disabled_skips_middleware(tmp_path: Path) -> None:
+    """`goal_criteria_tools=None` builds no criteria agents or middleware."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock()
+    make_fallback = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric.create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    make_criteria.assert_not_called()
+    make_fallback.assert_not_called()
 
 
 def _request_with_context(
@@ -315,6 +522,33 @@ def test_cli_context_field_parity() -> None:
     typed_dict_keys = set(CLIContext.__annotations__)
     dataclass_keys = {f.name for f in fields(CLIContextSchema)}
     assert typed_dict_keys == dataclass_keys
+
+
+def test_get_context_preserves_compaction_fields_from_dict() -> None:
+    """`_get_context` must carry the compaction fields across the dict boundary.
+
+    On the RemoteGraph path the run context arrives as a dict and
+    `_get_context` reconstructs `CLIContextSchema` field-by-field. The field
+    parity test only guards the *declarations*; this guards the coercion, so
+    `profile_overrides`/`model_context_limit` (which `/offload` reads via the
+    compaction middleware) are not silently dropped on that path.
+    """
+    from deepagents_code.configurable_model import _get_context
+
+    ctx = {
+        "model": "anthropic:claude-haiku-4-5-20251001",
+        "model_params": {"temperature": 0.5},
+        "profile_overrides": {"max_input_tokens": 12345},
+        "model_context_limit": 4096,
+    }
+    request = cast("Any", SimpleNamespace(runtime=SimpleNamespace(context=ctx)))
+
+    resolved = _get_context(request)
+
+    assert resolved is not None
+    assert resolved.profile_overrides == {"max_input_tokens": 12345}
+    assert resolved.model_context_limit == 4096
+    assert resolved.model_params == {"temperature": 0.5}
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
@@ -916,6 +1150,44 @@ class TestGetSystemPromptNonInteractive:
         assert "do NOT ask the user to approve your plan" in prompt
         assert "mark the first item `in_progress` immediately" in prompt
 
+    def test_experimental_prompt_omits_todo_section(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Experimental mode must not reference its removed todo tool."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Todo List Management" not in prompt
+        assert "write_todos" not in prompt
+        # `{todo_guidance}` lives only inside the gated section, so dropping the
+        # section must not leave the placeholder unresolved.
+        assert "{todo_list_section}" not in prompt
+        assert "{todo_guidance}" not in prompt
+
+    def test_default_prompt_resolves_todo_placeholders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default mode keeps the todo section with no unresolved placeholders.
+
+        Guards the `.replace` ordering in `get_system_prompt`: `{todo_guidance}`
+        is nested inside the todo section, so the section must be substituted
+        before the guidance placeholder is filled.
+        """
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Todo List Management" in prompt
+        assert "{todo_list_section}" not in prompt
+        assert "{todo_guidance}" not in prompt
+
 
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""
@@ -1070,7 +1342,7 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
@@ -1101,9 +1373,13 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
+        # The auto-generated prompt overwrites the SDK base prompt.
+        assert mock_create_deep_agent.call_args.kwargs["system_prompt"] == {
+            "base": "mocked prompt"
+        }
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
-        """Explicit system_prompt should be used verbatim, ignoring interactive."""
+        """Explicit system_prompt is forwarded verbatim, ignoring interactive."""
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -1132,7 +1408,7 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
@@ -1156,6 +1432,8 @@ class TestCreateCliAgentInteractiveForwarding:
 
         # get_system_prompt should NOT be called when system_prompt is provided
         mock_get_prompt.assert_not_called()
+        # A caller-supplied prompt is forwarded verbatim (SDK treats it as a
+        # prefix), unlike the auto-generated prompt which overwrites the base.
         assert (
             mock_create_deep_agent.call_args.kwargs["system_prompt"] == "custom prompt"
         )
@@ -1457,7 +1735,7 @@ class TestCreateCliAgentSkillsSources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
@@ -1511,82 +1789,6 @@ class TestCreateCliAgentSkillsSources:
             assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
         assert rendered.rstrip().endswith("(higher priority)")
 
-    def test_skills_sources_fallback_to_bare_paths_on_old_sdk(
-        self, tmp_path: Path
-    ) -> None:
-        """If the installed SDK lacks `SkillSource`, CLI passes bare paths.
-
-        Backwards-compat: SDKs < 0.5.4 only accept `list[str]`. The CLI
-        detects the missing alias at import time and strips labels
-        before handing sources to `SkillsMiddleware`, so the middleware
-        never receives an unsupported tuple.
-        """
-        agent_dir = tmp_path / "agent"
-        agent_dir.mkdir()
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        user_agent_skills_dir = tmp_path / "user-agent-skills"
-        user_agent_skills_dir.mkdir()
-        built_in_dir = Settings.get_built_in_skills_dir()
-
-        mock_settings = Mock()
-        mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
-        mock_settings.get_user_claude_skills_dir.return_value = tmp_path / "nonexistent"
-        mock_settings.get_project_claude_skills_dir.return_value = None
-        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = []
-        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
-        mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
-        mock_settings.project_root = None
-
-        captured_sources: list[list[Any]] = []
-
-        class FakeSkillsMiddleware:
-            def __init__(self, **kwargs: Any) -> None:
-                captured_sources.append(kwargs.get("sources", []))
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent._SUPPORTS_SKILL_SOURCE_TUPLES", False),
-            patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-        ):
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=True,
-                enable_shell=False,
-            )
-
-        assert len(captured_sources) == 1
-        sources = captured_sources[0]
-        # Fallback stripped all labels; middleware receives bare strings.
-        assert sources == [
-            str(built_in_dir),
-            str(skills_dir),
-            str(user_agent_skills_dir),
-        ]
-        for source in sources:
-            assert isinstance(source, str), f"expected str, got {type(source)!r}"
-
 
 class TestCreateCliAgentMemorySources:
     """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
@@ -1635,7 +1837,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1702,7 +1904,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1726,6 +1928,98 @@ class TestCreateCliAgentMemorySources:
         sources = captured[0]
         # Only user AGENTS.md, no project paths
         assert sources == [str(agent_dir / "AGENTS.md")]
+
+
+class TestCreateCliAgentMemoryAutoSave:
+    """Test that `memory_auto_save` selects the memory prompt variant."""
+
+    @staticmethod
+    def _mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        return mock_settings
+
+    def _capture_system_prompt(
+        self, tmp_path: Path, *, memory_auto_save: bool
+    ) -> object:
+        mock_settings = self._mock_settings(tmp_path)
+        captured: list[object] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the system_prompt arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("system_prompt", "__unset__"))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_code.agent.FilesystemBackend"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                memory_auto_save=memory_auto_save,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_auto_save_on_uses_default_prompt(self, tmp_path: Path) -> None:
+        """Default (auto-save on) leaves the middleware's default prompt in place."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=True)
+        # No override passed -> MemoryMiddleware keeps its default persistence prompt.
+        assert system_prompt == "__unset__"
+
+    def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
+        """Auto-save off swaps in the Code-owned read-only prompt."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
+        assert system_prompt is _MEMORY_READONLY_SYSTEM_PROMPT
+
+        formatted = _MEMORY_READONLY_SYSTEM_PROMPT.format(
+            agent_memory="(No memory loaded)"
+        )
+        assert "<agent_memory>" in formatted
+        assert "**Trust and verification:**" in formatted
+        assert "**Learning from feedback:**" not in formatted
+        assert "**When to update memories:**" not in formatted
+        assert "**Automatic memory saving is disabled:**" in formatted
+        assert "Never store API keys, access tokens, passwords" in formatted
 
 
 class TestCreateCliAgentProjectContext:
@@ -1790,7 +2084,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -1870,7 +2164,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -1946,7 +2240,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch(
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
@@ -2072,7 +2366,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch("deepagents._models.init_chat_model", return_value=fake_model),
@@ -2533,7 +2827,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2572,7 +2866,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2618,7 +2912,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2676,7 +2970,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2729,7 +3023,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2782,7 +3076,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2856,7 +3150,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2930,7 +3224,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2983,7 +3277,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3033,7 +3327,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3087,7 +3381,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3610,6 +3904,158 @@ class TestCreateCliAgentFsToolsWiring:
         ]
 
 
+class TestExperimentalTodoMiddlewareWiring:
+    """`DEEPAGENTS_CODE_EXPERIMENTAL` drops TodoListMiddleware from every stack.
+
+    `collect_built_in_tools` (see `test_tool_catalog.py`) only inspects the main
+    agent's bound tools, so the subagent splice needs its own coverage: these
+    tests capture the `create_deep_agent` kwargs and assert the stand-in reaches
+    the main agent, custom subagents, and the general-purpose subagent that
+    dcode auto-adds.
+    """
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+        return mock_settings
+
+    def _capture_create_deep_agent_kwargs(
+        self, tmp_path: Path, *, subagent_model: str | None = None
+    ) -> dict[str, Any]:
+        """Build a default agent + custom subagent; capture `create_deep_agent` kwargs.
+
+        Returns the kwargs dcode forwards to `create_deep_agent` so callers can
+        assert on both the main `middleware` list and each `subagents` spec.
+        `subagent_model` sets the custom subagent's `model:` frontmatter, which
+        drives the `has_explicit_model` branch in `_subagent_cli_middleware`.
+        """
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": subagent_model,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        return kwargs
+
+    @staticmethod
+    def _has_todo_standin(middleware: list[Any]) -> bool:
+        return any(
+            getattr(mw, "name", None) == TodoListMiddleware.__name__
+            for mw in middleware
+        )
+
+    def test_standin_name_matches_sdk_middleware(self) -> None:
+        """The stand-in must impersonate the real middleware's `.name`.
+
+        The name-based merge keys on the instance `.name`, so this guards a
+        hypothetical SDK `.name` override that `__name__`-derivation would miss.
+        """
+        from deepagents_code.agent import _NoTodoListMiddleware
+
+        assert _NoTodoListMiddleware().name == TodoListMiddleware().name
+
+    def test_dropped_from_main_and_subagents_when_experimental(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
+
+        assert self._has_todo_standin(kwargs["middleware"])
+
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        assert {"researcher", "general-purpose"} <= set(subagents_by_name)
+        for name, spec in subagents_by_name.items():
+            assert self._has_todo_standin(spec.get("middleware", [])), (
+                f"Expected TodoListMiddleware stand-in on subagent {name!r}"
+            )
+
+    def test_dropped_from_explicit_model_subagent_when_experimental(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The splice must survive the `has_explicit_model` branch.
+
+        `_subagent_cli_middleware` extends the stand-in in *before* the
+        `if not has_explicit_model:` model-middleware check, so a subagent with
+        an explicit `model:` in frontmatter must still receive it. The other
+        wiring cases only exercise the `model: None` branch, so without this a
+        regression that moved the splice inside that `if` would pass unnoticed.
+        """
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(
+            tmp_path, subagent_model="fake-model"
+        )
+
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        researcher = subagents_by_name["researcher"]
+        # Guards the premise: an explicit model must reach the spec, else the
+        # subagent would take the `model: None` path and the test proves nothing.
+        assert researcher.get("model"), "explicit subagent model was not forwarded"
+        assert self._has_todo_standin(researcher.get("middleware", []))
+
+    def test_absent_from_all_stacks_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
+
+        assert not self._has_todo_standin(kwargs["middleware"])
+        for spec in kwargs["subagents"]:
+            assert not self._has_todo_standin(spec.get("middleware", []))
+
+
 def _mock_agents_dir(agents_dir: Path) -> Mock:
     mock_settings = Mock()
     mock_settings.user_deepagents_dir = agents_dir
@@ -3753,7 +4199,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3791,9 +4237,9 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3848,9 +4294,30 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1\tfirst" in allowed.content
-        assert "2\tsecond" in allowed.content
+        assert "1  first" in allowed.content
+        assert "2  second" in allowed.content
         assert "can only read" in denied
+
+    def test_rubric_grader_prefix_tracks_artifacts_root(self, tmp_path: Path) -> None:
+        """The grader read allow-list follows the backend's `artifacts_root`.
+
+        With a non-default `artifacts_root`, offloaded results live under
+        `<root>/large_tool_results/`, so the grader must allow that prefix and
+        reject the old, unrelated `/large_tool_results/` path.
+        """
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        project = FilesystemBackend(root_dir=tmp_path / "project", virtual_mode=False)
+        backend = CompositeBackend(
+            default=project, routes={}, artifacts_root="/srv/art"
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        denied = read_tool.func(file_path="/large_tool_results/x", runtime=runtime)
+
+        assert "can only read files under /srv/art/large_tool_results/" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -3861,7 +4328,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3895,7 +4362,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3925,7 +4392,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_sandbox = Mock()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -3967,7 +4434,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -4011,7 +4478,7 @@ class TestCreateCliAgentInterpreterWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -4060,7 +4527,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",

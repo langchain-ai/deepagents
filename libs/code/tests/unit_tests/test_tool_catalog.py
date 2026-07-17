@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.config import Settings
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
@@ -170,6 +171,26 @@ class TestCollectBuiltInTools:
             pytest.raises(RuntimeError, match="does not expose"),
         ):
             collect_built_in_tools()
+
+
+class TestExperimentalTodoRemoval:
+    """`DEEPAGENTS_CODE_EXPERIMENTAL` drops the SDK `write_todos` tool."""
+
+    def test_write_todos_bound_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        names = {tool.name for tool in collect_built_in_tools()}
+        assert "write_todos" in names
+
+    def test_write_todos_removed_when_experimental(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        names = {tool.name for tool in collect_built_in_tools()}
+        assert "write_todos" not in names
+        # Only the todo tool is dropped; the rest of the core set stays bound.
+        assert names >= _CORE_BUILT_IN - {"write_todos"}
 
 
 class TestCollectToolsFromAgent:
@@ -492,6 +513,40 @@ class TestLoadMcpServerInfo:
             )
         assert result == server_info
         session_manager.cleanup.assert_awaited_once()
+
+    def test_passes_plugin_configs_and_project_dir(self) -> None:
+        """Tool catalog discovery should include project-scoped plugin MCP."""
+        project_root = object()
+        project_context = SimpleNamespace(
+            project_root=project_root,
+            user_cwd=object(),
+        )
+        plugin_configs = ({"mcpServers": {"plugin": {}}},)
+        loader = AsyncMock(return_value=([], None, []))
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
+                return_value=plugin_configs,
+            ) as discover_plugin_mcp,
+            patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", new=loader),
+        ):
+            result = asyncio.run(
+                _load_mcp_server_info(mcp_config_path=None, trust_project_mcp=None)
+            )
+
+        assert result == []
+        loader.assert_awaited_once_with(
+            explicit_config_path=None,
+            no_mcp=False,
+            trust_project_mcp=None,
+            project_context=project_context,
+            additional_configs=plugin_configs,
+        )
+        discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
 
     def test_cleanup_failure_is_swallowed(self) -> None:
         session_manager = AsyncMock()

@@ -82,6 +82,7 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from pathlib import Path
 
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
@@ -737,7 +738,8 @@ def _process_rubric_event(
     elif result == "needs_revision":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]↻ Changes need revision{suffix}[/yellow]", highlight=False
+            f"[yellow]↻ Acceptance criteria not yet satisfied{suffix}[/yellow]",
+            highlight=False,
         )
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and not criterion.get("passed", True):
@@ -746,15 +748,26 @@ def _process_rubric_event(
                 detail = f" — {gap}" if gap else ""
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            "[yellow]⚠ Acceptance criteria not satisfied "
-            "(iteration limit reached)[/yellow]",
+            "[yellow]⚠ Acceptance criteria not yet satisfied "
+            f"(iteration limit reached){suffix}[/yellow]",
             highlight=False,
         )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
+        label = (
+            "Rubric is invalid or cannot be evaluated"
+            if result == "failed"
+            else "Acceptance criteria check failed"
+        )
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+        console.print(f"[red]⚠ {label}{suffix}[/red]", highlight=False)
     elif result is not None:
         # A `rubric_evaluation_end` with an unrecognized result is still a
         # terminal grading event; surface it rather than letting the run go
@@ -762,7 +775,8 @@ def _process_rubric_event(
         # interactive fallback in `textual_adapter._format_rubric_event`.
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+            f"[yellow]⚠ Acceptance criteria check ended{suffix}[/yellow]",
+            highlight=False,
         )
 
     if state.spinner:
@@ -1077,7 +1091,10 @@ async def _run_agent_loop(
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    stream_input: dict[str, Any] | Command = {
+        "messages": [user_msg],
+        "goal_criteria_request": None,
+    }
     if rubric is not None:
         stream_input["rubric"] = rubric
 
@@ -1441,16 +1458,29 @@ async def run_non_interactive(
             build_skill_invocation_envelope,
             discover_skills_and_roots,
         )
-        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.load import (
+            ExtendedSkillMetadata,
+            load_skill_content,
+        )
 
         normalized_skill = initial_skill.strip().lower()
         try:
             # Offloaded to a thread: discovery does blocking filesystem I/O
             # (a JSON trust-store read plus `Path.resolve()` calls) that must
             # not block the event loop.
-            skills, allowed_roots = await asyncio.to_thread(
-                discover_skills_and_roots, assistant_id
+            from deepagents_code.plugins.adapters.skills import (
+                discover_plugin_skill_sources_and_roots,
             )
+
+            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
+                return discover_skills_and_roots(
+                    assistant_id,
+                    plugin_skill_sources=plugin_sources,
+                    plugin_skill_roots=plugin_roots,
+                )
+
+            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
             console.print(
@@ -1532,19 +1562,6 @@ async def run_non_interactive(
 
     thread_id = generate_thread_id()
 
-    # One user turn per process: fresh turn id, turn_number 1.
-    from uuid import uuid4
-
-    from deepagents_code.config import build_stream_config
-
-    config: RunnableConfig = build_stream_config(
-        thread_id,
-        assistant_id,
-        sandbox_type=sandbox_type,
-        turn_id=str(uuid4()),
-        turn_number=1,
-    )
-
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
@@ -1592,6 +1609,23 @@ async def run_non_interactive(
             else None
         )
 
+        # One user turn per process: fresh turn id, turn_number 1. Built here so
+        # the resolved `use_auto_approve` is stamped into the trace metadata
+        # (headless auto-approve means tools run without HITL because shell is
+        # unrestricted or disabled).
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        config: RunnableConfig = build_stream_config(
+            thread_id,
+            assistant_id,
+            sandbox_type=sandbox_type,
+            turn_id=str(uuid4()),
+            turn_number=1,
+            auto_approve=use_auto_approve,
+        )
+
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
@@ -1599,6 +1633,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,
             shell_allow_list=restrictive_allow_list,

@@ -46,7 +46,10 @@ GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
 complete.
 When a goal is active, use `get_goal` to inspect the objective and current status.
-Use `update_goal` only when you have evidence that the goal is complete or blocked."""
+A paused goal is persisted for later but must not drive work until the user resumes it.
+A goal is marked complete automatically when its current grading turn satisfies the
+accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains
+available for optional completion evidence but is not required."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
@@ -91,11 +94,12 @@ class GoalSnapshot(TypedDict):
     """
 
     active: bool
-    """Whether the goal is unfinished.
+    """Whether the goal is actionable (should drive work).
 
-    Derived from `status`: a set goal is active until it is `complete`. `False`
-    when no goal is set (the `objective is None` branch), where `status` is also
-    `None`.
+    Derived from `status`: `active` and `blocked` goals are actionable, while
+    `paused` and `complete` goals are not. Note a `paused` goal is unfinished
+    yet reports `active=False`. `False` when no goal is set (the
+    `objective is None` branch), where `status` is also `None`.
     """
 
     objective: str | None
@@ -110,10 +114,10 @@ class GoalSnapshot(TypedDict):
     """
 
     criteria: str | None
-    """Accepted criteria (from the shared rubric snapshot)."""
+    """Persisted goal criteria, or shared rubric criteria when no goal rubric exists."""
 
     note: str | None
-    """Latest evidence or blocker note recorded by `update_goal`."""
+    """Persisted completion evidence or blocker note for the goal."""
 
 
 class GoalToolState(GoalRubricChannels):
@@ -155,22 +159,25 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     goal_rubric = _clean_state_text(state, "_goal_rubric")
     sticky_rubric = _clean_state_text(state, "_sticky_rubric")
     objective = _clean_state_text(state, "_goal_objective")
+    status = coerce_goal_status(state.get("_goal_status")) or "active"
+    goal_is_actionable = objective is not None and status in {"active", "blocked"}
+    sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
     source: RubricSource | None = None
     if criteria is not None:
-        if objective is not None and goal_rubric == criteria:
+        if goal_is_actionable and goal_rubric == criteria:
             source = "goal"
-        elif sticky_rubric == criteria:
+        elif sticky_rubric == criteria and not sticky_is_goal_rubric:
             source = "sticky"
         else:
             source = "invocation"
     # Fallback branches below run only when there is no public `rubric` input,
     # so `invocation` is unreachable here by construction — the criteria can
-    # only be attributed to a `goal` or a `sticky` rubric.
-    elif objective is not None and goal_rubric is not None:
+    # only be attributed to an actionable `goal` or a standalone `sticky` rubric.
+    elif goal_is_actionable and goal_rubric is not None:
         criteria = goal_rubric
         source = "goal"
-    elif sticky_rubric is not None:
+    elif sticky_rubric is not None and not sticky_is_goal_rubric:
         criteria = sticky_rubric
         source = "sticky"
 
@@ -207,14 +214,15 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     # A set-but-unlabeled or unrecognized status defaults to "active"; an
     # unknown persisted value never leaks to the model as a bogus status.
     status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
+    criteria = _clean_state_text(state, "_goal_rubric") or rubric["criteria"]
     note = _clean_state_text(state, "_goal_status_note")
     return {
-        # A goal is active until it is complete; `blocked` is still unfinished.
-        # Derive `active` from `status` so the two never disagree.
-        "active": status != "complete",
+        # Blocked goals remain actionable, while paused and complete goals do not
+        # drive work until the user changes their state.
+        "active": status in {"active", "blocked"},
         "objective": objective,
         "status": status,
-        "criteria": rubric["criteria"],
+        "criteria": criteria,
         "note": note,
     }
 
@@ -258,6 +266,20 @@ def _update_goal_command(
                         tool_call_id=tool_call_id,
                     )
                 ]
+            }
+        )
+    goal_status = coerce_goal_status(state.get("_goal_status")) or "active"
+    if goal_status in {"paused", "complete"}:
+        if goal_status == "paused":
+            message = (
+                "The goal is paused. The user must run `/goal resume` before its "
+                "status can be updated."
+            )
+        else:
+            message = "The goal is already complete and cannot be updated."
+        return Command(
+            update={
+                "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)]
             }
         )
     clean_note = note.strip()
@@ -355,18 +377,18 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             tool_call_id: Annotated[str, InjectedToolCallId],
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
-            """Mark the current goal complete or blocked with evidence.
+            """Report a blocked goal or attach optional completion evidence.
 
-            Use `complete` only when the accepted criteria are satisfied; use
-            `blocked` when you cannot proceed without user input. Completion is
-            rejected unless the latest rubric result is satisfied. Do not create,
+            Use `blocked` when you cannot proceed without user input. Goals complete
+            automatically after a satisfied goal-backed grading turn, so `complete`
+            is optional and only stages its evidence for that result. Do not create,
             pause, resume, clear, or replace goals — those are user-controlled.
 
             Args:
-                status: `complete` when the criteria are met, `blocked` when you
-                    are stuck and need the user.
+                status: `complete` to attach completion evidence, or `blocked` when
+                    you are stuck and need the user.
                 note: Evidence the criteria are satisfied, or the specific
-                    blocker. Required — the status is not recorded without it.
+                    blocker. Required when calling this tool.
                 tool_call_id: Injected tool call ID for the tool response.
                 state: Injected graph state holding the current goal.
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.store.memory import InMemoryStore
@@ -108,6 +109,35 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
     _assert_snapshot(
         snapshot_path,
         _system_message_as_text(system_messages[0]),
+        update_snapshots=update_snapshots,
+    )
+
+
+@pytest.mark.video_extra
+def test_system_prompt_with_media_extra(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    """Snapshot the `read_file` tool when the optional `[video]` extra is installed.
+
+    The base `*_tools.json` snapshots capture the text-only `read_file`
+    description (the default install). When PyAV + Pillow are present,
+    `read_file` instead advertises the video-aware description and
+    seconds-based `offset`/`limit`. The `video_extra` marker pins that gate on
+    (see the smoke conftest), so this variant stays covered regardless of
+    whether the extra is actually installed in the test environment. The video
+    wording only affects `read_file`, so one representative config is enough.
+    """
+    model = _smoke_model()
+    backend = LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True)
+    agent = create_deep_agent(model=model, backend=backend)
+
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_media_extra_tools.json",
+        history[0]["tools"],
         update_snapshots=update_snapshots,
     )
 

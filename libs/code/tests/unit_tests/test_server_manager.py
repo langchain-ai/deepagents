@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -224,10 +224,11 @@ class TestStartServerAndGetAgent:
         assert agent is mock_agent
         assert server is mock_server
         assert manager is None
-        mock_server.wait_for_graph_ready.assert_awaited_once_with("agent")
+        assert mock_server.wait_for_graph_ready.await_args_list == [call("agent")]
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
         assert kwargs["graph_ref"] == "deepagents_code.server_graph:make_graph"
+        assert "additional_graphs" not in kwargs
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
         # The graph is imported as a package module, so the scaffold must not

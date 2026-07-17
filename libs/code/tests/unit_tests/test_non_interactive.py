@@ -312,10 +312,12 @@ class TestSandboxTypeForwarding:
             await run_non_interactive(
                 message="test task",
                 sandbox_type="modal",
+                profile_override={"max_input_tokens": 32_000},
             )
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+        assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
@@ -985,6 +987,16 @@ class TestShellAllowListDecisionLogic:
         assert kwargs["auto_approve"] is expected_auto
         assert kwargs["interrupt_shell_only"] is expected_shell_only
         assert kwargs["shell_allow_list"] == expected_allow_list
+
+        # The resolved auto-approve value must also reach the trace metadata
+        # (dcode_auto_approve), not only the server session — guards against the
+        # trace label silently diverging from the server's approval mode.
+        _, astream_kwargs = mock_agent.astream.call_args
+        stream_metadata = astream_kwargs["config"]["metadata"]
+        if expected_auto:
+            assert stream_metadata["dcode_auto_approve"] is True
+        else:
+            assert "dcode_auto_approve" not in stream_metadata
 
 
 class TestNonInteractivePrompt:

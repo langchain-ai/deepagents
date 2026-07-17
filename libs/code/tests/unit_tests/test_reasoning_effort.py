@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Coroutine, Iterator
+from pathlib import Path
 from typing import get_args
 from unittest.mock import AsyncMock, Mock
 
@@ -9,6 +10,7 @@ import pytest
 from textual.app import App
 from textual.widgets import OptionList
 
+from deepagents_code import model_config
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import COMMANDS
 from deepagents_code.config import settings
@@ -26,9 +28,13 @@ from deepagents_code.tui.widgets.messages import ErrorMessage
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings() -> Iterator[None]:
+def _restore_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
     original_name = settings.model_name
     original_provider = settings.model_provider
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
@@ -317,7 +323,67 @@ async def test_effort_command_sets_current_model_params() -> None:
     assert app._model_params_override == {
         "reasoning": {"effort": "high", "summary": "auto"}
     }
+    assert model_config.load_effort_for_model("openai:gpt-5.5") == "high"
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+async def test_restore_effort_override_applies_persisted_model_choice() -> None:
+    model_config.save_effort_for_model("openai:gpt-5.6-luna", "max")
+    app = DeepAgentsApp()
+    app._model_params_override = {"temperature": 0.2}
+
+    await app._restore_effort_override("openai:gpt-5.6-luna")
+
+    assert app._model_params_override == {
+        "temperature": 0.2,
+        "reasoning": {"effort": "max", "summary": "auto"},
+    }
+
+
+async def test_restore_effort_override_keeps_explicit_params() -> None:
+    model_config.save_effort_for_model("openai:gpt-5.5", "high")
+    app = DeepAgentsApp()
+    # Explicit per-session params already specify an effort.
+    app._model_params_override = {"reasoning": {"effort": "low", "summary": "auto"}}
+
+    await app._restore_effort_override("openai:gpt-5.5")
+
+    # The explicit low effort wins; the saved high is not merged over it.
+    assert app._model_params_override == {
+        "reasoning": {"effort": "low", "summary": "auto"}
+    }
+
+
+async def test_startup_model_params_precede_persisted_effort() -> None:
+    model_config.save_effort_for_model("openai:gpt-5.5", "high")
+    app = DeepAgentsApp(
+        model_kwargs={
+            "model_spec": "openai:gpt-5.5",
+            "extra_kwargs": {"reasoning": {"effort": "low", "summary": "auto"}},
+        }
+    )
+
+    # `on_mount` restores effort before deferred model creation consumes the
+    # startup kwargs. The explicit CLI value must already be active by then.
+    await app._restore_effort_override("openai:gpt-5.5")
+
+    assert app._model_params_override == {
+        "reasoning": {"effort": "low", "summary": "auto"}
+    }
+
+
+async def test_restore_effort_override_prunes_invalid_model_choice() -> None:
+    # gpt-5.5 does not support `max`, so the saved label is invalid for it.
+    model_config.save_effort_for_model("openai:gpt-5.5", "max")
+    app = DeepAgentsApp()
+    # No effort in the active params, so the invalid saved label is pruned and
+    # unrelated params are preserved.
+    app._model_params_override = {"temperature": 0.2}
+
+    await app._restore_effort_override("openai:gpt-5.5")
+
+    assert app._model_params_override == {"temperature": 0.2}
+    assert model_config.load_effort_for_model("openai:gpt-5.5") is None
 
 
 async def test_effort_command_without_args_opens_selector() -> None:
@@ -350,10 +416,62 @@ async def test_effort_command_clear_removes_only_effort_params() -> None:
     }
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
+    model_config.save_effort_for_model("openai:gpt-5.5", "high")
 
     await app._handle_effort_command("/effort clear")
 
     assert app._model_params_override == {"temperature": 0.2}
+    assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+
+
+async def test_effort_command_save_failure_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+    monkeypatch.setattr(
+        model_config, "save_effort_for_model", lambda *_args, **_kwargs: False
+    )
+
+    await app._set_effort_override("high")
+
+    # The effort still applies for the session, but the user is told it could
+    # not be persisted, and the success message is suppressed by the early
+    # return (so the only mounted message is the error).
+    assert app._model_params_override == {
+        "reasoning": {"effort": "high", "summary": "auto"}
+    }
+    assert app._mount_message.await_count == 1  # ty: ignore[unresolved-attribute]
+    message = app._mount_message.await_args.args[0]  # ty: ignore[unresolved-attribute]
+    assert isinstance(message, ErrorMessage)
+    assert "could not be saved" in message._content
+    assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+
+
+async def test_effort_command_clear_failure_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._model_params_override = {"reasoning": {"effort": "high", "summary": "auto"}}
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+    monkeypatch.setattr(
+        model_config, "clear_effort_for_model", lambda *_args, **_kwargs: False
+    )
+
+    await app._set_effort_override("clear")
+
+    # The session override is dropped (no params remain, so it collapses to
+    # None), but the user is warned the saved preference could not be removed,
+    # and the success message is suppressed by the early return.
+    assert app._model_params_override is None
+    assert app._mount_message.await_count == 1  # ty: ignore[unresolved-attribute]
+    message = app._mount_message.await_args.args[0]  # ty: ignore[unresolved-attribute]
+    assert isinstance(message, ErrorMessage)
+    assert "could not be removed" in message._content
 
 
 async def test_effort_command_updates_status_bar_effort() -> None:

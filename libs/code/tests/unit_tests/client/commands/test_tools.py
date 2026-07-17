@@ -362,8 +362,12 @@ class TestToolsList:
             trust_project_mcp=True,
         )
 
-    def test_list_consults_persisted_project_mcp_trust_by_default(self) -> None:
-        """Absent `--trust-project-mcp` lets MCP discovery use stored trust."""
+    def test_list_defaults_trust_project_mcp_to_none(self) -> None:
+        """Absent `--trust-project-mcp` forwards `None`.
+
+        Discovery then relies on the user's scoped approvals rather than
+        whole-config trust.
+        """
         args = argparse.Namespace(
             tools_command="list",
             output_format="json",

@@ -41,10 +41,10 @@ def _commit(repo: Path, path: Path, content: str, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _workflow_step(step_id: str) -> str:
+def _workflow_step(step_id: str, *, job: str = "release-notes") -> str:
     with WORKFLOW_PATH.open() as file:
         workflow = yaml.safe_load(file)
-    steps = workflow["jobs"]["release-notes"]["steps"]
+    steps = workflow["jobs"][job]["steps"]
     return next(step["run"] for step in steps if step.get("id") == step_id)
 
 
@@ -53,6 +53,7 @@ def _run_git_log_step(
     *,
     previous_tag: str,
     release_sha: str,
+    max_commits: int | None = None,
 ) -> str:
     output = repo / "github-output.txt"
     env = {
@@ -63,8 +64,13 @@ def _run_git_log_step(
         "REPOSITORY": REPOSITORY,
         "WORKING_DIR": str(PACKAGE_PATH),
     }
+    step = _workflow_step("generate-git-log")
+    if max_commits is not None:
+        production_setting = "MAX_COMMITS=100"
+        assert step.count(production_setting) == 1
+        step = step.replace(production_setting, f"MAX_COMMITS={max_commits}")
     subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", _workflow_step("generate-git-log")],
+        ["bash", "-eo", "pipefail", "-c", step],
         cwd=repo,
         env=env,
         check=True,
@@ -224,6 +230,25 @@ def _create_history(repo: Path) -> dict[str, str]:
     }
 
 
+def _create_sibling_prerelease_tag(
+    repo: Path,
+    *,
+    base: str,
+    version: str,
+    index: int,
+) -> None:
+    branch = f"prerelease-{index}"
+    _git(repo, "checkout", "-b", branch, base)
+    _commit(
+        repo,
+        PACKAGE_PATH / "module.py",
+        f"VERSION = {index}\n",
+        f"hotfix(example): prerelease {version}",
+    )
+    _git(repo, "tag", f"example=={version}")
+    _git(repo, "checkout", "main")
+
+
 def _entry(sha: str, subject: str) -> str:
     return f"- [`{sha[:7]}`](https://github.com/{REPOSITORY}/commit/{sha}) {subject}"
 
@@ -281,6 +306,94 @@ def test_temporary_repo_disables_inherited_commit_signing(
 
     assert commits["hotfix"] == _git(repo, "rev-parse", "HEAD")
     assert _git(repo, "config", "--local", "--bool", "commit.gpgSign") == "false"
+
+
+@pytest.mark.parametrize(
+    ("input_sha", "source"),
+    [
+        ("", "workflow SHA fallback because dangerous-nonmain-release is enabled"),
+        ("HEAD", "explicit release-sha input"),
+    ],
+)
+def test_resolve_release_sha_outputs_canonical_target_summary(
+    tmp_path: Path,
+    input_sha: str,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    sha = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    output = tmp_path / "setup-output.txt"
+    summary = tmp_path / "step-summary.md"
+    env = {
+        **os.environ,
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_SHA_FALLBACK": "HEAD",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "INPUT_SHA": input_sha,
+        "INPUT_VERSION": "1.1.0a1",
+        "IS_DANGEROUS": "true",
+        "PACKAGE": "example",
+        "WORKING_DIR": str(PACKAGE_PATH),
+    }
+
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="setup")],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    outputs = dict(
+        line.split("=", maxsplit=1) for line in output.read_text().splitlines()
+    )
+    assert outputs["sha"] == sha
+    assert (
+        f"| Release SHA | [`{sha[:7]}`](https://github.com/{REPOSITORY}/commit/{sha}) |"
+        in summary.read_text()
+    )
+    assert f"| Resolution | {source} |" in summary.read_text()
+
+
+def test_resolve_release_sha_rejects_unresolvable_sha(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _commit(tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base")
+    output = tmp_path / "setup-output.txt"
+    env = {
+        **os.environ,
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_SHA_FALLBACK": "HEAD",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary.md"),
+        "INPUT_SHA": "does-not-exist",
+        "INPUT_VERSION": "1.1.0a1",
+        "IS_DANGEROUS": "true",
+        "PACKAGE": "example",
+        "WORKING_DIR": str(PACKAGE_PATH),
+    }
+
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="setup")],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "does not resolve to a commit" in result.stdout
+    # The failure aborts before the `sha=` output is written.
+    assert not output.exists() or "sha=" not in output.read_text()
 
 
 def test_finalize_release_body_respects_github_size_limit(tmp_path: Path) -> None:
@@ -365,9 +478,10 @@ def test_git_log_escapes_and_limits_commit_subjects(tmp_path: Path) -> None:
 
 
 def test_git_log_limits_large_release_history(tmp_path: Path) -> None:
+    max_commits = 3
     commits = _create_history(tmp_path)
     tip = commits["hotfix"]
-    for index in range(101):
+    for index in range(max_commits + 1):
         tip = _commit(
             tmp_path,
             PACKAGE_PATH / "module.py",
@@ -379,14 +493,15 @@ def test_git_log_limits_large_release_history(tmp_path: Path) -> None:
         tmp_path,
         previous_tag="example==1.0.0",
         release_sha=tip,
+        max_commits=max_commits,
     )
 
-    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == 100
+    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == max_commits
     assert (
-        "The log is truncated to the newest 100 commits to keep the release "
-        "notes a reasonable size."
+        f"The log is truncated to the newest {max_commits} commits to keep the "
+        "release notes a reasonable size."
     ) in details
-    assert "fix(example): generated 100" in details
+    assert f"fix(example): generated {max_commits}" in details
     assert "fix(example): generated 0\n" not in details
 
 
@@ -535,6 +650,218 @@ def test_prerelease_resolve_refs_uses_base_version_predecessor(tmp_path: Path) -
         assert outputs["release-commit"] == head, version
 
 
+@pytest.mark.parametrize(
+    ("version", "tags", "expected"),
+    [
+        ("1.1.0a7", ("1.1.0a1", "1.1.0a6", "1.1.0a8"), "1.1.0a6"),
+        ("1.1.0b2", ("1.1.0a9", "1.1.0b1", "1.1.0b3"), "1.1.0b1"),
+        ("1.1.0rc2", ("1.1.0b9", "1.1.0rc1", "1.1.0rc3"), "1.1.0rc1"),
+        (
+            "1.1.0.dev3",
+            ("1.1.0.dev1", "1.1.0.dev2", "1.1.0.dev4"),
+            "1.1.0.dev2",
+        ),
+        ("1.1.0-rc.7", ("1.1.0-rc.6", "1.1.0-rc.8"), "1.1.0-rc.6"),
+        # Serials compare numerically, not lexically: a10 must beat a6.
+        ("1.1.0a11", ("1.1.0a6", "1.1.0a10"), "1.1.0a10"),
+        # Zero-padded serials parse as base-10 (a08 -> 8), never octal.
+        ("1.1.0a9", ("1.1.0a1", "1.1.0a08"), "1.1.0a08"),
+        # dev sorts before a/b/rc, so the latest dev is the predecessor of a1.
+        ("1.1.0a1", ("1.1.0.dev1", "1.1.0.dev5"), "1.1.0.dev5"),
+        # dev does not outrank a later phase: b1 wins over dev9.
+        ("1.1.0rc1", ("1.1.0.dev9", "1.1.0b1"), "1.1.0b1"),
+        # Dash-form alias: alpha maps to the `a` rank.
+        ("1.1.0-beta.1", ("1.1.0-alpha.9",), "1.1.0-alpha.9"),
+        # Dash-form alias: preview maps to the `rc` rank.
+        ("1.1.0-rc.2", ("1.1.0-preview.1",), "1.1.0-preview.1"),
+        # Optional separator: 1.1.0-rc7 (no dot) parses like 1.1.0-rc.7.
+        ("1.1.0-rc7", ("1.1.0-rc6",), "1.1.0-rc6"),
+    ],
+)
+def test_prerelease_resolve_refs_prefers_latest_earlier_sibling_tag(
+    tmp_path: Path,
+    version: str,
+    tags: tuple[str, ...],
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    base = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    _git(tmp_path, "tag", "example==1.0.0")
+    for index, tag in enumerate(tags):
+        _create_sibling_prerelease_tag(
+            tmp_path,
+            base=base,
+            version=tag,
+            index=index,
+        )
+
+    _git(tmp_path, "checkout", "-b", "current-prerelease", base)
+    release = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        f"hotfix(example): prerelease {version}",
+    )
+
+    outputs = _run_resolve_refs_step(tmp_path, version=version).outputs
+
+    assert outputs["prev-tag"] == f"example=={expected}"
+    assert outputs["release-commit"] == release
+    details = _run_git_log_step(
+        tmp_path,
+        previous_tag=outputs["prev-tag"],
+        release_sha=release,
+    )
+    assert f"<summary>Git log since example=={expected}</summary>" in details
+    assert _entry(release, f"hotfix(example): prerelease {version}") in details
+
+
+def test_prerelease_resolve_refs_rejects_tag_ahead_of_release(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    _git(tmp_path, "tag", "example==1.0.0")
+    release = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0a7",
+    )
+    _git(tmp_path, "checkout", "-b", "future-prerelease")
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "FUTURE = 1\n",
+        "hotfix(example): prerelease 1.1.0a6",
+    )
+    _git(tmp_path, "tag", "example==1.1.0a6")
+    _git(tmp_path, "checkout", "main")
+
+    outputs = _run_resolve_refs_step(tmp_path, version="1.1.0a7").outputs
+
+    # Fixture precondition: `checkout main` left HEAD (the resolve-refs RELEASE_SHA)
+    # on `release`, behind the 1.1.0a6 tag, so the "tag ahead" scenario truly holds.
+    assert _git(tmp_path, "rev-parse", "HEAD") == release
+    # a6 is a valid version-ordering candidate but descends from the release commit,
+    # so it is rejected; no example==1.1.0 base tag exists, so selection falls through
+    # to the latest stable tag.
+    assert outputs["prev-tag"] == "example==1.0.0"
+
+
+def test_prerelease_resolve_refs_falls_back_to_latest_stable_tag(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit(tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base")
+    _git(tmp_path, "tag", "example==1.0.0")
+    release = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0a1",
+    )
+
+    outputs = _run_resolve_refs_step(tmp_path, version="1.1.0a1").outputs
+
+    # First alpha of a new minor: no 1.1.0a* sibling and no example==1.1.0 base tag,
+    # so the three-tier fallback lands on the latest reachable stable tag.
+    assert outputs["prev-tag"] == "example==1.0.0"
+    assert outputs["release-commit"] == release
+
+
+def test_prerelease_resolve_refs_ignores_different_base_prerelease(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    base = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    _git(tmp_path, "tag", "example==1.0.0")
+    # A lower-ranked pre-release from a DIFFERENT base version (1.0.5a1, rank a) would
+    # pass the rank/serial filter against the current 1.1.0rc1 (rank rc); only the
+    # base-version guard excludes it. If that guard regressed it would be selected.
+    _create_sibling_prerelease_tag(tmp_path, base=base, version="1.0.5a1", index=0)
+
+    _git(tmp_path, "checkout", "-b", "current-prerelease", base)
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0rc1",
+    )
+
+    outputs = _run_resolve_refs_step(tmp_path, version="1.1.0rc1").outputs
+
+    assert outputs["prev-tag"] == "example==1.0.0"
+
+
+def test_prerelease_resolve_refs_ignores_later_phase_sibling(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    base = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    _git(tmp_path, "tag", "example==1.0.0")
+    # A later-phase sibling of the SAME base version (1.1.0rc1, rank rc) is not a valid
+    # predecessor of an earlier phase (1.1.0b1, rank b). It shares history with the
+    # release and does not descend from it, so it survives both the history-sharing and
+    # future-sibling ancestry checks; only the `candidate_rank > current_rank` guard
+    # excludes it. If that guard regressed it would be selected as the predecessor.
+    _create_sibling_prerelease_tag(tmp_path, base=base, version="1.1.0rc1", index=0)
+
+    _git(tmp_path, "checkout", "-b", "current-prerelease", base)
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0b1",
+    )
+
+    outputs = _run_resolve_refs_step(tmp_path, version="1.1.0b1").outputs
+
+    # No earlier sibling and no example==1.1.0 base tag, so selection falls through to
+    # the latest reachable stable tag.
+    assert outputs["prev-tag"] == "example==1.0.0"
+
+
+def test_prerelease_resolve_refs_warns_on_unparseable_prerelease(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit(tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base")
+    _git(tmp_path, "tag", "example==1.0.0")
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0-canary",
+    )
+
+    # '1.1.0-canary' trips the loose IS_PRERELEASE detector but not parse_prerelease.
+    result = _run_resolve_refs_step(tmp_path, version="1.1.0-canary")
+
+    assert "does not match a recognized pre-release format" in result.stdout
+    assert result.outputs["prev-tag"] == "example==1.0.0"
+
+
 def test_latest_stable_tag_selects_highest_reachable_version(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
@@ -613,14 +940,15 @@ def test_resolve_refs_initial_release_has_no_predecessor_or_warning(
 def test_git_log_includes_exactly_max_commits_without_truncation(
     tmp_path: Path,
 ) -> None:
-    # Exactly MAX_COMMITS (100) in-range package commits must yield 100 entries and
+    # Exactly MAX_COMMITS in-range package commits must yield that many entries and
     # no truncation banner — the boundary where the `--max-count=N+1` fetch and the
     # `-ge`/`-gt` checks could hide an off-by-one.
+    max_commits = 3
     _init_repo(tmp_path)
     _commit(tmp_path, PACKAGE_PATH / "module.py", "BASE = 0\n", "feat(example): base")
     _git(tmp_path, "tag", "example==1.0.0")
     tip = ""
-    for index in range(100):
+    for index in range(max_commits):
         tip = _commit(
             tmp_path,
             PACKAGE_PATH / "module.py",
@@ -632,7 +960,8 @@ def test_git_log_includes_exactly_max_commits_without_truncation(
         tmp_path,
         previous_tag="example==1.0.0",
         release_sha=tip,
+        max_commits=max_commits,
     )
 
-    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == 100
+    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == max_commits
     assert "The log is truncated to the newest" not in details

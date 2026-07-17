@@ -520,7 +520,7 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         console.print()
 
     console.print(
-        "  Tip: Run `dcode config show` or `dcode config get <key>` "
+        "  Tip: Run `dcode config` or `dcode config get <key>` "
         "to drill into config details.",
         style=theme.MUTED,
         highlight=False,

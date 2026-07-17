@@ -1236,7 +1236,6 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
-    "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
 }
@@ -1251,19 +1250,22 @@ Each value is `(subcommand_dest, ui_help_fn_name)`:
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
-When adding a new top-level command group with sub-subparsers, register it
-here and add a corresponding `show_<group>_help` to `ui.py`. The drift
-test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+Command groups whose bare invocation performs an action instead belong in
+`_BARE_ACTION_GROUPS`. The drift test in
+`tests/unit_tests/test_startup_fast_paths.py` requires every group to be in
+exactly one collection.
 """
+
+_BARE_ACTION_GROUPS = frozenset({"config"})
+"""Command groups that perform their primary action without a subcommand."""
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
-    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
-    commands when no subcommand was given.
+    invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
+    this path because their bare invocation has useful behavior.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1274,7 +1276,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
             when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    if not isinstance(command, str):
+    if not isinstance(command, str) or command in _BARE_ACTION_GROUPS:
         return False
     spec = _HELP_SPECS.get(command)
     if spec is None:

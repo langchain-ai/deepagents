@@ -1332,6 +1332,7 @@ class TestGetMCPTools:
     async def test_discovery_failure_marks_server_error(
         self,
         write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Discovery failures are reported per-server instead of aborting load."""
         path = write_config(
@@ -1349,6 +1350,8 @@ class TestGetMCPTools:
             raise RuntimeError(msg)
             yield
 
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
@@ -1356,6 +1359,14 @@ class TestGetMCPTools:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "error"
         assert "boom" in (server_infos[0].error or "")
+        # Unlike the recognized auth-skip branches, a genuinely unknown
+        # discovery error keeps its full traceback so real anomalies stay
+        # debuggable — guard against a future change silently suppressing it.
+        assert any(
+            record.exc_info is not None
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+        )
         await manager.cleanup()
 
     async def test_stdio_health_check_failure_is_non_fatal(
@@ -1754,7 +1765,7 @@ class TestLoadToolsFromConfigOAuth:
             raise ExceptionGroup(msg, [MCPReauthRequiredError("notion")])
             yield
 
-        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
@@ -1771,16 +1782,44 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "re-authentication" in (server_infos[0].error or "")
-        warning_records = [
+        error = server_infos[0].error or ""
+        assert "re-authentication" in error
+        # The reauth error carries only the concise, classified suffix — no
+        # "debug logs" / "redacted" note, since the breadcrumb now holds the
+        # (token-safe) detail instead.
+        assert "(token refresh failed)" in error
+        assert "debug logs" not in error
+        assert "redacted" not in error
+        mcp_records = [
             record
             for record in caplog.records
             if record.name == "deepagents_code.mcp_tools"
-            and record.levelno == logging.WARNING
+        ]
+        warning_records = [
+            record for record in mcp_records if record.levelno == logging.WARNING
         ]
         assert warning_records
-        assert all(record.exc_info is None for record in warning_records)
+        # A recognized re-auth skip must not dump a traceback at any level —
+        # the actionable WARNING already says everything useful.
+        assert all(record.exc_info is None for record in mcp_records)
         assert "Exception Group Traceback" not in caplog.text
+        # The concise DEBUG breadcrumb must be emitted and must name the nested
+        # culprit (via `format_login_failure`), not the bare `ExceptionGroup`
+        # wrapper the failure arrives in — deleting the breadcrumb or reverting
+        # to `exc.__class__.__name__` should fail here.
+        debug_breadcrumbs = [
+            record
+            for record in mcp_records
+            if record.levelno == logging.DEBUG
+            and "token refresh failed" in record.getMessage()
+        ]
+        assert debug_breadcrumbs
+        assert all(
+            "ExceptionGroup" not in record.getMessage() for record in debug_breadcrumbs
+        )
+        assert any(
+            "re-authentication" in record.getMessage() for record in debug_breadcrumbs
+        )
         await manager.cleanup()
 
     async def test_stored_tokens_attach_provider_without_explicit_oauth(
@@ -1868,7 +1907,10 @@ class TestLoadToolsFromConfigOAuth:
         assert "auth" not in recorded[0]
         await manager.cleanup()
 
-    async def test_discovery_401_challenge_marks_unauthenticated(self) -> None:
+    async def test_discovery_401_challenge_marks_unauthenticated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         """A 401 OAuth challenge during discovery is surfaced as unauthenticated."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")
         response = httpx.Response(
@@ -1893,6 +1935,8 @@ class TestLoadToolsFromConfigOAuth:
             raise challenge
             yield
 
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
                 "mcpServers": {
@@ -1908,6 +1952,22 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
         assert "mcp login notion" in (server_infos[0].error or "")
+        # A recognized 401 challenge is expected: no branch should dump the full
+        # challenge traceback (at DEBUG or WARNING), only concise lines.
+        mcp_records = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+        ]
+        # The breadcrumb must be present AND carry its diagnostic payload — the
+        # classified exception's type name (via `format_login_failure`) — so
+        # dropping the `(%s)` argument would fail here, not just its absence.
+        assert any(
+            "401 OAuth challenge detected (HTTPStatusError)" in record.getMessage()
+            for record in mcp_records
+        )
+        assert all(record.exc_info is None for record in mcp_records)
+        assert "Traceback (most recent call last)" not in caplog.text
         await manager.cleanup()
 
     async def test_discovery_401_without_challenge_stays_error(self) -> None:

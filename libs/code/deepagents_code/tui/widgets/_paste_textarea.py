@@ -506,14 +506,14 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
                     return start, end
                 if cursor_offset > 0:
                     previous_index = cursor_offset - 1
-                    # Only a literal space (the separator auto-inserted after a
-                    # token) is swallowed with it. A newline must not be — that
-                    # would delete the whole placeholder when the user is only
-                    # backspacing the line break to rejoin the lines.
+                    # Swallow trailing whitespace with the token, except for a
+                    # newline: backspacing a line break should rejoin the lines
+                    # without deleting the placeholder.
                     if (
                         previous_index < len(text)
                         and previous_index == end
-                        and text[previous_index] == " "
+                        and text[previous_index].isspace()
+                        and text[previous_index] != "\n"
                     ):
                         return start, cursor_offset
             elif start <= cursor_offset < end:

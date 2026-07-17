@@ -2818,33 +2818,41 @@ class TestDroppedImagePaste:
     async def test_backspace_from_line_below_image_keeps_placeholder(
         self, tmp_path
     ) -> None:
-        """Backspace on the line below `[image N]` rejoins lines, keeps token."""
-        img_path = tmp_path / "newline.png"
+        """Backspace on the line below `[image N]` rejoins lines, keeps token.
+
+        Two images dropped on separate lines render as `[image 1]`, a newline,
+        and then `[image 2]`, with no trailing space after the first token. The
+        newline sits immediately after the first
+        token's closing bracket. Backspacing from the start of the second line
+        must remove only the line break, not delete `[image 1]` atomically with
+        it (the regression this fix addresses for the media code path).
+        """
         from PIL import Image
 
-        image = Image.new("RGB", (4, 4), color="cyan")
-        image.save(img_path, format="PNG")
+        img1 = tmp_path / "one.png"
+        img2 = tmp_path / "two.png"
+        Image.new("RGB", (4, 4), color="cyan").save(img1, format="PNG")
+        Image.new("RGB", (4, 4), color="magenta").save(img2, format="PNG")
 
         app = _ImagePasteApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            chat.handle_external_paste(f"{img1}\n{img2}")
             await pilot.pause()
-            assert chat._text_area.text == "[image 1] "
+            assert chat._text_area.text == "[image 1]\n[image 2]"
 
-            chat._text_area.insert("\n")
+            chat._text_area.move_cursor((1, 0))
             await pilot.pause()
-            assert chat._text_area.cursor_location == (1, 0)
 
             await pilot.press("backspace")
             await pilot.pause()
 
-            # The line break is removed and the placeholder (with its trailing
-            # space) is preserved rather than being deleted atomically.
-            assert chat._text_area.text == "[image 1] "
-            assert len(app.tracker.get_images()) == 1
+            # The line break is removed and both placeholders survive rather
+            # than `[image 1]` being deleted atomically with the newline.
+            assert chat._text_area.text == "[image 1][image 2]"
+            assert len(app.tracker.get_images()) == 2
 
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
@@ -3986,6 +3994,27 @@ class TestModifiedBackspaceDeleteWordLeft:
             chat.handle_external_paste("p" * 900)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_after_tab_deletes_placeholder_atomically(
+        self, key: str
+    ) -> None:
+        """Modified Backspace preserves token integrity after a tab."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("p" * 900)
+            chat._text_area.insert("\t")
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]\t"
 
             await pilot.press(key)
             await pilot.pause()

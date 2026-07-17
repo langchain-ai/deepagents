@@ -354,15 +354,34 @@ class TestCreateMultimodalContent:
             unsupported_modalities=frozenset({"image"}),
         )
 
-        assert result == [
-            {
-                "type": "text",
-                "text": (
-                    "[Omitted 1 image attachment(s): the active model "
-                    "cannot process them.]"
-                ),
-            }
-        ]
+        # The image block is dropped and the notice becomes the sole text block,
+        # so the message is never empty. Structural checks (not the exact prose,
+        # pinned once in `test_unsupported_image_is_replaced_with_notice`) keep
+        # this robust to notice-wording edits.
+        assert len(result) == 1
+        assert result[0]["type"] == "text"
+        assert result[0]["text"].startswith("[Omitted")
+        assert "1 image attachment(s)" in result[0]["text"]
+
+    def test_unsupported_modality_without_matching_attachment_adds_no_notice(
+        self,
+    ) -> None:
+        """An unsupported modality with no attachment of that type is inert."""
+        vid = VideoData(base64_data="vid", format="mp4", placeholder="[video 1]")
+
+        # `image` is unsupported but no images are attached; the supported video
+        # must pass through untouched with no spurious "0 image" notice.
+        result = create_multimodal_content(
+            "Analyze [video 1]",
+            [],
+            [vid],
+            unsupported_modalities=frozenset({"image"}),
+        )
+
+        assert len(result) == 2
+        assert result[0] == {"type": "text", "text": "Analyze"}
+        assert "Omitted" not in result[0]["text"]
+        assert result[1]["type"] == "video"
 
     def test_text_and_multiple_images(self) -> None:
         """Test creating content with text and multiple images."""
@@ -1061,14 +1080,52 @@ class TestCreateMultimodalContentWithVideo:
         )
 
         assert len(result) == 2
-        assert result[0] == {
-            "type": "text",
-            "text": (
-                "Compare with\n\n"
-                "[Omitted 1 video attachment(s): the active model cannot process them.]"
-            ),
-        }
+        assert result[0]["type"] == "text"
+        assert "Compare with" in result[0]["text"]
+        assert "1 video attachment(s)" in result[0]["text"]
+        assert "image attachment(s)" not in result[0]["text"]
         assert result[1]["type"] == "image_url"
+
+    def test_image_and_video_both_unsupported_single_combined_notice(self) -> None:
+        """Both modalities unsupported yields one combined notice, no media."""
+        img = ImageData(base64_data="img", format="png", placeholder="[image 1]")
+        vid = VideoData(base64_data="vid", format="mp4", placeholder="[video 1]")
+
+        result = create_multimodal_content(
+            "Compare [image 1] with [video 1]",
+            [img],
+            [vid],
+            unsupported_modalities=frozenset({"image", "video"}),
+        )
+
+        # A single combined notice via the " and " join, and no media leaks.
+        assert result == [
+            {
+                "type": "text",
+                "text": (
+                    "Compare with\n\n"
+                    "[Omitted 1 image attachment(s) and 1 video attachment(s): "
+                    "the active model cannot process them.]"
+                ),
+            }
+        ]
+
+    def test_unrelated_unsupported_modality_forwards_all_media(self) -> None:
+        """Unsupported modalities with no attachment surface leave media intact."""
+        img = ImageData(base64_data="img", format="png", placeholder="[image 1]")
+        vid = VideoData(base64_data="vid", format="mp4", placeholder="[video 1]")
+
+        # A text-and-media model that only lacks audio/pdf: images and videos
+        # must pass through with no notice.
+        result = create_multimodal_content(
+            "Compare:",
+            [img],
+            [vid],
+            unsupported_modalities=frozenset({"audio", "pdf"}),
+        )
+
+        assert [block["type"] for block in result] == ["text", "image_url", "video"]
+        assert "Omitted" not in result[0]["text"]
 
     def test_video_only(self) -> None:
         """Test that empty text is not included when only video is present."""

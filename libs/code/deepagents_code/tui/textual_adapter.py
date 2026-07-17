@@ -74,7 +74,10 @@ from deepagents_code.hooks import (
     dispatch_hook_fire_and_forget,
 )
 from deepagents_code.input import MediaTracker, parse_file_mentions
-from deepagents_code.media_utils import create_multimodal_content
+from deepagents_code.media_utils import (
+    create_multimodal_content,
+    omitted_modality_summaries,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -749,12 +752,31 @@ async def execute_task_textual(
             images_to_send = image_tracker.get_images()
             videos_to_send = image_tracker.get_videos()
         if images_to_send or videos_to_send:
+            unsupported = settings.model_unsupported_modalities
+            omitted = omitted_modality_summaries(
+                images_to_send, videos_to_send, unsupported
+            )
             message_content = create_multimodal_content(
                 final_input,
                 images_to_send,
                 videos_to_send,
-                unsupported_modalities=settings.model_unsupported_modalities,
+                unsupported_modalities=unsupported,
             )
+            if omitted:
+                # The model-facing content already carries an `[Omitted ...]`
+                # notice, but the user's mounted message still shows the
+                # attachment as sent. Surface the drop in the transcript and
+                # logs so the omission isn't silent from the user's seat.
+                model_label = settings.model_name or "the active model"
+                detail = " and ".join(omitted)
+                logger.warning(
+                    "Omitted unsupported media from request (model=%s): %s",
+                    model_label,
+                    detail,
+                )
+                await adapter._mount_message(
+                    AppMessage(f"Omitted {detail}: {model_label} cannot process them.")
+                )
         else:
             message_content = final_input
 

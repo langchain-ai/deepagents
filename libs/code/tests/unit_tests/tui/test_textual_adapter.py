@@ -30,6 +30,8 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.input import MediaTracker
+from deepagents_code.media_utils import ImageData
 from deepagents_code.tui.textual_adapter import (
     RubricEvaluationEnd,
     SessionStats,
@@ -2161,6 +2163,99 @@ class TestExecuteTaskTextualUsageStats:
 
         assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
         assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+
+
+class TestExecuteTaskTextualMediaGating:
+    """`execute_task_textual` gates unsupported media at the call site.
+
+    The pure gating logic is unit-tested in `test_media_utils`; these guard the
+    wiring: the active model's `unsupported_modalities` reaches
+    `create_multimodal_content`, and a drop is surfaced to the user (transcript
+    `AppMessage`) rather than vanishing silently.
+    """
+
+    @staticmethod
+    def _image_tracker(img: ImageData) -> MediaTracker:
+        tracker = MediaTracker()
+        tracker.add_image(img)
+        return tracker
+
+    async def test_unsupported_image_is_gated_and_surfaced(self) -> None:
+        """An unsupported image is dropped from the request and shown to the user."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        agent = _SequencedAgent([[]])
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            mock_settings.model_unsupported_modalities = frozenset({"image"})
+            await execute_task_textual(
+                user_input="Describe [image 1]",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                image_tracker=self._image_tracker(img),
+            )
+
+        # The model-facing message carries the notice, never the image block.
+        content = agent.stream_inputs[0]["messages"][0]["content"]
+        assert all(block["type"] != "image_url" for block in content)
+        assert any(
+            block["type"] == "text" and "Omitted" in block["text"] for block in content
+        )
+        # The user is told in the transcript that the attachment was dropped.
+        assert any(
+            isinstance(widget, AppMessage) and "Omitted" in str(widget._content)
+            for widget in mounted
+        )
+
+    async def test_supported_image_is_forwarded_without_notice(self) -> None:
+        """A supported image passes through with no gating notice or app message."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        agent = _SequencedAgent([[]])
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            mock_settings.model_unsupported_modalities = frozenset()
+            await execute_task_textual(
+                user_input="Describe [image 1]",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                image_tracker=self._image_tracker(img),
+            )
+
+        content = agent.stream_inputs[0]["messages"][0]["content"]
+        assert any(block["type"] == "image_url" for block in content)
+        assert not any(
+            isinstance(widget, AppMessage) and "Omitted" in str(widget._content)
+            for widget in mounted
+        )
 
 
 class TestExecuteTaskTextualToolCallStreaming:

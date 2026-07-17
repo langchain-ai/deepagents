@@ -2637,6 +2637,14 @@ class DeepAgentsApp(App):
         completion in the chat input.
         """
 
+        self._debug_console_cleared_upto = 0
+        """Absolute emission index the Debug Console was last cleared up to.
+
+        Persists a `Ctrl+L` clear across close/reopen of the console for the
+        process lifetime; each newly opened `DebugConsoleScreen` is seeded from
+        it and reports a fresh clear back through its `on_clear` callback.
+        """
+
         self._lc_thread_id = thread_id
         """LangChain thread identifier.
 
@@ -2774,6 +2782,14 @@ class DeepAgentsApp(App):
 
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
+        self._restart_respawn_task: asyncio.Task[None] | None = None
+        """Strong reference to the detached `/restart` respawn task.
+
+        `_handle_restart_command` runs the multi-second server respawn off the
+        Textual message pump via `asyncio.create_task` so the chat input stays
+        responsive; holding the reference keeps the task from being GC'd
+        mid-flight and lets tests await it deterministically."""
 
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
@@ -6053,13 +6069,24 @@ class DeepAgentsApp(App):
         resolved versions of the core LangChain-ecosystem dependencies, which
         helps diagnose local checkouts.
         """
+        from deepagents_code.extras_info import (
+            collect_version_report,
+            format_cli_version_annotation,
+            format_sdk_version_annotation,
+        )
+
+        report = await asyncio.to_thread(collect_version_report)
+
         lines: list[str] = []
         try:
             from deepagents_code._version import __version__ as cli_version
             from deepagents_code.update_check import format_age_suffix
 
             age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
-            lines.append(f"deepagents-code version: {cli_version}{age_suffix}")
+            cli_annotation = format_cli_version_annotation(report.cli)
+            lines.append(
+                f"deepagents-code version: {cli_version}{age_suffix}{cli_annotation}"
+            )
         except ImportError:
             logger.debug("deepagents_code._version module not found")
             lines.append("deepagents-code version: unknown")
@@ -6067,14 +6094,16 @@ class DeepAgentsApp(App):
             logger.warning("Unexpected error looking up app version", exc_info=True)
             lines.append("deepagents-code version: unknown")
 
-        from deepagents_code.extras_info import resolve_sdk_version
-
-        sdk_version, sdk_status = resolve_sdk_version()
-        if sdk_status == "resolved":
+        if report.sdk.status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
+            sdk_version = report.sdk.primary_version
             sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
-            lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
+            sdk_annotation = format_sdk_version_annotation(report)
+            lines.append(
+                f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}"
+                f"{sdk_annotation}"
+            )
         else:
             lines.append("deepagents (SDK) version: unknown")
 
@@ -6096,20 +6125,35 @@ class DeepAgentsApp(App):
 
         available, latest = self._update_available
         if available and latest:
+            manual_hint = "Run /update or `dcode update` to install it."
+            hint = "Update it using the method that installed this copy of dcode."
+            upgrade_supported = False
             try:
-                from deepagents_code.update_check import upgrade_command
+                # Imported function-locally on purpose: tests patch these on the
+                # `update_check` module, which only takes effect because the names
+                # are resolved here at call time. Hoisting this to module scope
+                # would silently defeat those patches.
+                from deepagents_code.update_check import (
+                    detect_install_method,
+                    is_auto_update_enabled,
+                )
 
-                cmd = upgrade_command()
+                method = await asyncio.to_thread(detect_install_method)
+                upgrade_supported = method in {"uv", "brew"}
+                if upgrade_supported:
+                    if await asyncio.to_thread(is_auto_update_enabled):
+                        hint = "Quit and relaunch dcode to install it automatically."
+                    else:
+                        hint = manual_hint
             except Exception:
                 logger.warning(
-                    "Could not resolve upgrade command for /version; "
-                    "falling back to generic upgrade hint",
+                    "Could not resolve update preference for /version; "
+                    "falling back to a manual update hint",
                     exc_info=True,
                 )
-                from deepagents_code.update_check import FALLBACK_UPGRADE_COMMAND
-
-                cmd = FALLBACK_UPGRADE_COMMAND
-            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+                if upgrade_supported:
+                    hint = manual_hint
+            lines.extend(("", f"Update available: v{latest}. {hint}"))
 
         await self._mount_message(AppMessage("\n".join(lines)))
 
@@ -9837,8 +9881,19 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
-        active_request = state_values.get("goal_criteria_request")
-        pending_request_is_active = active_request is not None
+        criteria_request = state_values.get("goal_criteria_request")
+        completed_request_marker_is_stale = (
+            allow_pending_proposal
+            and proposal_request_id is not None
+            and payload.pending_goal_request_id == proposal_request_id
+            and isinstance(criteria_request, dict)
+            and criteria_request.get("request_id") == proposal_request_id
+        )
+        if completed_request_marker_is_stale:
+            # `_clear_submitted_goal_criteria_request` runs before this successful
+            # turn sync. Ignore its failed clear only here; restore and ordinary sync
+            # must keep matching markers active so failed partial drafts stay blocked.
+            payload = replace(payload, goal_criteria_request_active=False)
         discard_failed_proposal = (
             not allow_pending_proposal
             and payload.pending_goal_objective is not None
@@ -9853,7 +9908,7 @@ class DeepAgentsApp(App):
                 proposal_request_id is not None
                 and payload.pending_goal_request_id != proposal_request_id
             )
-            or pending_request_is_active
+            or payload.goal_criteria_request_active
             or not allow_pending_proposal
         ):
             payload = replace(
@@ -15394,11 +15449,30 @@ class DeepAgentsApp(App):
         should_drain_hooks = has_pending_hooks()
 
         if should_wait_for_agent or should_drain_hooks:
+            from deepagents_code.config import get_glyphs
+
+            # Surface a single toast so the user knows shutdown is intentionally
+            # waiting rather than hung. Gate `_graceful_exit` on an explicit
+            # refresh so even an already-finished worker or hook drain can't tear
+            # down Textual before the queued notification has been rendered.
+            # Immediate/idle exits skip this branch and stay toast-free, and a
+            # repeated exit while shutdown is still pending hits the force-quit
+            # guard above before reaching here, so it stays toast-free too.
+            self.notify(
+                f"Finishing pending work before exit{get_glyphs().ellipsis}",
+                markup=False,
+            )
+            refreshed = asyncio.Event()
+            if not self.call_after_refresh(refreshed.set):
+                # A closing message pump can't render the toast, but it must not
+                # strand shutdown waiting on a refresh that will never happen.
+                refreshed.set()
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
+                    await refreshed.wait()
                     worker = agent_worker
                     if should_wait_for_agent and worker is not None:
                         try:
@@ -15610,7 +15684,9 @@ class DeepAgentsApp(App):
 
         # Toggle whichever collapsible unit is most recent in DOM order so
         # content mounted after a tool group stays reachable.
-        # Grouped tool rows are folded into their summary, so skip them here.
+        # Skip grouped tool rows only while they are folded into their summary.
+        # Expanded groups retain the marker, but their visible rows should take
+        # precedence over the summary so Ctrl+O reaches their collapsible content.
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
@@ -15625,12 +15701,19 @@ class DeepAgentsApp(App):
             if isinstance(child, SkillMessage) and child._stripped_body.strip():
                 child.toggle_body()
                 return
-            if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
+            if isinstance(child, ToolCallMessage) and (
+                not child.has_class("-grouped") or child.display
+            ):
                 # Prefer the collapsible command/code block when the row has one,
                 # so Ctrl+O matches the "click or Ctrl+O to show command/code"
                 # hint rendered beside it. The output stays reachable by clicking
                 # its own region (see `ToolCallMessage.on_click`); rows without an
                 # expandable command/code block fall through to the output.
+                # A `task` row's truncated description takes the same role,
+                # owning Ctrl+O while its output stays reachable by click.
+                if child.has_expandable_task_desc:
+                    child.toggle_task_desc()
+                    return
                 if child.has_expandable_args:
                     child.toggle_args()
                     return
@@ -17112,8 +17195,16 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        def persist_clear(cursor: int) -> None:
+            self._debug_console_cleared_upto = cursor
+
         self.push_screen(
-            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+            DebugConsoleScreen(
+                self._build_debug_snapshot(),
+                cleared_upto=self._debug_console_cleared_upto,
+                on_clear=persist_clear,
+            ),
+            handle_result,
         )
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
@@ -19394,6 +19485,23 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
 
+        # A duplicate `/restart` bypasses the normal input queue while the
+        # first detached respawn is still connecting. Reject it before the
+        # destructive setup below so prompts queued during that respawn are
+        # preserved for the pending `ServerReady` handler to drain.
+        if (
+            self._restart_respawn_task is not None
+            and self._connecting
+            and self._reconnecting
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "A server restart is already in progress. Queued prompts "
+                    "will be sent once it finishes.",
+                ),
+            )
+            return
+
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
         # fire against the freshly respawned agent silently. This restart *is*
@@ -19467,11 +19575,63 @@ class DeepAgentsApp(App):
                 )
             return
 
-        restarting = await self._mount_transient_app_message("Restarting server...")
+        # Run the respawn as a detached task, NOT awaited on the message pump.
+        # `_respawn_server`'s multi-second `server_proc.restart()` would
+        # otherwise stall the pump — key events stop being forwarded and the
+        # chat input freezes ("blocked") for the whole restart. Mirrors the
+        # MCP viewer/force-reconnect paths: `asyncio.create_task` keeps the
+        # pump free, so keystrokes stay live and any message the user submits
+        # while `_connecting` is queued and drained once `ServerReady` fires.
+        # `_run_restart_respawn` owns the transient status and completion
+        # banner; `_log_task_exception` surfaces anything unexpected. The
+        # pre-respawn guards above (remote/starting/failed/deferred) already
+        # ran synchronously, so the user got immediate feedback before this.
+        # Mark the app reconnecting before scheduling because `create_task`
+        # does not run the coroutine inline. Otherwise a submission or second
+        # `/restart` could enter before `_respawn_server` sets these fields.
+        self._connecting = True
+        self._reconnecting = True
+        self._agent = None
+        self._sync_status_connection()
+        task = asyncio.create_task(self._run_restart_respawn())
+        self._restart_respawn_task = task
+        task.add_done_callback(_log_task_exception)
+
+    async def _run_restart_respawn(self) -> None:
+        """Respawn the server for `/restart`, detached from the message pump.
+
+        Scheduled via `asyncio.create_task` from `_handle_restart_command` so
+        the multi-second `server_proc.restart()` runs off the Textual message
+        pump, keeping the chat input responsive. Shows a transient
+        "Restarting server..." status for the duration and removes it whether
+        the respawn succeeds, returns `False`, or raises. Mounts the completion
+        banner only on success; on any non-success outcome it clears the
+        `_connecting`/`_reconnecting` flags the caller pre-set (on success the
+        `ServerReady` handler clears them once the new server is live).
+
+        An *unexpected* raise — distinct from the handled `return False` path,
+        which posts `ServerStartFailed` so the recovery UI gives the user
+        feedback — is caught here and surfaced as an `ErrorMessage`, mirroring
+        `_reconnect_from_viewer_safe`, which detaches the same respawn. Without
+        this the exception would reach only `_log_task_exception` and log a
+        warning the interactive user never sees; `_log_task_exception` stays a
+        last-resort backstop for anything that escapes even this handler.
+        """
+        restarting = None
         restarted = False
         try:
+            restarting = await self._mount_transient_app_message("Restarting server...")
             restarted = await self._restart_server_manual()
+        except Exception as exc:
+            logger.exception("Manual /restart of server raised unexpectedly")
+            await self._mount_message(
+                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+            )
         finally:
+            if not restarted:
+                self._connecting = False
+                self._reconnecting = False
+                self._sync_status_connection()
             if restarting is not None:
                 with suppress(NoMatches, ScreenStackError):
                     await restarting.remove()

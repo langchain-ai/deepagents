@@ -843,8 +843,9 @@ jobs:
           # unset just means we couldn't correlate its run in time (it still
           # dispatched).
           declare -A RUN_URLS=()
-          # Cached after the first lookup so the label check and run-link comment
-          # always target the same merged release PR.
+          # Cached after the first successful lookup so the label check and
+          # run-link comment always target the same merged release PR. A failed
+          # lookup is not cached, so a later caller retries it.
           RELEASE_PR_NUMBER=""
 
           # release.yml's `version` input is required and the API silently accepts
@@ -1026,7 +1027,14 @@ jobs:
               "/repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR_NUMBER}/comments" \
               --raw-field body="$body" \
               --jq '.html_url'); then
-              echo "Commented on release PR #$RELEASE_PR_NUMBER: $comment_url"
+              # A 2xx with an empty html_url means the comment posted but the
+              # response didn't parse as expected — report success without
+              # implying a URL we don't actually have.
+              if [ -n "$comment_url" ]; then
+                echo "Commented on release PR #$RELEASE_PR_NUMBER: $comment_url"
+              else
+                echo "Commented on release PR #$RELEASE_PR_NUMBER (comment URL unavailable)."
+              fi
             else
               echo "::warning::Could not comment on release PR #$RELEASE_PR_NUMBER; the dispatch succeeded and its run link remains in the step summary."
             fi

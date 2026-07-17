@@ -3617,6 +3617,12 @@ class _MutedRichMarkdown:
 # readable table instead of collapsing to a single column.
 _MARKDOWN_MIN_RENDER_WIDTH = 20
 
+# One-shot flag (mutable holder to avoid a `global` statement) set once the first
+# markdown style conversion fails, so a systematic breakage (e.g. a Rich/Textual
+# version drift) surfaces at `warning` once instead of staying invisible at
+# `debug`, without spamming a line per unconvertible span.
+_markdown_style_conversion_warned = [False]
+
 
 def _markdown_to_content(
     markup: str, width: int, console: RichConsole | None = None
@@ -3668,7 +3674,18 @@ def _markdown_to_content(
                 try:
                     style = Style.from_rich_style(segment.style)
                 except Exception:  # style conversion is best-effort
-                    logger.debug("Skipping unconvertible markdown style", exc_info=True)
+                    if not _markdown_style_conversion_warned[0]:
+                        _markdown_style_conversion_warned[0] = True
+                        logger.warning(
+                            "Failed to convert a markdown style; markdown will "
+                            "render without some styling (later occurrences log "
+                            "at debug)",
+                            exc_info=True,
+                        )
+                    else:
+                        logger.debug(
+                            "Skipping unconvertible markdown style", exc_info=True
+                        )
                 else:
                     spans.append(Span(start, end, style))
         content_lines.append(Content(stripped, spans))
@@ -3740,12 +3757,16 @@ class AppMessage(Static):
 
         Returns:
             The message `Content`. Markdown is rendered to selectable `Content`
-                sized to the widget's content width so it can be highlighted and
-                copied.
+                sized to the widget's current render width so it can be
+                highlighted and copied.
         """
         if not self._is_markdown:
             return super().render()  # ty: ignore[invalid-return-type]
         width = self._markdown_render_width()
+        # The cache is keyed on width only: captured spans are late-bound styles
+        # (`dim`, `bold`, ANSI colors) that Textual resolves against the active
+        # theme at display time, so cached `Content` still recolors on a theme
+        # switch and does not need re-rendering.
         if self._markdown_cache is None or self._markdown_cache[0] != width:
             try:
                 console = self.app.console
@@ -3762,12 +3783,19 @@ class AppMessage(Static):
             The widget's content width, falling back to the container or app
                 width, and never below `_MARKDOWN_MIN_RENDER_WIDTH`.
         """
-        width = self.content_size.width or self.container_size.width
+        width = self.content_size.width
         if width <= 0:
-            try:
-                width = self.app.size.width
-            except NoActiveAppError:
-                width = 0
+            # `content_size` is not known yet; fall back to the container (then
+            # app) width and subtract this widget's own horizontal padding,
+            # which those outer widths — unlike `content_size` — don't exclude.
+            outer = self.container_size.width
+            if outer <= 0:
+                try:
+                    outer = self.app.size.width
+                except NoActiveAppError:
+                    outer = 0
+            padding = self.styles.padding
+            width = outer - padding.left - padding.right
         return max(width, _MARKDOWN_MIN_RENDER_WIDTH)
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler

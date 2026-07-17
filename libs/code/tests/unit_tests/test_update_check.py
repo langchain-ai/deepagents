@@ -7,11 +7,14 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import signal
 import sys
+import tempfile
 import time
 import tomllib
 from collections.abc import Mapping, Sequence  # noqa: TC003
+from itertools import starmap
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
@@ -32,7 +35,8 @@ from deepagents_code.update_check import (
     _latest_from_releases,
     _note_install_baseline,
     _parse_version,
-    _requires_prerelease_dependency,
+    _prerelease_constraints_file,
+    _prerelease_pin_requirements,
     _run_install_subprocess,
     _terminate_install_process,
     _uv_tool_bin_dir,
@@ -87,6 +91,7 @@ from deepagents_code.update_check import (
     perform_install_package,
     perform_upgrade,
     prerelease_upgrade_supported,
+    release_prerelease_pins,
     release_requires_prereleases,
     set_auto_update,
     should_announce_auto_update_default,
@@ -363,23 +368,23 @@ class TestGetLatestVersion:
         assert data["version"] == "2.0.0"
         assert "checked_at" in data
 
-    def test_fresh_fetch_caches_prerelease_dependency_requirement(
-        self, cache_file
-    ) -> None:
+    def test_fresh_fetch_caches_prerelease_dependency_pins(self, cache_file) -> None:
         """Stable dcode releases can intentionally pin pre-release dependencies."""
         with patch(
             "requests.get",
             return_value=_mock_pypi_response(
                 "2.0.0",
-                requires_dist=("deepagents==0.7.0a2",),
+                requires_dist=("deepagents==0.7.0a2", "litellm<1.93.0a0"),
             ),
         ):
             result = get_latest_version()
 
         assert result == "2.0.0"
-        assert release_requires_prereleases("2.0.0") is True
+        # Only the mandatory exact pre-release pin is cached; the pre-release
+        # upper bound on litellm is not a targeted constraint.
+        assert release_prerelease_pins("2.0.0") == ["deepagents==0.7.0a2"]
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"] == {"2.0.0": True}
+        assert data["release_prerelease_pins"] == {"2.0.0": ["deepagents==0.7.0a2"]}
 
     def test_fresh_fetch_prerelease(self, cache_file) -> None:
         """PyPI fetch with include_prereleases returns pre-release version."""
@@ -551,11 +556,11 @@ class TestGetLatestVersion:
     def test_fresh_fetch_preserves_other_release_prerelease_entries(
         self, cache_file
     ) -> None:
-        """A refresh keeps cached pre-release answers for unrelated versions."""
+        """A refresh keeps cached pre-release pins for unrelated versions."""
         cache_file.write_text(
             json.dumps(
                 {
-                    "release_requires_prereleases": {"1.0.0": True},
+                    "release_prerelease_pins": {"1.0.0": ["deepagents==0.6.0a1"]},
                     "checked_at": time.time(),
                 }
             ),
@@ -566,7 +571,10 @@ class TestGetLatestVersion:
 
         assert result == "2.0.0"
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"] == {"1.0.0": True, "2.0.0": False}
+        assert data["release_prerelease_pins"] == {
+            "1.0.0": ["deepagents==0.6.0a1"],
+            "2.0.0": [],
+        }
 
     def test_fresh_fetch_non_dict_info_returns_cached(self, cache_file) -> None:
         """A PyPI payload whose `info` is not an object falls back to cache."""
@@ -591,80 +599,280 @@ class TestGetLatestVersion:
         assert not cache_file.exists()
 
 
-class TestRequiresPrereleaseDependency:
-    """Unit tests for the `Requires-Dist` pre-release detection helper."""
+class TestPrereleasePinRequirements:
+    """Unit tests for the targeted `Requires-Dist` pre-release pin extractor.
+
+    The supported contract is deliberately narrow: only a mandatory,
+    unconditional (marker-free), positive exact (`==`) pin of a pre-release
+    version is admitted, because that is the only shape safe to hand uv as a
+    first-party constraint without widening the candidate set. Everything
+    else — upper bounds, exclusions, extra-gated pins, interpreter/platform
+    markers — is ignored so a global `--prerelease allow` is never needed.
+    """
 
     @pytest.mark.parametrize(
         ("requirements", "expected"),
         [
-            (None, False),
-            ((), False),
-            (("deepagents==0.7.0",), False),
-            (("deepagents==0.7.0a2",), True),
-            (("deepagents>=0.7.0a2",), True),
-            (("deepagents~=0.7.0a2",), True),
-            # Operator-agnostic by design: even an exclusion of a pre-release
-            # flags the release. Errs toward enabling --prerelease (safe).
-            (("deepagents!=0.7.0a1",), True),
-            # Marker-gated pre-release pins still flag the release (conservative).
-            (('deepagents==0.7.0a2; extra=="x"',), True),
-            (("deepagents>=0.7.0,<0.8",), False),
-            (("deepagents",), False),  # no version specifier
-            (("requests>=2", "deepagents==0.7.0a2"), True),  # one of many
-            (("not a valid requirement !!!",), False),  # unparseable -> skipped
-            (("deepagents===not.a.version",), False),  # unparseable version
-            ((123, "deepagents==0.7.0a2"), True),  # non-str entry skipped
-            ((123, 456), False),  # all non-str entries
+            (None, []),
+            ((), []),
+            # (1) Unconditional exact pre-release pin is extracted (canonical).
+            (("deepagents==0.7.0a7",), ["deepagents==0.7.0a7"]),
+            (("deepagents==0.7.0rc1",), ["deepagents==0.7.0rc1"]),
+            # A valid `===` (arbitrary-equality) pin is also admitted and
+            # normalized to `==`.
+            (("deepagents===0.7.0a7",), ["deepagents==0.7.0a7"]),
+            # (2) A stable exact pin is ignored.
+            (("deepagents==0.7.0",), []),
+            # (3) A prerelease upper bound is ignored.
+            (("pydantic<2.14.0a0",), []),
+            (("deepagents>=0.7.0a2",), []),
+            (("deepagents~=0.7.0a2",), []),
+            # (4) A prerelease exclusion is ignored.
+            (("package!=1.0rc1",), []),
+            (("deepagents!=0.7.0a1",), []),
+            # (5) An extra-only prerelease requirement is ignored (not mandatory).
+            (('package==1.0rc1; extra == "unused-extra"',), []),
+            (('deepagents==0.7.0a2; extra=="x"',), []),
+            # (6) Environment markers are outside the unconditional-pin contract:
+            # both an applicable-looking and an inapplicable marker are ignored,
+            # because evaluating them here could target the wrong interpreter.
+            (('deepagents==0.7.0a7; python_version >= "3.8"',), []),
+            (('deepagents==0.7.0a7; python_version < "3.0"',), []),
+            # Compound specifiers are not a single positive exact pin.
+            (("deepagents>=0.7.0a2,<0.8",), []),
+            (("deepagents",), []),  # no version specifier
+            # One qualifying pin among many is still extracted.
+            (("requests>=2", "deepagents==0.7.0a2"), ["deepagents==0.7.0a2"]),
+            (("not a valid requirement !!!",), []),  # unparseable -> skipped
+            (("deepagents===not.a.version",), []),  # unparseable version
+            ((123, "deepagents==0.7.0a2"), ["deepagents==0.7.0a2"]),  # non-str skip
+            ((123, 456), []),  # all non-str entries
         ],
     )
-    def test_detects_prerelease_specifiers(self, requirements, expected) -> None:
-        assert _requires_prerelease_dependency(requirements) is expected
+    def test_extracts_targeted_pins(self, requirements, expected) -> None:
+        assert _prerelease_pin_requirements(requirements) == expected
+
+    def test_names_are_canonicalized(self) -> None:
+        """Pin names are normalized so downstream constraints match uv output."""
+        assert _prerelease_pin_requirements(("Deep_Agents==0.7.0a7",)) == [
+            "deep-agents==0.7.0a7"
+        ]
+
+    def test_multiple_pins_sorted(self) -> None:
+        """Several qualifying pins come back sorted and de-duplicated."""
+        assert _prerelease_pin_requirements(
+            ("zeta==2.0rc1", "alpha==1.0a1", "alpha==1.0a1")
+        ) == ["alpha==1.0a1", "zeta==2.0rc1"]
 
 
-class TestReleaseRequiresPrereleases:
-    """Unit tests for `release_requires_prereleases`."""
+class TestPrereleaseConstraintsFile:
+    """Unit tests for the temporary uv constraints-file context manager."""
 
-    def test_none_version_is_false(self) -> None:
-        """A missing version never needs the pre-release resolver."""
+    def test_empty_pins_yield_none(self) -> None:
+        """No pins means no file and a `None` handle for a single code path."""
+        with _prerelease_constraints_file([]) as path:
+            assert path is None
+
+    def test_writes_pins_and_cleans_up(self) -> None:
+        """The file lists one pin per line and is removed on exit."""
+        with _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path:
+            assert path is not None
+            assert path.exists()
+            assert path.read_text(encoding="utf-8") == "deepagents==0.7.0a7\n"
+            captured = path
+        assert not captured.exists()
+
+    def test_removes_file_even_on_error(self) -> None:
+        """A raised body still triggers cleanup in `finally`."""
+        captured: Path | None = None
+        err = RuntimeError("install blew up")
+        with (  # noqa: PT012
+            pytest.raises(RuntimeError),
+            _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path,
+        ):
+            captured = path
+            assert path is not None
+            assert path.exists()
+            raise err
+        assert captured is not None
+        assert not captured.exists()
+
+    def test_cleanup_error_is_swallowed(self, caplog) -> None:
+        """A failing unlink is logged, not raised — it can't mask a result."""
+        captured: Path | None = None
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.update_check"):
+            with (
+                patch(
+                    "deepagents_code.update_check.Path.unlink",
+                    side_effect=OSError("busy"),
+                ),
+                _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path,
+            ):
+                assert path is not None
+                captured = path
+                # Exiting the context did not raise despite the unlink failure.
+            assert any(
+                "constraints file" in record.message for record in caplog.records
+            )
+        # The patched unlink blocked the context manager's own cleanup; remove
+        # the real temp file now that the patch is lifted so nothing leaks.
+        if captured is not None:
+            captured.unlink(missing_ok=True)
+
+    def test_write_failure_unlinks_and_raises(self) -> None:
+        """A failed write removes the temp file and propagates the OSError.
+
+        Distinct from the body-raise and unlink-failure paths: here the write to
+        the freshly created `mkstemp` file fails, so the context manager must
+        clean up the file and re-raise (callers treat that as a
+        constraint-generation failure rather than falling back to a global
+        `--prerelease allow`).
+        """
+        created: list[Path] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def _tracking_mkstemp(
+            *, prefix: str | None = None, suffix: str | None = None
+        ) -> tuple[int, str]:
+            fd, name = real_mkstemp(prefix=prefix, suffix=suffix)
+            created.append(Path(name))
+            return fd, name
+
+        with (
+            patch(
+                "deepagents_code.update_check.tempfile.mkstemp",
+                side_effect=_tracking_mkstemp,
+            ),
+            patch(
+                "deepagents_code.update_check.os.fdopen",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
+            _prerelease_constraints_file(["deepagents==0.7.0a7"]),
+        ):
+            pass
+
+        assert created, "mkstemp should have created a file"
+        assert all(not path.exists() for path in created)
+
+
+class TestReleasePrereleasePins:
+    """Unit tests for `release_prerelease_pins` and its boolean wrapper."""
+
+    def test_none_version_is_empty(self) -> None:
+        """A missing version never needs pre-release admission."""
+        assert release_prerelease_pins(None) == []
         assert release_requires_prereleases(None) is False
 
-    def test_cache_hit_true(self, cache_file) -> None:
-        """A cached `True` short-circuits without a network call."""
+    def test_cache_hit_pins(self, cache_file) -> None:
+        """A cached pin list short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a2"]}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+            assert release_requires_prereleases("1.1.0") is True
+        get_mock.assert_not_called()
+
+    def test_cache_hit_empty(self, cache_file) -> None:
+        """A cached empty list short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_prerelease_pins("1.1.0") == []
+            assert release_requires_prereleases("1.1.0") is False
+        get_mock.assert_not_called()
+
+    def test_legacy_boolean_cache_is_ignored(self, cache_file) -> None:
+        """The stale marker-agnostic boolean key is not read as authoritative.
+
+        A pre-migration cache may still carry `release_requires_prereleases`
+        booleans. Those cannot name a pin, so the new lookup ignores them and
+        re-fetches structured metadata instead.
+        """
         cache_file.write_text(
             json.dumps({"release_requires_prereleases": {"1.1.0": True}}),
             encoding="utf-8",
         )
-        with patch("requests.get") as get_mock:
-            assert release_requires_prereleases("1.1.0") is True
-        get_mock.assert_not_called()
-
-    def test_cache_hit_false(self, cache_file) -> None:
-        """A cached `False` short-circuits without a network call."""
-        cache_file.write_text(
-            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
-            encoding="utf-8",
-        )
-        with patch("requests.get") as get_mock:
-            assert release_requires_prereleases("1.1.0") is False
-        get_mock.assert_not_called()
-
-    def test_cache_miss_fetches_and_writes(self, cache_file) -> None:
-        """A cache miss fetches per-version metadata and caches the result."""
         with patch(
             "requests.get",
             return_value=_mock_pypi_response(
                 "1.1.0", requires_dist=("deepagents==0.7.0a2",)
             ),
         ) as get_mock:
-            assert release_requires_prereleases("1.1.0") is True
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_corrupt_cache_falls_through_to_fetch(self, cache_file) -> None:
+        """Undecodable cache JSON is ignored and structured metadata re-fetched."""
+        cache_file.write_text("{ not valid json", encoding="utf-8")
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cached_non_string_entries_are_not_trusted(self, cache_file) -> None:
+        """A cached list with a non-string element re-fetches instead of trusting."""
+        cache_file.write_text(
+            json.dumps(
+                {"release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a2", 123]}}
+            ),
+            encoding="utf-8",
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cached_out_of_contract_entry_is_revalidated(self, cache_file) -> None:
+        """A drifted/tampered cache entry is re-validated, not fed to uv verbatim.
+
+        The stored strings are written verbatim into a uv constraints file, which
+        honors directives like `-r`/`-c`. A value that no longer parses as a
+        targeted pin (here an `-r` injection) must not be trusted: the lookup
+        drops it, the length check fails, and it re-fetches structured metadata.
+        """
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": ["-r /etc/passwd"]}}),
+            encoding="utf-8",
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cache_miss_fetches_and_writes(self, cache_file) -> None:
+        """A cache miss fetches per-version metadata and caches the pins."""
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
         assert get_mock.call_args.args[0].endswith("/deepagents-code/1.1.0/json")
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"]["1.1.0"] is True
+        assert data["release_prerelease_pins"]["1.1.0"] == ["deepagents==0.7.0a2"]
 
     def test_bypass_cache_forces_fetch(self, cache_file) -> None:
         """`bypass_cache` re-fetches even when a cached value exists."""
         cache_file.write_text(
-            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
             encoding="utf-8",
         )
         with patch(
@@ -673,34 +881,34 @@ class TestReleaseRequiresPrereleases:
                 "1.1.0", requires_dist=("deepagents==0.7.0a2",)
             ),
         ) as get_mock:
-            result = release_requires_prereleases("1.1.0", bypass_cache=True)
-        assert result is True
+            result = release_prerelease_pins("1.1.0", bypass_cache=True)
+        assert result == ["deepagents==0.7.0a2"]
         get_mock.assert_called_once()
 
-    def test_network_failure_returns_false(self, cache_file) -> None:
-        """A PyPI failure conservatively reports stable-only resolution."""
+    def test_network_failure_returns_empty(self, cache_file) -> None:
+        """A PyPI failure conservatively reports no pre-release admission."""
         import requests
 
         with patch("requests.get", side_effect=requests.RequestException("boom")):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         # Nothing cached, so a later successful lookup can still self-correct.
         assert not cache_file.exists()
 
-    def test_missing_requests_returns_false(self, cache_file) -> None:
-        """Without `requests`, the lookup degrades to stable-only resolution."""
+    def test_missing_requests_returns_empty(self, cache_file) -> None:
+        """Without `requests`, the lookup degrades to no pre-release admission."""
         with patch.dict(sys.modules, {"requests": None}):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         assert not cache_file.exists()
 
-    def test_malformed_info_returns_false(self, cache_file) -> None:
-        """A payload with a non-object `info` is treated as no requirement."""
+    def test_malformed_info_returns_empty(self, cache_file) -> None:
+        """A payload with a non-object `info` is treated as no pins."""
         resp = MagicMock()
         resp.json.return_value = {"info": "not-a-dict"}
         resp.raise_for_status = MagicMock()
         with patch("requests.get", return_value=resp):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"]["1.1.0"] is False
+        assert data["release_prerelease_pins"]["1.1.0"] == []
 
 
 class TestIsUpdateAvailable:
@@ -2022,19 +2230,38 @@ class TestUpdateLogs:
             "uv tool install -U deepagents-code --prerelease allow"
         )
 
-    async def test_perform_upgrade_allows_prereleases_for_target_dependency(
+    async def test_perform_upgrade_uses_targeted_constraints_for_target_dependency(
         self, cache_file
     ) -> None:
-        """A stable target that pins an alpha dependency opts uv into prereleases."""
+        """A stable target pinning an alpha dependency uses scoped constraints.
+
+        Instead of a global `--prerelease allow` (which let an unrelated RC in
+        #4524), the command pins the exact dcode target, passes the SDK pin
+        through a temporary constraints file, and uses uv's
+        `if-necessary-or-explicit` strategy. The constraints file is present
+        while the subprocess runs and removed afterwards.
+        """
         cache_file.write_text(
             json.dumps(
                 {
-                    "release_requires_prereleases": {"1.1.0": True},
+                    "release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a7"]},
                     "checked_at": time.time(),
                 }
             ),
             encoding="utf-8",
         )
+        seen: dict[str, object] = {}
+
+        def _capture(cmd: str, **_kwargs: object) -> tuple[bool, str]:
+            args = shlex.split(cmd)
+            idx = args.index("--constraints")
+            constraints_path = Path(args[idx + 1])
+            seen["cmd"] = cmd
+            seen["existed_during_run"] = constraints_path.exists()
+            seen["contents"] = constraints_path.read_text(encoding="utf-8")
+            seen["path"] = constraints_path
+            return True, ""
+
         with (
             patch("deepagents_code.update_check.__version__", "1.0.0"),
             patch(
@@ -2056,27 +2283,84 @@ class TestUpdateLogs:
             patch(
                 "deepagents_code.update_check._run_install_subprocess",
                 new_callable=AsyncMock,
+                side_effect=_capture,
+            ),
+        ):
+            success, _output = await perform_upgrade(target_version="1.1.0")
+
+        assert success is True
+        cmd = str(seen["cmd"])
+        assert "deepagents-code==1.1.0" in cmd
+        assert "--prerelease if-necessary-or-explicit" in cmd
+        assert "--prerelease allow" not in cmd
+        # Constraints file is present during the subprocess, removed afterwards.
+        assert seen["existed_during_run"] is True
+        assert seen["contents"] == "deepagents==0.7.0a7\n"
+        path = seen["path"]
+        assert isinstance(path, Path)
+        assert not path.exists()
+
+    async def test_perform_upgrade_preserves_extras_with_and_python(
+        self, cache_file
+    ) -> None:
+        """Extras, receipt `--with` packages, and interpreter survive.
+
+        The targeted-constraint path still preserves everything the receipt-aware
+        builder normally carries over.
+        """
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a7"]},
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset({"litellm", "openai"}),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_python",
+                return_value="3.13",
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=("langchain-custom",),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as run_mock,
         ):
             success, _output = await perform_upgrade(target_version="1.1.0")
 
         assert success is True
-        run_mock.assert_awaited_once()
         await_args = run_mock.await_args
         assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
-        )
+        cmd = str(await_args.args[0])
+        assert "--python 3.13" in cmd
+        assert "'deepagents-code[litellm,openai]==1.1.0'" in cmd
+        assert "--with langchain-custom" in cmd
+        assert "--prerelease if-necessary-or-explicit" in cmd
+        assert "--prerelease allow" not in cmd
 
-    async def test_perform_upgrade_fallback_pins_target_with_prerelease_deps(
+    async def test_perform_upgrade_fallback_uses_targeted_constraints(
         self, cache_file
     ) -> None:
-        """The bare fallback also avoids floating stable targets to app prereleases."""
+        """The bare fallback also uses targeted constraints, never global allow."""
         cache_file.write_text(
             json.dumps(
                 {
-                    "release_requires_prereleases": {"1.1.0": True},
+                    "release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a7"]},
                     "checked_at": time.time(),
                 }
             ),
@@ -2104,9 +2388,47 @@ class TestUpdateLogs:
         run_mock.assert_awaited_once()
         await_args = run_mock.await_args
         assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
+        cmd = str(await_args.args[0])
+        assert cmd.startswith("uv tool install -U deepagents-code==1.1.0")
+        assert "--constraints " in cmd
+        assert "--prerelease if-necessary-or-explicit" in cmd
+        assert "--prerelease allow" not in cmd
+
+    async def test_perform_upgrade_constraints_file_failure_leaves_install(
+        self, cache_file
+    ) -> None:
+        """A constraint-generation failure aborts before touching the install."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a7"]},
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
         )
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.tempfile.mkstemp",
+                side_effect=OSError("no space left on device"),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, output = await perform_upgrade(target_version="1.1.0")
+
+        assert success is False
+        assert "left" in output
+        assert "unchanged" in output
+        run_mock.assert_not_awaited()
 
     async def test_perform_upgrade_follows_installed_prerelease_channel(self) -> None:
         """Omitted pre-release preference follows an installed pre-release."""
@@ -2312,6 +2634,30 @@ class TestUpdateLogs:
         assert success is False
         assert "Pre-release updates aren't supported for this install" in output
         # The refusal must short-circuit before shelling out to `brew`.
+        run_mock.assert_not_awaited()
+
+    async def test_perform_upgrade_reports_missing_brew_binary(self) -> None:
+        """A brew install with no `brew` on PATH aborts before any subprocess.
+
+        This PR relocated the check ahead of constraints-file creation; pin the
+        early return so a future refactor cannot silently drop it.
+        """
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch("deepagents_code.update_check.shutil.which", return_value=None),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_upgrade()
+
+        assert success is False
+        assert output == "brew not found on PATH."
         run_mock.assert_not_awaited()
 
     def test_upgrade_command_prerelease(self) -> None:
@@ -2754,6 +3100,53 @@ class TestUpgradeInstallCommand:
                 "uv tool install -U 'deepagents-code[nvidia,quickjs]' "
                 "--prerelease allow"
             )
+
+    def test_targeted_flags_take_precedence_over_global_allow(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Constraints + strategy win over the `include_prereleases` global allow.
+
+        In the real `perform_upgrade` flow the targeted-pins path and the
+        `include_prereleases` channel are mutually exclusive, so this guards the
+        documented precedence directly: even with `include_prereleases=True`, a
+        supplied constraints file and strategy must emit the scoped form and
+        never a global `--prerelease allow`.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            cmd = upgrade_install_command(
+                include_prereleases=True,
+                constraints_path=Path("/tmp/pins.txt"),
+                prerelease_strategy="if-necessary-or-explicit",
+            )
+        assert "--constraints /tmp/pins.txt" in cmd
+        assert "--prerelease if-necessary-or-explicit" in cmd
+        assert "--prerelease allow" not in cmd
+
+    def test_quotes_constraints_path_with_spaces(self, tmp_path, monkeypatch) -> None:
+        """A constraints path containing spaces is shell-quoted, not word-split.
+
+        Every production path reaches this builder with a `mkstemp` path that has
+        no spaces, so a dropped `shlex.quote` would only surface on a temp dir
+        containing a space. Lock it explicitly.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        spaced = tmp_path / "dir with space" / "pins.txt"
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            cmd = upgrade_install_command(
+                constraints_path=spaced,
+                prerelease_strategy="if-necessary-or-explicit",
+            )
+        assert f"--constraints {shlex.quote(str(spaced))}" in cmd
+        assert f"--constraints {spaced}" not in cmd
 
     def test_preserves_with_packages(self, tmp_path, monkeypatch) -> None:
         """Packages installed via `--with` must survive the unpinned reinstall."""
@@ -5025,3 +5418,131 @@ class TestShouldShowWhatsNew:
         path = tmp_path / "config.toml"
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
+
+
+def _build_wheel(
+    wheelhouse: Path,
+    name: str,
+    version: str,
+    *,
+    requires: tuple[str, ...] = (),
+    extras: tuple[str, ...] = (),
+) -> None:
+    """Write a minimal pure-Python wheel into `wheelhouse` for resolver tests.
+
+    Builds just enough of the wheel format (METADATA, WHEEL, RECORD, and an
+    empty top-level module) for uv to resolve against a `--find-links`
+    directory without a build backend or network access.
+    """
+    import base64
+    import hashlib
+    import zipfile
+
+    module = name.replace("-", "_")
+    dist_info = f"{module}-{version}.dist-info"
+    metadata_lines = [
+        "Metadata-Version: 2.1",
+        f"Name: {name}",
+        f"Version: {version}",
+    ]
+    metadata_lines.extend(f"Provides-Extra: {extra}" for extra in extras)
+    metadata_lines.extend(f"Requires-Dist: {req}" for req in requires)
+    metadata = "\n".join(metadata_lines) + "\n"
+    wheel_meta = (
+        "Wheel-Version: 1.0\n"
+        "Generator: test-suite\n"
+        "Root-Is-Purelib: true\n"
+        "Tag: py3-none-any\n"
+    )
+    files = {
+        f"{module}/__init__.py": "",
+        f"{dist_info}/METADATA": metadata,
+        f"{dist_info}/WHEEL": wheel_meta,
+    }
+
+    def _record_line(path: str, data: str) -> str:
+        digest = hashlib.sha256(data.encode("utf-8")).digest()
+        b64 = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return f"{path},sha256={b64},{len(data.encode('utf-8'))}"
+
+    record = "\n".join(starmap(_record_line, files.items()))
+    record += f"\n{dist_info}/RECORD,,\n"
+    files[f"{dist_info}/RECORD"] = record
+
+    wheel_path = wheelhouse / f"{module}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel_path, "w") as zf:
+        for path, data in files.items():
+            zf.writestr(path, data)
+
+
+class TestTargetedPrereleaseResolution:
+    """End-to-end resolver check: targeted constraints beat global allow.
+
+    Uses a hand-built local wheelhouse so the resolution is deterministic and
+    needs no network. A stable app pins `core==1.0a1` and offers an optional
+    provider with a stable `1.0` and a pre-release `1.1rc1`. A global
+    `--prerelease allow` selects the RC provider (the #4524 failure mode);
+    targeted constraints plus `if-necessary-or-explicit` select the required
+    core pre-release while keeping the provider on its stable release.
+    """
+
+    def _resolve(self, wheelhouse: Path, *extra_args: str) -> str:
+        import subprocess
+
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--dry-run",
+            "--python",
+            sys.executable,
+            "--no-index",
+            "--offline",
+            "--find-links",
+            str(wheelhouse),
+            "app[provider]==1.0",
+            *extra_args,
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return f"{proc.stdout}\n{proc.stderr}"
+
+    @pytest.mark.skipif(
+        shutil.which("uv") is None, reason="uv is required for resolver test"
+    )
+    def test_targeted_constraints_keep_provider_stable(self, tmp_path) -> None:
+        wheelhouse = tmp_path / "wheelhouse"
+        wheelhouse.mkdir()
+        _build_wheel(
+            wheelhouse,
+            "app",
+            "1.0",
+            requires=("core==1.0a1", 'provider ; extra == "provider"'),
+            extras=("provider",),
+        )
+        _build_wheel(wheelhouse, "core", "1.0a1")
+        _build_wheel(wheelhouse, "provider", "1.0")
+        _build_wheel(wheelhouse, "provider", "1.1rc1")
+
+        # Global allow: the RC provider slips in (the regression #4524 exposed).
+        allow_output = self._resolve(wheelhouse, "--prerelease", "allow")
+        assert "provider==1.1rc1" in allow_output
+
+        # Targeted: pin core's prerelease via constraints + scoped strategy.
+        constraints = tmp_path / "constraints.txt"
+        constraints.write_text("core==1.0a1\n", encoding="utf-8")
+        targeted_output = self._resolve(
+            wheelhouse,
+            "--constraints",
+            str(constraints),
+            "--prerelease",
+            "if-necessary-or-explicit",
+        )
+        assert "core==1.0a1" in targeted_output
+        assert "provider==1.0" in targeted_output
+        assert "provider==1.1rc1" not in targeted_output

@@ -23,6 +23,7 @@ from deepagents_code.model_config import (
     STARTUP_MODE_DANGEROUSLY_AUTO,
     STARTUP_MODE_MANUAL,
     THREAD_COLUMN_DEFAULTS,
+    McpProjectServerApproval,
     McpServerTrustLists,
     ModelConfig,
     ModelConfigError,
@@ -40,6 +41,7 @@ from deepagents_code.model_config import (
     clear_default_agent,
     clear_default_model,
     clear_effort_for_model,
+    fingerprint_mcp_server_config,
     get_available_models,
     get_model_profiles,
     get_provider_auth_status,
@@ -52,6 +54,7 @@ from deepagents_code.model_config import (
     load_recent_models,
     load_startup_mode,
     load_thread_columns,
+    normalize_mcp_project_root,
     save_default_agent,
     save_effort_for_model,
     save_recent_agent,
@@ -5639,6 +5642,13 @@ class TestMcpServerTrustLists:
             frozenset(), frozenset(), read_error="boom"
         ) == McpServerTrustLists(frozenset(), frozenset())
 
+    def test_third_positional_argument_remains_read_error(self) -> None:
+        """The pre-approval constructor position remains backward compatible."""
+        lists = McpServerTrustLists(frozenset(), frozenset(), "boom")
+
+        assert lists.read_error == "boom"
+        assert lists.approvals == frozenset()
+
     def test_load_failed_tracks_read_error(self) -> None:
         """`load_failed` names the fail-closed contract for `read_error`."""
         assert not McpServerTrustLists(frozenset(), frozenset()).load_failed
@@ -5647,37 +5657,502 @@ class TestMcpServerTrustLists:
         ).load_failed
 
 
+class TestFingerprintMcpServerConfig:
+    """Independent oracle for the definition fingerprint.
+
+    Every trust round-trip test builds its expected TOML with
+    `fingerprint_mcp_server_config`, so those tests are self-referential: a
+    regression that narrowed the fingerprint (e.g. hashing only `command`) would
+    pass all of them. These pin the field-completeness and canonicalization
+    contract directly, since a narrowed fingerprint is a silent security
+    downgrade — an attacker could keep an approved name while mutating `args`,
+    `env`, or `headers`.
+    """
+
+    def test_prefix_and_stability(self) -> None:
+        """Same definition yields the same `sha256:`-prefixed digest."""
+        server = {"command": "echo", "args": ["hi"]}
+
+        first = fingerprint_mcp_server_config(server)
+
+        assert first.startswith("sha256:")
+        assert first == fingerprint_mcp_server_config(dict(server))
+
+    def test_key_order_does_not_matter(self) -> None:
+        """`sort_keys=True` makes the digest independent of key order."""
+        assert fingerprint_mcp_server_config(
+            {"command": "echo", "args": []}
+        ) == fingerprint_mcp_server_config({"args": [], "command": "echo"})
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            (
+                {"command": "echo", "args": []},
+                {"command": "echo", "args": ["--exfiltrate"]},
+            ),
+            (
+                {"command": "echo", "env": {}},
+                {"command": "echo", "env": {"TOKEN": "x"}},
+            ),
+            (
+                {"url": "https://a", "headers": {}},
+                {"url": "https://a", "headers": {"Authorization": "Bearer x"}},
+            ),
+            (
+                {"url": "https://a"},
+                {"url": "https://b"},
+            ),
+        ],
+    )
+    def test_any_field_change_changes_fingerprint(
+        self, a: dict[str, object], b: dict[str, object]
+    ) -> None:
+        """Mutating `args`, `env`, `headers`, or `url` re-prompts (new digest)."""
+        assert fingerprint_mcp_server_config(a) != fingerprint_mcp_server_config(b)
+
+    def test_non_serializable_input_raises_type_error(self) -> None:
+        """A non-JSON-serializable definition raises, per the documented contract.
+
+        Callers (`McpProjectServerApproval.create`, `add_enabled_project_mcp_servers`)
+        rely on this surfacing rather than silently hashing a partial value; the
+        writer catches it to keep its `bool` contract.
+        """
+        with pytest.raises(TypeError):
+            fingerprint_mcp_server_config({"command": object()})
+
+
+class TestNormalizeMcpProjectRoot:
+    """Tests for normalize_mcp_project_root()."""
+
+    def test_none_returns_none(self) -> None:
+        """`None` in yields `None` out (the "unavailable" signal)."""
+        assert normalize_mcp_project_root(None) is None
+
+    def test_expands_user_and_returns_absolute(self) -> None:
+        """`~` is expanded and the result is absolute, never left literal."""
+        result = normalize_mcp_project_root("~/some-project")
+
+        assert result is not None
+        assert "~" not in result
+        assert Path(result).is_absolute()
+
+    def test_relative_path_is_made_absolute(self) -> None:
+        """A relative input is resolved to an absolute path."""
+        result = normalize_mcp_project_root("some/rel/project")
+
+        assert result is not None
+        assert Path(result).is_absolute()
+
+    def test_symlink_resolves_to_target(self, tmp_path: Path) -> None:
+        """A symlinked root and its target normalize to the same string.
+
+        Root matching is exact-string over normalized output, so write-side and
+        read-side must agree whether the path is reached via a link or directly.
+        """
+        target = tmp_path / "real"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
+
+        assert normalize_mcp_project_root(link) == normalize_mcp_project_root(target)
+
+    def test_oserror_falls_back_to_expanded_unresolved_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When `resolve()` raises, the expanded-but-unresolved path is returned.
+
+        Documented as fail-closed: a transient failure on only one side yields a
+        different string and a spurious re-prompt, never a false match.
+        """
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "nope"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        result = normalize_mcp_project_root("~/proj")
+
+        assert result is not None
+        assert "~" not in result  # still expanded
+        assert result == str(Path("~/proj").expanduser())
+
+    def test_expanduser_runtime_error_returns_none_without_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An invalid `~user` fails closed without repeating the expansion."""
+        calls = 0
+
+        def _boom(_path: Path) -> Path:
+            nonlocal calls
+            calls += 1
+            msg = "unknown user"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "expanduser", _boom)
+
+        assert normalize_mcp_project_root("~missing/project") is None
+        assert calls == 1
+
+    def test_resolve_runtime_error_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink-loop error cannot leave an unresolved trusted path."""
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "symlink loop"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        assert normalize_mcp_project_root("/project/loop") is None
+
+
+class TestMcpProjectServerApproval:
+    """Tests for the approval value object and its normalizing factory."""
+
+    def test_rejects_empty_fields(self) -> None:
+        """A degenerate approval cannot be constructed (unrepresentable state).
+
+        An empty field can only ever equal a malformed peer, so the constructor
+        forbids it rather than let a never-matching approval persist.
+        """
+        with pytest.raises(ValueError, match="non-empty"):
+            McpProjectServerApproval(project_root="", name="n", fingerprint="f")
+        with pytest.raises(ValueError, match="non-empty"):
+            McpProjectServerApproval(project_root="/p", name="  ", fingerprint="f")
+
+    def test_create_normalizes_and_fingerprints(self, tmp_path: Path) -> None:
+        """`create` matches the root normalization and fingerprint of the loader."""
+        server = {"command": "echo", "args": []}
+
+        approval = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+
+        assert approval == McpProjectServerApproval(
+            project_root=normalize_mcp_project_root(tmp_path / "proj") or "",
+            name="docs",
+            fingerprint=fingerprint_mcp_server_config(server),
+        )
+
+    def test_create_returns_none_for_unavailable_root(self) -> None:
+        """`create` returns `None` (not a bad approval) when the root is `None`."""
+        assert (
+            McpProjectServerApproval.create(
+                project_root=None, name="docs", server={"command": "echo"}
+            )
+            is None
+        )
+
+    def test_from_toml_matches_create(self, tmp_path: Path) -> None:
+        """`from_toml` normalizes identically to `create`.
+
+        So a saved approval re-matches a freshly built runtime one for the same
+        definition.
+        """
+        server = {"command": "echo", "args": ["x"]}
+        runtime = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+        assert runtime is not None
+
+        restored = McpProjectServerApproval.from_toml(runtime.as_toml())
+
+        assert restored == runtime
+
+    def test_from_toml_normalizes_unresolved_root(self, tmp_path: Path) -> None:
+        """A persisted, not-yet-resolved root is normalized on read.
+
+        So it lines up with the resolved root `create` produces at write time.
+        """
+        server = {"command": "echo"}
+        runtime = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+        assert runtime is not None
+
+        restored = McpProjectServerApproval.from_toml(
+            {
+                "project_root": str(tmp_path / "proj"),
+                "name": "docs",
+                "fingerprint": fingerprint_mcp_server_config(server),
+            }
+        )
+
+        assert restored == runtime
+
+    def test_from_toml_returns_none_for_malformed(self) -> None:
+        """A table missing or blanking any field yields `None` (fail-closed)."""
+        assert McpProjectServerApproval.from_toml({"name": "docs"}) is None
+        assert (
+            McpProjectServerApproval.from_toml(
+                {"project_root": "/p", "name": "  ", "fingerprint": "f"}
+            )
+            is None
+        )
+
+
+class TestMcpServerTrustListsIsEnabled:
+    """Direct tests of the per-server trust decision (`is_enabled`).
+
+    The consumers only reach `is_enabled` transitively, so these pin the
+    contract branches directly: name/root/fingerprint scoping, the
+    project-agnostic env allowlist, and the disabled short-circuit.
+    """
+
+    @staticmethod
+    def _server() -> dict[str, object]:
+        return {"command": "echo", "args": ["run"]}
+
+    def _approval_for(self, root: Path, name: str) -> McpProjectServerApproval:
+        approval = McpProjectServerApproval.create(
+            project_root=root, name=name, server=self._server()
+        )
+        assert approval is not None
+        return approval
+
+    def test_exact_scoped_match_is_enabled(self, tmp_path: Path) -> None:
+        """Matching name, root, and fingerprint together approve the server."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert lists.is_enabled("docs", project_root=tmp_path, server=self._server())
+
+    def test_blank_name_is_not_enabled(self, tmp_path: Path) -> None:
+        """A blank server name (only from a malformed config) fails closed.
+
+        `is_enabled` short-circuits rather than let
+        `McpProjectServerApproval.create` raise its non-empty `ValueError` out
+        of the trust filter on adversarial `.mcp.json` input.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled("", project_root=tmp_path, server=self._server())
+        assert not lists.is_enabled("   ", project_root=tmp_path, server=self._server())
+
+    def test_different_project_root_not_enabled(self, tmp_path: Path) -> None:
+        """An approval for one repo does not carry to another."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path / "a", "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            "docs", project_root=tmp_path / "b", server=self._server()
+        )
+
+    def test_changed_definition_not_enabled(self, tmp_path: Path) -> None:
+        """A changed server definition (new fingerprint) re-prompts."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            "docs",
+            project_root=tmp_path,
+            server={"command": "echo", "args": ["--exfiltrate"]},
+        )
+
+    def test_env_enabled_is_project_agnostic(self, tmp_path: Path) -> None:
+        """An env-enabled name matches any project, even with no root at all."""
+        lists = McpServerTrustLists(enabled=frozenset({"docs"}), disabled=frozenset())
+
+        assert lists.is_enabled("docs", project_root=None, server=self._server())
+        assert lists.is_enabled(
+            "docs", project_root=tmp_path / "anywhere", server=self._server()
+        )
+
+    def test_disabled_name_never_enabled(self, tmp_path: Path) -> None:
+        """A disabled name is rejected regardless of approvals/env."""
+        lists = McpServerTrustLists(enabled=frozenset(), disabled=frozenset({"docs"}))
+
+        assert not lists.is_enabled(
+            "docs", project_root=tmp_path, server=self._server()
+        )
+
+    def test_scoped_approval_needs_a_root(self, tmp_path: Path) -> None:
+        """A scoped approval cannot match when the caller has no project root."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled("docs", project_root=None, server=self._server())
+
+    def test_padded_name_matches_stripped_approval(self, tmp_path: Path) -> None:
+        """A whitespace-padded config name still matches its stripped approval.
+
+        `create`/`from_toml` persist a stripped name, so `is_enabled` must
+        normalize the same way or a padded `.mcp.json` key would never match its
+        own saved approval. Pins that intended normalization.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert lists.is_enabled(" docs ", project_root=tmp_path, server=self._server())
+
+    def test_padded_name_cannot_bypass_deny(self, tmp_path: Path) -> None:
+        """A padded name cannot slip a denied server past reject precedence.
+
+        `is_enabled`'s `name in self.disabled` check uses the raw name, so a
+        padded `" docs "` sails past it; the deny holds only because
+        `__post_init__` stripped the matching approval out of `approvals`. This
+        pins that fail-closed guarantee so a refactor that changed either side
+        (dropped the post-init stripping, or naively "fixed" the raw check)
+        cannot reopen the bypass with the suite still green.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset({"docs"}),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            " docs ", project_root=tmp_path, server=self._server()
+        )
+
+
+class TestLoadMcpServerApprovalsParsing:
+    """Fail-closed parsing of `[mcp].enabled_project_server_approvals`.
+
+    Dropping a malformed entry only reduces trust, but the real hazard is a
+    regression that *accepts* an entry missing a fingerprint — silently
+    degrading definition-bound scoping to name+root matching. These pin the drop.
+    """
+
+    def test_non_list_value_yields_no_approvals(self, tmp_path: Path) -> None:
+        """A scalar (wrong-typed) approvals value degrades to no approvals."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_server_approvals = "nope"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset()
+        # The wrong-typed key counts as one dropped diagnostic so callers can
+        # surface it instead of it only reaching an unseen debug log.
+        assert result.malformed_approvals == 1
+
+    def test_malformed_entries_are_dropped(self, tmp_path: Path) -> None:
+        """Non-table and fingerprint-less entries drop; well-formed ones survive."""
+        config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = [\n"
+            '  "not-a-table",\n'
+            f'  {{ project_root = "{project_root}", name = "missing-fp" }},\n'
+            f'  {{ project_root = "{project_root}", name = "good", '
+            f'fingerprint = "{fingerprint}" }},\n'
+            "]\n"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset(
+            {
+                McpProjectServerApproval(
+                    project_root=project_root,
+                    name="good",
+                    fingerprint=fingerprint,
+                )
+            }
+        )
+        # Both the non-table entry and the fingerprint-less entry are counted so
+        # a corrupt saved approval is surfaced rather than silently re-prompting.
+        assert result.malformed_approvals == 2
+
+
 class TestLoadMcpServerTrustLists:
     """Tests for load_mcp_server_trust_lists()."""
 
-    def test_reads_both_lists_from_toml(self, tmp_path: Path) -> None:
-        """Parses enabled and disabled lists from the [mcp] table."""
+    def test_reads_approvals_and_disabled_list_from_toml(self, tmp_path: Path) -> None:
+        """Parses scoped approvals and disabled lists from the [mcp] table."""
         config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
         config_path.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["docs", "reference"]\n'
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
             'disabled_project_servers = ["blocked"]\n'
         )
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result == McpServerTrustLists(
-            enabled=frozenset({"docs", "reference"}),
+            enabled=frozenset(),
             disabled=frozenset({"blocked"}),
+            approvals=frozenset(
+                {
+                    McpProjectServerApproval(
+                        project_root=project_root,
+                        name="docs",
+                        fingerprint=fingerprint,
+                    )
+                }
+            ),
         )
 
-    def test_reject_precedence_removes_from_enabled(self, tmp_path: Path) -> None:
-        """A name in both lists is reported only as disabled."""
+    def test_unresolvable_approval_root_is_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale approval whose root becomes a symlink loop fails closed."""
         config_path = tmp_path / "config.toml"
+        loop = tmp_path / "loop"
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
         config_path.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["docs", "both"]\n'
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{loop}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "symlink loop"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset()
+        assert result.malformed_approvals == 1
+
+    def test_reject_precedence_removes_from_approvals(self, tmp_path: Path) -> None:
+        """A name in approvals and disabled is reported only as disabled."""
+        config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "both", '
+            f'fingerprint = "{fingerprint}" }}]\n'
             'disabled_project_servers = ["both"]\n'
         )
 
         result = load_mcp_server_trust_lists(config_path)
 
-        assert result.enabled == frozenset({"docs"})
+        assert result.enabled == frozenset()
+        assert result.approvals == frozenset()
         assert result.disabled == frozenset({"both"})
 
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
@@ -5701,12 +6176,20 @@ class TestLoadMcpServerTrustLists:
         (after env/TOML resolution), not merely within a single source.
         """
         config_path = tmp_path / "config.toml"
-        config_path.write_text('[mcp]\nenabled_project_servers = ["srv"]\n')
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "srv", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
         monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "srv")
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.enabled == frozenset()
+        assert result.approvals == frozenset()
         assert result.disabled == frozenset({"srv"})
 
     def test_missing_mcp_section_returns_empty(self, tmp_path: Path) -> None:
@@ -5736,18 +6219,51 @@ class TestLoadMcpServerTrustLists:
         assert result.read_error is not None
         assert str(config_path) in result.read_error
 
-    def test_scalar_coerced_and_mixed_elements_dropped(self, tmp_path: Path) -> None:
-        """A bare string is one name; non-string list elements are dropped."""
+    def test_dangerous_env_survives_toml_deny_when_config_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Characterize the documented reject-wins corner (accepted footgun).
+
+        When `config.toml` is unreadable, `toml_disabled` is lost, so a name that
+        is both TOML-`disabled` and exported in the `DANGEROUSLY_` enable env var
+        survives — "reject wins" does NOT hold in this one corner. This pins that
+        intentional behavior (and its `read_error` surfacing) so a future change
+        that closes it is a deliberate decision, not an accidental regression.
+        Contrast `test_env_deny_beats_toml_allow_same_name`, where a readable
+        config keeps the deny.
+        """
         config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = "docs"\n'  # bare string -> single name
-            'disabled_project_servers = [1, "blocked", true]\n'  # mixed types
+        # The deny lives here but is lost because the file cannot be parsed.
+        config_path.write_text('[[invalid toml\ndisabled_project_servers = ["srv"]')
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, "srv"
         )
 
         result = load_mcp_server_trust_lists(config_path)
 
-        assert result.enabled == frozenset({"docs"})
+        assert result.read_error is not None
+        # The footgun: the name survives despite the (unreadable) TOML deny.
+        assert result.enabled == frozenset({"srv"})
+        assert "srv" not in result.disabled
+        assert result.is_enabled(
+            "srv", project_root=tmp_path, server={"command": "echo", "args": []}
+        )
+
+    def test_legacy_enabled_ignored_and_mixed_disabled_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """Legacy flat enabled names are ignored; disabled list still parses."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = "docs"\n'
+            'disabled_project_servers = [1, "blocked", true]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.approvals == frozenset()
         assert result.disabled == frozenset({"blocked"})
 
     def test_env_overrides_toml(
@@ -5755,13 +6271,17 @@ class TestLoadMcpServerTrustLists:
     ) -> None:
         """Env lists replace their TOML counterparts, independently per list."""
         config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
         config_path.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["toml-enabled"]\n'
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "toml-enabled", '
+            f'fingerprint = "{fingerprint}" }}]\n'
             'disabled_project_servers = ["toml-disabled"]\n'
         )
         monkeypatch.setenv(
-            model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS,
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
             "env-enabled, env-two",
         )
 
@@ -5769,6 +6289,7 @@ class TestLoadMcpServerTrustLists:
 
         # Enabled comes from env; disabled falls back to the TOML value.
         assert result.enabled == frozenset({"env-enabled", "env-two"})
+        assert result.approvals == frozenset()
         assert result.disabled == frozenset({"toml-disabled"})
 
     def test_empty_env_clears_toml_list(
@@ -5776,24 +6297,51 @@ class TestLoadMcpServerTrustLists:
     ) -> None:
         """A set-but-empty env var overrides (clears) the TOML list."""
         config_path = tmp_path / "config.toml"
-        config_path.write_text('[mcp]\nenabled_project_servers = ["toml-enabled"]\n')
-        monkeypatch.setenv(model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS, "")
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "toml-enabled", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "",
+        )
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.enabled == frozenset()
+        assert result.approvals == frozenset()
 
     def test_defaults_to_user_config_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With no argument, the loader reads the user-level config path only."""
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        user_config.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
 
         result = load_mcp_server_trust_lists()
 
-        assert result.enabled == frozenset({"docs"})
+        assert result.enabled == frozenset()
+        assert result.approvals == frozenset(
+            {
+                McpProjectServerApproval(
+                    project_root=project_root,
+                    name="docs",
+                    fingerprint=fingerprint,
+                )
+            }
+        )
 
     def test_disabled_env_honored_without_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5817,9 +6365,13 @@ class TestLoadMcpServerTrustLists:
         silently dropped by the other source, so both contribute.
         """
         config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
         config_path.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["toml-enabled"]\n'
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "toml-enabled", '
+            f'fingerprint = "{fingerprint}" }}]\n'
             'disabled_project_servers = ["toml-disabled"]\n'
         )
         monkeypatch.setenv(
@@ -5829,7 +6381,16 @@ class TestLoadMcpServerTrustLists:
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.disabled == frozenset({"toml-disabled", "env-disabled"})
-        assert result.enabled == frozenset({"toml-enabled"})
+        assert result.enabled == frozenset()
+        assert result.approvals == frozenset(
+            {
+                McpProjectServerApproval(
+                    project_root=project_root,
+                    name="toml-enabled",
+                    fingerprint=fingerprint,
+                )
+            }
+        )
 
     def test_empty_disabled_env_preserves_toml_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5849,15 +6410,44 @@ class TestLoadMcpServerTrustLists:
 
         assert result.disabled == frozenset({"toml-disabled"})
 
-    def test_toml_entries_are_trimmed(self, tmp_path: Path) -> None:
-        """TOML names are stripped, matching env parsing (no whitespace mismatch)."""
+    def test_legacy_enabled_toml_list_is_ignored(self, tmp_path: Path) -> None:
+        """Legacy flat TOML approvals no longer auto-approve project servers."""
         config_path = tmp_path / "config.toml"
         config_path.write_text('[mcp]\nenabled_project_servers = [" docs ", "  "]\n')
 
         result = load_mcp_server_trust_lists(config_path)
 
-        # " docs " -> "docs"; the whitespace-only "  " entry is dropped.
-        assert result.enabled == frozenset({"docs"})
+        assert result.enabled == frozenset()
+        assert result.approvals == frozenset()
+        # The dropped names are surfaced so non-interactive paths can explain
+        # why those servers stopped loading.
+        assert result.legacy_ignored == frozenset({"docs"})
+
+    def test_legacy_env_var_flagged_when_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed env var, still exported, is flagged (not honored)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\n")
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # The old name never pre-approves; it only sets the diagnostic flag.
+        assert result.legacy_env_ignored is True
+        assert result.enabled == frozenset()
+
+    def test_legacy_env_var_absent_leaves_flag_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the old env var unset, the diagnostic flag stays `False`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\n")
+        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.legacy_env_ignored is False
 
     def test_bare_string_disabled_is_coerced_to_single_name(
         self, tmp_path: Path
@@ -5894,18 +6484,29 @@ class TestLoadMcpServerTrustLists:
     def test_wrong_typed_disabled_fails_closed_with_read_error(
         self, tmp_path: Path
     ) -> None:
-        """A wrong-typed deny list sets `read_error` instead of silently emptying.
+        """A wrong-typed deny list blocks TOML approvals and sets `read_error`.
 
-        Emptying the deny on a malformed value would be a fail-open (the user's
-        rejection stops being enforced). Surfacing `read_error` lets callers fail
-        closed, matching the corrupt-file path.
+        Preserving a saved approval when the deny list cannot be read would let
+        that server load despite an unenforced rejection policy. Only explicit
+        environment approvals may survive this config read failure.
         """
         config_path = tmp_path / "config.toml"
-        config_path.write_text("[mcp]\ndisabled_project_servers = 123\n")
+        project_root = tmp_path / "project"
+        server = {"command": "echo", "args": []}
+        fingerprint = fingerprint_mcp_server_config(server)
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+            "disabled_project_servers = 123\n"
+        )
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.disabled == frozenset()
+        assert result.approvals == frozenset()
+        assert not result.is_enabled("docs", project_root=project_root, server=server)
         assert result.load_failed
         assert "disabled_project_servers" in (result.read_error or "")
 
@@ -6287,6 +6888,329 @@ enabled = false
         assert not any(
             spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
         )
+
+
+class TestAddEnabledProjectMcpServers:
+    """Tests for persisting the approval prompt's "always allow" choice."""
+
+    @staticmethod
+    def _server_configs() -> dict[str, object]:
+        return {
+            "docs": {"command": "echo", "args": ["docs"]},
+            "reference": {"type": "http", "url": "https://example.test/mcp"},
+            "github": {"command": "gh", "args": ["api"]},
+        }
+
+    def _approvals(self, config_path: Path) -> list[dict[str, str]]:
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        return data["mcp"]["enabled_project_server_approvals"]
+
+    def test_creates_file_and_scoped_approvals(self, tmp_path: Path) -> None:
+        """A missing config gets fresh scoped MCP server approvals."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        project_root = tmp_path / "project"
+        server_configs = self._server_configs()
+
+        assert add_enabled_project_mcp_servers(
+            ["docs", "reference"],
+            config_path,
+            project_root=project_root,
+            server_configs=server_configs,
+        )
+
+        reference_fingerprint = fingerprint_mcp_server_config(
+            server_configs["reference"]
+        )
+        approvals = self._approvals(config_path)
+        assert approvals == [
+            {
+                "project_root": str(project_root),
+                "name": "docs",
+                "fingerprint": fingerprint_mcp_server_config(server_configs["docs"]),
+            },
+            {
+                "project_root": str(project_root),
+                "name": "reference",
+                "fingerprint": reference_fingerprint,
+            },
+        ]
+
+    def test_appends_and_dedupes(self, tmp_path: Path) -> None:
+        """New approvals append without duplicating existing entries."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        project_root = tmp_path / "project"
+        server_configs = self._server_configs()
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=project_root,
+            server_configs=server_configs,
+        )
+        assert add_enabled_project_mcp_servers(
+            ["docs", "reference"],
+            config_path,
+            project_root=project_root,
+            server_configs=server_configs,
+        )
+
+        approvals = self._approvals(config_path)
+        assert [approval["name"] for approval in approvals] == ["docs", "reference"]
+
+    def test_removes_migrated_names_from_legacy_approvals(self, tmp_path: Path) -> None:
+        """Scoped approvals consume matching names from the legacy allowlist."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["docs", "github"]\n')
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["mcp"]["enabled_project_servers"] == ["github"]
+        assert load_mcp_server_trust_lists(config_path).legacy_ignored == frozenset(
+            {"github"}
+        )
+
+    def test_deletes_empty_legacy_approval_key(self, tmp_path: Path) -> None:
+        """Migrating the final legacy name removes its warning source."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert "enabled_project_servers" not in data["mcp"]
+        assert not load_mcp_server_trust_lists(config_path).legacy_ignored
+
+    def test_preserves_other_sections_and_disabled(self, tmp_path: Path) -> None:
+        """Writing approvals leaves other config and the deny list intact."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+            "[mcp]\n"
+            'disabled_project_servers = ["evil"]\n'
+        )
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["mcp"]["enabled_project_server_approvals"][0]["name"] == "docs"
+        assert data["mcp"]["disabled_project_servers"] == ["evil"]
+
+    def test_heals_non_table_mcp_value(self, tmp_path: Path) -> None:
+        """An existing scalar `mcp` value is overwritten with a proper table.
+
+        The write-side analog of the read-side `test_non_table_mcp_sets_read_error`:
+        a corrupt `[mcp]` must not abort the save, and unrelated config survives.
+        """
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            'mcp = "oops"\n[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+        )
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["mcp"]["enabled_project_server_approvals"][0]["name"] == "docs"
+
+    def test_ignores_blank_names_and_empty_is_noop(self, tmp_path: Path) -> None:
+        """Blank names are skipped and an all-blank call writes nothing."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        assert add_enabled_project_mcp_servers(
+            ["", "  "],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+        assert not config_path.exists()
+
+        assert add_enabled_project_mcp_servers(
+            [" docs ", ""],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+        assert self._approvals(config_path)[0]["name"] == "docs"
+
+    def test_returns_false_without_project_context(self, tmp_path: Path) -> None:
+        """Saving refuses to create legacy global name approvals."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        assert add_enabled_project_mcp_servers(["docs"], config_path) is False
+        assert not config_path.exists()
+
+    def test_unknown_name_returns_false(self, tmp_path: Path) -> None:
+        """A name without a server definition cannot be fingerprinted."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        assert (
+            add_enabled_project_mcp_servers(
+                ["missing"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
+        assert not config_path.exists()
+
+    def test_round_trips_through_loader(self, tmp_path: Path) -> None:
+        """Persisted approvals are read back by `load_mcp_server_trust_lists`."""
+        from deepagents_code.model_config import (
+            add_enabled_project_mcp_servers,
+            load_mcp_server_trust_lists,
+        )
+
+        config_path = tmp_path / "config.toml"
+        project_root = tmp_path / "project"
+        server_configs = self._server_configs()
+        assert add_enabled_project_mcp_servers(
+            ["docs", "reference"],
+            config_path,
+            project_root=project_root,
+            server_configs=server_configs,
+        )
+        lists = load_mcp_server_trust_lists(config_path)
+
+        assert lists.enabled == frozenset()
+        assert lists.approvals == frozenset(
+            {
+                McpProjectServerApproval(
+                    project_root=str(project_root),
+                    name="docs",
+                    fingerprint=fingerprint_mcp_server_config(server_configs["docs"]),
+                ),
+                McpProjectServerApproval(
+                    project_root=str(project_root),
+                    name="reference",
+                    fingerprint=fingerprint_mcp_server_config(
+                        server_configs["reference"]
+                    ),
+                ),
+            }
+        )
+
+    def test_returns_false_on_unparseable_config(self, tmp_path: Path) -> None:
+        """A corrupt existing config fails closed (returns False) and is untouched."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        corrupt = "[mcp]\nenabled_project_server_approvals = [\n"
+        config_path.write_text(corrupt)
+        assert (
+            add_enabled_project_mcp_servers(
+                ["docs"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
+        # The unparseable file is left exactly as-is — no partial atomic clobber.
+        assert config_path.read_text() == corrupt
+
+    def test_returns_false_on_os_error(self, tmp_path: Path) -> None:
+        """An I/O failure while writing fails closed (returns False).
+
+        Direct coverage of the `OSError` arm the docstring promises: the config
+        directory cannot be created because a regular file sits where a
+        directory must go.
+        """
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        blocker = tmp_path / "afile"
+        blocker.write_text("")  # a file where a parent directory is needed
+        config_path = blocker / "config.toml"
+        assert (
+            add_enabled_project_mcp_servers(
+                ["docs"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
+
+    def test_failed_write_leaves_no_stray_tmp_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails mid-flight cleans up its atomic temp file.
+
+        Covers the `except BaseException: unlink; raise` arm: a serialization
+        failure after `mkstemp` must not leave a `.tmp` turd in the config dir.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "serialize failed"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(model_config.tomli_w, "dump", _boom)
+
+        assert (
+            add_enabled_project_mcp_servers(
+                ["docs"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
+        assert not config_path.exists()
+        assert list(tmp_path.glob("*.tmp")) == []
 
 
 class TestLoadStartupMode:

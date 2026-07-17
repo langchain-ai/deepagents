@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.tui.widgets import autocomplete as autocomplete_module
 from deepagents_code.tui.widgets.autocomplete import (
     MAX_SUGGESTIONS,
@@ -178,7 +178,7 @@ class TestSlashCommandController:
     @pytest.fixture
     def controller(self, mock_view):
         """Create a SlashCommandController with mock view."""
-        return SlashCommandController(SLASH_COMMANDS, mock_view)
+        return SlashCommandController(get_slash_commands(), mock_view)
 
     def test_can_handle_slash_prefix(self, controller):
         """Handles text starting with /."""
@@ -215,7 +215,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -246,7 +246,7 @@ class TestSlashCommandController:
         controller.on_text_changed("/", 1)
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_hidden_keyword_match_continue(self, controller, mock_view):
         """Typing 'continue' surfaces /threads via hidden keyword."""
@@ -287,6 +287,19 @@ class TestSlashCommandController:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/help" in s[0] for s in suggestions)
+
+    def test_prefix_ties_follow_registry_order_for_re_commands(self, mock_view) -> None:
+        """Equal-score prefixes keep registry order (`re`/`rel` disambiguation)."""
+        controller = SlashCommandController(get_slash_commands(), mock_view)
+        assert any(entry.name == "/reload" for entry in controller._commands)
+
+        controller.on_text_changed("/re", 3)
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0].startswith("/remember")
+
+        controller.on_text_changed("/rel", 4)
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0].startswith("/reload")
 
     def test_prefix_match_ranks_first(self, controller, mock_view):
         """Prefix matches on command name rank above description matches."""
@@ -491,7 +504,7 @@ class TestMultiCompletionManager:
     @pytest.fixture
     def manager(self, mock_view, tmp_path):
         """Create a MultiCompletionManager with both controllers."""
-        slash_ctrl = SlashCommandController(SLASH_COMMANDS, mock_view)
+        slash_ctrl = SlashCommandController(get_slash_commands(), mock_view)
         file_ctrl = FuzzyFileController(mock_view, cwd=tmp_path)
         # Cast needed: lists are invariant, so the inferred type
         # list[SlashCommandController | FuzzyFileController] won't match
@@ -600,6 +613,59 @@ class TestSlashCommandControllerUpdateCommands:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/skill:code-review" in s[0] for s in suggestions)
+
+
+class TestSlashCommandControllerDisplaySeparation:
+    """Popup shows the label but completion inserts the machine name."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view: MagicMock) -> SlashCommandController:
+        commands = [
+            CommandEntry(
+                name="/skill:my-plugin:review",
+                description="(my-plugin) Review code",
+                hidden_keywords="my-plugin review",
+                argument_hint="",
+                display_name="/skill:review",
+            ),
+        ]
+        return SlashCommandController(commands, mock_view)
+
+    def test_popup_shows_short_label(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """The suggestion popup renders the short display label."""
+        controller.on_text_changed("/skill:rev", 10)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
+
+    def test_completion_inserts_machine_name(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Applying the completion inserts the full namespaced name."""
+        controller.on_text_changed("/skill:rev", 10)
+        applied = controller._apply_selected_completion(10)
+
+        assert applied is True
+        mock_view.replace_completion_range.assert_called_once_with(
+            0, 10, "/skill:my-plugin:review"
+        )
+
+    def test_terminal_segment_fuzzy_matches_plugin_skill(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Typing just the terminal segment surfaces the plugin skill."""
+        controller.on_text_changed("/review", 7)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
 
 
 class TestFuzzyFileControllerSetCwd:

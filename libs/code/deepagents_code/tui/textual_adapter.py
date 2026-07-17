@@ -226,6 +226,25 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
+def _is_auto_mode_classifier_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is internal Auto mode classifier output.
+
+    The Auto mode authorization classifier is invoked with
+    `config={"metadata": {"lc_source": "auto_mode_classifier"}}`
+    (see `AutoModeHITLMiddleware` in `deepagents_code.auto_mode`), which
+    LangChain's callback system merges into the stream metadata dict.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk should be hidden from the conversation transcript.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "auto_mode_classifier"
+
+
 class RubricEvaluationEnd(NamedTuple):
     """A validated `rubric_evaluation_end` event forwarded to the caller.
 
@@ -1169,6 +1188,45 @@ async def execute_task_textual(
                                 await adapter._set_spinner("Offloading")
                         continue
 
+                    # Extract token usage before filtering hidden model output.
+                    # Usage may be attached to any message chunk, including the
+                    # internal Auto mode classifier response.
+                    if hasattr(message, "usage_metadata"):
+                        usage = message.usage_metadata
+                        if usage:
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
+                            total_toks = usage.get("total_tokens", 0)
+                            from deepagents_code.config import settings
+
+                            active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, total_toks
+                                )
+
+                    # The Auto mode authorization classifier is a nested model
+                    # call. Its structured JSON is internal policy machinery,
+                    # not assistant output for the conversation transcript.
+                    if _is_auto_mode_classifier_chunk(metadata):
+                        continue
+
                     # Regular (non-summarization) chunks resumed — summarization
                     # has finished. Mount the notification and reset the spinner.
                     if summarization_in_progress:
@@ -1338,38 +1396,6 @@ async def execute_task_textual(
                                     exc_info=True,
                                 )
                         continue
-
-                    # Extract token usage (before content_blocks check
-                    # - usage may be on any chunk)
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):

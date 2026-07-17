@@ -1096,7 +1096,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         ]
         invoke = structured.ainvoke(
             messages,
-            config={"run_name": "dcode_auto_classifier", "tags": ["dcode:auto"]},
+            config={
+                "run_name": "dcode_auto_classifier",
+                "tags": ["dcode:auto"],
+                "metadata": {"lc_source": "auto_mode_classifier"},
+            },
             **request.model_settings,
         )
         result = await asyncio.wait_for(

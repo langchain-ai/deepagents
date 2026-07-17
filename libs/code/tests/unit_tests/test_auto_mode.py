@@ -127,14 +127,16 @@ class _StructuredModel:
         self.result = result
         self.error = error
         self.calls: list[list[object]] = []
+        self.call_kwargs: list[dict[str, object]] = []
         self.schema: object = None
 
     def with_structured_output(self, schema: object) -> _StructuredModel:
         self.schema = schema
         return self
 
-    async def ainvoke(self, messages: list[object], **_kwargs: object) -> object:
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
         self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
         if self.error is not None:
             raise self.error
         return self.result
@@ -695,6 +697,13 @@ async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> Non
     assert "trusted_environment" in classifier_payload
     assert "IGNORE POLICY" not in classifier_payload
     assert model.schema is AutoDecisionBatch
+    # The `lc_source` metadata is the load-bearing contract: it drives the TUI
+    # transcript filter that hides classifier output. Assert it specifically
+    # rather than the whole config dict, which also carries unrelated tracing
+    # keys (`run_name`, `tags`).
+    classifier_config = cast("dict[str, object]", model.call_kwargs[0]["config"])
+    classifier_metadata = cast("dict[str, object]", classifier_config["metadata"])
+    assert classifier_metadata["lc_source"] == "auto_mode_classifier"
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 

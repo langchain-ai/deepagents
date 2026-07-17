@@ -42,6 +42,7 @@ from deepagents_code.tui.textual_adapter import (
     _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
+    _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
     execute_task_textual,
@@ -1340,6 +1341,21 @@ class TestIsSummarizationChunk:
         assert _is_summarization_chunk({"langgraph_node": None}) is False
 
 
+class TestIsAutoModeClassifierChunk:
+    """Tests for internal Auto mode classifier chunk detection."""
+
+    def test_returns_true_for_auto_mode_classifier_source(self) -> None:
+        """Classifier chunks are identified by their callback metadata."""
+        metadata = {"lc_source": "auto_mode_classifier"}
+        assert _is_auto_mode_classifier_chunk(metadata) is True
+
+    def test_returns_false_for_unrelated_metadata(self) -> None:
+        """Regular and missing metadata remain visible."""
+        assert _is_auto_mode_classifier_chunk(None) is False
+        assert _is_auto_mode_classifier_chunk({}) is False
+        assert _is_auto_mode_classifier_chunk({"lc_source": "summarization"}) is False
+
+
 class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
@@ -2107,7 +2123,12 @@ def _tool_chunk(
     return ((), "messages", (message, {}))
 
 
-def _usage_chunk(*, input_tokens: int, output_tokens: int) -> tuple[Any, ...]:
+def _usage_chunk(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[Any, ...]:
     """Build a `messages`-stream chunk carrying only `usage_metadata`."""
     from langchain_core.messages import AIMessageChunk
 
@@ -2119,7 +2140,7 @@ def _usage_chunk(*, input_tokens: int, output_tokens: int) -> tuple[Any, ...]:
             "total_tokens": input_tokens + output_tokens,
         },
     )
-    return ((), "messages", (message, {}))
+    return ((), "messages", (message, metadata or {}))
 
 
 class TestExecuteTaskTextualUsageStats:
@@ -2157,6 +2178,222 @@ class TestExecuteTaskTextualUsageStats:
 
         assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
         assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+
+
+class TestExecuteTaskTextualAutoModeClassifier:
+    """Internal Auto mode model output stays out of the transcript."""
+
+    class FakeAssistantMessage:
+        """Minimal stand-in for the streaming assistant bubble widget."""
+
+        def __init__(self, content: str = "", **kwargs: str | None) -> None:
+            self.id = kwargs.get("id")
+            self._content = content
+
+        async def append_content(self, text: str) -> None:
+            self._content += text
+
+        async def stop_stream(self) -> None:
+            pass
+
+        async def write_initial_content(self) -> None:
+            pass
+
+    async def test_classifier_json_is_hidden_but_usage_is_recorded(self) -> None:
+        """Classifier tokens count even though only primary output is mounted."""
+        mounted: list[object] = []
+        statuses: list[str | None] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _text_message('{"decisions":[{"decision":"allow"}]}'),
+                    {"lc_source": "auto_mode_classifier"},
+                ),
+            ),
+            _usage_chunk(
+                input_tokens=20,
+                output_tokens=5,
+                metadata={"lc_source": "auto_mode_classifier"},
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            side_effect=self.FakeAssistantMessage,
+        ):
+            await execute_task_textual(
+                user_input="edit the file",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(
+                    thread_id="thread-1",
+                    approval_mode=ApprovalMode.AUTO,
+                    auto_approve=True,
+                ),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        messages = [
+            widget
+            for widget in mounted
+            if isinstance(widget, self.FakeAssistantMessage)
+        ]
+        assert [message._content for message in messages] == ["Done."]
+        assert turn_stats.request_count == 1
+        assert turn_stats.input_tokens == 20
+        assert turn_stats.output_tokens == 5
+        # A lone classifier chunk must not masquerade as summarization: no
+        # notification is mounted and the spinner never flips to "Offloading".
+        assert not any(isinstance(widget, SummarizationMessage) for widget in mounted)
+        assert "Offloading" not in statuses
+
+    async def test_classifier_tool_call_chunk_is_not_rendered(self) -> None:
+        """`with_structured_output` streams tool-call chunks; these stay hidden."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            # Realistic on-the-wire shape: structured output arrives as a
+            # tool-call chunk, not text. The metadata filter runs before the
+            # content_blocks path, so it must be dropped regardless of shape.
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "AutoDecisionBatch", {"decisions": []}, "call-1"
+                    ),
+                    {"lc_source": "auto_mode_classifier"},
+                ),
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            side_effect=self.FakeAssistantMessage,
+        ):
+            await execute_task_textual(
+                user_input="edit the file",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(
+                    thread_id="thread-1",
+                    approval_mode=ApprovalMode.AUTO,
+                    auto_approve=True,
+                ),
+                adapter=adapter,
+            )
+
+        # Only the primary "Done." bubble is mounted — the classifier tool call
+        # produces no widget of any kind (assistant text or tool card).
+        messages = [
+            widget
+            for widget in mounted
+            if isinstance(widget, self.FakeAssistantMessage)
+        ]
+        assert [message._content for message in messages] == ["Done."]
+
+    async def test_classifier_chunk_mid_summarization_is_filtered(self) -> None:
+        """A classifier chunk between summarization chunks stays hidden.
+
+        Guards the placement of the classifier filter: it sits after the
+        summarization filter and before the summarization-reset block, so a
+        classifier chunk arriving while summarization is in progress is dropped
+        without leaking into the transcript. Summarization still completes
+        normally when a real chunk resumes.
+        """
+        mounted: list[object] = []
+        statuses: list[str | None] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    _text_message('{"decisions":[{"decision":"allow"}]}'),
+                    {"lc_source": "auto_mode_classifier"},
+                ),
+            ),
+            # A real chunk resumes and ends summarization.
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            side_effect=self.FakeAssistantMessage,
+        ):
+            await execute_task_textual(
+                user_input="edit the file",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(
+                    thread_id="thread-1",
+                    approval_mode=ApprovalMode.AUTO,
+                    auto_approve=True,
+                ),
+                adapter=adapter,
+            )
+
+        # Neither the summarization chunk nor the classifier JSON is rendered.
+        messages = [
+            widget
+            for widget in mounted
+            if isinstance(widget, self.FakeAssistantMessage)
+        ]
+        assert [message._content for message in messages] == ["Done."]
+        # Summarization still completes: exactly one notification, spinner
+        # passes through "Offloading" and settles back on "Thinking".
+        assert sum(isinstance(w, SummarizationMessage) for w in mounted) == 1
+        assert "Offloading" in statuses
+        assert statuses[-1] == "Thinking"
 
 
 class TestExecuteTaskTextualToolCallStreaming:

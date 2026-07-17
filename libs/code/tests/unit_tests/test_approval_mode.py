@@ -80,8 +80,12 @@ class _Writer:
         self.items.append((namespace, key, value))
 
 
-def test_approval_mode_payload_shape() -> None:
-    assert approval_mode_payload(mode=ApprovalMode.AUTO) == {"mode": "auto"}
+@pytest.mark.parametrize("mode", list(ApprovalMode))
+def test_approval_mode_payload_shape(mode: ApprovalMode) -> None:
+    payload = approval_mode_payload(mode=mode)
+
+    assert payload == {"mode": mode.value}
+    assert "auto_approve" not in payload
 
 
 def test_read_approval_mode_from_store_accepts_mapping_item() -> None:

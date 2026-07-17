@@ -816,6 +816,17 @@ It is reentrant so a caller can hold it across several of these helpers without
 self-deadlock. Cross-process races are out of scope (mirrors the existing
 helpers)."""
 _ollama_installed_models_cache: dict[str, list[str]] = {}
+_ollama_unreachable_endpoints: set[str] = set()
+"""Local endpoints (trailing slash stripped) whose daemon refused the TCP
+presence preflight.
+
+Lets `_get_ollama_installed_models` negatively-cache the empty result for a
+daemon that is definitively absent (connection refused) so it probes and logs
+"not detected" once per reload. A *reachable* daemon that merely has no models
+pulled yet -- and a daemon whose preflight is only ambiguous (a connect
+timeout, which defers to the HTTP probe) -- is still re-probed (its empty
+result is not cached), so a later `ollama pull` is discovered without
+`/reload`. Cleared by `clear_caches()`."""
 _ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
@@ -832,6 +843,7 @@ def clear_caches() -> None:
     _default_config_cache = None
     _provider_profiles_cache.clear()
     _ollama_installed_models_cache.clear()
+    _ollama_unreachable_endpoints.clear()
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
@@ -1447,6 +1459,14 @@ def _ollama_discovery_enabled() -> bool:
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
+    The result is cached when the daemon returns models, and also when a local
+    daemon definitively refuses the TCP presence preflight, so the two startup
+    callers (`get_available_models` and `get_model_profiles`) share a single
+    probe and a single "not detected" log line per reload. A reachable daemon
+    that reports no models -- and one whose preflight is merely ambiguous (a
+    connect timeout) -- is left uncached so a later pull can still be discovered
+    without `/reload`.
+
     Args:
         endpoint: Base URL of the Ollama daemon. When `None`, defaults to
             `OLLAMA_DEFAULT_BASE_URL`.
@@ -1459,7 +1479,7 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     if cached is not None:
         return list(cached)
     models = _fetch_ollama_installed_models(endpoint)
-    if models:
+    if models or key in _ollama_unreachable_endpoints:
         _ollama_installed_models_cache[key] = models
     return list(models)
 
@@ -1472,10 +1492,14 @@ def _ollama_host_reachable(
     A lightweight presence preflight so Ollama discovery can skip the HTTP
     probe entirely when no daemon is running (e.g. Ollama is not installed).
     The check opens and immediately closes a TCP connection to the endpoint's
-    host and port. Any failure -- connection refused, DNS error, timeout, or
-    sockets blocked under `pytest-socket` -- is treated as "not reachable" so
-    discovery falls back gracefully; an unexpected (non-`OSError`) failure is
-    additionally logged at warning so a real bug isn't misreported as absence.
+    host and port. A *definitive* failure -- connection refused, DNS error, or
+    sockets blocked under `pytest-socket` -- reports "not reachable" so
+    discovery falls back gracefully (and the caller may negatively cache it). A
+    *connect timeout* is ambiguous -- a present-but-slow or still-booting daemon
+    times out just like an absent one -- so it defers to the HTTP probe
+    (reports "reachable") rather than being cached as absent. An unexpected
+    (non-`OSError`) failure is additionally logged at warning so a real bug
+    isn't misreported as absence.
 
     Args:
         base: Base URL of the Ollama daemon, e.g. `http://localhost:11434`.
@@ -1483,8 +1507,9 @@ def _ollama_host_reachable(
 
     Returns:
         `True` when a connection is established (a daemon appears present) or
-            when the target cannot be determined (deferring to the HTTP probe);
-            `False` when the connection cannot be made.
+            when presence cannot be determined -- unparseable target or a
+            connect timeout -- so the caller defers to the HTTP probe; `False`
+            when the connection is definitively refused.
     """
     import socket
 
@@ -1500,15 +1525,22 @@ def _ollama_host_reachable(
         return True
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
-    # Mirror the discovery probe below: expected transport failures (refused,
-    # DNS, timeout) just mean the daemon is absent and stay silent; anything
-    # else is surfaced at warning so a real bug isn't misreported as "not
-    # detected". `pytest-socket`'s `SocketBlockedError` inherits from
+    # Expected transport failures split by how definitive they are. A refusal
+    # (`ECONNREFUSED` and friends -- an `OSError`) is a fast, certain "nothing
+    # is listening", so it reports absent and lets the caller negatively cache
+    # it. A connect *timeout* is ambiguous (present-but-slow vs. absent-and-
+    # firewalled), so it defers to the HTTP probe rather than being cached as
+    # absent and stuck until the next reload. `TimeoutError` is an `OSError`
+    # subclass, so its branch must precede the broad `OSError` one. Anything
+    # non-`OSError` is surfaced at warning so a real bug isn't misreported as
+    # "not detected"; `pytest-socket`'s `SocketBlockedError` inherits from
     # `Exception` (not `OSError`), so the broad branch catches it. The socket
     # is its own context manager, so `with` closes the probe connection.
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
+    except TimeoutError:
+        return True
     except OSError:
         return False
     except Exception as exc:  # noqa: BLE001  # see comment above
@@ -1567,6 +1599,7 @@ def _fetch_ollama_installed_models(
     # "discovery failed ... Connection refused" debug line.
     if _is_local_endpoint(base) and not _ollama_host_reachable(base, timeout=timeout):
         logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
+        _ollama_unreachable_endpoints.add(base)
         return []
 
     url = f"{base}/api/tags"

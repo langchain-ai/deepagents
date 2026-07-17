@@ -2114,7 +2114,16 @@ def _provider_retry_disable_kwargs(
     # positively identified its retry control through model configuration.
     if retry_param is None and "max_retries" in model_kwargs:
         retry_param = "max_retries"
-    return {retry_param: 0} if retry_param is not None else {}
+    if retry_param is None:
+        # The provider's own SDK retry loop can't be identified, so it stays
+        # active and may multiply the middleware's attempts. Register the
+        # provider in `RETRY_PARAM_BY_PROVIDER` or set `[retries.<provider>].param`.
+        logger.debug(
+            "No retry-disable kwarg for provider %r; its SDK retries stay active",
+            provider,
+        )
+        return {}
+    return {retry_param: 0}
 
 
 CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
@@ -2141,6 +2150,9 @@ middleware and the config resolver never drift.
 
 MODEL_RETRIES_ATTR = "_deepagents_model_retries"
 """Private model attribute carrying its resolved request-time retry budget."""
+
+MODEL_RETRY_OVERRIDE_ATTR = "_deepagents_model_retry_override"
+"""Private model attribute carrying an explicit CLI retry override, if any."""
 
 
 def _resolve_model_retries_from_section(
@@ -4406,6 +4418,20 @@ class ModelResult:
     unsupported_modalities: frozenset[str] = frozenset()
     model_retries: int = DEFAULT_MODEL_RETRIES
 
+    def __post_init__(self) -> None:
+        """Enforce the middleware's non-negative retry-budget invariant.
+
+        `resolve_model_retries` never returns a negative count, so a negative
+        value here signals a caller constructing `ModelResult` by hand with a
+        budget the retry middleware could not honor.
+
+        Raises:
+            ValueError: If `model_retries` is negative.
+        """
+        if self.model_retries < 0:
+            msg = f"model_retries must be >= 0, got {self.model_retries}"
+            raise ValueError(msg)
+
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
         s = _get_settings()
@@ -4728,6 +4754,9 @@ def create_model(
     # state or forwarding an internal key to a provider API.
     object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
         model, MODEL_RETRIES_ATTR, model_retries
+    )
+    object.__setattr__(  # noqa: PLC2801  # Pydantic models reject unknown fields through normal setattr
+        model, MODEL_RETRY_OVERRIDE_ATTR, cli_max_retries
     )
 
     # Extract context limit and modality support from model profile

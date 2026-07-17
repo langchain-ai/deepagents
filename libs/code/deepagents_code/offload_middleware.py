@@ -535,7 +535,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 return self._nothing_to_compact(tool_call_id)
 
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
-            summary = summarization._create_summary(to_summarize)
+            from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+            retry = CodeModelRetryMiddleware()
+            writer = getattr(runtime, "stream_writer", None)
+            summary = retry.run_with_retry(
+                summarization.model,
+                lambda: summarization._create_summary(to_summarize),
+                writer=writer,
+            )
             backend = self._resolve_backend(runtime)
             file_path = summarization._offload_to_backend(backend, to_summarize)
             # The inherited `_build_compact_result` produces the same event and
@@ -570,7 +578,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 return self._nothing_to_compact(tool_call_id)
 
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
-            summary = await summarization._acreate_summary(to_summarize)
+            from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+            retry = CodeModelRetryMiddleware()
+            writer = getattr(runtime, "stream_writer", None)
+            summary = await retry.arun_with_retry(
+                summarization.model,
+                lambda: summarization._acreate_summary(to_summarize),
+                writer=writer,
+            )
             backend = self._resolve_backend(runtime)
             file_path = await summarization._aoffload_to_backend(backend, to_summarize)
             # See `_run_forced_compact` for why the inherited builder is reused

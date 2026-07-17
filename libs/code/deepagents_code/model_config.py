@@ -577,6 +577,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "google_vertexai": "max_retries",
     "groq": "max_retries",
     "litellm": "max_retries",
+    "meta": "max_retries",
     "mistralai": "max_retries",
     "openai": "max_retries",
     "openai_codex": "max_retries",

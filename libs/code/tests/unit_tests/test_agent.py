@@ -3082,12 +3082,23 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    @pytest.mark.parametrize("model_retries", [0, 3])
+    @pytest.mark.parametrize(
+        ("model_retries", "retry_override", "pinned_retries"),
+        [(0, None, 7), (3, 3, 3)],
+    )
     def test_subagent_middleware_combines_model_retry_and_shell(
-        self, tmp_path: Path, model_retries: int
+        self,
+        tmp_path: Path,
+        model_retries: int,
+        retry_override: int | None,
+        pinned_retries: int,
     ) -> None:
         """Every subagent gets retries while model inheritance stays intact."""
         from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.config import (
+            CLI_MAX_RETRIES_KEY,
+            MODEL_RETRY_OVERRIDE_ATTR,
+        )
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
@@ -3095,6 +3106,14 @@ class TestCreateCliAgentShellMiddlewareWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         fake_model = _make_fake_chat_model()
+        if retry_override is not None:
+            object.__setattr__(  # noqa: PLC2801  # Pydantic rejects unknown fields through normal setattr
+                fake_model, MODEL_RETRY_OVERRIDE_ATTR, retry_override
+            )
+        pinned_model = _make_fake_chat_model()
+        pinned_result = SimpleNamespace(
+            model=pinned_model, model_retries=pinned_retries
+        )
 
         subagent_metas = [
             {
@@ -3124,12 +3143,16 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
+                "deepagents_code.config.create_model",
+                return_value=pinned_result,
+            ) as create_pinned_model,
+            patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 interrupt_shell_only=True,
                 enable_memory=False,
@@ -3165,12 +3188,20 @@ class TestCreateCliAgentShellMiddlewareWiring:
         # The pinned subagent retries its fixed model without allowing runtime
         # model switches to replace it.
         pinned = subagents_by_name["pinned"]
-        assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        assert pinned["model"] is pinned_model
+        create_pinned_model.assert_called_once_with(
+            "anthropic:claude-haiku-4-5",
+            extra_kwargs=(
+                {CLI_MAX_RETRIES_KEY: retry_override}
+                if retry_override is not None
+                else None
+            ),
+        )
         pinned_middleware = pinned["middleware"]
         retry_middleware = next(
             mw for mw in pinned_middleware if isinstance(mw, CodeModelRetryMiddleware)
         )
-        assert retry_middleware.max_retries == model_retries
+        assert retry_middleware.max_retries == pinned_retries
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
@@ -3345,6 +3376,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         fake_model = _make_fake_chat_model()
+        explicit_model = _make_fake_chat_model()
+        explicit_result = SimpleNamespace(model=explicit_model, model_retries=4)
 
         subagent_meta = {
             "name": "researcher",
@@ -3366,6 +3399,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
+                "deepagents_code.config.create_model",
+                return_value=explicit_result,
+            ) as create_explicit_model,
+            patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
@@ -3382,7 +3419,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         subagents = kwargs["subagents"]
         subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
         researcher = subagents_by_name["researcher"]
-        assert researcher["model"] == "anthropic:claude-haiku-4-5"
+        assert researcher["model"] is explicit_model
+        create_explicit_model.assert_called_once_with(
+            "anthropic:claude-haiku-4-5", extra_kwargs=None
+        )
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware)
             for mw in researcher.get("middleware", [])
@@ -3443,6 +3483,7 @@ class TestExperimentalTodoMiddlewareWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         fake_model = _make_fake_chat_model()
+        explicit_result = SimpleNamespace(model=fake_model, model_retries=5)
 
         subagent_meta = {
             "name": "researcher",
@@ -3463,6 +3504,10 @@ class TestExperimentalTodoMiddlewareWiring:
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
             ) as mock_create,
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=explicit_result,
+            ),
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,

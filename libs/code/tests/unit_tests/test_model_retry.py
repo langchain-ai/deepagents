@@ -23,6 +23,8 @@ from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
+    MODEL_RETRY_OVERRIDE_ATTR,
+    ModelResult,
     _resolve_config_retry_count,
     create_model,
     reset_glyphs_cache,
@@ -31,6 +33,7 @@ from deepagents_code.config import (
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
 from deepagents_code.model_retry import (
     CodeModelRetryMiddleware,
+    _describe_error,
     _is_retryable_model_error,
     build_retry_event,
     format_retry_status,
@@ -51,6 +54,12 @@ class _ResponseStatusError(Exception):
     def __init__(self, status_code: int) -> None:
         super().__init__("resp")
         self.response = SimpleNamespace(status_code=status_code)
+
+
+class _CodeStatusError(Exception):
+    def __init__(self, code: int) -> None:
+        super().__init__(f"code {code}")
+        self.code = code
 
 
 class APIConnectionError(Exception):
@@ -79,6 +88,26 @@ class AuthenticationError(Exception):
     def __init__(self) -> None:
         super().__init__("auth")
         self.status_code = 401
+
+
+class _QuotaError(Exception):
+    """OpenAI-style permanent billing error riding a retryable 429 status."""
+
+    def __init__(self) -> None:
+        super().__init__("insufficient_quota")
+        self.status_code = 429
+        self.code = "insufficient_quota"
+
+
+class _ThrottlingError(Exception):
+    """botocore-style rate limit surfaced behind a fatal-looking HTTP 400."""
+
+    def __init__(self) -> None:
+        super().__init__("throttled")
+        self.response = {
+            "Error": {"Code": "ThrottlingException"},
+            "ResponseMetadata": {"HTTPStatusCode": 400},
+        }
 
 
 def _write_config(tmp_path: Path, text: str) -> Path:
@@ -214,6 +243,7 @@ def test_create_model_disables_provider_retries(
     assert "num_retries" not in init.call_args.kwargs
     assert result.model_retries == cli_retries
     assert getattr(result.model, MODEL_RETRIES_ATTR) == cli_retries
+    assert getattr(result.model, MODEL_RETRY_OVERRIDE_ATTR) == cli_retries
 
 
 def test_custom_retry_param_is_disabled(
@@ -270,8 +300,11 @@ def test_resolve_config_retry_count_direct() -> None:
         _StatusError(429),
         _StatusError(500),
         _StatusError(503),
+        _CodeStatusError(429),
+        _CodeStatusError(503),
         _ResponseStatusError(502),
         _BedrockClientError(503),
+        _ThrottlingError(),
         APIConnectionError("x"),
         EndpointConnectionError("x"),
         ConnectionClosedError("x"),
@@ -291,8 +324,10 @@ def test_predicate_retryable(exc: Exception) -> None:
         _StatusError(401),
         _StatusError(403),
         _StatusError(404),
+        _CodeStatusError(400),
         AuthenticationError(),
         _BedrockClientError(400),
+        _QuotaError(),
         ValueError("bad request"),
         KeyError("schema"),
         RuntimeError("model config error"),
@@ -515,13 +550,136 @@ def test_status_helpers_respect_charset(
     monkeypatch.setenv("DEEPAGENTS_CODE_UI_CHARSET_MODE", mode)
     reset_glyphs_cache()
     try:
-        assert format_retry_status(1, 5) == (
-            f"model connection dropped, retrying 1/5{suffix}"
-        )
+        assert format_retry_status(1, 5) == (f"model call failed, retrying 1/5{suffix}")
         event = build_retry_event(2, 5)
         assert event["type"] == "model_retry"
         assert event["attempt"] == 2
         assert event["max_retries"] == 5
-        assert event["message"] == f"model connection dropped, retrying 2/5{suffix}"
+        assert event["message"] == f"model call failed, retrying 2/5{suffix}"
     finally:
         reset_glyphs_cache()
+
+
+# --- error classification helpers ---
+
+
+def test_describe_error_includes_status_and_code() -> None:
+    desc = _describe_error(_QuotaError())
+    assert "_QuotaError" in desc
+    assert "status=429" in desc
+    assert "code=insufficient_quota" in desc
+
+
+def test_meta_present_in_retry_param_map() -> None:
+    # `meta` is a wired provider; it must stay in the disable-list so its SDK
+    # retry loop cannot multiply the middleware budget.
+    assert model_config.RETRY_PARAM_BY_PROVIDER.get("meta") == "max_retries"
+
+
+def test_model_result_rejects_negative_retries() -> None:
+    with pytest.raises(ValueError, match="model_retries must be >= 0"):
+        ModelResult(
+            model=MagicMock(spec=BaseChatModel),
+            model_name="m",
+            provider="openai",
+            model_retries=-1,
+        )
+
+
+# --- backoff delay ---
+
+
+def test_compute_delay_grows_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pin jitter to zero to assert the exponential curve and the cap exactly.
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.random.uniform", lambda _a, _b: 0.0
+    )
+    mw = CodeModelRetryMiddleware(max_retries=10)
+    assert mw._compute_delay(0) == pytest.approx(0.2)
+    assert mw._compute_delay(1) == pytest.approx(0.4)
+    assert mw._compute_delay(2) == pytest.approx(0.8)
+    # Exponential growth is bounded by the max-delay cap.
+    assert mw._compute_delay(20) == pytest.approx(10.0)
+
+
+def test_compute_delay_jitter_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    base = 0.4  # initial_delay * factor**1
+    # random.uniform(-amount, +amount); return each extreme deterministically.
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.random.uniform", lambda low, _high: low
+    )
+    low = mw._compute_delay(1)
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.random.uniform", lambda _low, high: high
+    )
+    high = mw._compute_delay(1)
+    assert low == pytest.approx(base * 0.9)
+    assert high == pytest.approx(base * 1.1)
+    assert low >= 0.0
+
+
+# --- defensive attribute guards ---
+
+
+def test_bool_status_code_is_not_treated_as_int() -> None:
+    err = _StatusError(500)
+    err.status_code = True  # type: ignore[assignment]  # bool is not a status
+    assert _is_retryable_model_error(err) is False
+
+
+def test_bool_model_retries_falls_back_to_startup() -> None:
+    mw = CodeModelRetryMiddleware(max_retries=2)
+    model = MagicMock(spec=BaseChatModel)
+    setattr(model, MODEL_RETRIES_ATTR, True)
+    assert mw._model_max_retries(model) == 2
+
+
+def test_writer_failure_does_not_break_retry_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    calls = {"n": 0}
+    response = _response()
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _READ_ERROR
+        return response
+
+    def bad_writer(_event: dict[str, object]) -> None:
+        msg = "stream closed"
+        raise RuntimeError(msg)
+
+    runtime = SimpleNamespace(stream_writer=bad_writer)
+    request = ModelRequest(
+        model=MagicMock(spec=BaseChatModel),
+        messages=[HumanMessage(content="test")],
+        tools=[],
+        runtime=cast("Any", runtime),
+    )
+    mw = CodeModelRetryMiddleware(max_retries=5)
+    assert mw.wrap_model_call(request, handler) is response
+    assert calls["n"] == 3
+
+
+async def test_async_exhaustion_reraises_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    calls = {"n": 0}
+
+    async def handler(  # noqa: RUF029  # awaited by middleware; no internal await needed
+        _request: ModelRequest,
+    ) -> ModelResponse[Any]:
+        calls["n"] += 1
+        raise _READ_ERROR
+
+    mw = CodeModelRetryMiddleware(max_retries=2)
+    with pytest.raises(httpx.ReadError):
+        await mw.awrap_model_call(_req(), handler)
+    assert calls["n"] == 3

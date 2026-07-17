@@ -1651,7 +1651,9 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
-    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
+    def _subagent_cli_middleware(
+        *, has_explicit_model: bool, retry_fallback: int
+    ) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
         # Experimental: mirror the main agent and drop TodoListMiddleware /
         # write_todos from subagent stacks too. No-op unless the flag is set.
@@ -1660,7 +1662,7 @@ def create_cli_agent(
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-        middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+        middleware.append(CodeModelRetryMiddleware(max_retries=retry_fallback))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1686,15 +1688,32 @@ def create_cli_agent(
         # being forwarded verbatim to `resolve_model("")`.
         model_spec = subagent_meta["model"]
         has_explicit_model = bool(model_spec)
+        subagent_retries = model_retries
         subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],
         }
         if model_spec:
-            subagent["model"] = model_spec
+            from deepagents_code.config import (
+                CLI_MAX_RETRIES_KEY,
+                MODEL_RETRY_OVERRIDE_ATTR,
+                create_model,
+            )
+
+            retry_override = getattr(model, MODEL_RETRY_OVERRIDE_ATTR, None)
+            retry_kwargs = (
+                {CLI_MAX_RETRIES_KEY: retry_override}
+                if isinstance(retry_override, int)
+                and not isinstance(retry_override, bool)
+                else None
+            )
+            model_result = create_model(model_spec, extra_kwargs=retry_kwargs)
+            subagent["model"] = model_result.model
+            subagent_retries = model_result.model_retries
         subagent_middleware = _subagent_cli_middleware(
-            has_explicit_model=has_explicit_model
+            has_explicit_model=has_explicit_model,
+            retry_fallback=subagent_retries,
         )
         if subagent_middleware:
             subagent["middleware"] = subagent_middleware
@@ -1713,7 +1732,9 @@ def create_cli_agent(
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
             "description": GENERAL_PURPOSE_SUBAGENT["description"],
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-            "middleware": _subagent_cli_middleware(has_explicit_model=False),
+            "middleware": _subagent_cli_middleware(
+                has_explicit_model=False, retry_fallback=model_retries
+            ),
         }
         custom_subagents.append(general_purpose_subagent)
 

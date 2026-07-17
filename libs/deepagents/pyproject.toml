@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.6.2,<2.0.0"]
-quickjs = ["langchain-quickjs>=0.3.2"]
+quickjs = ["langchain-quickjs>=0.3.3"]
 video = ["av>=17.0.0,<18.0.0", "pillow>=10.0.0,<13.0.0"]
 
 [project.urls]

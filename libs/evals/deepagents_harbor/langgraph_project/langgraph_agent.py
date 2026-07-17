@@ -360,10 +360,10 @@ def make_structured_graph(config: dict[str, object] | None = None) -> object:
 
     Same tools/summarization/caching as ``make_minimal_graph``, but a
     ``_StructuredTurnMiddleware`` forces every turn into a structured
-    ``{analysis, plan, actions}`` object. Each action names one registered tool and
-    carries only that tool's validated arguments; a lone ``finish`` action is the
-    explicit terminal control. Reasoning is separated from action so the model cannot
-    run away emitting a huge artifact as its action. Experimental A/B against
+    ``{analysis, plan, actions, finish}`` object. Each turn names at most one registered
+    tool with validated arguments, or requests completion using evidence from prior
+    tool results. Reasoning is separated from action so the model cannot run away
+    emitting a huge artifact as its action. Experimental A/B against
     ``make_minimal_graph``; ``make_minimal_graph`` is left unchanged.
     """
     configurable = _configurable(config)
@@ -551,6 +551,7 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
 
 
 _MAX_STRUCTURED_ACTIONS = 8
+_MAX_ACTIONS_PER_TURN = 1
 _MAX_STRUCTURED_COMMAND_CHARS = 16_000
 _MAX_STRUCTURED_TEXT_CHARS = 12_000
 _MAX_STRUCTURED_REASONING_CHARS = 12_000
@@ -694,10 +695,11 @@ class _Turn(BaseModel):
     )
     actions: list[_StructuredAction] = Field(
         default_factory=list,
-        max_length=_MAX_STRUCTURED_ACTIONS,
+        max_length=_MAX_ACTIONS_PER_TURN,
         description=(
-            "Actions to take this turn. Use `execute` for short foreground commands and the "
-            "background action set for long-running work."
+            "At most one action to take this turn. Use `execute` for short foreground commands "
+            "and the background action set for long-running work. Batch dependent shell work "
+            "inside one command; `run_background` and `poll` happen on separate turns."
         ),
     )
     finish: _FinishRequest | None = Field(
@@ -718,10 +720,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
 
     Instead of free-form tool calling, every turn the model produces a structured
     ``_Turn`` via ``with_structured_output``. Reasoning goes into ``analysis``/``plan``
-    (never executed); every non-terminal action is converted to the matching registered
-    tool call with a stable trace correlation ID. A single ``finish`` action ends the
-    graph explicitly. One no-action repair call is allowed before falling back to the
-    normal model path on malformed or persistently empty structured output.
+    (never executed); the single non-terminal action is converted to the matching
+    registered tool call with a stable trace correlation ID. An evidence-backed
+    ``finish`` request ends the graph explicitly. One repair call is allowed before
+    falling back to the normal model path on invalid structured output.
     """
 
     def __init__(self) -> None:
@@ -821,11 +823,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
     @staticmethod
     def _completed_action_ids(messages: list[AnyMessage]) -> set[str]:
         return {
-            action["tool_call_id"]
+            message.tool_call_id
             for message in messages
             if isinstance(message, ToolMessage)
-            for action in [message.response_metadata.get("structured_action")]
-            if isinstance(action, dict) and isinstance(action.get("tool_call_id"), str)
+            and message.tool_call_id.startswith("structured_action_")
         }
 
     @staticmethod

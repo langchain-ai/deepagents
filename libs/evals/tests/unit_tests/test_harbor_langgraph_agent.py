@@ -353,19 +353,37 @@ def test_make_structured_graph_exposes_minimal_background_tools(
     }
 
 
-def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        (
+            {"action": "execute", "command": "pwd", "timeout": 10},
+            ("execute", {"command": "pwd", "timeout": 10}),
+        ),
+        (
+            {"action": "run_background", "command": "make all"},
+            ("run_background", {"command": "make all"}),
+        ),
+        (
+            {"action": "poll", "handle": "proc-1", "wait_seconds": 20},
+            ("poll", {"handle": "proc-1", "wait_seconds": 20}),
+        ),
+        (
+            {"action": "write_stdin", "handle": "proc-1", "text": "yes"},
+            ("write_stdin", {"handle": "proc-1", "text": "yes"}),
+        ),
+        ({"action": "kill", "handle": "proc-1"}, ("kill", {"handle": "proc-1"})),
+    ],
+)
+def test_structured_turn_routes_typed_action_to_matching_tool(
+    action: dict[str, object], expected: tuple[str, dict[str, object]]
+) -> None:
     middleware = langgraph_agent._StructuredTurnMiddleware()
     turn = langgraph_agent._Turn.model_validate(
         {
             "analysis": "The build needs monitoring.",
             "plan": "Start the build and poll it.",
-            "actions": [
-                {"action": "execute", "command": "pwd", "timeout": 10},
-                {"action": "run_background", "command": "make all"},
-                {"action": "poll", "handle": "proc-1", "wait_seconds": 20},
-                {"action": "write_stdin", "handle": "proc-1", "text": "yes"},
-                {"action": "kill", "handle": "proc-1"},
-            ],
+            "actions": [action],
         }
     )
 
@@ -374,13 +392,7 @@ def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
     assert response is not None
     message = response.result[0]
     assert isinstance(message, AIMessage)
-    assert [(call["name"], call["args"]) for call in message.tool_calls] == [
-        ("execute", {"command": "pwd", "timeout": 10}),
-        ("run_background", {"command": "make all"}),
-        ("poll", {"handle": "proc-1", "wait_seconds": 20}),
-        ("write_stdin", {"handle": "proc-1", "text": "yes"}),
-        ("kill", {"handle": "proc-1"}),
-    ]
+    assert [(call["name"], call["args"]) for call in message.tool_calls] == [expected]
     action_metadata = message.response_metadata["structured_turn"]["actions"]
     assert [action["tool_call_id"] for action in action_metadata] == [
         call["id"] for call in message.tool_calls
@@ -389,6 +401,18 @@ def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
         isinstance(call["id"], str) and call["id"].startswith("structured_action_")
         for call in message.tool_calls
     )
+
+
+def test_structured_turn_rejects_concurrent_actions() -> None:
+    with pytest.raises(ValidationError, match="at most 1 item"):
+        langgraph_agent._Turn.model_validate(
+            {
+                "actions": [
+                    {"action": "execute", "command": "write-file"},
+                    {"action": "run_background", "command": "read-file"},
+                ]
+            }
+        )
 
 
 def test_structured_action_instruction_prefers_background_processes() -> None:
@@ -415,7 +439,12 @@ def test_structured_turn_finish_requires_prior_action_evidence() -> None:
 
     assert middleware._to_response(turn, completed_action_ids=set()) is None
 
-    response = middleware._to_response(turn, completed_action_ids={"structured_action_1"})
+    completed_action_ids = middleware._completed_action_ids(
+        [ToolMessage(content="ACCEPTANCE: PASS", tool_call_id="structured_action_1")]
+    )
+    assert completed_action_ids == {"structured_action_1"}
+
+    response = middleware._to_response(turn, completed_action_ids=completed_action_ids)
     assert response is not None
     message = response.result[0]
     assert isinstance(message, AIMessage)

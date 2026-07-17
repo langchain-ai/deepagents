@@ -2,6 +2,29 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.43](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.42...deepagents-code==0.1.43) (2026-07-17)
+
+### Features
+
+- Added classifier-backed Auto approval mode behind `DEEPAGENTS_CODE_EXPERIMENTAL=1` ([#4804](https://github.com/langchain-ai/deepagents/issues/4804)).
+- Added a shutdown toast for deferred exits ([#4830](https://github.com/langchain-ai/deepagents/issues/4830)).
+- Task descriptions that were truncated can now be expanded by clicking or pressing `Ctrl+O` ([#4811](https://github.com/langchain-ai/deepagents/issues/4811)).
+- Debug Console clears with `Ctrl+L` now persist after reopening ([#4812](https://github.com/langchain-ai/deepagents/issues/4812)).
+- Added debug logging for skill-name override collisions ([#4772](https://github.com/langchain-ai/deepagents/issues/4772)).
+
+### Bug Fixes
+
+- Keep chat input responsive during `/restart` ([#4808](https://github.com/langchain-ai/deepagents/issues/4808)).
+- Fixed paste placeholders disappearing when backspacing a newline below them ([#4757](https://github.com/langchain-ai/deepagents/issues/4757)).
+- Made markdown `AppMessage` output selectable ([#4814](https://github.com/langchain-ai/deepagents/issues/4814)).
+- Fixed live tool-group counts to include only running tools ([#4809](https://github.com/langchain-ai/deepagents/issues/4809)).
+- Kept `task` timers monotonic across nested subagent human-in-the-loop flows ([#4771](https://github.com/langchain-ai/deepagents/issues/4771)).
+- Preserved goal criteria proposals when marker clearing fails ([#4785](https://github.com/langchain-ai/deepagents/issues/4785)).
+- Reduced repeated probing of an unreachable Ollama daemon to once per reload ([#4806](https://github.com/langchain-ai/deepagents/issues/4806)).
+- Quieted MCP auth-skip debug logging for known patterns ([#4805](https://github.com/langchain-ai/deepagents/issues/4805)).
+- Improved `/version` diagnostics for editable installs and core dependency reporting, including surfacing `langchain-quickjs` ([#4816](https://github.com/langchain-ai/deepagents/issues/4816), [#4813](https://github.com/langchain-ai/deepagents/issues/4813)).
+- Removed the `uv install` tip from the `/version` update hint ([#4822](https://github.com/langchain-ai/deepagents/issues/4822)).
+
 ## [0.1.42](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.41...deepagents-code==0.1.42) (2026-07-17)
 
 ### Features

@@ -6096,12 +6096,34 @@ class DeepAgentsApp(App):
 
         available, latest = self._update_available
         if available and latest:
-            from deepagents_code.update_check import is_auto_update_enabled
+            manual_hint = "Run /update or `dcode update` to install it."
+            hint = "Update it using the method that installed this copy of dcode."
+            upgrade_supported = False
+            try:
+                # Imported function-locally on purpose: tests patch these on the
+                # `update_check` module, which only takes effect because the names
+                # are resolved here at call time. Hoisting this to module scope
+                # would silently defeat those patches.
+                from deepagents_code.update_check import (
+                    detect_install_method,
+                    is_auto_update_enabled,
+                )
 
-            if await asyncio.to_thread(is_auto_update_enabled):
-                hint = "Quit and relaunch dcode to install it automatically."
-            else:
-                hint = "Run /update or `dcode update` to install it."
+                method = await asyncio.to_thread(detect_install_method)
+                upgrade_supported = method in {"uv", "brew"}
+                if upgrade_supported:
+                    if await asyncio.to_thread(is_auto_update_enabled):
+                        hint = "Quit and relaunch dcode to install it automatically."
+                    else:
+                        hint = manual_hint
+            except Exception:
+                logger.warning(
+                    "Could not resolve update preference for /version; "
+                    "falling back to a manual update hint",
+                    exc_info=True,
+                )
+                if upgrade_supported:
+                    hint = manual_hint
             lines.extend(("", f"Update available: v{latest}. {hint}"))
 
         await self._mount_message(AppMessage("\n".join(lines)))

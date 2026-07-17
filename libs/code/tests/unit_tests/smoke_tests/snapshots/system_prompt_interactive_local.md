@@ -212,6 +212,15 @@ Your skills are stored at: `~/.deepagents/agent/skills`
 Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
 Example: `bash python ~/.deepagents/agent/skills/web-research/script.py`
 
+### Subagents
+
+You can delegate work to subagents via the `task` tool. A subagent is defined
+by a `.deepagents/agents/{name}/AGENTS.md` file (loaded by `subagents.py`), and
+its model can be overridden with a `model:` field in that file's frontmatter
+(e.g. `model: fireworks:accounts/fireworks/models/kimi-k2p7-code`). Use this to
+run or review work with a different or additional model; the `multi-model-review`
+skill scaffolds and dispatches such a subagent.
+
 ### Human-in-the-Loop Tool Approval
 
 Some tool calls require user approval before execution. When a tool call is rejected by the user:

@@ -71,19 +71,59 @@ class HTTPResponse(Protocol):
         """Read the response body."""
 
 
-OpenUrl = Callable[..., HTTPResponse]
+class OpenUrl(Protocol):
+    """A urllib-compatible opener that accepts a per-request timeout."""
+
+    def __call__(self, request: Request, *, timeout: float) -> HTTPResponse:
+        """Open a request and return a context-managed response."""
+
+
 FetchPyPI = Callable[[str], Mapping[str, object]]
 Sleep = Callable[[float], None]
 
 
 @dataclass(frozen=True)
 class DependencyDeclaration:
-    """A bounded dependency declared by one release package."""
+    """A bounded dependency declared by one release package.
+
+    Construct via `from_requirement`, which guarantees `minimum` is the concrete
+    lower bound derived from `requirement`.
+    """
 
     manifest_path: str
     package_name: str
     requirement: Requirement
     minimum: Version
+
+    @classmethod
+    def from_requirement(
+        cls, manifest_path: str, package_name: str, requirement: Requirement
+    ) -> Self | None:
+        """Build a declaration when the requirement has a concrete minimum.
+
+        Args:
+            manifest_path: Repository-relative release manifest path.
+            package_name: Name of the package being released.
+            requirement: Parsed dependency requirement.
+
+        Returns:
+            A declaration, or `None` when no concrete lower bound is declared.
+
+        """
+        minimum = extract_minimum(requirement.specifier)
+        if minimum is None:
+            return None
+        return cls(
+            manifest_path=manifest_path,
+            package_name=package_name,
+            requirement=requirement,
+            minimum=minimum,
+        )
+
+    @property
+    def canonical_name(self) -> str:
+        """Return the canonicalized distribution name."""
+        return canonicalize_name(self.requirement.name)
 
 
 @dataclass(frozen=True)
@@ -96,6 +136,20 @@ class StaleDependency:
     minimum: Version
     latest: Version
     within_upper_bound: bool
+
+    def __post_init__(self) -> None:
+        """Reject findings that are not actually stale.
+
+        Raises:
+            ValueError: If `latest` does not exceed `minimum`.
+
+        """
+        if self.latest <= self.minimum:
+            msg = (
+                f"StaleDependency requires latest > minimum, "
+                f"got {self.latest} <= {self.minimum}"
+            )
+            raise ValueError(msg)
 
 
 class PyPIRequestError(RuntimeError):
@@ -223,7 +277,7 @@ def latest_pypi_version(
         The greatest eligible PEP 440 version, or `None` when none is available.
 
     Raises:
-        TypeError: If the payload has no releases mapping.
+        TypeError: If the payload's `releases` value is missing or not a mapping.
 
     """
     releases = payload.get("releases")
@@ -342,7 +396,10 @@ def fetch_pypi_json(
 
 def _source_is_local(source: object) -> bool:
     if isinstance(source, Mapping):
-        return isinstance(source.get("path"), str) or source.get("workspace") is True
+        local = isinstance(source.get("path"), str) or source.get("workspace") is True
+        # A marker-guarded local source only applies on some platforms; the
+        # dependency can still resolve from PyPI elsewhere, so keep checking it.
+        return local and "marker" not in source
     if isinstance(source, list) and source:
         return all(_source_is_local(item) for item in source)
     return False
@@ -350,6 +407,9 @@ def _source_is_local(source: object) -> bool:
 
 def local_dependency_names(manifest: Mapping[str, object]) -> frozenset[str]:
     """Return dependency names backed only by local path/workspace uv sources.
+
+    Marker-guarded sources are excluded: because the marker can be false on some
+    platforms, the dependency may still resolve from PyPI and remains in scope.
 
     Args:
         manifest: Parsed `pyproject.toml` data.
@@ -432,21 +492,16 @@ def load_declarations(
             or canonical_name == self_name
         ):
             continue
-        minimum = extract_minimum(requirement.specifier)
-        if minimum is None:
+        declaration = DependencyDeclaration.from_requirement(
+            manifest_path, package_name, requirement
+        )
+        if declaration is None:
             continue
         key = (canonical_name, str(requirement.specifier))
         if key in seen:
             continue
         seen.add(key)
-        declarations.append(
-            DependencyDeclaration(
-                manifest_path=manifest_path,
-                package_name=package_name,
-                requirement=requirement,
-                minimum=minimum,
-            )
-        )
+        declarations.append(declaration)
     return declarations
 
 
@@ -573,7 +628,9 @@ def check_dependency_freshness(
         fetcher: Injectable PyPI fetcher for tests.
 
     Returns:
-        Zero. Lagging bounds and known PyPI failures are advisory.
+        Zero on normal completion; lagging bounds and known PyPI failures are
+        advisory. Unexpected errors (e.g. a malformed manifest or git failure)
+        propagate; `main` fail-closes on those with exit code 2.
 
     """
     packages = load_release_packages()
@@ -594,9 +651,7 @@ def check_dependency_freshness(
             packages[manifest_path.removesuffix("/pyproject.toml")],
         )
     ]
-    canonical_names = {
-        canonicalize_name(declaration.requirement.name) for declaration in declarations
-    }
+    canonical_names = {declaration.canonical_name for declaration in declarations}
     payloads, failures = _fetch_payloads(
         canonical_names,
         fetcher or fetch_pypi_json,
@@ -609,7 +664,7 @@ def check_dependency_freshness(
         _warning(f"Skipping {name} after a {kind}PyPI query failure: {failure}")
 
     for declaration in declarations:
-        canonical_name = canonicalize_name(declaration.requirement.name)
+        canonical_name = declaration.canonical_name
         payload = payloads.get(canonical_name)
         if payload is None:
             continue
@@ -681,7 +736,7 @@ def main() -> int:
     try:
         policy = PrereleasePolicy(raw_policy)
     except ValueError:
-        choices = ", ".join(policy.value for policy in PrereleasePolicy)
+        choices = ", ".join(option.value for option in PrereleasePolicy)
         _error(f"{PRERELEASE_POLICY_ENV} must be one of: {choices}")
         return 2
 

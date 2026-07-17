@@ -162,9 +162,12 @@ def test_local_dependency_names_only_includes_exclusively_local_sources() -> Non
                 "sources": {
                     "DeepAgents": {"path": "../deepagents", "editable": True},
                     "workspace-package": {"workspace": True},
-                    "conditional-local": [
+                    "conditional-alternatives": [
                         {"path": "../one", "marker": "sys_platform == 'darwin'"},
                         {"path": "../two", "marker": "sys_platform != 'darwin'"},
+                    ],
+                    "conditional-fallback": [
+                        {"path": "../local", "marker": "sys_platform == 'darwin'"}
                     ],
                     "mixed": [
                         {"path": "../local"},
@@ -177,8 +180,35 @@ def test_local_dependency_names_only_includes_exclusively_local_sources() -> Non
     }
 
     assert local_dependency_names(manifest) == frozenset(
-        {"deepagents", "workspace-package", "conditional-local"}
+        {"deepagents", "workspace-package"}
     )
+
+
+def test_load_declarations_keeps_conditionally_local_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+[project]
+name = "example"
+dependencies = ["demo>=1"]
+
+[tool.uv.sources]
+demo = [{ path = "../demo", marker = "sys_platform == 'darwin'" }]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("check_dep_freshness.REPO_ROOT", tmp_path)
+
+    declarations = load_declarations(manifest_path, "example")
+
+    assert [(item.requirement.name, item.minimum) for item in declarations] == [
+        ("demo", Version("1"))
+    ]
 
 
 def test_load_declarations_reads_required_and_optional_and_skips_local(
@@ -489,3 +519,350 @@ def test_declaration_dataclass_keeps_parsed_requirement() -> None:
     )
 
     assert declaration.requirement.name == "demo"
+
+
+def test_declaration_from_requirement_derives_minimum_and_canonical_name() -> None:
+    declaration = DependencyDeclaration.from_requirement(
+        "libs/example/pyproject.toml", "example", Requirement("Demo_Package>=1,<3")
+    )
+
+    assert declaration is not None
+    assert declaration.minimum == Version("1")
+    assert declaration.canonical_name == "demo-package"
+
+
+def test_declaration_from_requirement_returns_none_without_lower_bound() -> None:
+    assert (
+        DependencyDeclaration.from_requirement(
+            "libs/example/pyproject.toml", "example", Requirement("demo<3")
+        )
+        is None
+    )
+
+
+def test_stale_dependency_rejects_non_stale_versions() -> None:
+    with pytest.raises(ValueError, match="latest > minimum"):
+        StaleDependency(
+            manifest_path="libs/example/pyproject.toml",
+            package_name="example",
+            dependency_name="demo",
+            minimum=Version("2.0"),
+            latest=Version("1.0"),
+            within_upper_bound=True,
+        )
+
+
+def test_freshness_markdown_renders_within_bound_as_yes() -> None:
+    markdown = freshness_markdown(
+        [finding(within=True)],
+        policy=PrereleasePolicy.BOUND,
+        include_marker=False,
+    )
+
+    assert "| `deepagents` | `langchain` | `1.0` | `1.1` | Yes |" in markdown
+
+
+def test_check_dependency_freshness_reports_current_dependency_as_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=2,<3")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return pypi_payload(**{"2.0": [{"yanked": False}]})
+
+    assert check_dependency_freshness("base", "head", fetcher=fetcher) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert written.count("\nfalse\n") == 2
+    assert COMMENT_MARKER not in written
+    assert not (tmp_path / "github_summary").exists()
+
+
+def test_check_dependency_freshness_always_policy_flags_prerelease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return pypi_payload(
+            **{"1.0": [{"yanked": False}], "2.0rc1": [{"yanked": False}]}
+        )
+
+    assert (
+        check_dependency_freshness(
+            "base", "head", policy=PrereleasePolicy.ALWAYS, fetcher=fetcher
+        )
+        == 0
+    )
+
+    written = output.read_text(encoding="utf-8")
+    assert "`2.0rc1`" in written
+    # No upper bound is declared, so the newer version stays within bounds.
+    assert "| Yes |" in written
+
+
+def test_check_dependency_freshness_never_policy_ignores_prerelease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return pypi_payload(
+            **{"1.0": [{"yanked": False}], "2.0rc1": [{"yanked": False}]}
+        )
+
+    assert (
+        check_dependency_freshness(
+            "base", "head", policy=PrereleasePolicy.NEVER, fetcher=fetcher
+        )
+        == 0
+    )
+
+    written = output.read_text(encoding="utf-8")
+    assert COMMENT_MARKER not in written
+
+
+def test_check_dependency_freshness_flags_version_over_upper_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1,<2")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return pypi_payload(**{"2.0": [{"yanked": False}]})
+
+    assert check_dependency_freshness("base", "head", fetcher=fetcher) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert "| `2.0` | **No** |" in written
+
+
+def test_check_dependency_freshness_skips_dependency_without_eligible_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return pypi_payload()
+
+    assert check_dependency_freshness("base", "head", fetcher=fetcher) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert written.count("\nfalse\n") == 2
+    assert COMMENT_MARKER not in written
+
+
+def test_check_dependency_freshness_reports_findings_with_partial_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+[project]
+name = "example"
+dependencies = ["demo>=1", "other>=1"]
+""".strip(),
+        encoding="utf-8",
+    )
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(name: str) -> dict[str, object]:
+        if name == "demo":
+            return pypi_payload(**{"2.0": [{"yanked": False}]})
+        msg = "PyPI is unavailable"
+        raise PyPIRequestError(msg, transient=True)
+
+    assert check_dependency_freshness("base", "head", fetcher=fetcher) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert written.count("\ntrue\n") == 2  # stale and indeterminate
+    assert "`2.0`" in written
+    assert "could not be queried completely" in written
+    assert "`other`" in written
+
+
+def test_check_dependency_freshness_marks_malformed_payload_indeterminate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1")
+    output = _configure_check(monkeypatch, tmp_path, manifest_path)
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return {"releases": "not-a-mapping"}
+
+    assert check_dependency_freshness("base", "head", fetcher=fetcher) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert "stale<<" in written
+    assert "indeterminate<<" in written
+    assert written.count("\ntrue\n") == 1  # indeterminate only; nothing stale
+    assert COMMENT_MARKER not in written
+
+
+def test_load_declarations_requires_project_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text("[build-system]\nrequires = []\n", encoding="utf-8")
+    monkeypatch.setattr("check_dep_freshness.REPO_ROOT", tmp_path)
+
+    with pytest.raises(TypeError, match=r"no \[project\] table"):
+        load_declarations(manifest_path, "example")
+
+
+def test_load_declarations_warns_and_skips_invalid_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+[project]
+name = "example"
+dependencies = ["valid>=1", "@@bad@@"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("check_dep_freshness.REPO_ROOT", tmp_path)
+
+    declarations = load_declarations(manifest_path, "example")
+
+    assert [item.requirement.name for item in declarations] == ["valid"]
+    assert "Skipping invalid requirement" in capsys.readouterr().out
+
+
+def test_load_declarations_excludes_self_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+[project]
+name = "example"
+dependencies = ["Example>=1", "demo>=1"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("check_dep_freshness.REPO_ROOT", tmp_path)
+
+    declarations = load_declarations(manifest_path, "example")
+
+    assert [item.requirement.name for item in declarations] == ["demo"]
+
+
+def test_load_declarations_deduplicates_identical_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    path = tmp_path / manifest_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+[project]
+name = "example"
+dependencies = ["demo>=1,<3"]
+
+[project.optional-dependencies]
+extra = ["demo>=1,<3"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("check_dep_freshness.REPO_ROOT", tmp_path)
+
+    declarations = load_declarations(manifest_path, "example")
+
+    assert len(declarations) == 1
+
+
+def test_fetch_pypi_json_rejects_non_positive_attempts() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        fetch_pypi_json("demo", attempts=0)
+
+
+def test_fetch_pypi_json_retries_rate_limit_status() -> None:
+    error = HTTPError("https://pypi.org", 429, "too many", Message(), None)
+    opener = SequenceOpener(
+        [error, FakeResponse(pypi_payload(**{"1.0": [{"yanked": False}]}))]
+    )
+
+    payload = fetch_pypi_json("demo", opener=opener, sleep=lambda _delay: None)
+
+    assert latest_pypi_version(payload, include_prereleases=False) == Version("1.0")
+    assert len(opener.requests) == 2
+
+
+def test_fetch_pypi_json_uses_exponential_backoff_on_invalid_retry_after() -> None:
+    headers = Message()
+    headers["Retry-After"] = "soon"
+    error = HTTPError("https://pypi.org", 503, "unavailable", headers, None)
+    opener = SequenceOpener(
+        [error, FakeResponse(pypi_payload(**{"1.0": [{"yanked": False}]}))]
+    )
+    delays: list[float] = []
+
+    fetch_pypi_json("demo", opener=opener, sleep=delays.append)
+
+    assert delays == [0.25]
+
+
+def test_main_runs_check_and_returns_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = "libs/example/pyproject.toml"
+    _write_manifest(tmp_path, manifest_path, "demo>=1")
+    _configure_check(monkeypatch, tmp_path, manifest_path)
+    monkeypatch.setattr(
+        "check_dep_freshness.fetch_pypi_json",
+        lambda _name: pypi_payload(**{"1.0": [{"yanked": False}]}),
+    )
+    monkeypatch.setenv("BASE_SHA", "base")
+    monkeypatch.setenv("HEAD_SHA", "head")
+    monkeypatch.delenv(PRERELEASE_POLICY_ENV, raising=False)
+
+    assert main() == 0
+
+
+def test_main_fail_closes_on_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BASE_SHA", "base")
+    monkeypatch.setenv("HEAD_SHA", "head")
+    monkeypatch.delenv(PRERELEASE_POLICY_ENV, raising=False)
+
+    def boom() -> dict[str, str]:
+        msg = "config exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("check_dep_freshness.load_release_packages", boom)
+
+    assert main() == 2

@@ -50,7 +50,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # "bound" includes pre-releases only for pre-release minimums. The
-          # script also accepts "always" and "never" for future policy changes.
+          # script also accepts "always" and "never" today if the policy needs
+          # to change.
           DEP_FRESHNESS_PRERELEASE_POLICY: "bound"
         run: uv run --no-project --with packaging python .github/scripts/check_dep_freshness.py
 
@@ -133,8 +134,11 @@ jobs:
                 core.info('No dependency freshness warning comment needed.');
               }
             } catch (err) {
+              // 403 covers both missing comment permissions and rate/abuse
+              // limits. Commenting is advisory, so degrade to a warning (with
+              // the original message for diagnosis) instead of failing the job.
               if (err.status === 403) {
-                core.warning(`Skipping dependency freshness PR comment (token cannot write comments): ${err.message}`);
+                core.warning(`Skipping dependency freshness PR comment (403 — token lacks comment permission or is rate limited): ${err.message}`);
                 return;
               }
               throw err;

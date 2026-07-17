@@ -1202,7 +1202,10 @@ def test_get_option_unknown_returns_none() -> None:
 def test_run_get_unknown_key_returns_error_code(capsys) -> None:
     args = argparse.Namespace(config_command="get", key="nope", output_format="text")
     assert run_config_command(args) == 1
-    assert "Unknown config option" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "Unknown config option" in err
+    # The hint must point at the surviving key-listing command, not a removed alias.
+    assert "config show --verbose" in err
 
 
 def test_config_registered_in_help_specs() -> None:
@@ -1510,8 +1513,9 @@ def test_config_parser_rejects_removed_aliases(monkeypatch, removed_alias) -> No
     from deepagents_code.main import parse_args
 
     monkeypatch.setattr(sys, "argv", ["dcode", "config", removed_alias])
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         parse_args()
+    assert exc.value.code == 2
 
 
 def test_run_get_text_returns_zero() -> None:

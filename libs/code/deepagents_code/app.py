@@ -6061,13 +6061,24 @@ class DeepAgentsApp(App):
         resolved versions of the core LangChain-ecosystem dependencies, which
         helps diagnose local checkouts.
         """
+        from deepagents_code.extras_info import (
+            collect_version_report,
+            format_cli_version_annotation,
+            format_sdk_version_annotation,
+        )
+
+        report = await asyncio.to_thread(collect_version_report)
+
         lines: list[str] = []
         try:
             from deepagents_code._version import __version__ as cli_version
             from deepagents_code.update_check import format_age_suffix
 
             age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
-            lines.append(f"deepagents-code version: {cli_version}{age_suffix}")
+            cli_annotation = format_cli_version_annotation(report.cli)
+            lines.append(
+                f"deepagents-code version: {cli_version}{age_suffix}{cli_annotation}"
+            )
         except ImportError:
             logger.debug("deepagents_code._version module not found")
             lines.append("deepagents-code version: unknown")
@@ -6075,14 +6086,16 @@ class DeepAgentsApp(App):
             logger.warning("Unexpected error looking up app version", exc_info=True)
             lines.append("deepagents-code version: unknown")
 
-        from deepagents_code.extras_info import resolve_sdk_version
-
-        sdk_version, sdk_status = resolve_sdk_version()
-        if sdk_status == "resolved":
+        if report.sdk.status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
+            sdk_version = report.sdk.primary_version
             sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
-            lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
+            sdk_annotation = format_sdk_version_annotation(report)
+            lines.append(
+                f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}"
+                f"{sdk_annotation}"
+            )
         else:
             lines.append("deepagents (SDK) version: unknown")
 

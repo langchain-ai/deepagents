@@ -3944,7 +3944,7 @@ class DeepAgentsApp(App):
             )
 
         try:
-            self._session_state = await asyncio.to_thread(_create)
+            session_state = await asyncio.to_thread(_create)
         except Exception:
             logger.exception("Failed to create session state")
             self.notify(
@@ -3953,6 +3953,11 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
             return
+        # A user can change the approval mode while session construction runs
+        # in the worker thread. Re-read the app-owned selection on the event
+        # loop so the newly assigned state cannot overwrite that newer choice.
+        session_state.approval_mode = self._approval_mode
+        self._session_state = session_state
         await self._auto_accept_pending_goal_rubric()
 
     async def _ensure_managed_ripgrep(self) -> bool:
@@ -7119,6 +7124,8 @@ class DeepAgentsApp(App):
 
         self._approval_mode = coerce_approval_mode(mode)
         self._auto_approve = False
+        if self._session_state is not None:
+            self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
@@ -15525,12 +15532,22 @@ class DeepAgentsApp(App):
         kind = event.get("event")
         reason = str(event.get("reason") or "")
         if kind == "fallback":
-            text = (
-                "Auto fallback: human approval required "
-                f"(denials {event.get('consecutive_denials', 0)}, "
-                f"unavailable {event.get('consecutive_unavailable', 0)}, "
-                f"total {event.get('total_denials', 0)})."
-            )
+            if event.get("mode") == "manual":
+                from deepagents_code.approval_mode import ApprovalMode
+
+                persisted = await self._write_live_approval_mode(ApprovalMode.MANUAL)
+                self._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                if not persisted:
+                    logger.warning("Could not persist server-requested Manual fallback")
+                text = f"Auto fell back to Manual: {reason}"
+                self.notify(text, severity="warning", timeout=10, markup=False)
+            else:
+                text = (
+                    "Auto fallback: human approval required "
+                    f"(denials {event.get('consecutive_denials', 0)}, "
+                    f"unavailable {event.get('consecutive_unavailable', 0)}, "
+                    f"total {event.get('total_denials', 0)})."
+                )
         elif kind == "denial":
             text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
         elif kind == "unavailable":
@@ -15615,7 +15632,14 @@ class DeepAgentsApp(App):
         else:
             target = ApprovalMode.MANUAL
 
-        if not await self._write_live_approval_mode(target):
+        # With no usable agent/session pair there is no running graph to update.
+        # Stage the selection locally; `execute_task_textual` persists it before
+        # the first `astream` after connection. This is also important for an
+        # initial prompt, which can run before generic deferred actions drain.
+        should_persist_live = (
+            self._agent is not None and self._session_state is not None
+        )
+        if should_persist_live and not await self._write_live_approval_mode(target):
             if target is ApprovalMode.AUTO:
                 self._warn_live_approval_mode_unavailable(
                     "Auto could not be persisted; remaining in Manual."

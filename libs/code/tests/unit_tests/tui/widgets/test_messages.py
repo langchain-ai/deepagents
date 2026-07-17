@@ -4155,6 +4155,105 @@ class TestLiveToolGroupSummary:
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
 
+    async def test_close_waits_for_pending_member_terminal_status(self) -> None:
+        """A stream boundary must not report a still-pending tool as having run."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            shell = pilot.app.query_one("#t1", ToolCallMessage)
+            read = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(shell)
+            summary.add_member(read)
+            summary.close()
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+            assert summary._finalized is False
+
+            shell.set_error("authorization classifier unavailable")
+            read.set_success("ok")
+            summary._tick()
+            await pilot.pause()
+
+            assert summary._finalized is True
+            assert shell.display is True
+            assert not shell.has_class("-grouped")
+            assert read.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+            assert "shell command" not in rendered.plain
+
+    async def test_open_group_accepts_member_after_current_members_settle(self) -> None:
+        """Settled members do not finalize a group that can still grow."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            shell = pilot.app.query_one("#t1", ToolCallMessage)
+            read = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(shell)
+            shell.set_success("ok")
+            summary._tick()
+
+            assert summary._finalized is False
+            assert summary._timer is None
+
+            summary.add_member(read)
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+            assert summary._timer is not None
+
+            read.set_error("boom")
+            summary._tick()
+            await pilot.pause()
+
+            assert summary._tools == [shell]
+            assert read.display is True
+            assert not read.has_class("-grouped")
+            assert summary._finalized is False
+            assert summary._timer is None
+
+            summary.close()
+            assert summary._finalized is True
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
+    async def test_reveal_pending_finalizes_closed_settled_members(self) -> None:
+        """Approval finalizes retained successes after pending calls leave."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("ok")
+            summary.close()
+
+            assert summary._finalized is False
+            assert summary._timer is not None
+
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert summary._tools == [completed]
+            assert summary._finalized is True
+            assert summary._timer is None
+            assert pending.display is True
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
     async def test_rejected_member_is_evicted_on_close(self) -> None:
         """A rejected tool stays visible, mirroring the errored-tool path."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary

@@ -583,8 +583,11 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
         return False
     event = data.get("event")
     reason = data.get("reason")
-    return event in {"denial", "unavailable", "fallback", "warning"} and (
-        reason is None or isinstance(reason, str)
+    mode = data.get("mode")
+    return (
+        event in {"denial", "unavailable", "fallback", "warning"}
+        and (reason is None or isinstance(reason, str))
+        and (mode is None or (event == "fallback" and mode == "manual"))
     )
 
 

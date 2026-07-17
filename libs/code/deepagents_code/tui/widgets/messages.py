@@ -3048,6 +3048,7 @@ class ToolGroupSummary(Static):
         super().__init__("", **kwargs)
         self._tools = list(tools or [])
         self._collapsible = list(collapsible or [])
+        self._accepting_members = live
         self._finalized = not live
         self._spinner_pos = 0
         self._timer: Timer | None = None
@@ -3072,8 +3073,8 @@ class ToolGroupSummary(Static):
             self._collapsible.append(widget)
         self._present_text = self._past_text = None
         self._apply_visibility()
-        self._render_line()
-        self._sync_timer()
+        in_progress = self._sync_lifecycle()
+        self._render_line(in_progress=in_progress)
 
     def add_collapsible(self, widget: Widget) -> None:
         """Attach a non-tool widget (e.g. a diff) to be folded with the group."""
@@ -3083,14 +3084,20 @@ class ToolGroupSummary(Static):
             widget.display = not self._collapsed
 
     def close(self) -> None:
-        """Mark the group complete; no further members will join."""
-        self._finalized = True
+        """Stop accepting members and finalize after every tool settles.
+
+        A non-tool stream event can close a group before middleware-generated
+        terminal results arrive. Keep the live timer running in that case so a
+        later error or rejection is evicted instead of being summarized in the
+        past tense as though the tool ran successfully.
+        """
+        self._accepting_members = False
         self._evict_failed()
-        self._stop_timer()
+        in_progress = self._sync_lifecycle()
         if not self.is_attached:
             return
         if self._tools:
-            self._render_line()
+            self._render_line(in_progress=in_progress)
         else:
             # Every tool failed and was ejected — nothing left to summarize.
             self.remove()
@@ -3108,11 +3115,10 @@ class ToolGroupSummary(Static):
             if tool.is_attached and not tool._awaiting_approval:
                 tool.display = True
         self._present_text = self._past_text = None
+        in_progress = self._sync_lifecycle()
         if self._tools:
-            self._render_line()
-            self._sync_timer()
+            self._render_line(in_progress=in_progress)
             return
-        self._stop_timer()
         for widget in self._collapsible:
             widget.remove_class("-grouped")
             if widget.is_attached:
@@ -3157,6 +3163,18 @@ class ToolGroupSummary(Static):
         """
         return any(tool.is_pending for tool in self._tools)
 
+    def _sync_lifecycle(self, *, in_progress: bool | None = None) -> bool:
+        """Finalize only once a closed group's retained tools have settled.
+
+        Returns:
+            Whether any retained tool is still in progress.
+        """
+        if in_progress is None:
+            in_progress = self._in_progress()
+        self._finalized = not self._accepting_members and not in_progress
+        self._sync_timer()
+        return in_progress
+
     def _evict_failed(self) -> None:
         """Un-fold errored/rejected/skipped tools so non-successes stay visible."""
         failed = [t for t in self._tools if t.is_failed]
@@ -3196,13 +3214,11 @@ class ToolGroupSummary(Static):
                 # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
                 self._apply_visibility()
             if not self._tools:
-                self._stop_timer()
+                self._sync_lifecycle(in_progress=False)
                 if self.is_attached:
                     self.remove()
                 return
-            in_progress = self._in_progress()
-            if not in_progress:
-                self._stop_timer()
+            in_progress = self._sync_lifecycle()
             # A bare spinner advance keeps the line height; only relayout when
             # membership changed (eviction) or the line flips to past tense.
             self._render_line(

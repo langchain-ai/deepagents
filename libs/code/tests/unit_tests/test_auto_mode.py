@@ -115,6 +115,13 @@ class _AsyncFailingCounterStore(_AsyncOnlyStore):
         await super().aput(namespace, key, value)
 
 
+class _UnavailableAsyncStore(_Store):
+    async def aget(self, namespace: tuple[str, ...], key: str) -> _Item | None:
+        _ = (namespace, key)
+        msg = "store unavailable"
+        raise RuntimeError(msg)
+
+
 class _StructuredModel:
     def __init__(self, result: object = None, error: Exception | None = None) -> None:
         self.result = result
@@ -345,6 +352,15 @@ def test_fixed_repo_commands_allow_only_read_only_git_operations(
     assert not _fixed_repo_command_allowed("git status & rm -rf .", tmp_path)
 
 
+def test_classifier_schema_requires_every_object_property() -> None:
+    """OpenAI Structured Outputs rejects object properties that are optional."""
+    schema = AutoDecisionBatch.model_json_schema()
+    decision_schema = schema["$defs"]["AutoDecision"]
+
+    assert set(schema["required"]) == set(schema["properties"])
+    assert set(decision_schema["required"]) == set(decision_schema["properties"])
+
+
 async def test_project_command_requires_classifier(tmp_path: Path) -> None:
     result = AutoDecisionBatch(
         decisions=[
@@ -352,6 +368,7 @@ async def test_project_command_requires_classifier(tmp_path: Path) -> None:
                 tool_call_id="call-1",
                 decision="allow",
                 category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
             )
         ]
     )
@@ -479,6 +496,125 @@ async def test_auto_async_counter_write_failure_routes_human(tmp_path: Path) -> 
     assert plan["decisions"][0]["disposition"] == "require_human"
 
 
+async def test_unavailable_auto_control_state_surfaces_manual_fallback(
+    tmp_path: Path,
+) -> None:
+    store = _UnavailableAsyncStore()
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {
+        "file_path": str(tmp_path / "README.md"),
+        "old_string": "before",
+        "new_string": "after",
+    }
+    request, _active_store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="edit_file",
+        args=args,
+        store=store,
+    )
+    events: list[dict[str, object]] = []
+    request.runtime.stream_writer = events.append
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="edit_file",
+        args=args,
+    )
+    assert plan["fallback_reason"] == "approval_mode_unavailable"
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "edit_file",
+                "args": args,
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await middleware.aafter_model(
+            cast(
+                "AgentState[Any]",
+                {"messages": [ai_message], "_auto_decision_plan": plan},
+            ),
+            request.runtime,
+        )
+
+    hitl_request = review.call_args.args[0]
+    description = hitl_request["action_requests"][0]["description"]
+    assert description.startswith("Auto human fallback ")
+    assert events == [
+        {
+            "type": "auto_mode",
+            "event": "fallback",
+            "reason": "Auto control state was unavailable; using Manual approval.",
+            "consecutive_denials": 0,
+            "consecutive_unavailable": 0,
+            "total_denials": 0,
+            "mode": "manual",
+        }
+    ]
+
+
+async def test_unavailable_manual_control_state_stays_plain_manual(
+    tmp_path: Path,
+) -> None:
+    store = _UnavailableAsyncStore()
+    middleware = _middleware(tmp_path)
+    request, _active_store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="edit_file",
+        args={"file_path": str(tmp_path / "README.md")},
+        store=store,
+    )
+    request.runtime.context["approval_mode"] = "manual"
+    events: list[dict[str, object]] = []
+    request.runtime.stream_writer = events.append
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="edit_file",
+        args={"file_path": str(tmp_path / "README.md")},
+    )
+    assert plan["fallback_reason"] is None
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "edit_file",
+                "args": {"file_path": str(tmp_path / "README.md")},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await middleware.aafter_model(
+            cast(
+                "AgentState[Any]",
+                {"messages": [ai_message], "_auto_decision_plan": plan},
+            ),
+            request.runtime,
+        )
+
+    description = review.call_args.args[0]["action_requests"][0].get("description", "")
+    assert not description.startswith("Auto human fallback ")
+    assert events == []
+
+
 @pytest.mark.parametrize(
     "file_path",
     [
@@ -529,6 +665,7 @@ async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> Non
                 tool_call_id="call-1",
                 decision="allow",
                 category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
             )
         ]
     )
@@ -676,6 +813,7 @@ async def test_new_user_turn_resets_consecutive_denials(tmp_path: Path) -> None:
                 tool_call_id="call-1",
                 decision="allow",
                 category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
             )
         ]
     )

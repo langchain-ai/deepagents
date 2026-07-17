@@ -105,7 +105,7 @@ class AutoDecision(BaseModel):
     tool_call_id: str
     decision: Literal["allow", "deny"]
     category: AutoDecisionCategory
-    reason: str = ""
+    reason: str
 
     @field_validator("tool_call_id")
     @classmethod
@@ -470,13 +470,20 @@ def _thread_key(runtime: object) -> str | None:
     return raw_key if raw_key == approval_mode_key(thread_id) else None
 
 
-async def _live_mode(runtime: object) -> ApprovalMode:
+async def _live_mode(runtime: object) -> tuple[ApprovalMode, bool]:
+    """Read the live mode and report whether control state was unavailable.
+
+    Returns:
+        The effective mode and whether the Store control record was unavailable.
+    """
     key = _thread_key(runtime)
     if key is None:
         logger.warning("Approval-mode Store key is missing or invalid; using Manual")
-        return ApprovalMode.MANUAL
+        return ApprovalMode.MANUAL, True
     mode = await aread_approval_mode_from_store(getattr(runtime, "store", None), key)
-    return mode if mode is not None else ApprovalMode.MANUAL
+    if mode is None:
+        return ApprovalMode.MANUAL, True
+    return mode, False
 
 
 def _trusted_prompt_rows(
@@ -1059,7 +1066,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         thread_key = _thread_key(request.runtime)
         if thread_key is None:
             return
-        mode = await _live_mode(request.runtime)
+        mode, _mode_unavailable = await _live_mode(request.runtime)
         counters = await _read_counters(request.runtime.store, thread_key, mode)
         if counters is None:
             return
@@ -1134,7 +1141,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         calls = list(ai_message.tool_calls)
         gated_calls = [call for call in calls if call["name"] in self.interrupt_on]
-        mode = await _live_mode(request.runtime)
+        mode, mode_unavailable = await _live_mode(request.runtime)
         thread_key = _thread_key(request.runtime) or ""
         batch_id = _batch_id(calls)
         manual_ids = [_tool_call_id(call) for call in gated_calls]
@@ -1148,7 +1155,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "pending_result_ids": [],
             "processed_result_ids": [],
             "counters_applied": False,
-            "fallback_reason": None,
+            "fallback_reason": (
+                "approval_mode_unavailable"
+                if mode_unavailable
+                and _context_value(_runtime_context(request.runtime), "approval_mode")
+                == ApprovalMode.AUTO.value
+                else None
+            ),
         }
 
         counter_context = await self._counter_context(request, mode)
@@ -1399,6 +1412,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         *,
         fallback: bool,
         counters: AutoModeCounters | None,
+        fallback_reason: str | None = None,
     ) -> tuple[ActionRequest, ReviewConfig]:
         config = self.interrupt_on[tool_call["name"]]
         action, review = self._create_action_and_config(
@@ -1406,9 +1420,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         if fallback:
             counts = counters or _default_counters(ApprovalMode.AUTO)
+            reason = f"reason: {fallback_reason}; " if fallback_reason else ""
             action["description"] = (
                 "Auto human fallback "
-                f"(consecutive denials: {counts['consecutive_denials']}, "
+                f"({reason}consecutive denials: {counts['consecutive_denials']}, "
                 f"classifier unavailable: {counts['consecutive_unavailable']}, "
                 f"total denials: {counts['total_denials']}).\n\n"
                 f"{action.get('description', '')}"
@@ -1425,6 +1440,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         fallback: bool,
         counters: AutoModeCounters | None,
         all_manual_ids: set[str],
+        fallback_reason: str | None = None,
+        fallback_mode: ApprovalMode | None = None,
     ) -> tuple[AIMessage, list[ToolMessage], bool]:
         target_calls = [
             call for call in ai_message.tool_calls if _tool_call_id(call) in target_ids
@@ -1433,26 +1450,32 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         review_configs: list[ReviewConfig] = []
         for call in target_calls:
             action, review = self._action_and_config(
-                call, state, runtime, fallback=fallback, counters=counters
+                call,
+                state,
+                runtime,
+                fallback=fallback,
+                counters=counters,
+                fallback_reason=fallback_reason,
             )
             action_requests.append(action)
             review_configs.append(review)
         if not action_requests:
             return ai_message, [], False
         if fallback:
+            event: dict[str, object] = {
+                "event": "fallback",
+                "reason": fallback_reason or "human approval threshold reached",
+                "consecutive_denials": (counters or {}).get("consecutive_denials", 0),
+                "consecutive_unavailable": (counters or {}).get(
+                    "consecutive_unavailable", 0
+                ),
+                "total_denials": (counters or {}).get("total_denials", 0),
+            }
+            if fallback_mode is not None:
+                event["mode"] = fallback_mode.value
             self._emit_event(
                 runtime,
-                {
-                    "event": "fallback",
-                    "reason": "human approval threshold reached",
-                    "consecutive_denials": (counters or {}).get(
-                        "consecutive_denials", 0
-                    ),
-                    "consecutive_unavailable": (counters or {}).get(
-                        "consecutive_unavailable", 0
-                    ),
-                    "total_denials": (counters or {}).get("total_denials", 0),
-                },
+                event,
             )
         response = interrupt(
             HITLRequest(
@@ -1628,7 +1651,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return {"_auto_decision_plan": None}
         thread_key = _thread_key(runtime)
         plan = self._validated_plan(state, ai_message, thread_key)
-        current_mode = await _live_mode(runtime)
+        current_mode, current_mode_unavailable = await _live_mode(runtime)
         manual_ids = {
             _tool_call_id(call)
             for call in ai_message.tool_calls
@@ -1640,21 +1663,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             logger.warning(
                 "Auto decision plan was missing or invalid; routing to Manual"
             )
-            self._emit_event(
-                runtime,
-                {
-                    "event": "warning",
-                    "reason": "Auto decision state was invalid; using Manual approval.",
-                },
+            manual_fallback = current_mode is ApprovalMode.AUTO or (
+                current_mode_unavailable
+                and _context_value(_runtime_context(runtime), "approval_mode")
+                == ApprovalMode.AUTO.value
+            )
+            fallback_reason = (
+                "Auto decision state was invalid; using Manual approval."
+                if manual_fallback
+                else None
             )
             revised, artificial, _approved = self._human_review(
                 state,
                 runtime,
                 ai_message,
                 manual_ids,
-                fallback=False,
+                fallback=manual_fallback,
                 counters=None,
                 all_manual_ids=manual_ids,
+                fallback_reason=fallback_reason,
+                fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )
             return {
                 "messages": [revised, *artificial],
@@ -1677,14 +1705,25 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 current_mode = ApprovalMode.MANUAL
 
         if proposal_mode is ApprovalMode.MANUAL or current_mode is ApprovalMode.MANUAL:
+            manual_fallback = plan["fallback_reason"] in {
+                "approval_mode_unavailable",
+                "control_state_unavailable",
+            } or (current_mode_unavailable and proposal_mode is ApprovalMode.AUTO)
+            fallback_reason = (
+                "Auto control state was unavailable; using Manual approval."
+                if manual_fallback
+                else None
+            )
             revised, artificial, _approved = self._human_review(
                 state,
                 runtime,
                 ai_message,
                 set(plan["manual_gated_ids"]),
-                fallback=False,
+                fallback=manual_fallback,
                 counters=counters,
                 all_manual_ids=manual_ids,
+                fallback_reason=fallback_reason,
+                fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )
             return {
                 "messages": [revised, *artificial],
@@ -1736,6 +1775,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         artificial: list[ToolMessage] = list(denied_messages)
         approved_fallback = False
         if human_ids:
+            manual_fallback = plan["fallback_reason"] == "control_state_unavailable"
+            fallback_reason = (
+                "Auto control state was unavailable; using Manual approval."
+                if manual_fallback
+                else None
+            )
             revised_ai, human_messages, approved_fallback = self._human_review(
                 state,
                 runtime,
@@ -1744,6 +1789,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 fallback=True,
                 counters=counters,
                 all_manual_ids=manual_ids,
+                fallback_reason=fallback_reason,
+                fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )
             artificial.extend(human_messages)
         if approved_fallback and counters is not None and thread_key is not None:

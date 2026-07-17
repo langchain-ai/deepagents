@@ -22023,6 +22023,82 @@ class TestLiveApprovalModeWrites:
         assert not await app._write_live_approval_mode()
         assert app._session_state.approval_mode_key is None
 
+    async def test_toggle_on_while_connecting_stages_mode(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._agent = None
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(),
+                ) as write_mode,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        write_mode.assert_not_awaited()
+        assert app._approval_mode is ApprovalMode.AUTO
+        assert app._session_state is not None
+        assert app._session_state.approval_mode is ApprovalMode.AUTO
+        assert not any(
+            "could not be persisted" in str(call.args[0])
+            for call in notify.call_args_list
+        )
+
+    async def test_toggle_off_while_reconnecting_stages_manual(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._reconnecting = True
+            app._agent = None
+            app._approval_mode_blocked = True
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(),
+                ) as write_mode,
+                patch.object(app, "notify") as notify,
+                patch.object(app, "_force_interrupt_active_work") as force,
+            ):
+                await app.action_toggle_auto_approve()
+
+        write_mode.assert_not_awaited()
+        force.assert_not_called()
+        notify.assert_not_called()
+        assert app._approval_mode is ApprovalMode.MANUAL
+        assert app._session_state is not None
+        assert app._session_state.approval_mode is ApprovalMode.MANUAL
+        assert app._approval_mode_blocked is False
+
+    async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+
+        async def create_stale_session_state(*_args: object) -> TextualSessionState:
+            await asyncio.sleep(0)
+            app._approval_mode = ApprovalMode.AUTO
+            return TextualSessionState(approval_mode=ApprovalMode.MANUAL)
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new=create_stale_session_state,
+        ):
+            await app._init_session_state()
+
+        assert app._session_state is not None
+        assert app._session_state.approval_mode is ApprovalMode.AUTO
+
     async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=True)
         async with app.run_test() as pilot:
@@ -22031,6 +22107,7 @@ class TestLiveApprovalModeWrites:
                 thread_id="thread-1",
                 auto_approve=True,
             )
+            app._agent = object()
             app._session_state.approval_mode_key = "stale"
             app._agent_running = True
             with (
@@ -22089,6 +22166,7 @@ class TestLiveApprovalModeWrites:
                 thread_id="thread-1",
                 auto_approve=True,
             )
+            app._agent = object()
             app._agent_running = False
             with (
                 patch.object(
@@ -22115,6 +22193,7 @@ class TestLiveApprovalModeWrites:
                 thread_id="thread-1",
                 auto_approve=False,
             )
+            app._agent = object()
             app._agent_running = True
             with (
                 patch.object(
@@ -22154,6 +22233,47 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.auto_approve is False
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
+
+    async def test_server_manual_fallback_updates_tui_mode_and_warns(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._approval_mode = ApprovalMode.AUTO
+        app._session_state = TextualSessionState(
+            approval_mode=ApprovalMode.AUTO,
+            thread_id="thread-1",
+        )
+        status = MagicMock()
+        app._status_bar = status
+        event = {
+            "event": "fallback",
+            "mode": "manual",
+            "reason": "Auto control state was unavailable; using Manual approval.",
+        }
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ) as write_mode,
+            patch.object(app, "_mount_message", new=AsyncMock()) as mount,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._on_auto_mode_event(event)
+
+        write_mode.assert_awaited_once_with(ApprovalMode.MANUAL)
+        assert app._approval_mode is ApprovalMode.MANUAL
+        assert app._session_state.approval_mode is ApprovalMode.MANUAL
+        status.set_approval_mode.assert_called_once_with("manual")
+        notify.assert_called_once_with(
+            "Auto fell back to Manual: Auto control state was unavailable; "
+            "using Manual approval.",
+            severity="warning",
+            timeout=10,
+            markup=False,
+        )
+        mount.assert_awaited_once()
 
 
 class TestExternalBypassFieldHonored:

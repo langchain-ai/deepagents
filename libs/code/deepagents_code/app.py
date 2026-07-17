@@ -3035,7 +3035,8 @@ class DeepAgentsApp(App):
 
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
-        it can be dimmed if the turn is interrupted."""
+        its prompt can be restored to the input if the turn is interrupted
+        (Esc)."""
 
         self._active_turn_visible_output_started = False
         """True once the current turn has displayed model text or a tool call.
@@ -12804,7 +12805,8 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
-        # Mount the user message, tracking it so it can be dimmed on interrupt.
+        # Mount the user message, tracking it so its prompt can be restored to
+        # the input if the turn is interrupted (Esc).
         media_snapshot = self._image_tracker.snapshot()
         user_message = UserMessage(message, media_snapshot=media_snapshot)
         await self._mount_message(user_message)

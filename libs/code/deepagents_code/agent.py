@@ -1724,9 +1724,19 @@ def create_cli_agent(
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and injects goal guidance into the prompt.
     from deepagents_code.goal_tools import GoalToolsMiddleware
+    from deepagents_code.intent_followthrough import IntentFollowThroughMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+    agent_middleware.extend(
+        [
+            ResumeStateMiddleware(),
+            GoalToolsMiddleware(),
+            # Re-drive the model when a turn ends on a plan-only intent statement
+            # for a request that needs external data, so the promised tool work
+            # actually happens instead of terminating with a bare promise.
+            IntentFollowThroughMiddleware(),
+        ]
+    )
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

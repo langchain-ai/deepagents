@@ -192,6 +192,17 @@ include = [
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+# Verifying reasoning_effort_levels/reasoning_effort_default profile data +
+# native reasoning_effort support against the unreleased langchain changes on
+# https://github.com/langchain-ai/langchain/pull/38887. Points at a branch
+# (not a local path) so CI can resolve it too. Remove once those changes are
+# released.
+langchain = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/langchain_v1" }
+langchain-core = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/core" }
+langchain-openai = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/openai" }
+langchain-anthropic = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/anthropic" }
+langchain-fireworks = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/fireworks" }
+langchain-xai = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/xai" }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }

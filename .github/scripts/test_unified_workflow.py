@@ -494,6 +494,13 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
     assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
     assert '"${expected_shards_args[@]}"' in compute
+    # A flat matrix spans categories, so its global harbor result is not a
+    # category-local completeness signal. Expected shard coverage is authoritative.
+    assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in compute
+    assert "harbor_result_args=()" in compute
+    assert 'if [ -z "$FLAT_MATRIX" ]; then' in compute
+    assert 'harbor_result_args=(--harbor-result "$HARBOR_RESULT")' in compute
+    assert '"${harbor_result_args[@]}"' in compute
 
 
 def test_harbor_artifacts_are_archived_and_extracted_for_aggregation() -> None:

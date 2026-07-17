@@ -115,12 +115,23 @@ def total_job_guard(n_models: int, shards_per_model: int) -> None:
 
 
 def derive_pool(
-    concurrency: int, rollouts: int, n_shards: int, n_models: int
+    concurrency: int,
+    rollouts: int,
+    n_shards: int,
+    n_models: int,
+    n_sources: int = 1,
 ) -> tuple[int, int]:
-    """Derive bounded pools using full packed-shard concurrency."""
+    """Derive bounded pools using full packed-shard concurrency.
+
+    Sources compared for the same model share its 40-trial budget. The outer
+    pool can still schedule source/model groups independently, bounded by the
+    global 80-runner budget.
+    """
     del rollouts
-    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // max(1, concurrency), n_shards))
-    group_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
+    per_model_shards = MAX_TASKS_PER_MODEL // max(1, concurrency)
+    max_parallel = max(1, min(per_model_shards // n_sources, n_shards))
+    group_count = n_models * n_sources
+    group_parallel = max(1, min(MAX_RUNNERS // max_parallel, group_count))
     return max_parallel, group_parallel
 
 
@@ -430,8 +441,19 @@ def main(argv: list[str] | None = None) -> int:
     largest_matrix = max(
         (len(entries) for entries in per_model_matrices.values()), default=1
     )
+    per_model_shards = MAX_TASKS_PER_MODEL // concurrency
+    if len(sources) > per_model_shards:
+        raise SystemExit(
+            f"{len(sources)} sources exceed the per-model concurrent-shard budget "
+            f"of {per_model_shards} at concurrency={concurrency}. Reduce sources "
+            "or lower concurrency."
+        )
     max_parallel, version_model_parallel = derive_pool(
-        concurrency, rollouts, largest_matrix, eval_group_count
+        concurrency,
+        rollouts,
+        largest_matrix,
+        len(model_specs),
+        len(sources),
     )
 
     expected_leaves: list[dict] = []

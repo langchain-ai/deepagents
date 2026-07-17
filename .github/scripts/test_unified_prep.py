@@ -27,6 +27,10 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
 def test_derive_pool_uses_full_concurrency_for_packed_shards():
     # Packed shards can use all four slots: 40 // 4 = 10.
     assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (10, 1)
+    # Two sources for one model split that model's 10-shard budget equally.
+    assert up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=34, n_models=1, n_sources=2
+    ) == (5, 2)
     # concurrency 1 -> 40 shard jobs; 80 // 40 = 2 models.
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_models=5) == (
         40,
@@ -417,3 +421,23 @@ def test_main_preserves_immutable_sources_and_packed_post_source_job_guard(
     assert int(lines["total_jobs"]) == 2 * len(
         _j.loads(matrix[0]["flat_matrix"])["include"]
     )
+    # Sources share one model's 40-trial budget rather than each getting 40.
+    assert lines["max_parallel"] == "5"
+    assert lines["model_parallel"] == "2"
+
+
+def test_main_rejects_sources_exceeding_one_models_trial_budget(monkeypatch):
+    import json as _j
+
+    sources = [
+        {"version_id": f"v{i}", "branch": f"branch-{i}", "sha": f"{i:040x}"}
+        for i in range(1, 12)
+    ]
+    monkeypatch.setenv("UNIFIED_SOURCES_JSON", _j.dumps(sources))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "4")
+
+    with pytest.raises(SystemExit, match="sources.*per-model concurrent-shard budget"):
+        up.main([])

@@ -1261,6 +1261,7 @@ jobs:
           CATEGORY: ${{ matrix.category }}
           AGENT_IMPL: ${{ matrix.agent_impl }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
@@ -1269,6 +1270,13 @@ jobs:
           expected_shards_args=()
           if [ -n "$EXPECTED_SHARDS" ]; then
             expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
+          fi
+          # `needs.harbor.result` is global to a flat matrix that spans all
+          # categories. Per-category expected shard coverage is authoritative
+          # there; the global result remains valid for a single-dataset run.
+          harbor_result_args=()
+          if [ -z "$FLAT_MATRIX" ]; then
+            harbor_result_args=(--harbor-result "$HARBOR_RESULT")
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
@@ -1279,7 +1287,7 @@ jobs:
             --model "$MODEL" \
             --category "$CATEGORY" \
             --config "$AGENT_IMPL" \
-            --harbor-result "$HARBOR_RESULT" \
+            "${harbor_result_args[@]}" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"

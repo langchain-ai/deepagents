@@ -513,6 +513,13 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
+        # Surface an invoked skill's name as queryable trace metadata so skill
+        # usage can be aggregated in LangSmith (RunQueryStats group_by metadata
+        # path=ls_skill_name). The name lives in the skill envelope's
+        # additional_kwargs.__skill (see skills/invocation.py).
+        skill_meta = message_kwargs.get("additional_kwargs", {}).get("__skill")
+        if isinstance(skill_meta, dict) and skill_meta.get("name"):
+            config.setdefault("metadata", {})["ls_skill_name"] = skill_meta["name"]
     stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.

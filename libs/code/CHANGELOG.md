@@ -2,6 +2,32 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.43](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.42...deepagents-code==0.1.43) (2026-07-17)
+
+
+### Features
+
+* **code:** classifier-backed Auto approval mode ([#4804](https://github.com/langchain-ai/deepagents/issues/4804)) ([eae7c28](https://github.com/langchain-ai/deepagents/commit/eae7c28f1152a5116b5b330c9fa1088ce173656d))
+* **code:** debug-log skill-name override collisions ([#4772](https://github.com/langchain-ai/deepagents/issues/4772)) ([77603c6](https://github.com/langchain-ai/deepagents/commit/77603c69e2eeededf6f1df68b384da27f7d2843f))
+* **code:** expand truncated `task` descriptions on click or `Ctrl+O` ([#4811](https://github.com/langchain-ai/deepagents/issues/4811)) ([2ddb551](https://github.com/langchain-ai/deepagents/commit/2ddb551bd77d210d689f3a75037259ade4fbf54a))
+* **code:** persist Debug Console `Ctrl+L` clear across reopen ([#4812](https://github.com/langchain-ai/deepagents/issues/4812)) ([20089a5](https://github.com/langchain-ai/deepagents/commit/20089a53703b031726fdc898831bb09f434527b7))
+* **code:** shutdown toast for deferred exits ([#4830](https://github.com/langchain-ai/deepagents/issues/4830)) ([a8a05f5](https://github.com/langchain-ai/deepagents/commit/a8a05f58f2ffb755bf373cd8f9a4cced2778370c))
+
+
+### Bug Fixes
+
+* **code:** count only running tools in live tool-group line ([#4809](https://github.com/langchain-ai/deepagents/issues/4809)) ([4d483fd](https://github.com/langchain-ai/deepagents/commit/4d483fdf39b6d7c691322041a4fc58be06ecfd6b))
+* **code:** disentangle version diagnostics for editable installs ([#4816](https://github.com/langchain-ai/deepagents/issues/4816)) ([7408378](https://github.com/langchain-ai/deepagents/commit/7408378896344e4db7dbc45a35ae6b02cc746d31))
+* **code:** drop `uv install` tip from `/version` update hint ([#4822](https://github.com/langchain-ai/deepagents/issues/4822)) ([4e618f0](https://github.com/langchain-ai/deepagents/commit/4e618f07b4b00f94133b4d1c105011c438cb35be))
+* **code:** keep `task` timers monotonic across nested subagent HITL ([#4771](https://github.com/langchain-ai/deepagents/issues/4771)) ([6952011](https://github.com/langchain-ai/deepagents/commit/69520118a7f96866a5e92e7b31894d8ba3312938))
+* **code:** keep chat input responsive during `/restart` ([#4808](https://github.com/langchain-ai/deepagents/issues/4808)) ([a915c59](https://github.com/langchain-ai/deepagents/commit/a915c590dfb7c50d9bf697953ce724bad8dd4149))
+* **code:** keep goal criteria proposal when marker clear fails ([#4785](https://github.com/langchain-ai/deepagents/issues/4785)) ([487b25f](https://github.com/langchain-ai/deepagents/commit/487b25f885c74b43ad2df837c6c0f6c45626be2a))
+* **code:** keep paste placeholder when backspacing newline below it ([#4757](https://github.com/langchain-ai/deepagents/issues/4757)) ([ea82538](https://github.com/langchain-ai/deepagents/commit/ea825386b3c817f8461ea9e92c71de3411991e2a))
+* **code:** make markdown `AppMessage` output selectable ([#4814](https://github.com/langchain-ai/deepagents/issues/4814)) ([2d6b2ce](https://github.com/langchain-ai/deepagents/commit/2d6b2ceeda97f8c77d1b3ea70c674b076e7d713f))
+* **code:** probe unreachable Ollama daemon once per reload ([#4806](https://github.com/langchain-ai/deepagents/issues/4806)) ([45baf6c](https://github.com/langchain-ai/deepagents/commit/45baf6c7a47e08e656ba56eb76beea30a9956403))
+* **code:** quiet MCP auth-skip debug logging for known patterns ([#4805](https://github.com/langchain-ai/deepagents/issues/4805)) ([c2c27d6](https://github.com/langchain-ai/deepagents/commit/c2c27d621b63d5af18870e034f99355dc410cbda))
+* **code:** surface `langchain-quickjs` in `/version` core deps ([#4813](https://github.com/langchain-ai/deepagents/issues/4813)) ([4112392](https://github.com/langchain-ai/deepagents/commit/41123924da6f6aa0243b51f2374210bee86df089))
+
 ## [0.1.42](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.41...deepagents-code==0.1.42) (2026-07-17)
 
 ### Features

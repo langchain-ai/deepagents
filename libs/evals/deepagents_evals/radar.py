@@ -7,18 +7,19 @@ encodes the score (0-1 correctness).
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import math
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 try:
-    import matplotlib.pyplot as plt
+    plt: Any = importlib.import_module("matplotlib.pyplot")
 except ImportError:
-    plt = None  # type: ignore[assignment]
+    plt = None
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -45,7 +46,7 @@ EVAL_CATEGORIES: list[str] = _categories_raw.get("radar_categories", _categories
 """Radar-eligible eval category names.
 
 Order determines axis placement on the radar chart (clockwise from top).
-Categories like ``unit_test`` that verify SDK plumbing rather than model
+Categories like `unit_test` that verify SDK plumbing rather than model
 capability are excluded from this list.
 """
 

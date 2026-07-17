@@ -1,0 +1,471 @@
+name: "📊 Evals - Unified"
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated provider:model specs"
+        type: string
+        required: true
+      categories:
+        description: "Comma list"
+        type: string
+        default: "autonomous,conversation,context"
+      agent_impl:
+        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
+        type: choice
+        default: "bare"
+        options:
+          - bare
+          - dcode
+      profile:
+        description: "Task scope: 'full' (every task) or 'lite' (frozen high-signal subset from lite_tasks.py — fewer tasks, full rollouts)."
+        type: choice
+        default: "full"
+        options:
+          - full
+          - lite
+      rollouts:
+        type: string
+        default: "3"
+      concurrency:
+        type: string
+        default: "4"
+      sandbox_env:
+        type: string
+        default: "langsmith"
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
+        type: boolean
+        default: false
+      harbor_package_override:
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  # Lets the called reusable workflow manage run artifacts; a caller caps the
+  # callee's token, so it must be granted here (the eval job inherits this).
+  actions: write
+
+concurrency:
+  group: unified-evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: "🔧 Parse models + build the per-model flat matrix"
+    runs-on: ubuntu-latest
+    environment: evals
+    outputs:
+      eval_matrix: ${{ steps.p.outputs.eval_matrix }}
+      max_parallel: ${{ steps.p.outputs.max_parallel }}
+      model_parallel: ${{ steps.p.outputs.model_parallel }}
+      models: ${{ steps.p.outputs.models }}
+      categories: ${{ steps.p.outputs.categories }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        if: ${{ inputs.profile == 'full' }}
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-enumerate
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        if: ${{ inputs.profile == 'full' }}
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🔢 Enumerate full-profile tasks"
+        # Only the full profile needs the live task list per category; lite
+        # uses the frozen subset baked into lite_tasks.py and skips this
+        # entirely. Resolves each selected category's task names the same way
+        # the harbor leaf's own sharding does (enumerate_tasks.py), so
+        # unified_prep.py's flat matrix always matches the real dataset.
+        if: ${{ inputs.profile == 'full' }}
+        id: enumerate
+        working-directory: libs/evals
+        env:
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          # Resolve dataset refs straight from unified_prep.py's CATEGORY_MAP
+          # (the same module the flat-matrix step below imports) so there is
+          # a single source of truth for category -> dataset and a version
+          # bump there can't silently drift out of sync with enumeration.
+          sys.path.insert(
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts")
+          )
+          from unified_prep import CATEGORY_MAP
+
+          KNOWN_CATEGORIES = set(CATEGORY_MAP)
+
+          raw = os.environ.get("UNIFIED_CATEGORIES", "")
+          categories = list(dict.fromkeys(c.strip() for c in raw.split(",") if c.strip()))
+          unknown = [c for c in categories if c not in KNOWN_CATEGORIES]
+          if unknown:
+              sys.exit(f"::error::Unknown categor(y/ies) for enumeration: {unknown}")
+          if not categories:
+              sys.exit("::error::No categories selected to enumerate for the full profile")
+
+          enumerate_script = os.path.join(
+              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "enumerate_tasks.py"
+          )
+          tasks_by_cat: dict[str, list[str]] = {}
+          for category in categories:
+              dataset = CATEGORY_MAP[category]["dataset"]
+              dataset_path = CATEGORY_MAP[category]["dataset_path"]
+              env = os.environ.copy()
+              if dataset_path:
+                  # Local dataset: the per-task corpus is git-ignored and must be
+                  # regenerated from the vendored copy before enumeration can see
+                  # any task.toml files, mirroring the leaf's own populate step.
+                  subprocess.run(
+                      [
+                          "uv", "run", "python", "-m",
+                          "harbor_adapters.contextbench.main",
+                          "--populate", dataset_path,
+                      ],
+                      check=True,
+                  )
+                  env["ENUM_DATASET_PATH"] = dataset_path
+                  env.pop("ENUM_DATASET", None)
+              else:
+                  env["ENUM_DATASET"] = dataset
+                  env.pop("ENUM_DATASET_PATH", None)
+              result = subprocess.run(
+                  ["uv", "run", "python", enumerate_script],
+                  env=env,
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              names = [line for line in result.stdout.splitlines() if line.strip()]
+              if not names:
+                  sys.exit(f"::error::Enumerated 0 tasks for category {category!r}")
+              tasks_by_cat[category] = names
+
+          out_path = os.path.join(os.environ["RUNNER_TEMP"], "tasks.json")
+          with open(out_path, "w") as f:
+              json.dump(tasks_by_cat, f)
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"UNIFIED_TASKS_JSON={out_path}\n")
+          PY
+
+      - name: "🧮 Parse models + build the per-model flat matrix"
+        id: p
+        env:
+          UNIFIED_MODELS: ${{ inputs.models }}
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
+          UNIFIED_PROFILE: ${{ inputs.profile }}
+          UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
+          UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
+          # Set by the enumerate step above for the full profile only; empty
+          # (unset) for lite, which unified_prep.py never reads in that case.
+          UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
+        run: python .github/scripts/unified_prep.py
+
+      # A single place to see exactly what a dispatch ran with — the raw inputs
+      # plus the values prep derived from them (resolved model list, and the
+      # derived shard-pool parallelism). Runs even if the parse step failed, so a
+      # bad dispatch still shows what was requested. Values are passed via env
+      # (never interpolated into the script) so free-form inputs can't inject.
+      - name: "📝 Summarize dispatch inputs"
+        if: ${{ always() }}
+        env:
+          IN_MODELS: ${{ inputs.models }}
+          RESOLVED_MODELS: ${{ steps.p.outputs.models }}
+          IN_CATEGORIES: ${{ inputs.categories }}
+          RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
+          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_PROFILE: ${{ inputs.profile }}
+          IN_ROLLOUTS: ${{ inputs.rollouts }}
+          IN_CONCURRENCY: ${{ inputs.concurrency }}
+          MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
+          MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
+          IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          IN_FORCE_BUILD: ${{ inputs.force_build }}
+          HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
+        run: |
+          # Never echo the override spec: uv accepts authenticated specs
+          # (e.g. git+https://user:token@host/repo.git) and this summary is
+          # public, so report only whether an override was set.
+          override_status="(pinned)"
+          [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
+
+          # RESOLVED_MODELS is a JSON array; render it as a plain comma list.
+          resolved_models="${RESOLVED_MODELS:-(prep did not complete)}"
+          resolved_models="${resolved_models#[}"
+          resolved_models="${resolved_models%]}"
+          resolved_models="${resolved_models//\"/}"
+
+          # agent_impl only affects the autonomous/context (deep-agents)
+          # categories. When neither ran, the value is inert — flag it rather
+          # than imply a harness was used. An empty RESOLVED_CATEGORIES means
+          # prep didn't complete, so report the requested value as-is.
+          agent_impl_note=""
+          case "${RESOLVED_CATEGORIES}" in
+            *'"autonomous"'* | *'"context"'* | '') ;;
+            *) agent_impl_note=" — not applicable (no autonomous/context category selected)" ;;
+          esac
+          {
+            echo "## Unified evals — run configuration"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| models (requested) | \`${IN_MODELS}\` |"
+            echo "| models (resolved) | \`${resolved_models}\` |"
+            echo "| categories | \`${IN_CATEGORIES}\` |"
+            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| profile | \`${IN_PROFILE}\` |"
+            echo "| rollouts | \`${IN_ROLLOUTS}\` |"
+            echo "| concurrency | \`${IN_CONCURRENCY}\` |"
+            echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
+            echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
+            echo "| force_build | \`${IN_FORCE_BUILD}\` |"
+            echo "| harbor_package_override | \`${override_status}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  eval:
+    name: "🚀 Evaluate (${{ matrix.model }})"
+    needs: prep
+    strategy:
+      fail-fast: false
+      # Caps how many models run concurrently so total runners across every
+      # model's own shard pool stay within the global runner budget (see
+      # unified_prep.py's derive_pool).
+      max-parallel: ${{ fromJson(needs.prep.outputs.model_parallel) }}
+      matrix: ${{ fromJson(needs.prep.outputs.eval_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      # The model's full multi-category, multi-shard matrix, pre-serialized by
+      # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
+      # entries directly instead of expanding a single-dataset shard axis.
+      flat_matrix: ${{ matrix.flat_matrix }}
+      max_parallel: ${{ needs.prep.outputs.max_parallel }}
+      # Fallbacks only: every flat_matrix entry carries its own category,
+      # dataset, dataset_path, agent_impl, and include_tasks.
+      category: ""
+      dataset: ""
+      dataset_path: ""
+      agent_impl: ${{ inputs.agent_impl }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  combine:
+    name: "📊 Combine cross-model results"
+    needs:
+      - prep
+      - eval
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    # Every ref publishes to the same branch. Serialize the publishing jobs so
+    # each one fetches the branch tip after the previous writer has pushed.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      ROLLOUTS: ${{ inputs.rollouts }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-combine
+          working-directory: libs/evals
+
+      - name: "⬇️ Download leaf summaries"
+        run: |
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No harbor-* artifacts matched; combining an empty set."
+              break
+            fi
+            echo "Leaf download attempt ${attempt} failed:"
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Leaf download failed after ${attempt} attempts (not an empty-artifact case)."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+
+      - name: "📊 Combine"
+        env:
+          # Expected grid, so a model whose leaf never uploaded is shown and
+          # flagged incomplete rather than silently ranking on fewer categories.
+          EXPECTED_MODELS: ${{ needs.prep.outputs.models }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+        run: |
+          mkdir -p _leaves
+          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+
+      - name: "📊 Generate radar chart"
+        id: radar-chart
+        # radar_results.json is emitted only for full (>=3 category) runs, so its
+        # presence is the gate. Best-effort: a chart failure must not fail combine.
+        if: hashFiles('_combined/radar_results.json') != ''
+        continue-on-error: true
+        working-directory: libs/evals
+        run: |
+          uv sync --extra charts
+          uv run --extra charts python scripts/generate_radar.py \
+            --results ../../_combined/radar_results.json \
+            -o ../../_combined/radar.png \
+            --individual-dir ../../_combined/individual \
+            --title "Deep Agents Unified Evals"
+
+      - name: "📤 Upload combined results"
+        if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-combined
+          path: _combined/
+
+      - name: "🖼️ Publish charts to eval-assets branch"
+        id: publish-charts
+        if: hashFiles('_combined/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded (unified-combined artifact + leaderboard summary), so a
+        # transient git/push failure must not fail an otherwise-successful
+        # combine. The "Append charts" step gates on this outcome == 'success'.
+        continue-on-error: true
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}"
+
+          # Set up a temp workdir so we don't disturb the main checkout.
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # Fetch eval-assets if it exists; otherwise start an orphan branch.
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
+          mkdir -p "${asset_dir}"
+          cp "$GITHUB_WORKSPACE/_combined/radar.png" "${asset_dir}/radar.png"
+          if [ -f "$GITHUB_WORKSPACE/_combined/radar-dark.png" ]; then
+            cp "$GITHUB_WORKSPACE/_combined/radar-dark.png" "${asset_dir}/radar-dark.png"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/_combined/individual" ]; then
+            cp -r "$GITHUB_WORKSPACE/_combined/individual" "${asset_dir}/individual"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/_combined/individual-dark" ]; then
+            cp -r "$GITHUB_WORKSPACE/_combined/individual-dark" "${asset_dir}/individual-dark"
+          fi
+
+          git add "${asset_dir}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+
+          # Expose base URL for the summary step.
+          base="https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}"
+          echo "base_url=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append charts to summary"
+        if: steps.publish-charts.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
+        run: |
+          # Use <picture> with prefers-color-scheme so GitHub automatically
+          # shows the right variant based on the reader's theme setting.
+          # Direct download links are included for each variant.
+          has_dark=false
+          [ -f _combined/radar-dark.png ] && has_dark=true
+
+          {
+            echo ""
+            echo "## Radar charts"
+            echo ""
+            echo "### Combined"
+            echo ""
+            if $has_dark; then
+              echo '<picture>'
+              echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo '</picture>'
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
+            else
+              echo "<img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png)"
+            fi
+            echo ""
+
+            if [ -d _combined/individual ]; then
+              echo "### Per-model"
+              echo ""
+              for img in _combined/individual/*.png; do
+                name="$(basename "$img" .png)"
+                if [ -d _combined/individual-dark ] && [ -f "_combined/individual-dark/${name}.png" ]; then
+                  echo '<picture>'
+                  echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo '</picture>'
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
+                else
+                  echo "<img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png)"
+                fi
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -9,6 +9,8 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
 from typing import (
     TYPE_CHECKING,
@@ -28,6 +30,8 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 
+from deepagents_code.unicode_security import sanitize_control_chars
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -43,6 +47,66 @@ _TOOL_NAME_DISPLAY_LIMIT = 10
 
 _DETECT_SCRIPT_TIMEOUT = 30
 """Timeout in seconds for the environment detection script."""
+
+_MCP_ERROR_DETAIL_LIMIT = 200
+"""Max characters of an MCP server error surfaced in the system prompt."""
+
+_TRACING_PROJECT_NAME_LIMIT = 200
+"""Max characters of a LangSmith project name surfaced in the system prompt."""
+
+
+def _sanitize_error_detail(error: str | None) -> str:
+    """Make an untrusted MCP error string safe to embed in the system prompt.
+
+    The error originates from exception text or MCP config-file contents, so it
+    is untrusted input flowing into the system prompt (prompt-injection and
+    log-forging risk). Strip hidden/deceptive Unicode, flatten control
+    characters and newlines to spaces so the value cannot break out of its
+    single bullet line or inject fake instruction lines, collapse runs of
+    whitespace, and bound the length.
+
+    Args:
+        error: Raw error message, or `None`.
+
+    Returns:
+        A single-line, length-bounded, sanitized string. Falls back to
+        `"unknown error"` when no usable message remains.
+    """
+    if not error:
+        return "unknown error"
+    sanitized = sanitize_control_chars(error, max_length=_MCP_ERROR_DETAIL_LIMIT)
+    return sanitized or "unknown error"
+
+
+def _sanitize_tracing_project_name(project: str) -> str:
+    """Make an untrusted LangSmith project name safe for the system prompt.
+
+    Project names can originate from a workspace `.env` file or process
+    environment. Flatten hidden/control characters and bound the length before
+    embedding them in prompt bullets so a crafted value cannot inject extra
+    prompt lines.
+
+    Args:
+        project: Raw LangSmith project name.
+
+    Returns:
+        A single-line, length-bounded, sanitized project name. Falls back to
+        `"unknown project"` when no usable text remains.
+    """
+    sanitized = sanitize_control_chars(project, max_length=_TRACING_PROJECT_NAME_LIMIT)
+    return sanitized or "unknown project"
+
+
+def _quote_tracing_project_name(project: str) -> str:
+    """JSON-quote a sanitized LangSmith project name for prompt insertion.
+
+    Args:
+        project: Sanitized LangSmith project name.
+
+    Returns:
+        JSON string literal for the project name.
+    """
+    return json.dumps(project, ensure_ascii=False)
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -62,7 +126,41 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
 
     for server in servers:
         if not server.tools:
-            lines.append(f"- **{server.name}** ({server.transport}): (no tools)")
+            # `status`/`error` always exist on the frozen dataclass; the
+            # `__post_init__` invariant guarantees a non-`ok` status carries a
+            # non-`None` error. The error is untrusted (exception/config text),
+            # so it is sanitized and isolated in an `<error>` delimiter before
+            # reaching the prompt.
+            if server.status == "error":
+                detail = _sanitize_error_detail(server.error)
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): "
+                    f"FAILED TO LOAD — <error>{detail}</error>. "
+                    "Treat this integration as temporarily unavailable; "
+                    "tell the user the server failed to load and suggest "
+                    "restarting the MCP server."
+                )
+            elif server.status == "unauthenticated":
+                detail = _sanitize_error_detail(server.error)
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): "
+                    f"NEEDS LOGIN — <error>{detail}</error>. "
+                    "This integration requires authentication before its "
+                    "tools are available; tell the user and suggest running "
+                    "`/mcp` to log in."
+                )
+            elif server.status == "disabled":
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): (disabled by user)"
+                )
+            else:
+                # `ok` with no tools (genuinely empty). `awaiting_reconnect` is a
+                # transient UI-only status that never reaches this function (the
+                # middleware is always built from a fresh preload), but it would
+                # also render benignly here.
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): (no tools registered)"
+                )
             continue
 
         names = [t.name for t in server.tools]
@@ -78,6 +176,44 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
                 f"- **{server.name}** ({server.transport}): {', '.join(names)}"
             )
 
+    return "\n".join(lines)
+
+
+def _build_tracing_context(
+    agent_project: str | None,
+    user_project: str | None,
+) -> str:
+    """Format LangSmith tracing project names for the system prompt.
+
+    Surfaces both projects so the agent can look up the right traces with the
+    LangSmith MCP server or CLI: the project its own runs are traced to, and
+    the user's original project that shell commands trace to. The
+    shell-command line is shown only when the user's project differs from the
+    agent's (after sanitizing both), avoiding a redundant duplicate line.
+
+    Args:
+        agent_project: Project receiving the agent's own traces, or `None`
+            when LangSmith tracing is not enabled.
+        user_project: User's original `LANGSMITH_PROJECT`, used by code the
+            agent runs in the shell.
+
+    Returns:
+        Formatted markdown string, or `""` when tracing is disabled.
+    """
+    if not agent_project:
+        return ""
+
+    safe_agent_project = _sanitize_tracing_project_name(agent_project)
+    quoted_agent_project = _quote_tracing_project_name(safe_agent_project)
+    lines = [
+        "**LangSmith Tracing**:",
+        f"- Agent traces: project {quoted_agent_project}",
+    ]
+    if user_project:
+        safe_user_project = _sanitize_tracing_project_name(user_project)
+        if safe_user_project != safe_agent_project:
+            quoted_user_project = _quote_tracing_project_name(safe_user_project)
+            lines.append(f"- Shell-command traces: project {quoted_user_project}")
     return "\n".join(lines)
 
 
@@ -266,6 +402,43 @@ if $IN_GIT; then
 fi"""
 
 
+def _section_gh_cli() -> str:
+    """GitHub CLI search JSON-field affordances from the installed `gh`.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- GitHub CLI ---
+if command -v gh >/dev/null 2>&1; then
+  _gh_json_fields() {
+    gh search "$1" --help 2>/dev/null \
+      | awk '
+        /^JSON FIELDS/ { in_fields = 1; next }
+        in_fields && /^$/ { exit }
+        in_fields { gsub(/^  /, ""); print }
+      ' \
+      | tr '\n' ' ' \
+      | sed 's/  */ /g; s/^ //; s/ $//'
+  }
+
+  GH_PRS_FIELDS="$(_gh_json_fields prs)"
+  GH_ISSUES_FIELDS="$(_gh_json_fields issues)"
+  if [ -n "$GH_PRS_FIELDS" ] || [ -n "$GH_ISSUES_FIELDS" ]; then
+    echo "**GitHub CLI**:"
+    [ -n "$GH_PRS_FIELDS" ] \
+      && echo "- \`gh search prs --json\` fields: ${GH_PRS_FIELDS}"
+    [ -n "$GH_ISSUES_FIELDS" ] \
+      && echo "- \`gh search issues --json\` fields: ${GH_ISSUES_FIELDS}"
+    case ",$GH_PRS_FIELDS," in
+      *mergedAt*) ;;
+      *) echo "- \`gh search prs --json\` does not expose \`mergedAt\`;"
+         echo "  use \`gh pr view --json mergedAt\` per PR for merge timestamps." ;;
+    esac
+    echo ""
+  fi
+fi"""
+
+
 def _section_test_command() -> str:
     """Test command detection (make test / pytest / npm test).
 
@@ -400,10 +573,11 @@ def build_detect_script() -> str:
         ("02_pkgmgr", _section_package_managers()),
         ("03_runtimes", _section_runtimes()),
         ("04_git", _section_git()),
-        ("05_testcmd", _section_test_command()),
-        ("06_files", _section_files()),
-        ("07_tree", _section_tree()),
-        ("08_makefile", _section_makefile()),
+        ("05_gh_cli", _section_gh_cli()),
+        ("06_testcmd", _section_test_command()),
+        ("07_files", _section_files()),
+        ("08_tree", _section_tree()),
+        ("09_makefile", _section_makefile()),
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a
@@ -429,9 +603,13 @@ DETECT_CONTEXT_SCRIPT = build_detect_script()
 class LocalContextState(AgentState):
     """State for local context middleware."""
 
-    local_context: NotRequired[str]
-    """Formatted local context: cwd, project, package managers,
-    runtimes, git, test command, files, tree, Makefile.
+    _local_context: NotRequired[Annotated[str, PrivateStateAttr]]
+    """Private formatted local context cached for prompt injection.
+
+    The context is intentionally stored in private state rather than recomputed
+    before every model call: volatile sections such as git status, file lists,
+    and directory trees would otherwise churn the system prompt and reduce
+    provider prompt-cache hits across a conversation.
     """
 
     _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
@@ -466,15 +644,24 @@ class LocalContextMiddleware(AgentMiddleware):
         backend: _ExecutableBackend | _AsyncExecutableBackend,
         *,
         mcp_server_info: list[MCPServerInfo] | None = None,
+        tracing_project: str | None = None,
+        user_tracing_project: str | None = None,
     ) -> None:
         """Initialize with a backend that supports shell execution.
 
         Args:
             backend: Backend instance that provides shell command execution.
             mcp_server_info: MCP server metadata to include in the system prompt.
+            tracing_project: LangSmith project the agent's own runs trace to, or
+                `None` when tracing is disabled (the tracing section is omitted).
+            user_tracing_project: User's original `LANGSMITH_PROJECT` used by
+                shell commands the agent runs.
         """
         self.backend = backend
         self._mcp_context = _build_mcp_context(mcp_server_info or [])
+        self._tracing_context = _build_tracing_context(
+            tracing_project, user_tracing_project
+        )
 
     @staticmethod
     def _handle_detect_result(result: ExecuteResponse) -> str | None:
@@ -543,7 +730,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
     # override - state parameter is intentionally narrowed from
     # AgentState to LocalContextState for type safety within this middleware.
-    def before_agent(  # type: ignore[override]
+    def before_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
@@ -560,9 +747,9 @@ class LocalContextMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated on success. On a
+            State update with `_local_context` populated on success. On a
                 post-summarization refresh failure, returns a state update
-                recording the cutoff (without `local_context`) to prevent
+                recording the cutoff (without `_local_context`) to prevent
                 retry loops.
 
                 Returns `None` if context is already set and no refresh is
@@ -582,20 +769,20 @@ class LocalContextMiddleware(AgentMiddleware):
                 output = self._run_detect_script()
                 if output:
                     return {
-                        "local_context": output,
+                        "_local_context": output,
                         "_local_context_refreshed_at_cutoff": cutoff,
                     }
                 # Script failed — record cutoff to avoid retry loop,
-                # keep existing local_context.
+                # keep existing `_local_context`.
                 return {"_local_context_refreshed_at_cutoff": cutoff}
 
         # --- Initial detection (first invocation) ---
-        if state.get("local_context"):
+        if state.get("_local_context"):
             return None
 
         output = self._run_detect_script()
         if output:
-            return {"local_context": output}
+            return {"_local_context": output}
         return None
 
     async def _arun_detect_script(self) -> str | None:
@@ -611,7 +798,7 @@ class LocalContextMiddleware(AgentMiddleware):
         backend = self.backend
         if not (
             isinstance(backend, _AsyncExecutableBackend)
-            and asyncio.iscoroutinefunction(backend.aexecute)
+            and inspect.iscoroutinefunction(backend.aexecute)
         ):
             try:
                 return await asyncio.to_thread(self._run_detect_script)
@@ -638,7 +825,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return LocalContextMiddleware._handle_detect_result(result)
 
-    async def abefore_agent(  # type: ignore[override]
+    async def abefore_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
@@ -650,9 +837,9 @@ class LocalContextMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated on success. On a
+            State update with `_local_context` populated on success. On a
                 post-summarization refresh failure, returns a state update
-                recording the cutoff (without `local_context`) to prevent
+                recording the cutoff (without `_local_context`) to prevent
                 retry loops.
 
                 Returns `None` if context is already set and no refresh is
@@ -667,17 +854,17 @@ class LocalContextMiddleware(AgentMiddleware):
                 output = await self._arun_detect_script()
                 if output:
                     return {
-                        "local_context": output,
+                        "_local_context": output,
                         "_local_context_refreshed_at_cutoff": cutoff,
                     }
                 return {"_local_context_refreshed_at_cutoff": cutoff}
 
-        if state.get("local_context"):
+        if state.get("_local_context"):
             return None
 
         output = await self._arun_detect_script()
         if output:
-            return {"local_context": output}
+            return {"_local_context": output}
         return None
 
     def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
@@ -690,9 +877,11 @@ class LocalContextMiddleware(AgentMiddleware):
             Modified request with context appended, or `None`.
         """
         state = cast("LocalContextState", request.state)
-        local_context = state.get("local_context", "")
+        local_context = state.get("_local_context", "")
 
-        parts = [p for p in (local_context, self._mcp_context) if p]
+        parts = [
+            p for p in (local_context, self._tracing_context, self._mcp_context) if p
+        ]
         if not parts:
             return None
 

@@ -1,10 +1,29 @@
+"""Snapshot smoke tests for the quickjs system prompt.
+
+These tests render the system prompt that `CodeInterpreterMiddleware` injects
+into a `create_deep_agent` agent and compare it against committed snapshots in
+`snapshots/`. Their purpose is to catch *drift in the deepagents SDK* that
+silently changes the prompt the quickjs middleware composes — wording the
+middleware does not own but depends on (e.g. the built-in `write_todos`
+prompt, tool-listing format, or harness scaffolding).
+
+Because the quickjs partner can be untouched while the SDK changes, CI runs
+this file as a dedicated `test-quickjs-sdk-smoke` job (see `ci.yml`) whenever
+the SDK changes but quickjs does not — the full quickjs suite would otherwise
+not run and the drift would land unnoticed.
+
+Run `pytest ... --update-snapshots` to regenerate the snapshots after an
+intentional prompt change.
+"""
+
 from __future__ import annotations
 
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -106,7 +125,7 @@ def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
-    return "\n".join(
+    return "".join(
         str(part.get("text", "")) if isinstance(part, dict) else str(part)
         for part in content
     )
@@ -145,26 +164,51 @@ def _capture_system_prompt(model: _SmokeChatModel) -> str:
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
     assert len(system_messages) >= 1
-    return _system_message_as_text(system_messages[0])
+    return _system_message_as_text(system_messages[0]).rstrip("\n") + "\n"
 
 
+def _snapshot_name_for_mode(
+    *, base: str, mode: Literal["thread", "turn", "call"]
+) -> str:
+    if mode == "thread":
+        return f"{base}.md"
+    return f"{base}_{mode}.md"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_no_tools(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[CodeInterpreterMiddleware()],
+        middleware=[CodeInterpreterMiddleware(mode=mode)],
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
 
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_no_tools.md"
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_no_tools",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_with_mixed_foreign_functions(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
     mixed_tools = [
         find_users_by_name,
@@ -176,11 +220,14 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools)],
+        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools, mode=mode)],
         tools=mixed_tools,
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
 
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_mixed_foreign_functions.md"
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_mixed_foreign_functions",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)

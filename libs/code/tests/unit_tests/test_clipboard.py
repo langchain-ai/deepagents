@@ -18,6 +18,7 @@ from deepagents_code.clipboard import (
     _copy_osc52,
     copy_selection_to_clipboard,
     copy_text_to_clipboard,
+    copy_text_with_feedback,
     logger as clipboard_logger,
 )
 
@@ -47,7 +48,7 @@ class TestCopyTextToClipboard:
 
         with (
             patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")) as copy,
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -65,7 +66,7 @@ class TestCopyTextToClipboard:
         with (
             patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
             patch("deepagents_code.clipboard._copy_osc52") as osc52,
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -86,7 +87,7 @@ class TestCopyTextToClipboard:
                 "deepagents_code.clipboard._copy_osc52",
                 side_effect=OSError("no tty"),
             ),
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -95,6 +96,28 @@ class TestCopyTextToClipboard:
         assert "no pyperclip" in caplog.text
         assert "no app clipboard" in caplog.text
         assert "no tty" in caplog.text
+
+    def test_unicode_encode_error_is_caught_not_propagated(self, caplog) -> None:
+        """A backend raising `UnicodeEncodeError` is caught, not propagated.
+
+        `_copy_osc52` does `text.encode("utf-8")`, which raises
+        `UnicodeEncodeError` (a `ValueError` subclass) on lone surrogate code
+        points. The loop must treat it like any other backend failure so the
+        `(success, error)` contract holds instead of crashing the caller.
+        """
+        mock_app = MagicMock()
+        mock_app.copy_to_clipboard.side_effect = OSError("no app clipboard")
+        boom = UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+
+        with (
+            patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
+            patch("deepagents_code.clipboard._copy_osc52", side_effect=boom),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
+        ):
+            success, error = copy_text_to_clipboard(mock_app, "\ud800")
+
+        assert success is False
+        assert "surrogates not allowed" in (error or "")
 
     def test_returns_exception_class_name_when_message_empty(self) -> None:
         """An exception with empty `str()` still produces a non-empty reason."""
@@ -145,11 +168,95 @@ class TestCopyTextToClipboard:
         mock_app.copy_to_clipboard.assert_not_called()
 
 
+class TestCopyTextWithFeedback:
+    """The copy-then-notify helper shared by Ctrl+C and the `[ COPY ]` button."""
+
+    def test_success_with_message_notifies(self) -> None:
+        """A successful copy with a message emits a confirmation toast."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            result = copy_text_with_feedback(
+                mock_app,
+                "draft",
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+
+        assert result is True
+        copy.assert_called_once_with(mock_app, "draft")
+        mock_app.notify.assert_called_once_with(
+            "Input copied to clipboard",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_success_without_message_is_silent(self) -> None:
+        """With no success message, a successful copy emits no toast."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ):
+            result = copy_text_with_feedback(
+                mock_app,
+                "selection",
+                failure_noun="selection",
+            )
+
+        assert result is True
+        mock_app.notify.assert_not_called()
+
+    def test_failure_warns_with_noun_and_markup_disabled(self) -> None:
+        """A failed copy warns using the failure noun, with `markup=False`."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(False, "boom"),
+        ):
+            result = copy_text_with_feedback(
+                mock_app,
+                "draft",
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+
+        assert result is False
+        mock_app.notify.assert_called_once_with(
+            "Failed to copy input: boom",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_failure_without_error_uses_fallback_message(self) -> None:
+        """A failure with no error detail falls back to the generic warning."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(False, None),
+        ):
+            copy_text_with_feedback(mock_app, "draft", failure_noun="input")
+
+        mock_app.notify.assert_called_once_with(
+            "Failed to copy input - no clipboard method available",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+
 class TestCopyOsc52:
     """Direct coverage of the OSC 52 escape sequence (`_copy_osc52`)."""
 
     def test_emits_escape_envelope(self, monkeypatch) -> None:
-        r"""Emits ``\x1b]52;c;<base64>\a`` written to ``/dev/tty``."""
+        r"""Emits `\x1b]52;c;<base64>\a` written to `/dev/tty`."""
         captured = io.StringIO()
 
         class _DummyTTY:
@@ -251,6 +358,25 @@ class TestCopySelectionToClipboard:
             markup=False,
         )
 
+    def test_copies_select_all_selection(self) -> None:
+        """Textual represents triple-click/select-all as `Selection(None, None)`."""
+        from textual.selection import SELECT_ALL
+
+        mock_app = MagicMock()
+        widget = MagicMock()
+        widget.is_attached = True
+        widget.text_selection = SELECT_ALL
+        widget.get_selection.return_value = ("full widget text", None)
+        mock_app.query.return_value = [widget]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "full widget text")
+
     def test_handles_widget_selection_failures(self, caplog) -> None:
         """A failing widget logs and is skipped, not re-raised."""
         mock_app = MagicMock()
@@ -259,11 +385,85 @@ class TestCopySelectionToClipboard:
         mock_widget.get_selection.side_effect = AttributeError("No selection")
         mock_app.query.return_value = [mock_widget]
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             copy_selection_to_clipboard(mock_app)
 
         assert "Failed to get selection from widget" in caplog.text
         assert "No selection" in caplog.text
+
+    def test_skips_detached_widget_without_reading_text_selection(self) -> None:
+        """Un-attached widgets are skipped before `text_selection` is read.
+
+        Guards the contract that `is_attached` short-circuits the property
+        access — `widget.text_selection` raises `NoScreen` for detached
+        widgets, so reading it would re-introduce the crash this fix
+        addresses.
+        """
+        from unittest.mock import PropertyMock
+
+        mock_app = MagicMock()
+        detached = MagicMock()
+        detached.is_attached = False
+        type(detached).text_selection = PropertyMock(
+            side_effect=AssertionError("text_selection must not be read"),
+        )
+        mock_app.query.return_value = [detached]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_not_called()
+
+    def test_skips_widget_when_text_selection_raises_noscreen(self, caplog) -> None:
+        """`NoScreen` from a lifecycle race is logged; sibling copy proceeds."""
+        from unittest.mock import PropertyMock
+
+        from textual.dom import NoScreen
+
+        mock_app = MagicMock()
+
+        racy = MagicMock()
+        racy.is_attached = True
+        type(racy).text_selection = PropertyMock(
+            side_effect=NoScreen("node has no screen"),
+        )
+
+        sibling = MagicMock()
+        sibling.is_attached = True
+        sibling.text_selection = MagicMock(end=1)
+        sibling.get_selection.return_value = ("sibling text", None)
+
+        mock_app.query.return_value = [racy, sibling]
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
+            patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy,
+        ):
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "sibling text")
+        assert "Skipping widget" in caplog.text
+
+
+class TestAppSelectionCopy:
+    """Regression coverage for click-chain selection copy timing."""
+
+    def test_mouse_up_defers_copy_until_after_click_selection_updates(self) -> None:
+        from deepagents_code.app import DeepAgentsApp
+
+        mock_app = MagicMock()
+        event = MagicMock()
+        with patch("deepagents_code.clipboard.copy_selection_to_clipboard") as copy:
+            DeepAgentsApp.on_mouse_up(mock_app, event)
+
+        copy.assert_not_called()
+        mock_app.call_after_refresh.assert_called_once_with(copy, mock_app)
 
 
 class TestClipboardLogger:

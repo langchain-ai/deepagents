@@ -5,22 +5,22 @@ description = "A natural language to SQL query agent powered by LangChain's Deep
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents>=0.3.5",
-    "langchain>=1.2.3",
-    "langchain-anthropic>=1.3.1",
-    "langchain-community>=0.3.0",
-    "langgraph>=1.0.6",
-    "sqlalchemy>=2.0.0",
+    "deepagents>=0.6.12",
+    "langchain>=1.3.12,<2.0.0",
+    "langchain-anthropic>=1.4.8",
+    "langchain-community>=0.4.2",
+    "langgraph>=1.2.6",
+    "sqlalchemy>=2.0.51",
     "python-dotenv>=1.2.2",
-    "tavily-python>=0.5.0",
-    "rich>=13.0.0",
+    "tavily-python>=0.7.26",
+    "rich>=15.0.0",
 ]
 
 [project.urls]
 Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/text-to-sql-agent"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.ruff.lint.flake8-tidy-imports]

@@ -1,0 +1,15 @@
+{
+  "name": "x",
+  "system_prompt": "hi\n",
+  "skills": [
+    {
+      "type": "inline",
+      "name": "summarize",
+      "description": "Summarise text into a one-paragraph summary.",
+      "instructions": "# Summarize\n\nGiven a text, produce a one-paragraph summary.",
+      "files": {
+        "examples.md": "- Example 1: ...\n- Example 2: ...\n"
+      }
+    }
+  ]
+}

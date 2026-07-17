@@ -694,6 +694,11 @@ class HarnessProfile:
     declarative synchronous subagents created from `SubAgent` specs —
     i.e., the stacks that `create_deep_agent` assembles itself.
 
+    Appended after the SDK defaults and any caller-supplied `middleware`, and
+    before profile tool exclusions, prompt caching, memory, and
+    human-in-the-loop middleware. This lets profiles tune the final request
+    surface after extra middleware has added any tools or prompt behavior.
+
     *Not* applied to `CompiledSubAgent` runnables or `AsyncSubAgent` entries.
     A `CompiledSubAgent` is passed in pre-built (its `runnable` is already a
     compiled graph with its own middleware chain), so `create_deep_agent` has
@@ -1103,7 +1108,11 @@ def _resolve_middleware_seq(
 ) -> Sequence[AgentMiddleware]:
     """Resolve middleware to a concrete sequence, calling the factory if needed."""
     if callable(middleware):
-        return middleware()  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
+        # `callable()` is the runtime discriminator for this union, but `ty` keeps
+        # a callable+Sequence intersection in play, so it cannot infer the
+        # zero-argument factory signature without this local cast.
+        factory = cast("Callable[[], Sequence[AgentMiddleware]]", middleware)
+        return factory()
     return middleware
 
 

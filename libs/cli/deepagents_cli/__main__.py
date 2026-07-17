@@ -1,4 +1,4 @@
-"""Allow running the CLI as: python -m deepagents.cli."""
+"""Allow running the CLI as `python -m deepagents_cli`."""
 
 from deepagents_cli.main import cli_main
 

@@ -24,8 +24,8 @@ def _make_backend(
 ) -> tuple[ContextHubBackend, MagicMock]:
     """Build a ContextHubBackend with a mocked langsmith.Client.
 
-    ``files`` pre-populates the ``pull_agent`` return as ``AgentContext.files``.
-    Entry values can be ``FileEntry``/``AgentEntry``/``SkillEntry`` instances.
+    `files` pre-populates the `pull_agent` return as `AgentContext.files`.
+    Entry values can be `FileEntry`/`AgentEntry`/`SkillEntry` instances.
     """
     mock_client = MagicMock()
     context = SimpleNamespace(
@@ -60,6 +60,16 @@ def test_read_slices_by_offset_limit() -> None:
     assert result.error is None
     assert result.file_data is not None
     assert result.file_data["content"] == "2\n3\n"
+
+
+def test_read_surfaces_pagination_metadata() -> None:
+    """`ContextHubBackend.read` propagates the pagination metadata from `slice_read_response`."""
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="1\n2\n3\n4\n5")})
+    result = backend.read("/a.md", offset=1, limit=2)
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
 
 
 def test_pull_runs_only_once_for_multiple_reads() -> None:
@@ -303,11 +313,101 @@ def test_grep_with_path_prefix() -> None:
     assert paths == {"/memories/a.md"}
 
 
+def test_grep_with_glob_filter() -> None:
+    """`grep` honors the glob filter via the precompiled, hoisted matcher."""
+    backend, _ = _make_backend(
+        **{
+            "src/main.py": FileEntry(type="file", content="import os"),
+            "src/notes.md": FileEntry(type="file", content="import os"),
+        }
+    )
+    result = backend.grep("import", glob="*.py")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/src/main.py"}
+
+
+def test_grep_glob_matches_full_path_not_basename() -> None:
+    """A directory-qualified glob matches against the full path, not the basename.
+
+    Context Hub matches the glob against the whole file path, so `src/*.py`
+    selects the nested file but excludes a same-named top-level file. A
+    basename-only matcher would select neither, so this pins the intended
+    full-path semantics.
+    """
+    backend, _ = _make_backend(
+        **{
+            "src/main.py": FileEntry(type="file", content="import os"),
+            "main.py": FileEntry(type="file", content="import os"),
+        }
+    )
+    result = backend.grep("import", glob="src/*.py")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/src/main.py"}
+
+
+def test_grep_glob_does_not_brace_expand() -> None:
+    """Context Hub uses `fnmatch`, which treats braces literally.
+
+    Unlike the wcmatch-backed in-memory grep helpers (which enable brace
+    expansion), `*.{py,md}` here matches a file literally named `x.{py,md}`
+    rather than expanding to `*.py` or `*.md`. This locks in the intended
+    asymmetry between the two grep paths.
+    """
+    backend, _ = _make_backend(
+        **{
+            "a.py": FileEntry(type="file", content="hit"),
+            "b.md": FileEntry(type="file", content="hit"),
+            "literal.{py,md}": FileEntry(type="file", content="hit"),
+        }
+    )
+    result = backend.grep("hit", glob="*.{py,md}")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/literal.{py,md}"}
+
+
 def test_grep_invalid_regex() -> None:
     backend, _ = _make_backend()
     result = backend.grep("[unclosed")
     assert result.error is not None
     assert "Invalid regex" in result.error
+
+
+def _grep_cap_backend() -> ContextHubBackend:
+    """Backend with three total matches across two files for cap tests."""
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="hit\nhit\n"),
+            "b.md": FileEntry(type="file", content="hit\n"),
+        }
+    )
+    return backend
+
+
+def test_grep_max_count_over_cap_truncates() -> None:
+    """More matches than `max_count` returns the cap flagged truncated."""
+    result = _grep_cap_backend().grep("hit", max_count=2)
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert result.truncated is True
+
+
+def test_grep_max_count_exact_cap_not_truncated() -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    result = _grep_cap_backend().grep("hit", max_count=3)
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
+
+
+def test_grep_max_count_none_returns_all() -> None:
+    """`max_count=None` returns every match, untruncated."""
+    result = _grep_cap_backend().grep("hit")
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
 
 
 def test_glob_matches_pattern() -> None:
@@ -480,8 +580,8 @@ def test_default_client_constructed_when_not_provided() -> None:
 def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
     """Paths through a CompositeBackend route reach the hub with the prefix stripped.
 
-    Wires a ContextHubBackend under ``/memories/`` and verifies write/read/ls/
-    grep/glob round-trip: writes to ``/memories/x`` land at hub key ``x``,
+    Wires a ContextHubBackend under `/memories/` and verifies write/read/ls/
+    grep/glob round-trip: writes to `/memories/x` land at hub key `x`,
     reads come back with the route prefix restored, and writes outside the
     route go to the default backend.
     """
@@ -523,3 +623,95 @@ def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
     glob_mem = composite.glob("*.md", path="/memories")
     assert glob_mem.matches is not None
     assert any(m["path"] == "/memories/notes.md" for m in glob_mem.matches)
+
+
+def test_delete_commits_none_entry() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="bye")})
+    result = backend.delete("/a.md")
+
+    assert result.error is None
+    assert result.path == "/a.md"
+    mock_client.push_agent.assert_called_once()
+    call = mock_client.push_agent.call_args
+    files_arg = call.kwargs["files"]
+    # A None entry is the deletion marker.
+    assert "a.md" in files_arg
+    assert files_arg["a.md"] is None
+    assert call.kwargs["parent_commit"] == _COMMIT_HASH
+
+
+def test_delete_directory_commits_all_nested_entries() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "work/a.md": FileEntry(type="file", content="a"),
+            "work/sub/b.md": FileEntry(type="file", content="b"),
+            "keep.md": FileEntry(type="file", content="k"),
+        }
+    )
+    result = backend.delete("/work")
+
+    assert result.error is None
+    assert result.path == "/work"
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # Every nested entry under /work is marked for deletion...
+    assert files_arg["work/a.md"] is None
+    assert files_arg["work/sub/b.md"] is None
+    # ...and the sibling outside the subtree is left alone.
+    assert "keep.md" not in files_arg
+
+
+def test_delete_missing_returns_not_found() -> None:
+    backend, mock_client = _make_backend()
+    result = backend.delete("/ghost.md")
+
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_delete_updates_cache_after_commit() -> None:
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="bye")})
+    assert backend.read("/a.md").error is None
+
+    backend.delete("/a.md")
+
+    # File is gone from the cache; no re-pull needed.
+    assert backend.read("/a.md").error is not None
+
+
+def test_delete_failure_invalidates_cache() -> None:
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
+    mock_client.push_agent.side_effect = LangSmithAPIError("500")
+
+    result = backend.delete("/a.md")
+    assert result.error is not None
+    assert "Hub unavailable" in result.error
+
+    backend.read("/a.md")
+    assert mock_client.pull_agent.call_count == 2
+
+
+async def test_adelete_commits_none_entry() -> None:
+    """Async delete (protocol default `asyncio.to_thread`) behaves like sync."""
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="bye")})
+    result = await backend.adelete("/a.md")
+
+    assert result.error is None
+    assert result.path == "/a.md"
+    mock_client.push_agent.assert_called_once()
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # A None entry is the deletion marker, same as the sync path.
+    assert files_arg["a.md"] is None
+    # Cache was updated, so a follow-up read finds the file gone without re-pulling.
+    assert backend.read("/a.md").error is not None
+
+
+async def test_adelete_missing_returns_not_found() -> None:
+    backend, mock_client = _make_backend()
+    result = await backend.adelete("/ghost.md")
+
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    mock_client.push_agent.assert_not_called()

@@ -121,7 +121,7 @@ def chunk_text(text: str, *, chunk_size: int = 4096) -> list[str]:
     _ensure_nltk_tokenizer(nltk)
 
     try:
-        encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+        encoding = tiktoken.encoding_for_model("gpt-5.4-mini")
     except KeyError:
         encoding = tiktoken.get_encoding("cl100k_base")
 

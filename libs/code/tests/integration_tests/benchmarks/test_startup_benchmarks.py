@@ -92,7 +92,7 @@ def _run_python(code: str, *, timeout: int = 60) -> subprocess.CompletedProcess[
 
 
 def _get_loaded_modules(import_statement: str) -> set[str]:
-    """Return the set of ``sys.modules`` keys after executing *import_statement*.
+    """Return the set of `sys.modules` keys after executing *import_statement*.
 
     Runs in a subprocess so the module cache is completely fresh.
 
@@ -100,7 +100,7 @@ def _get_loaded_modules(import_statement: str) -> set[str]:
         import_statement: A valid Python import statement.
 
     Returns:
-        Set of module names present in ``sys.modules``.
+        Set of module names present in `sys.modules`.
     """
     result = _run_python(f"""
         import json, sys
@@ -114,7 +114,7 @@ def _get_loaded_modules(import_statement: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Benchmark marker — matches ``make benchmark`` (pytest -m benchmark)
+# Benchmark marker — matches `make benchmark` (pytest -m benchmark)
 # ---------------------------------------------------------------------------
 
 pytestmark = pytest.mark.benchmark
@@ -146,7 +146,7 @@ class TestImportIsolation:
             "import deepagents_code.skills.commands",
             "from deepagents_code._cli_context import CLIContext",
             "import deepagents_code._ask_user_types",
-            "import deepagents_code.textual_adapter",
+            "import deepagents_code.tui.textual_adapter",
             "import deepagents_code.tool_display",
             "import deepagents_code.file_ops",
         ],
@@ -225,14 +225,12 @@ class TestCLIStartupTime:
         module level.
         """
         elapsed = self._time_cli_command("--help")
-        assert elapsed < 1, f"`deepagents --help` took {elapsed:.2f}s — expected < 1s"
+        assert elapsed < 1, f"`dcode --help` took {elapsed:.2f}s — expected < 1s"
 
     def test_version_under_threshold(self) -> None:
         """`deepagents --version` should complete well under 1 s."""
         elapsed = self._time_cli_command("--version")
-        assert elapsed < 1, (
-            f"`deepagents --version` took {elapsed:.2f}s — expected < 1s"
-        )
+        assert elapsed < 1, f"`dcode --version` took {elapsed:.2f}s — expected < 1s"
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +302,7 @@ class TestDeferredImportsWork:
     """
 
     def test_agent_import_loads_langchain(self) -> None:
-        """Importing ``deepagents_code.agent`` should pull in langchain."""
+        """Importing `deepagents_code.agent` should pull in langchain."""
         loaded = _get_loaded_modules("import deepagents_code.agent")
         langchain_modules = {m for m in loaded if m.startswith("langchain")}
         assert langchain_modules, (

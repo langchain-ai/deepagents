@@ -18,6 +18,7 @@ from deepagents_code.mcp_providers.base import LoginResult, OAuthProvider
 
 if TYPE_CHECKING:
     from deepagents_code.mcp_auth import FileTokenStorage
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
 _GITHUB_MCP_CLIENT_ID = "Iv23libxz8qOApH0WQL3"
@@ -35,12 +36,20 @@ def _is_github_mcp_url(url: str) -> bool:
     return (urlparse(url).hostname or "") == "api.githubcopilot.com"
 
 
-async def _preseed_github_auth(storage: FileTokenStorage) -> None:
-    """Run GitHub Device Flow and persist the token and stub client info."""
+async def _preseed_github_auth(
+    storage: FileTokenStorage, *, ui: OAuthInteraction
+) -> None:
+    """Run GitHub Device Flow and persist the token and stub client info.
+
+    Args:
+        storage: File-backed token storage for this server identity.
+        ui: Interaction surface that renders the device-code prompt.
+    """
     token = await _run_device_flow(
         device_code_url=_GITHUB_DEVICE_CODE_URL,
         token_url=_GITHUB_TOKEN_URL,
         client_id=_GITHUB_MCP_CLIENT_ID,
+        ui=ui,
     )
     await storage.set_tokens_and_client_info(
         token,
@@ -74,6 +83,7 @@ class GitHubProvider(OAuthProvider):
         server_name: str,
         server_url: str,
         storage: FileTokenStorage,
+        ui: OAuthInteraction,
     ) -> LoginResult:
         """Run the device flow and short-circuit the Authorization Code handshake.
 
@@ -81,11 +91,12 @@ class GitHubProvider(OAuthProvider):
             server_name: MCP server name (unused).
             server_url: Remote MCP endpoint URL (unused).
             storage: File-backed token storage for this server identity.
+            ui: Interaction surface that renders the device-code prompt.
 
         Returns:
             `LoginResult(completed=True)` — tokens are already persisted so
             the caller must skip the handshake step.
         """
         del server_name, server_url
-        await _preseed_github_auth(storage)
+        await _preseed_github_auth(storage, ui=ui)
         return LoginResult(completed=True)

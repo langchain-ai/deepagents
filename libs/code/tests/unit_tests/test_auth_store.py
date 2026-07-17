@@ -63,15 +63,141 @@ class TestRoundTrip:
         auth_store.set_stored_key("anthropic", "new")
         assert auth_store.get_stored_key("anthropic") == "new"
 
-    def test_delete_returns_true_when_removed(self) -> None:
-        """Deleting an existing entry returns `True` and clears the value."""
+    def test_base_url_round_trips(self) -> None:
+        """A stored base_url is persisted alongside the key."""
+        auth_store.set_stored_key("openai", "k", base_url="  https://mine.example/v1  ")
+        assert auth_store.get_stored_key("openai") == "k"
+        assert auth_store.get_stored_base_url("openai") == "https://mine.example/v1"
+
+    def test_blank_base_url_not_stored(self) -> None:
+        """A blank/omitted base_url stores nothing (use provider default)."""
+        auth_store.set_stored_key("openai", "k", base_url="   ")
+        assert auth_store.get_stored_base_url("openai") is None
+        auth_store.set_stored_key("anthropic", "k")
+        assert auth_store.get_stored_base_url("anthropic") is None
+
+    def test_resave_without_base_url_drops_it(self) -> None:
+        """Replacing a credential without a base_url clears the prior one."""
+        auth_store.set_stored_key("openai", "k", base_url="https://mine.example/v1")
+        auth_store.set_stored_key("openai", "k2")
+        assert auth_store.get_stored_base_url("openai") is None
+
+    def test_reads_legacy_entry_without_base_url(self) -> None:
+        """Entries written before base_url existed read back cleanly."""
         auth_store.set_stored_key("openai", "k")
-        assert auth_store.delete_stored_key("openai") is True
+        # get_stored_base_url returns None and the key still resolves.
+        assert auth_store.get_stored_base_url("openai") is None
+        assert auth_store.get_stored_key("openai") == "k"
+
+    def test_project_round_trips(self) -> None:
+        """A stored project is persisted alongside the key."""
+        auth_store.set_stored_key("langsmith", "k", project="  my-app  ")
+        assert auth_store.get_stored_key("langsmith") == "k"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    def test_blank_project_not_stored(self) -> None:
+        """A blank/omitted project stores nothing (use the default project)."""
+        auth_store.set_stored_key("langsmith", "k", project="   ")
+        assert auth_store.get_stored_project("langsmith") is None
+        auth_store.set_stored_key("langsmith", "k")
+        assert auth_store.get_stored_project("langsmith") is None
+
+    def test_resave_without_project_drops_it(self) -> None:
+        """Replacing a credential without a project clears the prior one."""
+        auth_store.set_stored_key("langsmith", "k", project="my-app")
+        auth_store.set_stored_key("langsmith", "k2")
+        assert auth_store.get_stored_project("langsmith") is None
+
+    def test_project_rejected_for_non_langsmith(self) -> None:
+        """A non-empty project may only pair with the langsmith service.
+
+        The invariant is enforced at the write boundary (not just in the CLI),
+        and nothing is persisted when it is violated.
+        """
+        with pytest.raises(ValueError, match="langsmith"):
+            auth_store.set_stored_key("anthropic", "k", project="my-app")
+        assert auth_store.get_stored_key("anthropic") is None
+
+    def test_blank_project_allowed_for_non_langsmith(self) -> None:
+        """A blank project is a no-op for any provider, so the key still stores."""
+        auth_store.set_stored_key("anthropic", "k", project="   ")
+        assert auth_store.get_stored_key("anthropic") == "k"
+        assert auth_store.get_stored_project("anthropic") is None
+
+    def test_malformed_project_is_dropped_and_logged(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string project is dropped, the key survives, and it's logged."""
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credentials": {
+                        "langsmith": {
+                            "type": "api_key",
+                            "key": "k",
+                            "added_at": "",
+                            "project": 1234,
+                        }
+                    },
+                }
+            )
+        )
+        with caplog.at_level("WARNING", logger="deepagents_code.auth_store"):
+            assert auth_store.get_stored_project("langsmith") is None
+            assert auth_store.get_stored_key("langsmith") == "k"
+        assert any("malformed project" in r.getMessage() for r in caplog.records)
+
+    def test_malformed_base_url_is_dropped_and_logged(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string base_url is dropped, the key survives, and it's logged.
+
+        A hand-edit (or truncated write) leaving a non-string base_url must not
+        silently degrade the key to the provider default with no trace — the
+        drop is greppable so a wrong endpoint is diagnosable.
+        """
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credentials": {
+                        "openai": {
+                            "type": "api_key",
+                            "key": "k",
+                            "added_at": "",
+                            "base_url": 1234,
+                        }
+                    },
+                }
+            )
+        )
+        with caplog.at_level("WARNING", logger="deepagents_code.auth_store"):
+            assert auth_store.get_stored_base_url("openai") is None
+            assert auth_store.get_stored_key("openai") == "k"
+        assert any("malformed base_url" in r.getMessage() for r in caplog.records)
+
+    def test_delete_returns_true_when_removed(self) -> None:
+        """Deleting an existing entry reports `removed=True` and clears the value."""
+        auth_store.set_stored_key("openai", "k")
+        assert auth_store.delete_stored_key("openai").removed is True
         assert auth_store.get_stored_key("openai") is None
 
     def test_delete_missing_returns_false(self) -> None:
-        """Deleting an unknown provider is a no-op."""
-        assert auth_store.delete_stored_key("anthropic") is False
+        """Deleting an unknown provider is a no-op that reports `removed=False`."""
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is False
+        # A no-op performs no write, so it can carry no chmod warnings.
+        assert outcome.warnings == ()
+
+    def test_delete_outcome_rejects_warnings_without_removal(self) -> None:
+        """The type refuses the illegal `removed=False` + warnings combination."""
+        with pytest.raises(ValueError, match="cannot carry warnings"):
+            auth_store.DeleteOutcome(removed=False, warnings=("boom",))
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -133,6 +259,37 @@ class TestPermissions:
         outcome = auth_store.set_stored_key("anthropic", "k")
         assert outcome.warnings == ()
 
+    def test_delete_chmod_failure_returned_as_warning(
+        self,
+        fake_home: Path,  # noqa: ARG002 - fixture activates the temp state dir
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A chmod that can't lock down the delete rewrite shows up in DeleteOutcome."""
+        from pathlib import Path as _Path
+
+        auth_store.set_stored_key("anthropic", "k")
+        original_chmod = _Path.chmod
+
+        def deny_file_chmod(self: _Path, mode: int) -> None:
+            if self.name == "auth.json":
+                msg = "simulated chmod denial"
+                raise OSError(msg)
+            original_chmod(self, mode)
+
+        # Deny chmod only for the delete rewrite, not the seeding write above.
+        monkeypatch.setattr(_Path, "chmod", deny_file_chmod)
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is True
+        assert any("0600" in w for w in outcome.warnings)
+        assert any("simulated chmod denial" in w for w in outcome.warnings)
+
+    def test_clean_delete_returns_no_warnings(self, fake_home: Path) -> None:  # noqa: ARG002 - fixture activates the temp state dir
+        """A successful delete reports an empty warnings tuple."""
+        auth_store.set_stored_key("anthropic", "k")
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is True
+        assert outcome.warnings == ()
+
 
 @pytest.mark.usefixtures("fake_home")
 class TestCorruption:
@@ -143,6 +300,14 @@ class TestCorruption:
         path = _auth_file(fake_home)
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
+        with pytest.raises(RuntimeError, match="Delete the file"):
+            auth_store.load_credentials()
+
+    def test_non_utf8_raises(self, fake_home: Path) -> None:
+        """A non-UTF-8 file surfaces the deletion hint, not a `UnicodeDecodeError`."""
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff\xfe not utf-8")
         with pytest.raises(RuntimeError, match="Delete the file"):
             auth_store.load_credentials()
 
@@ -258,7 +423,10 @@ class TestSafety:
             return original_open(path, flags, mode, dir_fd=dir_fd)
 
         monkeypatch.setattr(os, "open", boom)
-        with pytest.raises(OSError, match="simulated failure"):
+        # The write `OSError` is wrapped as the documented `RuntimeError` with a
+        # remediation hint; the original message survives in the chained cause
+        # and the failing match here.
+        with pytest.raises(RuntimeError, match="simulated failure"):
             auth_store.set_stored_key("openai", "second")
         # Restore so load_credentials can read.
         monkeypatch.setattr(os, "open", original_open)

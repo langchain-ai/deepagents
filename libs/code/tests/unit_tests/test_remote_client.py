@@ -1,13 +1,16 @@
 """Tests for RemoteAgent, _convert_message_data, and helpers."""
 
 import uuid
+from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
-from deepagents_code.remote_client import (
+from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
+from deepagents_code.client.remote_client import (
     RemoteAgent,
     _convert_ai_message,
     _convert_human_message,
@@ -15,6 +18,8 @@ from deepagents_code.remote_client import (
     _convert_message_data,
     _convert_tool_message,
     _prepare_config,
+    agent_error_type,
+    format_agent_exception,
 )
 
 _TEST_THREAD_ID = "01966f3a-0000-7000-8000-000000000001"
@@ -227,7 +232,7 @@ class TestConvertInterrupts:
 
 
 def _make_agent(
-    events: list[tuple[tuple[str, ...], str, Any]],
+    events: Sequence[tuple[tuple[str, ...], str, Any]],
 ) -> RemoteAgent:
     """Create a RemoteAgent with a mock RemoteGraph yielding events."""
     agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
@@ -247,6 +252,72 @@ def _make_agent(
 
 def _config() -> dict[str, Any]:
     return {"configurable": {"thread_id": _TEST_THREAD_ID}}
+
+
+def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
+    """RemoteAgent whose mock graph records the kwargs passed to `astream`."""
+    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    captured: dict[str, Any] = {}
+    mock_graph = MagicMock()
+
+    async def fake_astream(  # noqa: RUF029
+        input: Any,  # noqa: A002, ANN401, ARG001
+        **kwargs: Any,
+    ) -> Any:  # noqa: ANN401
+        captured.update(kwargs)
+        for ev in ():  # async generator that yields nothing
+            yield ev
+
+    mock_graph.astream = fake_astream
+    agent._graph = mock_graph
+    return agent, captured
+
+
+class TestRemoteAgentReplicaForwarding:
+    """`astream` forwards the LangSmith replica project to the server SDK.
+
+    The server mirrors a run to an extra project only via the SDK's
+    `langsmith_tracing` field, so these lock the exact kwarg name and payload
+    shape `RemoteGraph.astream` (and thus `client.runs.stream`) expects.
+
+    `test_forwards_replica_project` / `test_no_kwarg_when_unset` assert the
+    payload against a mock graph that swallows any kwarg, so they verify only
+    the `RemoteAgent` side of the contract. `test_sdk_accepts_langsmith_tracing`
+    pins the *other* side — that the real SDK still accepts the kwarg and shape —
+    so a future SDK rename surfaces here rather than silently dropping replicas.
+    """
+
+    async def test_forwards_replica_project(self, monkeypatch) -> None:
+        """A configured replica is passed through as `langsmith_tracing`."""
+        monkeypatch.setenv(LANGSMITH_REPLICA_PROJECTS, "mason-dual-trace")
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert captured["langsmith_tracing"] == {"project_name": "mason-dual-trace"}
+
+    async def test_no_kwarg_when_unset(self, monkeypatch) -> None:
+        """Without a replica, `langsmith_tracing` is not passed at all."""
+        monkeypatch.delenv(LANGSMITH_REPLICA_PROJECTS, raising=False)
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert "langsmith_tracing" not in captured
+
+    def test_sdk_accepts_langsmith_tracing(self) -> None:
+        """The real SDK still accepts the kwarg name and `project_name` shape.
+
+        `RemoteGraph.astream` forwards unknown kwargs to `client.runs.stream`, so
+        a silent drop would happen if either the parameter or the payload key
+        were renamed upstream. This guards both.
+        """
+        import inspect
+
+        from langgraph_sdk.client import RunsClient
+        from langgraph_sdk.schema import LangSmithTracing
+
+        params = inspect.signature(RunsClient.stream).parameters
+        assert "langsmith_tracing" in params
+        assert "project_name" in LangSmithTracing.__annotations__
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +557,19 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
+    async def test_forwards_as_node(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"}, as_node="model")
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        update_args = mock_graph.aupdate_state.await_args
+        assert update_args is not None
+        assert update_args.kwargs["as_node"] == "model"
+
     async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         with pytest.raises(ValueError, match="thread_id"):
@@ -511,6 +595,290 @@ class TestRemoteAgentUpdateState:
         )
         call_config = mock_graph.aupdate_state.call_args[0][0]
         uuid.UUID(call_config["configurable"]["thread_id"])
+
+
+class TestRemoteAgentCancelActiveRuns:
+    """`acancel_active_runs` exposes best-effort remote run cancellation."""
+
+    async def test_cancels_running_and_pending_runs(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}],
+                [{"run_id": "run-2"}],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+
+        await agent.acancel_active_runs(_config())
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 2
+        assert {call.args[1] for call in runs_cancel.await_args_list} == {
+            "run-1",
+            "run-2",
+        }
+
+    async def test_raises_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.acancel_active_runs({"configurable": {}})
+
+
+def _conflict_error() -> Exception:
+    """Build a `ConflictError` (HTTP 409) for tests."""
+    import httpx
+    from langgraph_sdk.errors import ConflictError
+
+    request = httpx.Request("POST", "http://localhost:8123/threads/x/state")
+    response = httpx.Response(409, request=request)
+    return ConflictError("Thread busy", response=response, body=None)
+
+
+class TestRemoteAgentUpdateStateConflictRecovery:
+    """`aupdate_state` cancels in-flight runs on 409 and retries once."""
+
+    def _agent_with_client(
+        self,
+        *,
+        runs_list: AsyncMock,
+        runs_cancel: AsyncMock,
+        update_side_effect: list[Any],
+    ) -> tuple[RemoteAgent, MagicMock]:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock(side_effect=update_side_effect)
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+        return agent, mock_graph
+
+    async def test_cancels_all_active_runs_then_retries(self) -> None:
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}, {"run_id": "run-2"}],  # running
+                [{"run_id": "run-3"}],  # pending
+            ]
+        )
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 3
+        cancelled_ids = {call.args[1] for call in runs_cancel.await_args_list}
+        assert cancelled_ids == {"run-1", "run-2", "run-3"}
+        # wait=True + action="interrupt" are contractual — `wait` is what
+        # actually settles the thread before the retry.
+        for call in runs_cancel.await_args_list:
+            assert call.kwargs == {"wait": True, "action": "interrupt"}
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_no_active_runs_still_retries(self) -> None:
+        runs_list = AsyncMock(return_value=[])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 0
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_retry_still_conflict_raises(self) -> None:
+        runs_list = AsyncMock(return_value=[])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), _conflict_error()],
+        )
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_cancel_timeout_still_retries(self) -> None:
+        import asyncio
+
+        async def slow_cancel(*_args: Any, **_kwargs: Any) -> None:
+            await asyncio.sleep(60)  # exceeds wait_for timeout
+
+        runs_list = AsyncMock(return_value=[{"run_id": "run-1"}])
+        runs_cancel = AsyncMock(side_effect=slow_cancel)
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        with patch(
+            "deepagents_code.client.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01
+        ):
+            await agent.aupdate_state(_config(), {"messages": []})
+
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_cancel_non_timeout_exception_is_swallowed(self) -> None:
+        runs_list = AsyncMock(side_effect=[[{"run_id": "run-1"}], []])
+        runs_cancel = AsyncMock(side_effect=RuntimeError("server hiccup"))
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 1
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_list_partial_failure_still_retries(self) -> None:
+        # First status list raises; second returns runs. Recovery should still
+        # cancel what it can find and retry.
+        runs_list = AsyncMock(side_effect=[RuntimeError("boom"), [{"run_id": "run-2"}]])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 1
+        assert runs_cancel.await_args_list[0].args[1] == "run-2"
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_list_total_failure_skips_cancel(self) -> None:
+        # Both status calls raise. With nothing listed, no cancels happen and
+        # the retry surfaces the persistent conflict.
+        runs_list = AsyncMock(side_effect=[RuntimeError("boom"), RuntimeError("boom")])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), _conflict_error()],
+        )
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        runs_cancel.assert_not_called()
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_validate_client_raises_skips_cancel_and_retries(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock(
+            side_effect=[_conflict_error(), _conflict_error()]
+        )
+        mock_graph._validate_client.side_effect = RuntimeError("no client")
+        agent._graph = mock_graph
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_without_run_id_are_skipped(self) -> None:
+        runs_list = AsyncMock(
+            side_effect=[
+                # Mixed shapes: missing key, None id, non-dict — all skipped.
+                [{"run_id": "ok"}, {"run_id": None}, {"status": "running"}, "garbage"],
+                [],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 1
+        assert runs_cancel.await_args_list[0].args[1] == "ok"
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_non_conflict_exception_does_not_retry(self) -> None:
+        runs_list = AsyncMock()
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[ConnectionError("down")],
+        )
+
+        with pytest.raises(ConnectionError, match="down"):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 1
+        runs_list.assert_not_called()
+        runs_cancel.assert_not_called()
+
+
+class TestRemoteAgentStore:
+    async def test_aput_store_item_uses_unindexed_put(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock())
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        store.put_item.assert_awaited_once_with(
+            ("ns",),
+            "key",
+            {"auto_approve": True},
+            index=False,
+        )
+
+    async def test_aput_store_item_logs_and_reraises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock(side_effect=RuntimeError("boom")))
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        with (
+            caplog.at_level("DEBUG", logger="deepagents_code.client.remote_client"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        assert "Failed to write store item ns/key" in caplog.text
 
 
 class TestRemoteAgentEnsureThread:
@@ -613,3 +981,96 @@ class TestRemoteAgentWithConfig:
     def test_returns_self(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         assert agent.with_config({"configurable": {}}) is agent
+
+
+class TestFormatAgentException:
+    """Cover the rendering helper for agent-stream exceptions."""
+
+    def test_remote_exception_dict_payload(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException(
+            {"error": "ToolException", "message": "An internal error occurred"}
+        )
+        assert (
+            format_agent_exception(exc) == "ToolException: An internal error occurred"
+        )
+
+    def test_remote_exception_dict_payload_no_message(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "ToolException"})
+        assert format_agent_exception(exc) == "ToolException"
+
+    def test_remote_exception_dict_payload_empty_message(self) -> None:
+        """Falsy `message` still falls through to the error-type-only branch."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "ToolException", "message": ""})
+        assert format_agent_exception(exc) == "ToolException"
+
+    def test_remote_exception_dict_payload_non_string_error(self) -> None:
+        """Non-string `error` keys must not crash; class name stands in."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": 500, "message": "boom"})
+        # `agent_error_type` ignores the non-string `error` and uses the class
+        # name, so the message still renders cleanly.
+        assert format_agent_exception(exc) == "RemoteException: boom"
+
+    def test_remote_exception_dict_payload_empty_dict(self) -> None:
+        """Empty payload dict resolves `error` to the exception class name."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({})
+        # `payload.get("error") or type(exc).__name__` → "RemoteException",
+        # and `message` is None so the err-only branch returns the class.
+        assert format_agent_exception(exc) == "RemoteException"
+
+    def test_remote_exception_non_dict_payload(self) -> None:
+        """`RemoteException("string")` is not the dict shape; uses `str(exc)`."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException("just a string")
+        assert format_agent_exception(exc) == "just a string"
+
+    def test_plain_exception_uses_str(self) -> None:
+        assert format_agent_exception(ValueError("bad thing")) == "bad thing"
+
+    def test_exception_without_message_falls_back_to_type(self) -> None:
+        class _BoomError(Exception):
+            pass
+
+        assert format_agent_exception(_BoomError()) == "_BoomError"
+
+
+class TestAgentErrorType:
+    """Cover the shared error-type extraction used for UI dispatch."""
+
+    def test_dict_payload_error_key_wins(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        assert agent_error_type(exc) == "PermissionDeniedError"
+
+    def test_empty_args_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException()
+        assert exc.args == ()
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_dict_without_error_key_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"message": "x"})
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_non_string_error_key_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": 500})
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_non_dict_payload_uses_class_name(self) -> None:
+        assert agent_error_type(ValueError("boom")) == "ValueError"

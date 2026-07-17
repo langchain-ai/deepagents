@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code.main import cli_main
+from deepagents_code.main import _preload_session_mcp_server_info, cli_main
 
 
 def _make_acp_args(**overrides: object) -> argparse.Namespace:
@@ -54,17 +54,28 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     mcp_tool = object()
     mcp_server_info = [SimpleNamespace(name="docs")]
     fetch_tool = object()
+    thread_tool = object()
     search_tool = object()
+    acp_project_root = object()
+    acp_project_context = SimpleNamespace(
+        project_root=acp_project_root,
+        user_cwd=object(),
+    )
+    plugin_configs = ({"mcpServers": {"plugin": {}}},)
 
     def _resolve_mcp_tools_with_bound_loop(
         *,
         explicit_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
+        project_context: object | None,
+        additional_configs: tuple[dict[str, object], ...],
     ) -> tuple[list[object], object, list[SimpleNamespace]]:
         assert explicit_config_path is None
         assert not no_mcp
         assert trust_project_mcp is False
+        assert project_context is acp_project_context
+        assert additional_configs == plugin_configs
         nonlocal mcp_loop
         mcp_loop = asyncio.get_running_loop()
         return [mcp_tool], mcp_manager, mcp_server_info
@@ -79,14 +90,26 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
         patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=True)),
+        patch(
+            "deepagents_code.config.is_memory_auto_save_enabled", return_value=False
+        ) as mock_memory_auto_save,
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch(
             "deepagents_code.config.create_model", return_value=model_result
         ) as mock_create_model,
         patch(
+            "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+            return_value=acp_project_context,
+        ),
+        patch(
+            "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
+            return_value=plugin_configs,
+        ) as discover_plugin_mcp,
+        patch(
             "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
         ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
+        patch("deepagents_code.tools.get_current_thread_id", new=thread_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
@@ -109,15 +132,20 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         explicit_config_path=None,
         no_mcp=False,
         trust_project_mcp=False,
+        project_context=acp_project_context,
+        additional_configs=plugin_configs,
     )
+    discover_plugin_mcp.assert_called_once_with(project_dir=acp_project_root)
     model_result.apply_to_settings.assert_called_once_with()
     mock_create_agent.assert_called_once()
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
-    assert call_kwargs["tools"] == [fetch_tool, search_tool, mcp_tool]
+    assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["memory_auto_save"] is False
+    mock_memory_auto_save.assert_called_once_with()
     mock_server_cls.assert_called_once_with("graph")
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
@@ -136,6 +164,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     server = object()
     run_agent = AsyncMock(return_value=None)
     fetch_tool = object()
+    thread_tool = object()
     search_tool = object()
     resolve_mcp_tools = AsyncMock(return_value=([], None, []))
 
@@ -153,6 +182,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
             "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
         ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
+        patch("deepagents_code.tools.get_current_thread_id", new=thread_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
@@ -168,9 +198,49 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
-    assert call_kwargs["tools"] == [fetch_tool]
+    assert call_kwargs["tools"] == [fetch_tool, thread_tool]
     assert call_kwargs["mcp_server_info"] == []
     assert call_kwargs["checkpointer"] is not None
+
+
+def test_mcp_preload_includes_plugin_configs() -> None:
+    """The TUI metadata preload should include enabled plugin MCP servers."""
+    project_root = object()
+    project_context = SimpleNamespace(project_root=project_root, user_cwd=object())
+    plugin_configs = ({"mcpServers": {"plugin": {}}},)
+    session_manager = SimpleNamespace(cleanup=AsyncMock(return_value=None))
+    server_info = [SimpleNamespace(name="plugin")]
+    resolver = AsyncMock(return_value=([], session_manager, server_info))
+
+    with (
+        patch(
+            "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+            return_value=project_context,
+        ),
+        patch(
+            "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
+            return_value=plugin_configs,
+        ) as discover_plugin_mcp,
+        patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolver),
+    ):
+        result = asyncio.run(
+            _preload_session_mcp_server_info(
+                mcp_config_path=None,
+                no_mcp=False,
+                trust_project_mcp=None,
+            )
+        )
+
+    assert result == server_info
+    resolver.assert_awaited_once_with(
+        explicit_config_path=None,
+        no_mcp=False,
+        trust_project_mcp=None,
+        project_context=project_context,
+        additional_configs=plugin_configs,
+    )
+    discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
+    session_manager.cleanup.assert_awaited_once_with()
 
 
 def test_non_acp_mode_checks_dependencies_before_parsing() -> None:

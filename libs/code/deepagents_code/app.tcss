@@ -21,10 +21,31 @@ Screen {
 
 /* Main content goes on base layer by default */
 
-/* Chat area - main scrollable messages area */
+.message-timestamp-footer {
+    display: none;
+    height: auto;
+    color: $text-muted;
+    text-style: dim;
+    margin: -1 0 1 0;
+    padding: 0;
+}
+
+/*
+ * Visibility is toggled per-footer (not via a class on #messages) so a
+ * `/timestamps` toggle restyles only the footer leaves instead of forcing a
+ * re-cascade across every message subtree.
+ */
+.message-timestamp-footer.message-timestamp-footer-visible {
+    display: block;
+}
+
+/* Chat area - main scrollable messages area.
+   No horizontal padding so message blocks span the same full width as the
+   input box below (whose border is flush to both edges). The scrollbar is
+   toggled at runtime via the /scrollbar command (off by default). */
 #chat {
     height: 1fr;
-    padding: 1 2 0 2;
+    padding: 1 0 0 0;
     background: $background;
 }
 
@@ -231,8 +252,19 @@ ToolCallMessage.-ascii:hover {
     background: $surface;
 }
 
-/* Ask user widget */
-.ask-user-menu {
+/* Persistent goal status */
+.goal-status-panel {
+    height: auto;
+    max-height: 5;
+    margin: 0 1;
+    padding: 0 1;
+    color: $text;
+    background: $surface-darken-1;
+    border-left: thick $primary;
+}
+
+/* Shared inline prompt shell */
+.inline-prompt {
     height: auto;
     margin: 1 0;
     padding: 0 1;
@@ -240,19 +272,71 @@ ToolCallMessage.-ascii:hover {
     border: solid $success;
 }
 
-.ask-user-menu .ask-user-title {
+.inline-prompt .inline-prompt-title {
     text-style: bold;
     color: $success;
     margin-bottom: 0;
 }
 
-.ask-user-menu .ask-user-help {
+.inline-prompt .inline-prompt-help {
     color: $text-muted;
     text-style: italic;
     margin-top: 0;
     margin-bottom: 0;
 }
 
+.inline-prompt .inline-prompt-input {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
+/* Goal review widget */
+.goal-review-menu .goal-review-content {
+    height: auto;
+    max-height: 12;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-body {
+    height: auto;
+}
+
+.goal-review-menu .goal-review-markdown {
+    margin: 0 0 1 0;
+    padding: 0;
+}
+
+.goal-review-menu .goal-review-options-container {
+    height: auto;
+    background: $surface-darken-1;
+    padding: 0 1;
+    margin-top: 0;
+}
+
+.goal-review-menu .goal-review-option {
+    height: 1;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-option-selected {
+    background: $primary;
+    text-style: bold;
+}
+
+.goal-review-menu .goal-review-edit-input {
+    margin: 1 1 0 1;
+    height: auto;
+    min-height: 4;
+    max-height: 12;
+    background: transparent;
+}
+
+/* Ask user widget */
 .ask-user-menu .ask-user-questions {
     height: auto;
     padding: 0 1;
@@ -297,16 +381,6 @@ ToolCallMessage.-ascii:hover {
     min-height: 3;
     max-height: 10;
     background: transparent;
-}
-
-.ask-user-menu AskUserTextArea {
-    & .text-area--cursor-line {
-        background: transparent;
-    }
-
-    & .text-area--cursor-gutter {
-        background: transparent;
-    }
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

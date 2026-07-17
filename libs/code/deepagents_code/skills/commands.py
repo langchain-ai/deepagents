@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -195,7 +195,7 @@ def _list(
             )
             console.print(
                 "\n[dim]Create a project skill:\n"
-                "  deepagents skills create my-skill --project[/dim]",
+                "  dcode skills create my-skill --project[/dim]",
                 style=theme.MUTED,
             )
             return
@@ -245,8 +245,7 @@ def _list(
                 style=theme.MUTED,
             )
             console.print(
-                "\n[dim]Create your first skill:\n"
-                "  deepagents skills create my-skill[/dim]",
+                "\n[dim]Create your first skill:\n  dcode skills create my-skill[/dim]",
                 style=theme.MUTED,
             )
             return
@@ -854,6 +853,131 @@ def _delete(
     )
 
 
+def _trust(args: argparse.Namespace) -> None:
+    """Handle `skills trust list|revoke|clear`.
+
+    Args:
+        args: Parsed arguments with a `trust_command` attribute.
+
+    Raises:
+        SystemExit: If the trust store cannot be read, or trust entries cannot
+            be revoked or cleared.
+    """
+    from rich.markup import escape
+
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.skills.trust import (
+        RevokeResult,
+        clear_trusted_skill_dirs,
+        list_trusted_skill_dir_entries,
+        revoke_skill_dir_trust,
+    )
+
+    command = getattr(args, "trust_command", None)
+    output_format = getattr(args, "output_format", "text")
+    checkmark = get_glyphs().checkmark
+
+    if command in {"list", "ls"}:
+        # Read strictly so an unreadable store surfaces as an error instead of
+        # falsely reporting "No trusted skill directories" — the whole point of
+        # the audit command is to show what is trusted so it can be revoked.
+        try:
+            entries = list_trusted_skill_dir_entries(strict=True)
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not read the skill trust "
+                f"store: {escape(str(exc))}"
+            )
+            raise SystemExit(1) from exc
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "skills trust list",
+                [
+                    {"dir": path, "trusted_at": trusted_at}
+                    for path, trusted_at in entries
+                ],
+            )
+            return
+        if not entries:
+            console.print()
+            console.print("[yellow]No trusted skill directories.[/yellow]")
+            console.print(
+                "[dim]Directories are trusted when you approve a skill that "
+                "resolves outside the standard skill roots.[/dim]",
+                style=theme.MUTED,
+            )
+            console.print()
+            return
+        console.print(
+            "\n[bold]Trusted skill directories:[/bold]\n", style=theme.PRIMARY
+        )
+        for path, trusted_at in entries:
+            console.print(f"  {escape(str(path))}")
+            if trusted_at:
+                console.print(
+                    f"    [dim]trusted {escape(trusted_at)}[/dim]", style=theme.MUTED
+                )
+        console.print()
+    elif command == "revoke":
+        target = args.dir
+        result = revoke_skill_dir_trust(target)
+        # An I/O/read failure is a hard error regardless of output format
+        # (matching `list`): print red and exit non-zero without emitting a
+        # success envelope a script might misread.
+        if result is RevokeResult.ERROR:
+            console.print(
+                "[bold red]Error:[/bold red] Could not revoke trust for: "
+                f"{escape(str(target))}"
+            )
+            raise SystemExit(1)
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "skills trust revoke",
+                {"dir": str(target), "result": result.value},
+            )
+            return
+        # `ERROR` was handled above (early exit), so only `REMOVED`/`NOT_FOUND`
+        # remain. Match exhaustively with `assert_never` so adding a future
+        # `RevokeResult` member is a static error here rather than a silent
+        # success that prints nothing yet exits 0.
+        match result:
+            case RevokeResult.REMOVED:
+                console.print(
+                    f"{checkmark} Revoked trust for: {escape(str(target))}",
+                    style=theme.PRIMARY,
+                )
+            case RevokeResult.NOT_FOUND:
+                # Report honestly, not a false success.
+                console.print(
+                    f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
+                )
+            case _:  # pragma: no cover - exhaustiveness guard
+                assert_never(result)
+    elif command == "clear":
+        if not clear_trusted_skill_dirs():
+            console.print(
+                "[bold red]Error:[/bold red] Could not clear trusted directories."
+            )
+            raise SystemExit(1)
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("skills trust clear", {"cleared": True})
+            return
+        console.print(
+            f"{checkmark} Cleared all trusted skill directories.",
+            style=theme.PRIMARY,
+        )
+    else:
+        from deepagents_code.ui import show_skills_trust_help
+
+        show_skills_trust_help()
+
+
 def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
@@ -1013,6 +1137,45 @@ def setup_skills_parser(
         action="store_true",
         help="Show what would happen without making changes",
     )
+
+    # Skills trust — manage directories approved to be read outside the
+    # standard skill roots (the persistent counterpart to the in-TUI prompt).
+    trust_parser = skills_subparsers.add_parser(
+        "trust",
+        help="Manage trusted skill directories",
+        description=(
+            "List, revoke, or clear skill directories that have been trusted "
+            "to be read even though they resolve outside the standard skill "
+            "roots (for example, symlink targets approved at invocation time)."
+        ),
+        add_help=False,
+        parents=help_parent(_lazy_help("show_skills_trust_help")),
+    )
+    if add_output_args is not None:
+        add_output_args(trust_parser)
+    trust_subparsers = trust_parser.add_subparsers(
+        dest="trust_command", help="Trust command"
+    )
+    trust_list_parser = trust_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List trusted skill directories",
+    )
+    if add_output_args is not None:
+        add_output_args(trust_list_parser)
+    revoke_parser = trust_subparsers.add_parser(
+        "revoke",
+        help="Revoke trust for a directory",
+    )
+    revoke_parser.add_argument("dir", help="Directory path to revoke")
+    if add_output_args is not None:
+        add_output_args(revoke_parser)
+    clear_parser = trust_subparsers.add_parser(
+        "clear",
+        help="Remove all trusted skill directories",
+    )
+    if add_output_args is not None:
+        add_output_args(clear_parser)
     return skills_parser
 
 
@@ -1027,8 +1190,14 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     """
     from deepagents_code.config import console
 
+    # The `trust` subcommand manages directory paths, not agent-scoped skills,
+    # so it has no `--agent` and is dispatched before agent validation.
+    if args.skills_command == "trust":
+        _trust(args)
+        return
+
     # validate agent argument
-    if args.agent:
+    if getattr(args, "agent", None):
         is_valid, error_msg = _validate_name(args.agent)
         if not is_valid:
             console.print(

@@ -1,13 +1,19 @@
-"""Deep Agents CLI - Interactive AI coding assistant."""
+"""Deep Agents Code - Interactive AI coding assistant."""
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from deepagents_code._debug import configure_debug_logging
+from deepagents_code._debug_buffer import install_log_buffer
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+install_log_buffer(logging.getLogger(__name__))  # noqa: RUF067  # attach the always-on tail first so warnings from configure_debug_logging are captured
+configure_debug_logging(logging.getLogger(__name__))  # noqa: RUF067  # package logger must be configured before child modules emit logs; sets the final level over the buffer's INFO floor
 
 __all__ = [
     "__version__",

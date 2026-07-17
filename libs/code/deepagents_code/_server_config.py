@@ -12,7 +12,6 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,8 +22,6 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
-
-logger = logging.getLogger(__name__)
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -83,6 +80,25 @@ def _read_env_str(suffix: str) -> str | None:
     return os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
 
 
+def _read_env_int(suffix: str, *, default: int | None) -> int | None:
+    """Read a `DEEPAGENTS_CODE_SERVER_*` integer from the environment.
+
+    Args:
+        suffix: Variable name suffix after the `DEEPAGENTS_CODE_SERVER_` prefix.
+        default: Value when the variable is absent or malformed.
+
+    Returns:
+        Parsed integer, or the default when absent or parsing fails.
+    """
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _read_env_optional_bool(suffix: str) -> bool | None:
     """Read a tri-state `DEEPAGENTS_CODE_SERVER_*` boolean (`True` / `False` / `None`).
 
@@ -101,6 +117,67 @@ def _read_env_optional_bool(suffix: str) -> bool | None:
     return raw.lower() == "true"
 
 
+def _resolve_enable_interpreter(
+    enable_interpreter: bool | None, sandbox_type: str | None
+) -> bool:
+    """Resolve the interpreter's tri-state caller option to a concrete boolean.
+
+    Args:
+        enable_interpreter: Explicit caller preference, or `None` to use the
+            sandbox-aware default.
+        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
+            or `"none"` is treated as local execution.
+
+    Returns:
+        The explicit `enable_interpreter` value when not `None`; `False` for
+            remote-sandbox defaults; otherwise the configured local default
+            (`settings.enable_interpreter`).
+    """
+    if enable_interpreter is not None:
+        return enable_interpreter
+    if sandbox_type and sandbox_type != "none":
+        return False
+
+    from deepagents_code.config import settings
+
+    return settings.enable_interpreter
+
+
+def _interpreter_suppressed_by_sandbox(
+    *, enable_interpreter: bool | None, sandbox_type: str | None, local_default: bool
+) -> bool:
+    """Whether a remote sandbox suppressed the otherwise-default interpreter.
+
+    Used to decide whether to surface an advisory: returns `True` only when the
+    user made no explicit choice, a remote sandbox is active, and the local
+    default would have enabled it — i.e. the sandbox (not an explicit
+    `--no-interpreter` opt-out, nor a disabled `[interpreter]` config) is why
+    `js_eval` is unavailable.
+
+    Takes the *raw* tri-state caller intent rather than the resolved boolean: a
+    sandbox-suppressed default and an explicit `--no-interpreter` both resolve to
+    `False`, so the resolved value cannot distinguish them. Any explicit choice
+    (`not None`) is the user's own decision and is left unannounced.
+
+    Args:
+        enable_interpreter: The raw tri-state caller intent (`--interpreter` →
+            `True`, `--no-interpreter` → `False`, unset → `None`).
+        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
+            or `"none"` is treated as local execution.
+        local_default: The local-mode default (`settings.enable_interpreter`);
+            gating on it keeps the advisory quiet for users who disabled the
+            interpreter in config.
+
+    Returns:
+        `True` when the advisory should be shown, otherwise `False`.
+    """
+    if enable_interpreter is not None:
+        return False
+    if not (sandbox_type and sandbox_type != "none"):
+        return False
+    return local_default
+
+
 @dataclass(frozen=True)
 class ServerConfig:
     """Full configuration payload passed from the app to the server subprocess.
@@ -117,6 +194,9 @@ class ServerConfig:
     model_params: dict[str, Any] | None = None
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
+
+    profile_overrides: dict[str, Any] | None = None
+    """Model profile metadata overrides resolved by the client."""
 
     assistant_id: str = DEFAULT_ASSISTANT_ID
     """Identifier of the agent graph to invoke on the server."""
@@ -152,12 +232,54 @@ class ServerConfig:
     enable_skills: bool = True
     """Enable the skills subsystem (SKILL.md loading and skill tools)."""
 
+    enable_interpreter: bool = False
+    """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
+
+    Always the resolved concrete value: `from_cli_args` collapses the tri-state
+    caller option via `_resolve_enable_interpreter` before constructing the
+    config, so the `bool | None` "defer to default" sentinel never reaches this
+    field. The `False` default here is only the bare-constructor/`from_env`
+    fallback; the user-facing default (on in local mode) lives in
+    `settings.enable_interpreter`.
+
+    Local-mode only; the server graph raises if a sandbox is configured and
+    this flag is `True`.
+    """
+
+    interpreter_ptc: str | list[str] | None = None
+    """Override for `settings.interpreter_ptc`.
+
+    `None` means "fall through to whatever `settings.interpreter_ptc` resolves
+    to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
+    a list is an explicit allowlist of tool names that may also include the
+    `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
+    a list.
+    """
+
+    interpreter_ptc_acknowledge_unsafe: bool = False
+    """Mirror of `settings.interpreter_ptc_acknowledge_unsafe` — required when
+    `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
+    """
+
+    rubric_model: str | None = None
+    """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
+
+    `None` reuses the main agent model.
+    """
+
+    rubric_max_iterations: int | None = None
+    """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
+
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
     host. `'none'` is normalized to `None` in `__post_init__`."""
 
     sandbox_id: str | None = None
     """Existing sandbox ID to attach to; `None` creates a fresh sandbox."""
+
+    sandbox_snapshot_name: str | None = None
+    """Sandbox snapshot (langsmith) or blueprint (runloop) name; must be `None`
+    when `sandbox_id` is set."""
 
     sandbox_setup: str | None = None
     """Absolute path to a setup script executed inside the sandbox on first attach."""
@@ -184,12 +306,20 @@ class ServerConfig:
         """Normalize fields and validate invariants.
 
         Raises:
-            ValueError: If `shell_allow_list` is an empty list.
+            TypeError: If `rubric_max_iterations` is a boolean.
+            ValueError: If `shell_allow_list` is an empty list or
+                `rubric_max_iterations` is non-positive.
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
+            raise ValueError(msg)
+        if isinstance(self.rubric_max_iterations, bool):
+            msg = "rubric_max_iterations must be None or a positive integer"
+            raise TypeError(msg)
+        if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
+            msg = "rubric_max_iterations must be None or a positive integer"
             raise ValueError(msg)
 
     # ------------------------------------------------------------------
@@ -212,6 +342,11 @@ class ServerConfig:
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
             ),
+            "PROFILE_OVERRIDES": (
+                json.dumps(self.profile_overrides)
+                if self.profile_overrides is not None
+                else None
+            ),
             "ASSISTANT_ID": self.assistant_id,
             "SYSTEM_PROMPT": self.system_prompt,
             "AUTO_APPROVE": str(self.auto_approve).lower(),
@@ -226,8 +361,24 @@ class ServerConfig:
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
             "ENABLE_MEMORY": str(self.enable_memory).lower(),
             "ENABLE_SKILLS": str(self.enable_skills).lower(),
+            "ENABLE_INTERPRETER": str(self.enable_interpreter).lower(),
+            "INTERPRETER_PTC": (
+                json.dumps(self.interpreter_ptc)
+                if self.interpreter_ptc is not None
+                else None
+            ),
+            "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
+                self.interpreter_ptc_acknowledge_unsafe
+            ).lower(),
+            "RUBRIC_MODEL": self.rubric_model,
+            "RUBRIC_MAX_ITERATIONS": (
+                str(self.rubric_max_iterations)
+                if self.rubric_max_iterations is not None
+                else None
+            ),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
+            "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
             "SANDBOX_SETUP": self.sandbox_setup,
             "CWD": self.cwd,
             "PROJECT_ROOT": self.project_root,
@@ -253,6 +404,7 @@ class ServerConfig:
         return cls(
             model=_read_env_str("MODEL"),
             model_params=_read_env_json("MODEL_PARAMS"),
+            profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
             assistant_id=_read_env_str("ASSISTANT_ID") or DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
@@ -268,8 +420,16 @@ class ServerConfig:
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
+            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER"),
+            interpreter_ptc=_read_env_json("INTERPRETER_PTC"),
+            interpreter_ptc_acknowledge_unsafe=_read_env_bool(
+                "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
+            ),
+            rubric_model=_read_env_str("RUBRIC_MODEL") or None,
+            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
+            sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
             sandbox_setup=_read_env_str("SANDBOX_SETUP"),
             cwd=_read_env_str("CWD"),
             project_root=_read_env_str("PROJECT_ROOT"),
@@ -289,15 +449,22 @@ class ServerConfig:
         project_context: ProjectContext | None,
         model_name: str | None,
         model_params: dict[str, Any] | None,
+        profile_overrides: dict[str, Any] | None = None,
         assistant_id: str,
         auto_approve: bool,
         interrupt_shell_only: bool = False,
         shell_allow_list: list[str] | None = None,
         sandbox_type: str = "none",
         sandbox_id: str | None,
+        sandbox_snapshot_name: str | None,
         sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
+        enable_interpreter: bool | None = None,
+        interpreter_ptc: str | list[str] | None = None,
+        interpreter_ptc_acknowledge_unsafe: bool = False,
+        rubric_model: str | None = None,
+        rubric_max_iterations: int | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -313,6 +480,7 @@ class ServerConfig:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
             model_params: Extra model kwargs.
+            profile_overrides: Model profile metadata overrides.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
             interrupt_shell_only: Validate shell commands via middleware instead
@@ -321,9 +489,19 @@ class ServerConfig:
                 server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
+            sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop)
+                name to use or create.
             sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
+            enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
+                agent. `None` uses the sandbox-aware default.
+            interpreter_ptc: Override for `settings.interpreter_ptc`.
+            interpreter_ptc_acknowledge_unsafe: Mirror of
+                `settings.interpreter_ptc_acknowledge_unsafe`.
+            rubric_model: Grader model spec; `None` reuses the main model.
+            rubric_max_iterations: Explicit grader iterations per rubric attempt;
+                `None` uses the SDK default.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -334,9 +512,14 @@ class ServerConfig:
         """
         normalized_mcp = _normalize_path(mcp_config_path, project_context, "MCP config")
 
+        resolved_enable_interpreter = _resolve_enable_interpreter(
+            enable_interpreter, sandbox_type
+        )
+
         return cls(
             model=model_name,
             model_params=model_params,
+            profile_overrides=profile_overrides,
             assistant_id=assistant_id,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
@@ -344,8 +527,14 @@ class ServerConfig:
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
+            enable_interpreter=resolved_enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            rubric_model=rubric_model,
+            rubric_max_iterations=rubric_max_iterations,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=_normalize_path(
                 sandbox_setup, project_context, "sandbox setup"
             ),

@@ -236,6 +236,18 @@ SPINNER = "blue"
 # ---------------------------------------------------------------------------
 
 
+_textual_colors_cache: dict[tuple[str, bool], ThemeColors] = {}
+"""Cache of derived built-in `ThemeColors` keyed on `(theme name, dark)`.
+
+A built-in Textual theme does not change its color values once registered under
+a name, so its derived colors only change when the active theme changes. Caching
+avoids re-running over a dozen hex validations on every widget render. The `dark`
+flag is part of the key defensively; for built-in themes it is already fixed by
+the name. Only registered built-ins are cached (see `get_theme_colors`) — the
+cache is cleared by `reload_registry`.
+"""
+
+
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 """Matches a 7-character hex color string like `#7AA2F7`.
 
@@ -717,6 +729,7 @@ def reload_registry() -> MappingProxyType[str, ThemeEntry]:
     """
     get_registry.cache_clear()
     _builtin_names.cache_clear()
+    _textual_colors_cache.clear()
     return get_registry()
 
 
@@ -758,7 +771,7 @@ def _resolve_app(widget_or_app: object) -> object:
         The resolved App instance.
     """
     return (
-        widget_or_app.app  # type: ignore[attr-defined]
+        widget_or_app.app  # ty: ignore[unresolved-attribute]
         if hasattr(type(widget_or_app), "app")
         else widget_or_app
     )
@@ -780,7 +793,7 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     Returns:
         `ThemeColors` derived from the active theme.
     """
-    ct = app.current_theme  # type: ignore[attr-defined]
+    ct = app.current_theme  # ty: ignore[unresolved-attribute]
     dark: bool = ct.dark
     base = DARK_COLORS if dark else LIGHT_COLORS
 
@@ -852,16 +865,27 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
         except (ImportError, LookupError):
             return DARK_COLORS
     app = _resolve_app(widget_or_app)
-    entry = get_registry().get(app.theme)  # type: ignore[attr-defined]
+    entry = get_registry().get(app.theme)  # ty: ignore[unresolved-attribute]
     # Custom themes (LC-branded / user-defined) use pre-built colors.
     if entry is not None and entry.custom:
         return entry.colors
     # Built-in or unrecognized themes — derive from the resolved Textual
-    # theme so Python styling matches CSS.
+    # theme so Python styling matches CSS. Cache only registered built-ins,
+    # since unregistered runtime themes may reuse a name with different colors.
     try:
-        return _colors_from_textual_theme(app)
+        ct = app.current_theme  # ty: ignore[unresolved-attribute]
+        if entry is None:
+            colors = _colors_from_textual_theme(app)
+        else:
+            key = (app.theme, bool(ct.dark))  # ty: ignore[unresolved-attribute]
+            colors = _textual_colors_cache.get(key)
+            if colors is None:
+                colors = _colors_from_textual_theme(app)
+                _textual_colors_cache[key] = colors
     except Exception:
         logger.warning("Could not resolve theme colors dynamically", exc_info=True)
         if entry is not None:
             return entry.colors
         return DARK_COLORS
+    else:
+        return colors

@@ -1,0 +1,2991 @@
+"""Chat input widget for deepagents-code with autocomplete and history support."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
+
+from rich.cells import cell_len
+from rich.segment import Segment
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
+from textual.css.query import NoMatches
+from textual.geometry import Offset, Size
+from textual.message import Message
+from textual.reactive import reactive
+from textual.strip import Strip
+from textual.widgets import Static, TextArea
+
+from deepagents_code import theme
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
+from deepagents_code.config import (
+    MODE_DISPLAY_GLYPHS,
+    MODE_PREFIXES,
+    detect_mode_prefix,
+    is_ascii_mode,
+)
+from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from deepagents_code.paste_collapse import (
+    PASTE_PLACEHOLDER_PATTERN,
+    PastedContent,
+    count_lines,
+    expand_paste_refs,
+    format_paste_ref,
+    should_collapse_paste,
+)
+from deepagents_code.tui.widgets._paste_textarea import (
+    PasteBurstTextArea,
+    _collapse_pastes_enabled,
+)
+from deepagents_code.tui.widgets.autocomplete import (
+    CompletionResult,
+    FuzzyFileController,
+    MultiCompletionManager,
+    SlashCommandController,
+)
+from deepagents_code.tui.widgets.history import HistoryManager
+
+logger = logging.getLogger(__name__)
+
+
+def _default_history_path() -> Path:
+    """Return the default history file path.
+
+    Extracted as a function so tests can monkeypatch it to a temp path,
+    preventing test runs from polluting `~/.deepagents/.state/history.jsonl`.
+    """
+    from deepagents_code.model_config import DEFAULT_STATE_DIR
+
+    return DEFAULT_STATE_DIR / "history.jsonl"
+
+
+_LOCK_KEYS = frozenset({"caps_lock", "num_lock", "scroll_lock"})
+"""Lock keys that must never insert text.
+
+Under the kitty keyboard protocol with associated-text reporting (VS Code's
+xterm.js and others), pressing a lock key arrives as a `Key` event whose
+`character` is the text that *would* have been produced by the next key —
+e.g. pressing Caps Lock reports `key='caps_lock'`, `character='A'`. Textual's
+parser does not strip this, so `TextArea` inserts a stray letter. We drop
+these events entirely. Terminals encode lock keys in several shapes (iTerm2
+notably differs from kitty/Ghostty); `_textual_patches.py` is the canonical
+reference and neutralizes every shape at the parser. See the kitty keyboard
+protocol spec (functional key definitions) for background.
+"""
+
+
+_FILE_CACHE_WORKER_GROUP = "file-cache"
+"""Textual worker group for all `@` file-completion cache warmers."""
+
+_BACKSLASH_ENTER_GAP_SECONDS = 0.15
+"""Maximum gap between a `\\` key and a following `enter` key to treat the
+pair as a terminal-emitted shift+enter sequence.
+
+Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
+followed by enter when the user presses shift+enter.  The gap is
+generous (150 ms) because the terminal emits both characters nearly
+simultaneously; a human deliberately typing `\\` then pressing Enter would
+have a much larger gap."""
+
+_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
+"""Window after a terminal focus regain during which a click only refocuses.
+
+When the terminal window is unfocused and the user clicks back in, we rely on
+the OS delivering a `FocusIn` (Textual `AppFocus`) before the mouse report —
+the same FocusIn support `on_app_focus` documents. Terminals without it never
+arm suppression, so clicks just behave normally (the cursor moves). A
+mouse-down landing within this window after the focus regain is treated as
+focus-only so the cursor stays put instead of jumping to the click location.
+
+The window trades off two failure modes: too small and a genuine refocus click
+leaks through and moves the cursor (the bug this guards against); too large and
+an intentional click made shortly after refocusing is wrongly suppressed. 0.3s
+comfortably covers the FocusIn-to-mouse-report latency while staying below a
+deliberate click-pause-click interaction.
+"""
+
+_FILE_CACHE_REFRESH_INTERVAL_SECONDS = 30.0
+"""How often to refresh the `@` file-completion cache in the background.
+
+The cache is pre-warmed on mount and re-warmed on cwd switches, but files
+created or deleted mid-session would otherwise stay stale until the next switch.
+A periodic refresh keeps `@` suggestions current; the walk runs off the event
+loop and swaps in atomically, so it never blocks typing."""
+
+if TYPE_CHECKING:
+    from textual import events
+    from textual.app import ComposeResult
+    from textual.events import Click
+
+    from deepagents_code.config_manifest import CursorStyle
+    from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
+
+
+def _should_collapse_chat_paste(text: str) -> bool:
+    """Return whether pasted chat text should be collapsed."""
+    return detect_mode_prefix(text) is None and should_collapse_paste(text)
+
+
+_PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand it inline."
+"""Toast shown when a paste collapses into a `[Pasted text #N]` placeholder.
+
+Emitted only for a new collapse, not when a repeat paste expands an existing
+placeholder back to full text.
+"""
+
+
+class CompletionOption(Static):
+    """A clickable completion option in the autocomplete popup."""
+
+    DEFAULT_CSS = """
+    CompletionOption {
+        height: 1;
+        padding: 0 1;
+    }
+
+    CompletionOption:hover {
+        background: $surface-lighten-1;
+    }
+
+    CompletionOption.completion-option-selected {
+        background: $primary;
+        color: $background;
+        text-style: bold;
+    }
+
+    CompletionOption.completion-option-selected:hover {
+        background: $primary-lighten-1;
+    }
+    """
+
+    class Clicked(Message):
+        """Message sent when a completion option is clicked."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the clicked option index."""
+            super().__init__()
+            self.index = index
+
+    def __init__(
+        self,
+        label: str,
+        description: str,
+        index: int,
+        is_selected: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the completion option.
+
+        Args:
+            label: The main label text (e.g., command name or file path)
+            description: Secondary description text
+            index: Index of this option in the suggestions list
+            is_selected: Whether this option is currently selected
+            **kwargs: Additional arguments for parent
+        """
+        super().__init__(**kwargs)
+        self._label = label
+        self._description = description
+        self._index = index
+        self._is_selected = is_selected
+
+    def on_mount(self) -> None:
+        """Set up the option display on mount."""
+        self._update_display()
+
+    def _update_display(self) -> None:
+        """Update the display text and styling."""
+        display_label = self._label.removeprefix("/")
+        if self._description:
+            content = Content.from_markup(
+                "[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=display_label,
+                desc=self._description,
+            )
+        else:
+            content = Content.from_markup("[bold]$label[/bold]", label=display_label)
+
+        self.update(content)
+
+        if self._is_selected:
+            self.add_class("completion-option-selected")
+        else:
+            self.remove_class("completion-option-selected")
+
+    def set_selected(self, *, selected: bool) -> None:
+        """Update the selected state of this option."""
+        if self._is_selected != selected:
+            self._is_selected = selected
+            self._update_display()
+
+    def set_content(
+        self, label: str, description: str, index: int, *, is_selected: bool
+    ) -> None:
+        """Replace label, description, index, and selection in-place."""
+        self._label = label
+        self._description = description
+        self._index = index
+        self._is_selected = is_selected
+        self._update_display()
+
+    def on_click(self, event: Click) -> None:
+        """Handle click on this option."""
+        event.stop()
+        self.post_message(self.Clicked(self._index))
+
+
+InputAction = Literal["clear", "copy"]
+"""Closed set of actions an `InputActionButton` can dispatch."""
+
+
+class InputActionButton(Static):
+    """Small clickable button shown at the right edge of the chat input row.
+
+    Provides discoverable mouse alternatives to keyboard shortcuts for
+    clearing (`[ X ]`) and copying (`[ COPY ]`) the current draft.
+    """
+
+    DEFAULT_CSS = """
+    InputActionButton {
+        height: 1;
+        margin: 0 0 0 1;
+        text-style: bold;
+    }
+
+    InputActionButton.input-action-clear {
+        width: 5;
+        color: $error;
+    }
+
+    InputActionButton.input-action-copy {
+        width: 8;
+        color: $primary;
+    }
+
+    InputActionButton.input-action-clear:hover {
+        background: $error;
+        color: auto;
+    }
+
+    InputActionButton.input-action-copy:hover {
+        background: $primary;
+        color: auto;
+    }
+    """
+
+    class Clicked(Message):
+        """Message sent when an input action button is clicked."""
+
+        def __init__(self, action: InputAction) -> None:
+            """Initialize with the action identifier (`clear` or `copy`)."""
+            super().__init__()
+            self.action = action
+
+    @property
+    def allow_select(self) -> bool:
+        """Disable terminal text selection for the action label."""
+        return False
+
+    def __init__(self, label: str, action: InputAction, **kwargs: Any) -> None:
+        """Initialize the button with a label and an action identifier."""
+        super().__init__(label, markup=False, **kwargs)
+        self._action = action
+
+    def on_click(self, event: Click) -> None:
+        """Relay the click as a typed `Clicked` message."""
+        event.stop()
+        self.post_message(self.Clicked(self._action))
+
+
+class CompletionPopup(VerticalScroll):
+    """Popup widget that displays completion suggestions as clickable options."""
+
+    DEFAULT_CSS = """
+    CompletionPopup {
+        display: none;
+        height: auto;
+        max-height: 12;
+    }
+    """
+
+    class OptionClicked(Message):
+        """Message sent when a completion option is clicked."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the clicked option index."""
+            super().__init__()
+            self.index = index
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize the completion popup."""
+        super().__init__(**kwargs)
+        self.can_focus = False
+        self._options: list[CompletionOption] = []
+        self._selected_index = 0
+        self._pending_suggestions: list[tuple[str, str]] = []
+        self._pending_selected: int = 0
+        self._rebuild_generation: int = 0
+
+    def update_suggestions(
+        self, suggestions: list[tuple[str, str]], selected_index: int
+    ) -> None:
+        """Update the popup with new suggestions."""
+        if not suggestions:
+            self.hide()
+            return
+
+        self._selected_index = selected_index
+        self._pending_suggestions = suggestions
+        self._pending_selected = selected_index
+        # Increment generation so stale callbacks from prior calls are skipped.
+        self._rebuild_generation += 1
+        gen = self._rebuild_generation
+        # show() is still deferred to _rebuild_options to avoid stale content,
+        # but the rebuild runs before the next paint so prompt and popup changes
+        # appear in the same frame.
+        self.call_next(lambda: self._rebuild_options(gen))
+
+    async def _rebuild_options(self, generation: int) -> None:
+        """Rebuild option widgets from pending suggestions.
+
+        Reuses existing DOM nodes where possible to avoid flicker from
+        a full teardown/mount cycle while the popup is visible.
+
+        Args:
+            generation: Caller's generation counter; skipped if superseded.
+        """
+        if generation != self._rebuild_generation:
+            return
+
+        suggestions = self._pending_suggestions
+        selected_index = self._pending_selected
+
+        if not suggestions:
+            self.hide()
+            return
+
+        existing = len(self._options)
+        needed = len(suggestions)
+
+        # Update existing widgets in-place
+        for i in range(min(existing, needed)):
+            label, desc = suggestions[i]
+            self._options[i].set_content(
+                label, desc, i, is_selected=(i == selected_index)
+            )
+
+        # DOM mutations: trim extras / mount new widgets
+        try:
+            if existing > needed:
+                for option in self._options[needed:]:
+                    await option.remove()
+                del self._options[needed:]
+
+            if needed > existing:
+                new_widgets: list[CompletionOption] = []
+                for idx in range(existing, needed):
+                    label, desc = suggestions[idx]
+                    option = CompletionOption(
+                        label=label,
+                        description=desc,
+                        index=idx,
+                        is_selected=(idx == selected_index),
+                    )
+                    new_widgets.append(option)
+                self._options.extend(new_widgets)
+                await self.mount(*new_widgets)
+        except Exception:
+            logger.exception("Failed to rebuild completion popup; hiding to recover")
+            self._options = []
+            with contextlib.suppress(Exception):
+                await self.remove_children()
+            self.hide()
+            return
+
+        # The DOM mutations above can await, during which a hide() (or a newer
+        # rebuild) bumps the generation to cancel this one. The top-of-function
+        # guard ran before that await, so re-check here: without it a stale
+        # rebuild would re-show a popup that was dismissed mid-flight (e.g. when
+        # a completion is applied and the popup hidden in the same key press).
+        if generation != self._rebuild_generation:
+            return
+
+        self.show()
+
+        if 0 <= selected_index < len(self._options):
+            self._options[selected_index].scroll_visible()
+
+    def update_selection(self, selected_index: int) -> None:
+        """Update which option is selected without rebuilding the list."""
+        # Keep pending state in sync so an in-flight _rebuild_options uses
+        # the latest selection.
+        self._pending_selected = selected_index
+
+        if self._selected_index == selected_index:
+            return
+
+        # Deselect previous
+        if 0 <= self._selected_index < len(self._options):
+            self._options[self._selected_index].set_selected(selected=False)
+
+        # Select new
+        self._selected_index = selected_index
+        if 0 <= selected_index < len(self._options):
+            self._options[selected_index].set_selected(selected=True)
+            self._options[selected_index].scroll_visible()
+
+    def on_completion_option_clicked(self, event: CompletionOption.Clicked) -> None:
+        """Handle click on a completion option."""
+        event.stop()
+        self.post_message(self.OptionClicked(event.index))
+
+    def hide(self) -> None:
+        """Hide the popup."""
+        self._pending_suggestions = []
+        self._rebuild_generation += 1  # Cancel any in-flight rebuild
+        self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
+
+    def show(self) -> None:
+        """Show the popup."""
+        self.styles.display = "block"
+
+
+class ChatTextArea(PasteBurstTextArea):
+    """TextArea subclass with custom key handling for chat input."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding(
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
+            "insert_newline",
+            "New Line",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
+        ),
+    ]
+    """Key bindings for the chat text area.
+
+    These are the single source of truth for shortcut keys. `_NEWLINE_KEYS`
+    is derived from this list so that `_on_key` stays in sync automatically.
+    """
+
+    _NEWLINE_KEYS: ClassVar[frozenset[str]] = frozenset(
+        key
+        for b in BINDINGS
+        if b.action == "insert_newline"
+        for key in b.key.split(",")
+    )
+    """Flattened set of keys that insert a newline, derived from `BINDINGS`."""
+
+    _skip_history_change_events: int
+    """Counter incremented before a history-driven text replacement so the
+    resulting `TextArea.Changed` event (which fires on the next message-loop
+    iteration) can be suppressed.  `ChatInput.on_text_area_changed` decrements
+    the counter.
+    """
+
+    class Submitted(Message):
+        """Message sent when text is submitted."""
+
+        def __init__(self, value: str) -> None:
+            """Initialize with submitted value."""
+            self.value = value
+            super().__init__()
+
+    class HistoryPrevious(Message):
+        """Request previous history entry."""
+
+        def __init__(self, current_text: str) -> None:
+            """Initialize with current text for saving."""
+            self.current_text = current_text
+            super().__init__()
+
+    class HistoryNext(Message):
+        """Request next history entry."""
+
+    class PastedPaths(Message):
+        """Message sent when paste payload resolves to file paths."""
+
+        def __init__(self, raw_text: str, paths: list[Path]) -> None:
+            """Initialize with raw pasted text and parsed file paths."""
+            self.raw_text = raw_text
+            self.paths = paths
+            super().__init__()
+
+    class PastedText(Message):
+        """Message sent when a paste is large enough to be collapsed.
+
+        The full text is carried in the message so `ChatInput` can store it
+        and insert a compact placeholder into the text area instead.
+        """
+
+        def __init__(self, text: str) -> None:
+            """Initialize with the full pasted text.
+
+            Args:
+                text: The complete pasted text content.
+            """
+            self.text = text
+            super().__init__()
+
+    class Typing(Message):
+        """Posted when the user presses a printable key or backspace.
+
+        Relayed by `ChatInput` as `ChatInput.Typing` for the app to track
+        typing activity.
+        """
+
+    argument_hint: reactive[str] = reactive("")
+    """Inline slash-command argument hint rendered at the end of the line."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize the chat text area."""
+        # Remove placeholder if passed, TextArea doesn't support it the same way
+        kwargs.pop("placeholder", None)
+        super().__init__(**kwargs)
+        self._chat_input_owner: ChatInput | None = None
+        self._skip_history_change_events = 0
+        self._completion_active = False
+        # Paste-burst state is initialized by PasteBurstTextArea.__init__.
+        # See _BACKSLASH_ENTER_GAP_SECONDS for context.
+        self._backslash_pending_time: float | None = None
+        # Tracks terminal focus so a click that re-focuses the window only
+        # restores focus instead of also moving the cursor. See
+        # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
+        self._app_blurred = False
+        self._refocus_time: float | None = None
+
+    def render_line(self, y: int) -> Strip:
+        """Render a single line, appending any argument hint at line end.
+
+        The built-in `TextArea.suggestion` renders at the cursor position,
+        but slash-command argument hints should stay attached to the end of the
+        command text regardless of cursor movement.
+
+        Args:
+            y: Y Coordinate of line relative to the widget region.
+
+        Returns:
+            A rendered line.
+        """
+        strip = super().render_line(y)
+        if not self._should_render_argument_hint():
+            return strip
+
+        line_info = self._get_visual_line_info(y)
+        if line_info is None:
+            return strip
+
+        line_index, section_offset = line_info
+        if not self._is_argument_hint_section(line_index, section_offset):
+            return strip
+
+        content_cells = self._get_section_cell_length(line_index, section_offset)
+        if content_cells >= strip.cell_length:
+            return strip
+
+        prefix = strip.crop(0, content_cells)
+        suffix = strip.crop(content_cells, strip.cell_length)
+        suffix_width = suffix.cell_length
+        cursor_on_hint = self._cursor_at_argument_hint_anchor(line_index)
+        if cursor_on_hint and suffix_width > 0:
+            suffix = suffix.crop(1, suffix.cell_length)
+
+        hint_strip = self._build_argument_hint_strip(cursor_on_hint=cursor_on_hint)
+        tail = Strip.join([hint_strip, suffix]).crop(0, suffix_width)
+        return Strip.join([prefix, tail])
+
+    def _should_render_argument_hint(self) -> bool:
+        """Return whether the inline argument hint should be rendered."""
+        return bool(
+            self.argument_hint and (self.has_focus or not self.hide_suggestion_on_blur)
+        )
+
+    def _get_visual_line_info(self, y: int) -> tuple[int, int] | None:
+        """Map a widget-relative y coordinate to wrapped line metadata.
+
+        Returns:
+            Tuple of `(line_index, section_offset)` for the wrapped line at `y`,
+            otherwise `None` when `y` is outside the wrapped document.
+        """
+        _scroll_x, scroll_y = self.scroll_offset
+        absolute_y = scroll_y + y
+        # Private Textual API (verified against textual 3.x); revisit on
+        # major Textual upgrades.
+        try:
+            offset_map = self.wrapped_document._offset_to_line_info
+        except AttributeError:
+            logger.warning(
+                "WrappedDocument._offset_to_line_info not found; "
+                "argument hint rendering disabled (Textual API change?)"
+            )
+            return None
+        if absolute_y < 0 or absolute_y >= len(offset_map):
+            return None
+        entry = offset_map[absolute_y]
+        expected_length = 2  # (line_index, section_offset)
+        if not isinstance(entry, tuple) or len(entry) != expected_length:
+            logger.warning("Unexpected offset_map entry: %r", entry)
+            return None
+        return entry
+
+    def _is_argument_hint_section(self, line_index: int, section_offset: int) -> bool:
+        """Return whether a wrapped section owns the end-of-line hint."""
+        if line_index != self.document.line_count - 1:
+            return False
+        return section_offset == len(self.wrapped_document.get_offsets(line_index))
+
+    def _get_section_cell_length(self, line_index: int, section_offset: int) -> int:
+        """Return the rendered cell width of a wrapped text section."""
+        wrapped_sections = self.wrapped_document.get_sections(line_index)
+        if section_offset < 0 or section_offset >= len(wrapped_sections):
+            return 0
+        section_text = wrapped_sections[section_offset].expandtabs(self.indent_width)
+        return cell_len(section_text)
+
+    def _cursor_at_argument_hint_anchor(self, line_index: int) -> bool:
+        """Return whether the cursor currently sits on the hint anchor."""
+        if not self._draw_cursor or not self.show_cursor or not self.has_focus:
+            return False
+        cursor_row, cursor_column = self.selection.end
+        if cursor_row != line_index:
+            return False
+        return cursor_column == len(self.document.get_line(line_index))
+
+    def _build_argument_hint_strip(self, *, cursor_on_hint: bool) -> Strip:
+        """Build a strip for the current argument hint text.
+
+        Returns:
+            A `Strip` containing the current argument hint, with cursor styling
+            applied to the first hint character when the cursor sits on the
+            hint anchor.
+        """
+        hint = self.argument_hint
+        hint_style = self.get_component_rich_style("text-area--suggestion")
+        if not cursor_on_hint or not hint:
+            return Strip([Segment(hint, hint_style)], cell_length=cell_len(hint))
+
+        ta_theme = self._theme
+        cursor_style = ta_theme.cursor_style if ta_theme else None
+        first_style = hint_style if cursor_style is None else hint_style + cursor_style
+        segments = [Segment(hint[0], first_style)]
+        if len(hint) > 1:
+            segments.append(Segment(hint[1:], hint_style))
+        return Strip(segments, cell_length=cell_len(hint))
+
+    def scroll_cursor_visible(
+        self, center: bool = False, animate: bool = False
+    ) -> Offset:
+        """Scroll to make the cursor visible, guarding against cursor/document desync.
+
+        Textual's `WrappedDocument.location_to_offset` has an off-by-one in its
+        line-index clamp (`len(...)` instead of `len(...) - 1`). When a reactive
+        watcher (e.g. `_watch_show_vertical_scrollbar`) fires between a document
+        replacement and cursor update, the stale cursor location triggers a
+        `ValueError`. Guard here since `scroll_cursor_visible` is the sole
+        caller of `_recompute_cursor_offset`.
+
+        Args:
+            center: Whether the cursor should be scrolled to the center.
+            animate: Whether to animate while scrolling.
+
+        Returns:
+            The scroll offset applied, or `Offset(0, 0)` on desync.
+        """
+        try:
+            return super().scroll_cursor_visible(center=center, animate=animate)
+        except (
+            ValueError
+        ):  # WrappedDocument.get_offsets off-by-one clamp in location_to_offset
+            logger.warning(
+                "Cursor/document desync in scroll_cursor_visible "
+                "(cursor=%s, doc_lines=%d); skipping scroll",
+                self.cursor_location,
+                self.document.line_count,
+            )
+            return Offset(0, 0)
+
+    def set_app_focus(self, *, has_focus: bool) -> None:
+        """Set whether the app should show the cursor as active.
+
+        Args:
+            has_focus: Whether the app input should be focused.
+        """
+        self._backslash_pending_time = None
+        if has_focus and not self.has_focus:
+            self.call_after_refresh(self.focus)
+
+    def _notify_app_blur(self) -> None:
+        """Record that the terminal window lost OS focus."""
+        self._app_blurred = True
+
+    def _notify_app_focus(self) -> None:
+        """Record that the terminal window regained OS focus via a focus event.
+
+        Stamps the regain time so the click that re-focused the window (which
+        arrives just after the focus event) can be treated as focus-only.
+        """
+        if self._app_blurred:
+            self._refocus_time = time.monotonic()
+            self._app_blurred = False
+
+    def _consume_refocus_click(self) -> bool:
+        """Return whether the current mouse-down only re-focuses the window.
+
+        `_refocus_time` is only cleared here, so a focus regain that is never
+        followed by a text-area click leaves the stamp set. The gap check
+        bounds that staleness: an old stamp exceeds the window and returns
+        `False` (clearing it), so a much later click is never suppressed.
+        """
+        refocus_time = self._refocus_time
+        if refocus_time is None:
+            return False
+        self._refocus_time = None
+        gap = time.monotonic() - refocus_time
+        return gap <= _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        """Position the cursor on click, except when the click re-focuses the app.
+
+        A mouse-down landing within a short window after a terminal focus
+        regain only restores focus and leaves the cursor where it was.
+
+        Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
+        cursor positioning; verified against Textual 8.2.7. If the base handler
+        changes, re-verify that early-returning before `super()` still leaves no
+        selection/capture state set.
+        """
+        if self._consume_refocus_click():
+            event.stop()
+            event.prevent_default()
+            return
+        await super()._on_mouse_down(event)
+
+    def set_completion_active(self, *, active: bool) -> None:
+        """Set whether completion suggestions are visible."""
+        self._completion_active = active
+
+    def action_insert_newline(self) -> None:
+        """Insert a newline character."""
+        self.insert("\n")
+        # TextArea's built-in cursor-visible scroll runs before the widget
+        # reflows for the new row, so it sees stale dimensions and is a no-op
+        # when the cursor would land below `max-height`. Re-issue after
+        # refresh so it stays in view.
+        self.call_after_refresh(self.scroll_cursor_visible)
+
+    def _refresh_scrollbars(self) -> None:
+        """Refresh scrollbars without flashing a transient vertical bar.
+
+        `TextArea` grows its `virtual_size` height the moment a row is inserted,
+        a frame before this `height: auto` widget's container reflows to match.
+        The base `_refresh_scrollbars` decides vertical visibility by comparing
+        `virtual_size.height` against the stale `self._container_size.height`,
+        so for that one frame the freshly inserted row looks like overflow and
+        the scrollbar flashes on, then off once the container catches up.
+
+        The widget only ever truly overflows once its content exceeds the height
+        it settles at — its resolved `max-height` (the layout chain above it is
+        all `height: auto`, so it always grows to `min(content, max-height)`).
+        Feed the base method that settled height instead of the mid-reflow one,
+        so the bar appears only on genuine overflow and never flashes. All other
+        base behavior (horizontal bar, anti-oscillation, scroll updates) is left
+        untouched.
+
+        Deliberately overrides Textual's private `_refresh_scrollbars` and
+        swaps the private `_container_size`; verified against Textual 8.2.7.
+        Re-verify on major Textual upgrades.
+        """
+        bound = self._settled_content_height()
+        if bound is None:
+            super()._refresh_scrollbars()
+            return
+
+        original = self._container_size
+        # Never report a viewport smaller than the settled height; `max(...)`
+        # also guards the unlikely case where the real container is already
+        # larger than the bound, so we only ever raise the comparison height.
+        corrected_height = max(original.height, min(self.virtual_size.height, bound))
+        if corrected_height == original.height:
+            super()._refresh_scrollbars()
+            return
+
+        self._container_size = Size(original.width, corrected_height)
+        try:
+            super()._refresh_scrollbars()
+        finally:
+            self._container_size = original
+
+    def _settled_content_height(self) -> int | None:
+        """Return the content-row height this widget settles at, if knowable.
+
+        Returns `None` (so the caller defers to the base behavior) unless the
+        vertical overflow is `auto` and `max-height` resolves to a fixed cell
+        count, the only case where the flash-suppression bound is well-defined.
+        """
+        styles = self.styles
+        if styles.overflow_y != "auto" or not styles.has_rule("max_height"):
+            return None
+        max_height = styles.max_height
+        cells = max_height.cells if max_height is not None else None
+        if cells is None:
+            return None
+        # box-sizing is border-box by default, so subtract border/padding to get
+        # the content-row count the base method compares `virtual_size` against.
+        return max(1, cells - self.gutter.height)
+
+    def _cursor_at_visual_top(self) -> bool:
+        """Return whether the cursor cannot move up further."""
+        try:
+            return self.get_cursor_up_location() == self.cursor_location
+        except ValueError:
+            # `WrappedDocument.location_to_offset` can raise during a brief
+            # text/cursor desync window (see `scroll_cursor_visible` guard).
+            # Treat as "not at top" so TextArea moves the cursor instead of
+            # firing history navigation on a transient state.
+            return False
+
+    def _cursor_at_visual_bottom(self) -> bool:
+        """Return whether the cursor cannot move down further."""
+        try:
+            return self.get_cursor_down_location() == self.cursor_location
+        except ValueError:
+            return False
+
+    def action_cursor_up(self, select: bool = False) -> None:
+        """Move cursor up, or navigate to the previous history entry at top.
+
+        When `select` is true or a selection is active, falls through to
+        TextArea's default so shift+up extends selection rather than
+        triggering navigation. History fires only when moving up cannot
+        advance the cursor — handled via the wrapped-document navigator so
+        soft-wrap is respected.
+        """
+        if not select and self.selection.is_empty and self._cursor_at_visual_top():
+            self.post_message(self.HistoryPrevious(self.text))
+            return
+        super().action_cursor_up(select)
+
+    def action_cursor_down(self, select: bool = False) -> None:
+        """Move cursor down, or navigate to the next history entry at bottom.
+
+        Mirrors `action_cursor_up`: defers to TextArea on selection or when
+        the cursor still has somewhere to move; otherwise fires history.
+        """
+        if not select and self.selection.is_empty and self._cursor_at_visual_bottom():
+            self.post_message(self.HistoryNext())
+            return
+        super().action_cursor_down(select)
+
+    def _reset_paste_burst_state(self) -> None:
+        """Reset all paste-burst and backslash tracking to a clean slate.
+
+        Shared by the text-replacing entry points (`set_text_from_history`,
+        `clear_text`, `discard_text`) so a wholesale text swap never leaves
+        stale burst/backslash timing that would misclassify the next keystroke.
+        """
+        super()._reset_paste_burst_state()
+        self._backslash_pending_time = None
+
+    def _in_slash_command_context(self) -> bool:
+        """Return whether the current input is composing a slash command."""
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            return True
+        return self.text.startswith("/")
+
+    def _paste_collapse_enabled(self) -> bool:
+        """Return whether large pastes should be collapsed into placeholders.
+
+        Reads the owning `ChatInput`'s resolved preference, defaulting to
+        enabled when the owner is not yet attached.
+        """
+        owner = self._chat_input_owner
+        return owner is None or owner._collapse_pastes
+
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Route a flushed burst through dropped-path and large-paste checks.
+
+        When parsing fails, the buffered text is inserted unchanged so regular
+        typing behavior is preserved.
+        """
+        from deepagents_code.input import parse_pasted_path_payload
+
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
+        except Exception:
+            # The parser absorbs OSError/RuntimeError internally, so reaching
+            # here signals an unexpected regression.  Leave a breadcrumb (never
+            # the paste content) instead of swallowing it, then fall through to
+            # normal text handling.  Logged at warning (not debug) so the
+            # regression actually surfaces in production.
+            logger.warning(
+                "Path-payload parsing failed; treating burst as text",
+                exc_info=True,
+            )
+            parsed = None
+        if parsed is not None:
+            self.post_message(self.PastedPaths(payload, parsed.paths))
+            return
+
+        if self._paste_collapse_enabled() and _should_collapse_chat_paste(payload):
+            self.post_message(self.PastedText(payload))
+            return
+
+        self.insert(payload)
+
+    def _delete_preceding_backslash(self) -> bool:
+        """Delete the backslash character immediately before the cursor.
+
+        Caller must ensure a backslash is expected at this position. The
+        method verifies the character before deleting it.
+
+        Returns:
+            `True` if a backslash was found and deleted, `False` otherwise.
+        """
+        row, col = self.cursor_location
+        if col > 0:
+            start = (row, col - 1)
+            if self.document.get_text_range(start, self.cursor_location) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        elif row > 0:
+            prev_line = self.document.get_line(row - 1)
+            start = (row - 1, len(prev_line) - 1)
+            end = (row - 1, len(prev_line))
+            if self.document.get_text_range(start, end) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        return False
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Handle key events."""
+        # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
+        # kitty parser patch in `_textual_patches.py` already neutralizes these
+        # at the source; this is defense-in-depth in case a lock key still
+        # arrives with associated text (e.g. if that patch failed to install or
+        # a future terminal bypasses it). Note this only shields the chat input
+        # — if the parser patch silently no-ops, other widgets stay broken. The
+        # key may carry modifier prefixes (e.g. 'ctrl+caps_lock'), so match on
+        # the final '+'-delimited token.
+        if event.key.rsplit("+", 1)[-1] in _LOCK_KEYS:
+            event.prevent_default()
+            event.stop()
+            return
+
+        # VS Code 1.110 incorrectly sends space as a CSI u escape code
+        # (`\x1b[32u`) instead of a plain ` ` character.  Textual parses
+        # this as Key(key='space', character=None, is_printable=False), so
+        # the TextArea never inserts the space.  Per the kitty keyboard
+        # protocol spec, keys that generate text (like space) should NOT
+        # use CSI u encoding — VS Code is the outlier here.
+        #
+        # This workaround should be safe to keep indefinitely: once VS Code or
+        # Textual fixes the issue upstream, `character` will be `' '` and
+        # this branch simply won't match.
+        #
+        # Upstream: https://github.com/Textualize/textual/issues/6408
+        if event.key == "space" and event.character is None:
+            event.prevent_default()
+            event.stop()
+            self.insert(" ")
+            self.post_message(self.Typing())
+            return
+
+        now = time.monotonic()
+
+        # Signal typing activity for printable keys and backspace so the app
+        # can defer approval widgets while the user is actively editing.
+        if event.is_printable or event.key == "backspace":
+            self.post_message(self.Typing())
+
+        if await self._absorb_key_into_burst(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        if self._maybe_start_burst(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Promote rapid keystroke runs into the paste buffer so terminals without
+        # bracketed paste still get newline grouping and large-paste collapsing.
+        if self._track_burst_run(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
+        # unselected input switches modes. Handle it before TextArea inserts the
+        # character so the trigger never flashes on screen for a frame before
+        # the change handler would strip it.
+        if (
+            event.is_printable
+            and event.character is not None
+            and self.cursor_location == (0, 0)
+            and self.selection.is_empty
+            and self._chat_input_owner is not None
+            and self._chat_input_owner.handle_mode_prefix_keystroke(event.character)
+        ):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Some terminals (e.g. VSCode built-in) send a literal backslash
+        # followed by enter for shift+enter.  When enter arrives shortly
+        # after a backslash, delete the backslash and insert a newline.
+        if (
+            event.key == "enter"
+            and not self._completion_active
+            and self._backslash_pending_time is not None
+            and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+        ):
+            self._backslash_pending_time = None
+            if self._delete_preceding_backslash():
+                event.prevent_default()
+                event.stop()
+                self.action_insert_newline()
+                return
+        self._backslash_pending_time = None
+
+        if event.key == "backslash" and event.character == "\\":
+            self._backslash_pending_time = now
+
+        # Modifier+Enter inserts newline — keys derived from BINDINGS
+        if event.key in self._NEWLINE_KEYS:
+            event.prevent_default()
+            event.stop()
+            self.action_insert_newline()
+            return
+
+        if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # If completion is active, let parent handle navigation keys.
+        # Space is included so that slash-command completion can accept the
+        # selected suggestion via the same code path as Tab (avoiding a
+        # frame-lag between the popup hiding and the argument hint appearing).
+        # When the active controller ignores the space (e.g. file completion),
+        # ChatInput.on_key inserts it manually.
+        if self._completion_active and event.key in {
+            "up",
+            "down",
+            "tab",
+            "enter",
+            "space",
+        }:
+            # Prevent TextArea's default behavior (e.g., Enter inserting newline)
+            # but let event bubble to ChatInput for completion handling
+            event.prevent_default()
+            return
+
+        # Plain Enter submits, unless a recent keystroke burst suggests this
+        # newline is part of a paste replayed as key events; then insert a
+        # newline and keep the window alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream.
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            if self._consume_enter_as_burst_newline(now):
+                return
+            if (
+                self._chat_input_owner is not None
+                and self._chat_input_owner._handle_stale_slash_enter()
+            ):
+                return
+            value = self.text.strip()
+            if value:
+                self.post_message(self.Submitted(value))
+            return
+
+        await super()._on_key(event)
+
+    def action_delete_right(self) -> None:
+        """Delete a bound placeholder atomically or the next character."""
+        if not self._delete_placeholder_token(backwards=False):
+            super().action_delete_right()
+
+    def action_delete_word_left(self) -> None:
+        """Delete a bound placeholder atomically or the previous word."""
+        if not self._delete_placeholder_token(backwards=True):
+            super().action_delete_word_left()
+
+    def _delete_placeholder_token(self, *, backwards: bool) -> bool:
+        """Delete a full placeholder token (image, video, or paste) in one keypress.
+
+        Args:
+            backwards: Whether the delete action is backwards (`backspace`) or
+                forwards (`delete`).
+
+        Returns:
+            `True` when a placeholder token was deleted.
+        """
+        if not self.text or not self.selection.is_empty:
+            return False
+
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        span = self._find_placeholder_span(cursor_offset, backwards=backwards)
+        if span is None:
+            return False
+
+        start, end = span
+        start_location = self.document.get_location_from_index(start)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        end_location = self.document.get_location_from_index(end)  # ty: ignore[unresolved-attribute]
+        self.delete(start_location, end_location)
+        self.move_cursor(start_location)
+        return True
+
+    def _bound_media_placeholders(self) -> set[str]:
+        """Return placeholder tokens bound to currently tracked media.
+
+        Returns:
+            The set of `[image N]`/`[video N]` tokens for media the tracker is
+                actually holding. Empty when there is no owner/tracker.
+        """
+        owner = self._chat_input_owner
+        tracker = owner._image_tracker if owner is not None else None
+        if tracker is None:
+            return set()
+        placeholders = {img.placeholder for img in tracker.images}
+        placeholders.update(video.placeholder for video in tracker.videos)
+        return placeholders
+
+    def _bound_paste_ids(self) -> set[int]:
+        """Return paste ids that have backing content in the owner.
+
+        Returns:
+            The set of paste ids present in `ChatInput._pasted_contents`. Empty
+                when there is no owner.
+        """
+        owner = self._chat_input_owner
+        if owner is None:
+            return set()
+        return set(owner._pasted_contents)
+
+    def _find_placeholder_span(
+        self, cursor_offset: int, *, backwards: bool
+    ) -> tuple[int, int] | None:
+        """Return placeholder span to delete for current cursor and key direction.
+
+        Covers image, video, and collapsed-paste placeholders so each deletes as
+        a single atomic token.  Paste placeholders carry backing content in
+        `ChatInput._pasted_contents`; that map is intentionally left untouched
+        here so an undo can restore the token with its content (it is cleared
+        only at submit).
+
+        Only tokens bound to real attachments are treated as atomic: image/video
+        placeholders must correspond to a tracked media item and paste
+        placeholders to an entry in `ChatInput._pasted_contents`. Placeholder-
+        shaped text the user typed by hand (e.g. literally typing ``[image 2]``)
+        is left as ordinary text and edits character by character.
+
+        Args:
+            cursor_offset: Character offset of the cursor from the start of text.
+            backwards: Whether the delete action is backwards (backspace) or
+                forwards (delete).
+
+        Returns:
+            The `(start, end)` character span of the placeholder to delete, or
+                `None` when the cursor is not adjacent to a bound placeholder
+                token.
+        """
+        text = self.text
+        media_placeholders = self._bound_media_placeholders()
+        pasted_ids = self._bound_paste_ids()
+        for pattern in (
+            IMAGE_PLACEHOLDER_PATTERN,
+            VIDEO_PLACEHOLDER_PATTERN,
+            PASTE_PLACEHOLDER_PATTERN,
+        ):
+            for match in pattern.finditer(text):
+                if pattern is PASTE_PLACEHOLDER_PATTERN:
+                    if int(match.group(1)) not in pasted_ids:
+                        continue
+                elif match.group(0) not in media_placeholders:
+                    continue
+                start, end = match.span()
+                if backwards:
+                    # Cursor is inside token or right after a trailing space inserted
+                    # with the token.
+                    if start < cursor_offset <= end:
+                        return start, end
+                    if cursor_offset > 0:
+                        previous_index = cursor_offset - 1
+                        # Swallow trailing whitespace with the token, except for
+                        # a newline: backspacing a line break should rejoin the
+                        # lines without deleting the placeholder.
+                        if (
+                            previous_index < len(text)
+                            and previous_index == end
+                            and text[previous_index].isspace()
+                            and text[previous_index] != "\n"
+                        ):
+                            return start, cursor_offset
+                elif start <= cursor_offset < end:
+                    return start, end
+        return None
+
+    def replace_placeholder_with_text(self, paste_id: int, content: str) -> bool:
+        """Replace a `[Pasted text #id]` placeholder with full text in place.
+
+        Used when the same content is pasted again: the compact placeholder is
+        expanded back to the original text where it sits, preserving surrounding
+        input.
+
+        Args:
+            paste_id: The paste id whose placeholder should be expanded.
+            content: The full text to insert where the placeholder was.
+
+        Returns:
+            `True` when a matching placeholder was found and replaced.
+        """
+        for match in PASTE_PLACEHOLDER_PATTERN.finditer(self.text):
+            if int(match.group(1)) != paste_id:
+                continue
+            start, end = match.span()
+            start_location = self.document.get_location_from_index(start)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+            end_location = self.document.get_location_from_index(end)  # ty: ignore[unresolved-attribute]
+            self.delete(start_location, end_location)
+            self.insert(content, start_location)
+            return True
+        return False
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Handle paste events, detecting file paths and large pastes."""
+        self._backslash_pending_time = None
+        if self._paste_burst_buffer:
+            await self._flush_paste_burst()
+
+        from deepagents_code.input import parse_pasted_path_payload
+
+        try:
+            parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
+        except Exception:
+            # See _flush_paste_burst: swallowing here would silently break the
+            # drag-drop-file path, so log a breadcrumb and fall through to text.
+            logger.debug(
+                "Path-payload parsing failed; treating paste as text",
+                exc_info=True,
+            )
+            parsed = None
+        if parsed is not None:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedPaths(event.text, parsed.paths))
+            return
+
+        if self._paste_collapse_enabled() and _should_collapse_chat_paste(event.text):
+            # Intercept the paste so Textual's default _on_paste doesn't insert
+            # the full text. ChatInput stores the content and inserts a compact
+            # placeholder instead.
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedText(event.text))
+            return
+
+        # Don't call super() here — Textual's MRO dispatch already calls
+        # TextArea._on_paste after this handler returns. Calling super()
+        # would insert the text a second time, duplicating the paste.
+
+    def set_text_from_history(self, text: str, *, cursor_at_end: bool = True) -> None:
+        """Set text from history navigation.
+
+        Args:
+            text: The history entry text to load.
+            cursor_at_end: Place the cursor at the end of the loaded text
+                (use for down-navigation, so the next down press continues
+                forward through history). When `False`, place at the start
+                so the next up press continues backward. Defaults to `True`
+                to preserve historical cursor-at-end behavior for callers
+                that don't specify a direction.
+        """
+        self._reset_paste_burst_state()
+        self._skip_history_change_events += 1
+        self.text = text
+        # The suppressed Changed event (see above) is what would normally toggle
+        # the clear/copy buttons, so sync them now to hide/show in the same frame
+        # the text swaps — otherwise an emptied draft keeps the buttons for a frame.
+        self._sync_owner_action_buttons(text)
+        if cursor_at_end:
+            self.move_cursor_to_end()
+        else:
+            self.move_cursor((0, 0))
+
+    def move_cursor_to_end(self) -> None:
+        """Move the cursor to the end of the current text."""
+        lines = self.text.split("\n")
+        last_row = len(lines) - 1
+        self.move_cursor((last_row, len(lines[last_row])))
+
+    def clear_text(self) -> None:
+        """Clear the text area."""
+        # Increment (not reset) so any pending Changed event from a prior
+        # set_text_from_history is still suppressed, plus one for the
+        # self.text = "" assignment below.
+        self._skip_history_change_events += 1
+        self._reset_paste_burst_state()
+        self.text = ""
+        # Hide the clear/copy buttons in the same frame the draft empties; the
+        # suppressed Changed event would otherwise leave them for an extra frame.
+        self._sync_owner_action_buttons("")
+        self.move_cursor((0, 0))
+
+    def _sync_owner_action_buttons(self, text: str) -> None:
+        """Match the owner's clear/copy buttons to programmatically set text.
+
+        History/clear text swaps suppress the `Changed` event that normally
+        drives button visibility, so the owner is updated directly to keep the
+        buttons in lockstep with the draft (matching the `Changed`-path gate).
+        """
+        owner = self._chat_input_owner
+        if owner is not None:
+            owner._set_action_buttons_visible(visible=bool(text.strip()))
+
+    def discard_text(self) -> bool:
+        """Clear the draft via an undoable edit (restorable with ctrl+z).
+
+        Unlike `clear_text`, the deletion is recorded in the undo history and
+        the resulting `Changed` event is allowed to propagate, so completion
+        and argument-hint state stay in sync.
+
+        Returns:
+            `True` when there was text to clear.
+        """
+        if not self.text:
+            return False
+        self._reset_paste_burst_state()
+        self.clear()
+        return True
+
+
+class _CompletionViewAdapter:
+    """Translate completion-space replacements to text-area coordinates."""
+
+    def __init__(self, chat_input: ChatInput) -> None:
+        """Initialize adapter with its owning `ChatInput`."""
+        self._chat_input = chat_input
+
+    def render_completion_suggestions(
+        self, suggestions: list[tuple[str, str]], selected_index: int
+    ) -> None:
+        """Delegate suggestion rendering to `ChatInput`."""
+        self._chat_input.render_completion_suggestions(suggestions, selected_index)
+
+    def clear_completion_suggestions(self) -> None:
+        """Delegate completion clearing to `ChatInput`."""
+        self._chat_input.clear_completion_suggestions()
+
+    def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
+        """Map completion indices to text-area indices before replacing text."""
+        # The completion controller returns the full command name (e.g.
+        # "/remember") in completion space, but the TextArea only contains
+        # text after the virtual mode prefix (e.g. "/" in command mode).
+        # Strip the prefix to avoid double-insertion.
+        prefix = MODE_PREFIXES.get(self._chat_input.mode, "")
+        if prefix and replacement.startswith(prefix):
+            replacement = replacement[len(prefix) :]
+        self._chat_input.replace_completion_range(
+            self._chat_input._completion_index_to_text_index(start),
+            self._chat_input._completion_index_to_text_index(end),
+            replacement,
+        )
+
+
+class ChatInput(Vertical):
+    """Chat input widget with prompt, multi-line text, autocomplete, and history.
+
+    Features:
+    - Multi-line input with TextArea
+    - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
+    - Up/Down arrows for command history at input boundaries (start/end of text)
+    - Autocomplete for @ (files) and / (commands)
+    """
+
+    DEFAULT_CSS = """
+    ChatInput {
+        height: auto;
+        layers: base actions;
+    }
+
+    ChatInput #input-box {
+        height: auto;
+        min-height: 3;
+        max-height: 25;
+        padding: 0;
+        background: $background;
+        border: solid $primary;
+    }
+
+    ChatInput.mode-shell #input-box {
+        border: solid $mode-bash;
+    }
+
+    ChatInput.mode-command #input-box {
+        border: solid $mode-command;
+    }
+
+    ChatInput.mode-shell-incognito #input-box {
+        border: solid $mode-incognito;
+        border-title-color: $mode-incognito;
+        border-title-style: bold;
+    }
+
+    /* Action buttons float on their own z-layer over the top border line, so
+       they cost no content row and never overlap the draft text. The row docks
+       to the right edge and sizes to its buttons (`width: auto`), overlaying
+       only the right portion of the border line and leaving the rest clear. */
+    ChatInput #input-actions {
+        layer: actions;
+        dock: right;
+        width: auto;
+        height: 1;
+        margin-right: 1;
+        display: none;
+    }
+
+    ChatInput .input-row {
+        height: auto;
+        width: 100%;
+    }
+
+    ChatInput .input-prompt {
+        width: 3;
+        height: 1;
+        padding: 0 1;
+        color: $primary;
+        text-style: bold;
+    }
+
+    ChatInput.mode-shell .input-prompt {
+        color: $mode-bash;
+    }
+
+    ChatInput.mode-command .input-prompt {
+        color: $mode-command;
+    }
+
+    ChatInput.mode-shell-incognito .input-prompt {
+        color: $mode-incognito;
+    }
+
+    ChatInput ChatTextArea {
+        width: 1fr;
+        height: auto;
+        min-height: 1;
+        max-height: 8;
+        border: none;
+        background: transparent;
+        padding: 0;
+    }
+
+    ChatInput ChatTextArea.cursor-underline .text-area--cursor {
+        background: transparent;
+        color: $text;
+        text-style: underline;
+    }
+
+    ChatInput ChatTextArea:focus {
+        border: none;
+    }
+    """
+    """Border and prompt glyph change color per mode for immediate visual feedback."""
+
+    class Submitted(Message):
+        """Message sent when input is submitted."""
+
+        def __init__(self, value: str, mode: str = "normal") -> None:
+            """Initialize with value and mode."""
+            super().__init__()
+            self.value = value
+            self.mode = mode
+
+    class ModeChanged(Message):
+        """Message sent when input mode changes."""
+
+        def __init__(self, mode: str) -> None:
+            """Initialize with new mode."""
+            super().__init__()
+            self.mode = mode
+
+    class Typing(Message):
+        """Posted when the user presses a printable key or backspace in the input.
+
+        The app uses this to delay approval widgets while the user is actively
+        typing, preventing accidental key presses (e.g. `y`, `n`) from
+        triggering approval decisions.
+        """
+
+    mode: reactive[str] = reactive("normal")
+
+    def __init__(
+        self,
+        cwd: str | Path | None = None,
+        history_file: Path | None = None,
+        image_tracker: MediaTracker | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the chat input widget.
+
+        Args:
+            cwd: Current working directory for file completion
+            history_file: Override path for persisted input history.
+                Resolved by `_default_history_path()` when `None`.
+            image_tracker: Optional tracker for attached images
+            **kwargs: Additional arguments for parent
+        """
+        super().__init__(**kwargs)
+        self._cwd = Path(cwd) if cwd else Path.cwd()
+        self._image_tracker = image_tracker
+        self._input_box: Vertical | None = None
+        self._action_buttons: Horizontal | None = None
+        self._text_area: ChatTextArea | None = None
+        self._popup: CompletionPopup | None = None
+        self._completion_manager: MultiCompletionManager | None = None
+        self._completion_view: _CompletionViewAdapter | None = None
+        self._slash_controller: SlashCommandController | None = None
+
+        # Collapsed paste storage: paste_id → full content.  When a large paste
+        # arrives, the full text is stored here and a compact
+        # `[Pasted text #N +M lines]` placeholder is inserted into the text
+        # area instead.  At submission the placeholder is expanded back.
+        self._pasted_contents: dict[int, PastedContent] = {}
+        self._next_paste_id = 1
+
+        # Whether large pastes are collapsed into `[Pasted text #N +M lines]`
+        # placeholders.
+        # Gated by `display.collapse_pastes` (env / `[ui].collapse_pastes`);
+        # when disabled, pasted text is inserted verbatim.
+        self._collapse_pastes = _collapse_pastes_enabled()
+
+        # Guard flag: set True before programmatically stripping the mode
+        # prefix character so the resulting text-change event does not
+        # re-evaluate mode.
+        self._stripping_prefix = False
+
+        # When the user submits, we clear the text area which fires a
+        # text-change event. Without this guard the tracker would see the
+        # now-empty text, assume all media were deleted, and discard them
+        # before the app has a chance to send them. Each submit bumps the
+        # counter by one; the next text-change event decrements it and
+        # skips the sync.
+        self._skip_media_sync_events = 0
+
+        # Number of virtual prefix characters currently injected for
+        # completion controller calls (0 for normal, 1 for shell/command).
+        self._completion_prefix_len = 0
+
+        # Guard flag: set while replacing a dropped path payload with an
+        # inline image placeholder so the resulting change event doesn't
+        # immediately recurse into the same replacement path.
+        self._applying_inline_path_replacement = False
+
+        # Text area content from the previous Changed event. Used to skip
+        # blocking filesystem path-detection on single-keystroke edits while
+        # still detecting replacement edits that insert a full path payload.
+        self._prev_text = ""
+
+        # Track current suggestions for click handling
+        self._current_suggestions: list[tuple[str, str]] = []
+        self._current_selected_index = 0
+
+        # Command name (without /) → argument hint for inline ghost text
+        self._argument_hints: dict[str, str] = {}
+
+        # Set up history manager
+        if history_file is None:
+            history_file = _default_history_path()
+        self._history = HistoryManager(history_file)
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
+        """Compose the chat input layout.
+
+        Yields:
+            Widgets for the input row and completion popup.
+        """
+        # The bordered box owns the prompt, text area, and completion popup so
+        # the action buttons (a sibling) can float on its top border line; a
+        # widget can only render on its sibling's border, not its parent's.
+        with Vertical(id="input-box"):
+            with Horizontal(classes="input-row"):
+                yield Static(">", classes="input-prompt", id="prompt")
+                yield ChatTextArea(id="chat-input")
+            yield CompletionPopup(id="completion-popup")
+
+        # Action buttons float on their own z-layer over the top border line so
+        # they cost no content row and never overlap the draft text.
+        with Horizontal(id="input-actions"):
+            yield InputActionButton(
+                "[ X ]",
+                "clear",
+                id="clear-button",
+                classes="input-action input-action-clear",
+            )
+            yield InputActionButton(
+                "[ COPY ]",
+                "copy",
+                id="copy-button",
+                classes="input-action input-action-copy",
+            )
+
+    def on_mount(self) -> None:
+        """Initialize components after mount."""
+        self._input_box = self.query_one("#input-box", Vertical)
+        self._action_buttons = self.query_one("#input-actions", Horizontal)
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self._input_box.styles.border = ("ascii", colors.primary)
+
+        self._text_area = self.query_one("#chat-input", ChatTextArea)
+        self._popup = self.query_one("#completion-popup", CompletionPopup)
+        self._text_area._chat_input_owner = self
+
+        # Both controllers implement the CompletionController protocol but have
+        # different concrete types; the list-item warning is a false positive.
+        self._completion_view = _CompletionViewAdapter(self)
+        self._file_controller = FuzzyFileController(
+            self._completion_view, cwd=self._cwd
+        )
+        self._slash_controller = SlashCommandController(
+            get_slash_commands(), self._completion_view
+        )
+        self._completion_manager = MultiCompletionManager(
+            [
+                self._slash_controller,
+                self._file_controller,
+            ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
+        )
+
+        self._rebuild_argument_hints(get_slash_commands())
+
+        self._warm_file_cache()
+        self.set_interval(
+            _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+            self._refresh_file_cache,
+        )
+        self._text_area.focus()
+
+    def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
+        """Schedule an `@` file-completion cache warmer.
+
+        No-ops before `on_mount` wires up the file controller (the periodic
+        refresh interval can fire during teardown or a partial mount).
+
+        Args:
+            force: Re-walk even when the cache is already populated. The prior
+                cache stays visible until the new walk completes.
+            exclusive: Cancel any other in-flight warmer in the shared worker
+                group before starting, so a slow walk is superseded by the next
+                tick rather than stacking overlapping walks. Used by the
+                periodic refresh; the on-mount/cwd-switch warmers run
+                non-exclusively so a quick invalidation can warm concurrently.
+        """
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is None:
+            return
+        self.run_worker(
+            file_controller.warm_cache(force=force),
+            exclusive=exclusive,
+            group=_FILE_CACHE_WORKER_GROUP,
+            exit_on_error=False,
+        )
+
+    def _refresh_file_cache(self) -> None:
+        """Re-warm the `@` file-completion cache off the event loop."""
+        self._warm_file_cache(force=True, exclusive=True)
+
+    def set_cwd(self, cwd: str | Path) -> None:
+        """Update file completion to use a new cwd.
+
+        Re-roots the file controller and schedules a background cache warm so
+        the project-root walk runs off the event loop.
+        """
+        self._cwd = Path(cwd)
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is not None:
+            file_controller.set_cwd(self._cwd)
+            self._warm_file_cache()
+
+    def update_slash_commands(self, commands: list[CommandEntry]) -> None:
+        """Update the slash command controller's command list.
+
+        Called by the app after discovering skills to merge static
+        commands with dynamic `/skill:` entries.
+
+        Args:
+            commands: Full list of `CommandEntry` instances.
+        """
+        if self._slash_controller:
+            self._slash_controller.update_commands(commands)
+            self._rebuild_argument_hints(commands)
+        else:
+            logger.warning(
+                "Cannot update slash commands: controller not initialized "
+                "(widget not yet mounted)"
+            )
+
+    def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
+        """Rebuild the command-name -> argument-hint lookup.
+
+        Args:
+            commands: Current list of `CommandEntry` instances.
+        """
+        self._argument_hints = {
+            entry.name.removeprefix("/"): entry.argument_hint
+            for entry in commands
+            if entry.argument_hint
+        }
+
+    def _update_argument_hint(self) -> None:
+        """Show or clear inline ghost text for slash-command argument hints.
+
+        Sets `ChatTextArea.argument_hint` when the input is a known slash
+        command followed by a trailing space with no args typed yet. Both
+        spacebar and Tab completion produce this state (Tab goes through
+        `replace_completion_range` which appends a trailing space).
+        """
+        if not self._text_area:
+            return
+
+        if self.mode == "command":
+            text = self._text_area.text
+            if text.endswith(" ") and text.count(" ") == 1:
+                hint = self._argument_hints.get(text[:-1], "")
+                if hint:
+                    self._text_area.argument_hint = hint
+                    return
+
+        self._text_area.argument_hint = ""
+
+    def _set_action_buttons_visible(self, *, visible: bool) -> None:
+        """Show or hide the clear/copy action buttons on the input border.
+
+        Only writes `display` when it actually changes. Mutating it on every
+        keystroke would trigger a layout reflow each time, which perturbs the
+        completion popup's deferred (`call_after_refresh`) show/hide ordering.
+        """
+        if self._action_buttons is not None and self._action_buttons.display != visible:
+            self._action_buttons.display = visible
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Detect input mode and update completions."""
+        text = event.text_area.text
+        # Reveal the clear/copy buttons only when there is a meaningful draft to
+        # act on, so an empty input keeps a clean, uncluttered border.
+        # Whitespace-only input (e.g. stray spaces or newlines) has nothing
+        # worth clearing or copying, so it stays hidden too. Done before the
+        # early returns below so recalled-history text shows them as well.
+        # NOTE: this `strip()` gate is deliberately stricter than the keyboard
+        # paths (esc+esc clear, Ctrl+C copy), which act on the raw value so a
+        # whitespace-only draft is still clearable/copyable without the buttons.
+        self._set_action_buttons_visible(visible=bool(text.strip()))
+        # Drag-drop / bracketed paste arrive as one Changed event with a
+        # multi-character inserted span. Normal typing arrives one character at
+        # a time. Checking the changed span (rather than net length delta)
+        # preserves replacement edits where selected text is replaced by a path
+        # of similar length.
+        should_check_path_payload = self._should_check_path_payload(text)
+        previous_text = self._prev_text
+        self._sync_media_tracker_to_text(
+            text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
+        )
+        self._prev_text = text
+
+        # History handlers explicitly decide mode and stripped display text.
+        # Skip mode detection here so recalled entries don't inherit stale mode.
+        if self._text_area and self._text_area._skip_history_change_events > 0:
+            self._text_area._skip_history_change_events -= 1
+            if self._completion_manager:
+                self._completion_manager.reset()
+            self.scroll_visible()
+            return
+        if self._text_area and self._text_area._skip_history_change_events < 0:
+            logger.warning(
+                "_skip_history_change_events is negative (%d); resetting to 0",
+                self._text_area._skip_history_change_events,
+            )
+            self._text_area._skip_history_change_events = 0
+
+        if self._applying_inline_path_replacement:
+            self._applying_inline_path_replacement = False
+        elif should_check_path_payload and self._apply_inline_dropped_path_replacement(
+            text
+        ):
+            return
+
+        # Checked after the guards above so we skip the (potentially slow)
+        # filesystem lookup when the text change came from history navigation
+        # or prefix stripping, which never need path detection.
+        is_path_payload = should_check_path_payload and self._is_dropped_path_payload(
+            text
+        )
+
+        # Guard: skip mode re-detection after we programmatically stripped
+        # a prefix character.
+        if self._stripping_prefix:
+            self._stripping_prefix = False
+        elif detected_prefix := detect_mode_prefix(text):
+            prefix, raw_detected = detected_prefix
+            detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
+            if prefix == "/" and is_path_payload:
+                # Absolute dropped paths stay normal input, not slash-command mode.
+                if self.mode != "normal":
+                    self.mode = "normal"
+            else:
+                # Detected a mode-trigger prefix (e.g. "!" or "/").
+                # Strip it unconditionally -- even when already in the correct
+                # mode -- because completion controllers may write replacement
+                # text that re-includes the trigger character.  The
+                # _stripping_prefix guard prevents the resulting change event
+                # from looping back here.
+                if self.mode != detected:
+                    self.mode = detected
+                if strip_length:
+                    self._strip_mode_prefix(strip_length)
+                # Fall through to update completion suggestions in the same
+                # refresh cycle as the mode/glyph change rather than waiting
+                # for the next text-change event caused by the prefix strip.
+                # Note: the strip's text-change event will also call
+                # on_text_changed (idempotently) since _stripping_prefix only
+                # skips mode detection, not the completion block below.
+        # Set inline argument hint before the completion manager runs so
+        # the suggestion is ready in the same render pass that hides the popup.
+        self._update_argument_hint()
+
+        # Update completion suggestions using completion-space text/cursor.
+        if self._completion_manager and self._text_area:
+            if is_path_payload:
+                self._completion_manager.reset()
+            else:
+                vtext, vcursor = self._completion_text_and_cursor()
+                self._completion_manager.on_text_changed(vtext, vcursor)
+
+        # Scroll input into view when content changes (handles text wrap)
+        self.scroll_visible()
+
+    def _should_check_path_payload(self, text: str) -> bool:
+        """Return whether a text change may contain a pasted path payload."""
+        old = self._prev_text
+        if text == old:
+            return False
+
+        prefix_len = 0
+        max_prefix_len = min(len(old), len(text))
+        while prefix_len < max_prefix_len and old[prefix_len] == text[prefix_len]:
+            prefix_len += 1
+
+        old_suffix = len(old)
+        text_suffix = len(text)
+        while (
+            old_suffix > prefix_len
+            and text_suffix > prefix_len
+            and old[old_suffix - 1] == text[text_suffix - 1]
+        ):
+            old_suffix -= 1
+            text_suffix -= 1
+
+        inserted_len = text_suffix - prefix_len
+        return inserted_len > 1
+
+    @staticmethod
+    def _parse_dropped_path_payload(
+        text: str, *, allow_leading_path: bool = False
+    ) -> ParsedPastedPathPayload | None:
+        """Parse dropped-path payload text through a single parser entrypoint.
+
+        Returns:
+            Parsed payload details, otherwise `None`.
+        """
+        from deepagents_code.input import parse_pasted_path_payload
+
+        return parse_pasted_path_payload(text, allow_leading_path=allow_leading_path)
+
+    def _parse_dropped_path_payload_with_command_recovery(
+        self, text: str, *, allow_leading_path: bool = False
+    ) -> tuple[str, ParsedPastedPathPayload | None]:
+        """Parse payload and recover stripped leading slash in command mode.
+
+        Args:
+            text: Input text to parse.
+            allow_leading_path: Whether to parse leading path + suffix payloads.
+
+        Returns:
+            Tuple of `(candidate_text, parsed_payload)`.
+        """
+        candidate = text
+        parsed = self._parse_dropped_path_payload(
+            text, allow_leading_path=allow_leading_path
+        )
+        if parsed is not None:
+            return candidate, parsed
+
+        if self.mode != "command":
+            return candidate, None
+
+        prefixed = f"/{text.lstrip('/')}"
+        parsed = self._parse_dropped_path_payload(
+            prefixed, allow_leading_path=allow_leading_path
+        )
+        if parsed is None:
+            return candidate, None
+
+        logger.debug(
+            "Recovering stripped absolute path; resetting mode from "
+            "'command' to 'normal'"
+        )
+        self.mode = "normal"
+        return prefixed, parsed
+
+    def _extract_leading_dropped_path_with_command_recovery(
+        self, text: str
+    ) -> tuple[str, tuple[Path, int] | None]:
+        """Extract a leading dropped-path token with command-mode recovery.
+
+        Args:
+            text: Input text to parse.
+
+        Returns:
+            Tuple of `(candidate_text, leading_match)`, where `leading_match` is
+            `(path, token_end)` when extraction succeeds, otherwise `None`.
+        """
+        from deepagents_code.input import extract_leading_pasted_file_path
+
+        leading_match = extract_leading_pasted_file_path(text)
+        candidate = text
+        if leading_match is not None:
+            return candidate, leading_match
+
+        if self.mode != "command":
+            return candidate, None
+
+        prefixed = f"/{text.lstrip('/')}"
+        leading_match = extract_leading_pasted_file_path(prefixed)
+        if leading_match is None:
+            return candidate, None
+
+        logger.debug(
+            "Recovering stripped absolute leading path; resetting mode "
+            "from 'command' to 'normal'"
+        )
+        self.mode = "normal"
+        return prefixed, leading_match
+
+    @staticmethod
+    def _is_existing_path_payload(text: str) -> bool:
+        """Return whether text is a dropped-path payload for existing files."""
+        if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
+            return False
+        from deepagents_code.input import parse_pasted_path_payload
+
+        return parse_pasted_path_payload(text, allow_leading_path=True) is not None
+
+    def _is_dropped_path_payload(self, text: str) -> bool:
+        """Return whether current text looks like a dropped file-path payload."""
+        if not text:
+            return False
+        if self._is_existing_path_payload(text):
+            return True
+        if self.mode == "command":
+            candidate = f"/{text.lstrip('/')}"
+            return self._is_existing_path_payload(candidate)
+        return False
+
+    def _resolve_prefix_mode(self, prefix: str, detected: str) -> tuple[str, int]:
+        """Resolve target mode and strip length for a detected mode prefix.
+
+        Applies the `!`/`!!` state machine relative to the current mode.
+
+        Returns:
+            Tuple of `(target_mode, strip_length)`.
+        """
+        strip_length = len(prefix)
+        if self.mode == "shell" and detected == "shell":
+            # First `!` was stripped on entry to shell mode, so this `!` is the
+            # second bang of `!!`. Promote to incognito and consume it.
+            detected = "shell_incognito"
+        elif self.mode == "shell_incognito" and detected == "shell":
+            # Already in incognito; an extra `!` is part of the command body.
+            # Skip the strip-and-demote path that would drop back to shell mode.
+            detected = "shell_incognito"
+            strip_length = 0
+        return detected, strip_length
+
+    def handle_mode_prefix_keystroke(self, char: str) -> bool:
+        """Switch input mode for a mode trigger typed at the start of the input.
+
+        Handles the switch before `TextArea` inserts the character so the
+        trigger (`!`, `!!`, `/`) never flashes on screen for a frame before the
+        change handler would strip it.
+
+        Returns:
+            True if the keystroke was consumed as a mode selector without
+            inserting the character, otherwise False.
+        """
+        detected_prefix = detect_mode_prefix(char)
+        if detected_prefix is None:
+            return False
+        prefix, raw_detected = detected_prefix
+        detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
+        if not strip_length:
+            # An extra `!` inside an incognito command body is literal text.
+            return False
+        if self.mode != detected:
+            self.mode = detected
+        # No text changed, so run the same hint/completion refresh that
+        # on_text_area_changed performs after stripping a typed prefix.
+        self._update_argument_hint()
+        if self._completion_manager and self._text_area:
+            vtext, vcursor = self._completion_text_and_cursor()
+            self._completion_manager.on_text_changed(vtext, vcursor)
+        self.scroll_visible()
+        return True
+
+    def _strip_mode_prefix(self, length: int = 1) -> None:
+        """Remove the mode trigger from the text area.
+
+        Sets the `_stripping_prefix` guard so the resulting text-change event is
+        not misinterpreted as new input.
+
+        Args:
+            length: Number of leading characters to strip (matches the trigger
+                length detected by `detect_mode_prefix`).
+        """
+        if not self._text_area:
+            return
+        if self._stripping_prefix:
+            logger.warning(
+                "Previous _stripping_prefix guard was never cleared; "
+                "resetting. This may indicate a missed text-change event."
+            )
+        text = self._text_area.text
+        if not text:
+            return
+        row, col = self._text_area.cursor_location
+        self._stripping_prefix = True
+        self._text_area.text = text[length:]
+        if row == 0 and col > 0:
+            col = max(0, col - length)
+        self._text_area.move_cursor((row, col))
+
+    def _completion_text_and_cursor(self) -> tuple[str, int]:
+        """Return controller-facing text/cursor in completion space.
+
+        Also updates `_completion_prefix_len` so that subsequent calls to
+        `_completion_index_to_text_index` use the matching offset.
+        """
+        if not self._text_area:
+            self._completion_prefix_len = 0
+            return "", 0
+
+        text = self._text_area.text
+        cursor = self._get_cursor_offset()
+        prefix = MODE_PREFIXES.get(self.mode, "")
+        self._completion_prefix_len = len(prefix)
+
+        if prefix:
+            return prefix + text, cursor + len(prefix)
+        return text, cursor
+
+    def _completion_index_to_text_index(self, index: int) -> int:
+        """Translate completion-space index into text-area index.
+
+        Args:
+            index: Cursor/index position in completion space.
+
+        Returns:
+            Clamped index in text-area space.
+        """
+        if not self._text_area:
+            return 0
+
+        if 0 <= index <= self._completion_prefix_len:
+            return 0
+
+        mapped = index - self._completion_prefix_len
+        text_len = len(self._text_area.text)
+        if mapped < 0 or mapped > text_len:
+            logger.warning(
+                "Completion index %d mapped to %d, outside [0, %d]; "
+                "clamping (prefix_len=%d, mode=%s)",
+                index,
+                mapped,
+                text_len,
+                self._completion_prefix_len,
+                self.mode,
+            )
+        return max(0, min(mapped, text_len))
+
+    def _handle_stale_slash_enter(self) -> bool:
+        """Refresh stale slash completions during an Enter-key race.
+
+        Returns:
+            `True` when Enter was handled by applying a single visible
+            suggestion or by showing multiple visible suggestions.
+        """
+        if self.mode != "command" or self._text_area is None:
+            return False
+
+        slash_controller = self._slash_controller
+        if slash_controller is None:
+            return False
+
+        if self._text_area._completion_active:
+            return False
+
+        text, cursor = self._completion_text_and_cursor()
+        if not text.startswith("/"):
+            return False
+
+        matches = slash_controller.name_prefix_matches(text, cursor)
+        if not matches:
+            return False
+
+        completion_manager = self._completion_manager
+        if completion_manager is None:
+            logger.warning(
+                "Slash controller is initialized without completion manager; "
+                "stale slash Enter cannot refresh completions."
+            )
+            return False
+
+        completion_manager.on_text_changed(text, cursor)
+        if len(matches) == 1:
+            slash_controller.apply_name_prefix_completion(matches[0], cursor)
+            self._submit_value(self._text_area.text.strip())
+            return True
+        return True
+
+    def _submit_value(self, value: str) -> None:
+        """Prepend mode prefix, save to history, post message, and reset input.
+
+        This is the single path for all submission flows so the prefix-prepend +
+        history + post + clear + mode-reset logic stays in one place.
+
+        Args:
+            value: The stripped text to submit (without mode prefix).
+        """
+        if not value:
+            return
+
+        if self._completion_manager:
+            self._completion_manager.reset()
+
+        # Expand collapsed paste placeholders back to their full content so the
+        # agent receives the original text, not the compact reference.
+        value = expand_paste_refs(value, self._pasted_contents)
+        value = self._replace_submitted_paths_with_images(value)
+
+        mode = self.mode
+        if mode == "normal":
+            detected = detect_mode_prefix(value)
+            if detected is not None:
+                _, mode = detected
+
+        # Prepend mode prefix so the app layer receives the original trigger
+        # form (e.g. "!ls", "/help"). The value may already contain the prefix
+        # when a completion controller wrote it back into the text area before
+        # the strip handler ran.
+        prefix = MODE_PREFIXES.get(mode, "")
+        if prefix and not value.startswith(prefix):
+            value = prefix + value
+
+        # Placeholder spans were captured against the raw draft; the transforms
+        # above (whitespace strip, paste expansion, path substitution, prefix)
+        # shifted offsets. Re-map spans onto the final submitted text so the
+        # adapter strips the correct display token from the model-facing message
+        # instead of a same-looking literal the user typed.
+        if self._text_area is not None and self._image_tracker is not None:
+            self._image_tracker.remap_spans_to_text(
+                value, previous_text=self._text_area.text
+            )
+
+        self._history.add(value)
+        self.post_message(self.Submitted(value, mode))
+
+        if self._text_area:
+            # Preserve submission-time attachments until adapter consumes them.
+            self._skip_media_sync_events += 1
+            self._text_area.clear_text()
+        # Clear only after submit. Ordinary edits are undoable, so removing
+        # backing content earlier can strand a restored placeholder.  The input
+        # and its paste map are emptied together here, so IDs can safely restart
+        # at 1 for the next message.
+        self._pasted_contents.clear()
+        self._next_paste_id = 1
+        self.mode = "normal"
+
+    def _sync_media_tracker_to_text(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> None:
+        """Keep tracked media aligned with placeholder tokens in input text.
+
+        Args:
+            text: Current text in the input area.
+            previous_text: Previous text in the input area.
+            cursor_offset: Current cursor offset in the input area.
+        """
+        if not self._image_tracker:
+            return
+        if self._skip_media_sync_events:
+            if self._skip_media_sync_events < 0:
+                logger.warning(
+                    "_skip_media_sync_events is negative (%d); resetting to 0",
+                    self._skip_media_sync_events,
+                )
+                self._skip_media_sync_events = 0
+            else:
+                self._skip_media_sync_events -= 1
+            return
+        self._image_tracker.sync_to_text(
+            text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
+
+    def on_chat_text_area_typing(
+        self,
+        event: ChatTextArea.Typing,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Relay typing activity to the app as `ChatInput.Typing`."""
+        self.post_message(self.Typing())
+
+    def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
+        """Handle text submission.
+
+        Always posts the Submitted event - the app layer decides whether to
+        process immediately or queue based on agent status.
+        """
+        self._submit_value(event.value)
+
+    def on_chat_text_area_history_previous(
+        self, event: ChatTextArea.HistoryPrevious
+    ) -> None:
+        """Handle history previous request."""
+        entry = self._history.get_previous(event.current_text, query=event.current_text)
+        if entry is not None and self._text_area:
+            mode, display_text = self._history_entry_mode_and_text(entry)
+            self.mode = mode
+            # Cursor at top so pressing up again continues backward through
+            # history without the user having to navigate to the first row.
+            self._text_area.set_text_from_history(display_text, cursor_at_end=False)
+        else:
+            # No matching older entry — surface the boundary so the user
+            # doesn't think their keypress was lost.
+            self.app.bell()
+
+    def on_chat_text_area_history_next(
+        self,
+        event: ChatTextArea.HistoryNext,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Handle history next request."""
+        entry = self._history.get_next()
+        if entry is not None and self._text_area:
+            mode, display_text = self._history_entry_mode_and_text(entry)
+            self.mode = mode
+            # Cursor at end so pressing down again continues forward through
+            # history.
+            self._text_area.set_text_from_history(display_text, cursor_at_end=True)
+        else:
+            self.app.bell()
+
+    def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
+        """Handle paste payloads that resolve to dropped file paths."""
+        if not self._text_area:
+            return
+
+        self._insert_pasted_paths(event.raw_text, event.paths)
+
+    def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
+        """Handle large pastes by collapsing into a compact placeholder.
+
+        Stores the full text in `_pasted_contents` and inserts a
+        `[Pasted text #N +M lines]` placeholder into the text area instead
+        of the raw content, keeping the input box compact.
+
+        Args:
+            event: The `PastedText` message carrying the full pasted text.
+        """
+        if not self._text_area:
+            return
+        self._collapse_and_insert_paste(event.text)
+
+    def handle_external_paste(self, pasted: str) -> bool:
+        """Handle paste text from app-level routing when input is not focused.
+
+        When the text area is mounted, the paste is always consumed: file paths
+        are attached as images, large text is collapsed into a placeholder,
+        and remaining plain text is inserted directly.
+
+        Args:
+            pasted: Raw pasted text payload.
+
+        Returns:
+            `True` when the text area is mounted and the paste was inserted,
+                `False` if the widget is not yet composed.
+        """
+        if not self._text_area:
+            return False
+
+        parsed = self._parse_dropped_path_payload(pasted)
+        if parsed is not None:
+            self._insert_pasted_paths(pasted, parsed.paths)
+        elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
+            self._collapse_and_insert_paste(pasted)
+        else:
+            self._text_area.insert(pasted)
+
+        self._text_area.focus()
+        return True
+
+    def _collapse_and_insert_paste(self, text: str) -> None:
+        """Store full paste content and insert a compact placeholder.
+
+        Pasting content identical to a visible already-collapsed placeholder
+        expands that placeholder back to the full text in place instead of
+        adding a second placeholder — a repeat paste is treated as a request to
+        see the content in full.
+
+        Args:
+            text: The full pasted text to collapse.
+        """
+        if not self._text_area:
+            logger.debug("Dropping collapsed paste: text area not mounted")
+            return
+        visible_ids = {
+            int(match.group(1))
+            for match in PASTE_PLACEHOLDER_PATTERN.finditer(self._text_area.text)
+        }
+        match_id = next(
+            (
+                pid
+                for pid, stored in self._pasted_contents.items()
+                if pid in visible_ids and stored.content == text
+            ),
+            None,
+        )
+        if match_id is not None and self._text_area.replace_placeholder_with_text(
+            match_id, text
+        ):
+            return
+        paste_id = self._next_paste_id
+        self._next_paste_id += 1
+        self._pasted_contents[paste_id] = PastedContent(content=text)
+        placeholder = format_paste_ref(paste_id, count_lines(text))
+        self._text_area.insert(placeholder)
+        self.app.notify(_PASTE_COLLAPSED_TOAST, timeout=5, markup=False)
+
+    def _apply_inline_dropped_path_replacement(self, text: str) -> bool:
+        """Replace full dropped-path payload text with image placeholders.
+
+        Some terminals insert drag-and-drop payloads as plain text rather than
+        dispatching a dedicated paste event. When the current text resolves to
+        one or more file paths and at least one path is an image, rewrite the
+        text inline to `[image N]` placeholders.
+
+        Args:
+            text: Current text area content.
+
+        Returns:
+            `True` if text was rewritten inline, otherwise `False`.
+        """
+        if not self._text_area:
+            return False
+
+        parsed = self._parse_dropped_path_payload(text)
+        if parsed is None:
+            return False
+
+        replacement, attached = self._build_path_replacement(
+            text, parsed.paths, add_trailing_space=True
+        )
+        if not attached or replacement == text:
+            return False
+
+        self._applying_inline_path_replacement = True
+        self._text_area.text = replacement
+        self._text_area.move_cursor_to_end()
+        return True
+
+    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+        """Insert pasted path payload, attaching images when possible.
+
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+        """
+        if not self._text_area:
+            return
+        replacement, attached = self._build_path_replacement(
+            raw_text, paths, add_trailing_space=True
+        )
+        if attached:
+            self._text_area.insert(replacement)
+            return
+        self._text_area.insert(raw_text)
+
+    def _build_path_replacement(
+        self,
+        raw_text: str,
+        paths: list[Path],
+        *,
+        add_trailing_space: bool,
+    ) -> tuple[str, bool]:
+        """Build replacement text for dropped paths and attach any images.
+
+        Args:
+            raw_text: Original paste payload text.
+            paths: Resolved file paths parsed from the payload.
+            add_trailing_space: Whether to append a trailing space after the
+                last token when paths are separated by spaces.
+
+        Returns:
+            Tuple of `(replacement, attached)` where `attached` indicates whether
+            at least one media attachment (image or video) was created.
+        """
+        if not self._image_tracker:
+            return raw_text, False
+
+        from deepagents_code.media_utils import (
+            IMAGE_EXTENSIONS,
+            MAX_MEDIA_BYTES,
+            VIDEO_EXTENSIONS,
+            ImageData,
+            get_media_from_path,
+        )
+
+        parts: list[str] = []
+        attached = False
+        for path in paths:
+            media = get_media_from_path(path)
+            if media is not None:
+                kind = "image" if isinstance(media, ImageData) else "video"
+                existing_text = self._text_area.text if self._text_area else raw_text
+                parts.append(
+                    self._image_tracker.add_media(
+                        media,
+                        kind,
+                        existing_text=existing_text,
+                    )
+                )
+                attached = True
+                continue
+
+            # Check if it looked like media but failed validation
+            suffix = path.suffix.lower()
+            if suffix in IMAGE_EXTENSIONS or suffix in VIDEO_EXTENSIONS:
+                label = "Video" if suffix in VIDEO_EXTENSIONS else "Image"
+                try:
+                    size = path.stat().st_size
+                    if size > MAX_MEDIA_BYTES:
+                        msg = (
+                            f"{label} too large: {path.name} "
+                            f"({size // (1024 * 1024)} MB, max "
+                            f"{MAX_MEDIA_BYTES // (1024 * 1024)} MB)"
+                        )
+                    else:
+                        msg = f"Could not attach {label.lower()}: {path.name}"
+                except OSError as exc:
+                    logger.debug("Failed to stat media file %s: %s", path, exc)
+                    msg = f"Could not attach {label.lower()}: {path.name}"
+                self.app.notify(msg, severity="warning", timeout=5, markup=False)
+
+            # Not a supported media file, keep as path
+            logger.debug("Could not load media from dropped path: %s", path)
+            parts.append(str(path))
+
+        if not attached:
+            return raw_text, False
+
+        separator = "\n" if "\n" in raw_text else " "
+        replacement = separator.join(parts)
+        if separator == " " and add_trailing_space:
+            replacement += " "
+        return replacement, True
+
+    def _replace_submitted_paths_with_images(self, value: str) -> str:
+        """Replace dropped-path payloads in submitted text with image placeholders.
+
+        Handles both full-path payloads and leading-path-with-suffix payloads
+        (for example, `'<path>' what is this?`). When command mode previously
+        stripped a leading slash, this method also retries with the slash
+        restored before giving up.
+
+        Args:
+            value: Stripped submitted text (without mode prefix).
+
+        Returns:
+            Submitted text with image placeholders when attachment succeeded.
+        """
+        candidate, parsed = self._parse_dropped_path_payload_with_command_recovery(
+            value, allow_leading_path=True
+        )
+        if parsed is None:
+            return value
+
+        if parsed.token_end is None:
+            replacement, attached = self._build_path_replacement(
+                candidate, parsed.paths, add_trailing_space=False
+            )
+            if attached:
+                return replacement.strip()
+            # Even when full-payload parsing resolves, still retry explicit
+            # leading-token extraction before giving up.
+            candidate, leading_match = (
+                self._extract_leading_dropped_path_with_command_recovery(value)
+            )
+            if leading_match is None:
+                return value
+            leading_path, token_end = leading_match
+        else:
+            leading_path = parsed.paths[0]
+            token_end = parsed.token_end
+
+        replacement, attached = self._build_path_replacement(
+            str(leading_path), [leading_path], add_trailing_space=False
+        )
+        if attached:
+            suffix = candidate[token_end:].lstrip()
+            if suffix:
+                return f"{replacement.strip()} {suffix}".strip()
+            return replacement.strip()
+        return value
+
+    @staticmethod
+    def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:
+        """Return mode and stripped display text for a history entry.
+
+        Args:
+            entry: Raw entry value read from history storage.
+
+        Returns:
+            Tuple of `(mode, display_text)` where mode-trigger prefixes are
+                removed from `display_text`.
+        """
+        if mode_match := detect_mode_prefix(entry):
+            prefix, mode = mode_match
+            return mode, entry[len(prefix) :]
+        return "normal", entry
+
+    async def on_key(self, event: events.Key) -> None:
+        """Handle key events for completion navigation."""
+        if not self._completion_manager or not self._text_area:
+            return
+
+        # Backspace at the start of a mode prompt exits the current mode. Prefix
+        # characters are mode selectors, not hidden draft text, so exiting the
+        # mode does not restore `/`, `!`, or `!!` into the input.
+        if (
+            event.key == "backspace"
+            and self.mode != "normal"
+            and self._get_cursor_offset() == 0
+            and not self._text_area.text
+        ):
+            # Schedule the popup reset alongside the prompt/style update so both
+            # visual changes land before the next paint.
+            def _deferred_reset() -> None:
+                if self._completion_manager is not None:
+                    self._completion_manager.reset()
+
+            self.call_next(_deferred_reset)
+            self.mode = "normal"
+            event.prevent_default()
+            event.stop()
+            return
+
+        text, cursor = self._completion_text_and_cursor()
+        result = self._completion_manager.on_key(event, text, cursor)
+
+        match result:
+            case CompletionResult.HANDLED:
+                event.prevent_default()
+                event.stop()
+            case CompletionResult.SUBMIT:
+                event.prevent_default()
+                event.stop()
+                self._submit_value(self._text_area.text.strip())
+            case CompletionResult.IGNORED if event.key == "space":
+                # Space was intercepted (prevent_default) so the active
+                # controller could attempt completion. The controller
+                # declined (e.g. file completion), so insert the space that
+                # TextArea would have inserted normally.
+                self._text_area.insert(" ")
+            case CompletionResult.IGNORED if event.key == "enter":
+                # Handle Enter when completion is not active (shell/normal modes)
+                value = self._text_area.text.strip()
+                if value:
+                    event.prevent_default()
+                    event.stop()
+                    self._submit_value(value)
+
+    def _get_cursor_offset(self) -> int:
+        """Get the cursor offset as a single integer.
+
+        Returns:
+            Cursor position as character offset from start of text.
+        """
+        if not self._text_area:
+            return 0
+
+        text = self._text_area.text
+        row, col = self._text_area.cursor_location
+
+        if not text:
+            return 0
+
+        lines = text.split("\n")
+        row = max(0, min(row, len(lines) - 1))
+        col = max(0, col)
+
+        offset = sum(len(lines[i]) + 1 for i in range(row))
+        return offset + min(col, len(lines[row]))
+
+    def watch_mode(self, mode: str) -> None:
+        """Post mode changed message and update prompt indicator.
+
+        The prompt glyph update is scheduled for the next message-loop turn so
+        callers which also schedule popup work can coalesce both visual changes
+        before the next paint.
+        """
+        # Keep inline argument hints in sync for mode-only transitions
+        # (for example, exiting command mode via Escape or backspace).
+        self._update_argument_hint()
+
+        glyph = MODE_DISPLAY_GLYPHS.get(mode)
+        if not glyph and mode != "normal":
+            logger.warning(
+                "No display glyph for mode %r; falling back to '>'",
+                mode,
+            )
+
+        def _apply() -> None:
+            self.remove_class("mode-shell", "mode-command", "mode-shell-incognito")
+            if glyph:
+                class_name = (
+                    "mode-shell-incognito"
+                    if mode == "shell_incognito"
+                    else f"mode-{mode}"
+                )
+                self.add_class(class_name)
+            try:
+                prompt = self.query_one("#prompt", Static)
+            except NoMatches:
+                logger.warning("watch_mode._apply: prompt widget not found")
+                if mode == "shell_incognito":
+                    # Privacy-sensitive: surface a visible warning so the user
+                    # never types an incognito command without confirmation
+                    # that the mode is active.
+                    app = getattr(self, "app", None)
+                    if app is not None:
+                        with contextlib.suppress(Exception):
+                            app.notify(
+                                "Incognito mode UI failed to render; "
+                                "switching back to normal input.",
+                                severity="warning",
+                                markup=False,
+                            )
+                    self.mode = "normal"
+                return
+            prompt.update(glyph or ">")
+            if self._input_box is not None:
+                self._input_box.border_title = (
+                    "incognito" if mode == "shell_incognito" else None
+                )
+
+        self.call_next(_apply)
+        self.post_message(self.ModeChanged(mode))
+
+    def focus_input(self) -> None:
+        """Focus the input field."""
+        if self._text_area:
+            self._text_area.focus()
+
+    @property
+    def value(self) -> str:
+        """Current input value.
+
+        Returns:
+            Current text in the input field.
+        """
+        if self._text_area:
+            return self._text_area.text
+        return ""
+
+    @value.setter
+    def value(self, val: str) -> None:
+        """Set the input value."""
+        if self._text_area:
+            self._text_area.text = val
+
+    def set_value_at_end(self, val: str) -> bool:
+        """Set the input value and place the cursor at the end of the text.
+
+        Returns:
+            `True` when the value was written, `False` when the text area is
+            unavailable and the value could not be set. Callers that surface a
+            "restored"/"moved to input" toast should gate it on this so the
+            toast never claims a write that did not happen.
+        """
+        if not self._text_area:
+            return False
+        self._text_area.text = val
+        self._text_area.move_cursor_to_end()
+        return True
+
+    def discard_text(self) -> bool:
+        """Clear the draft, keeping it restorable via undo (ctrl+z).
+
+        Returns:
+            `True` when there was text to clear.
+        """
+        if self._text_area is None:
+            return False
+        if self._text_area.text:
+            self._skip_media_sync_events += 1
+        return self._text_area.discard_text()
+
+    def on_input_action_button_clicked(self, event: InputActionButton.Clicked) -> None:
+        """Handle clicks on the `[ X ]` / `[ COPY ]` input buttons."""
+        event.stop()
+        if event.action == "clear":
+            self._clear_via_button()
+        elif event.action == "copy":
+            self._copy_via_button()
+        else:
+            assert_never(event.action)
+
+    def _clear_via_button(self) -> None:
+        """Clear the draft from the `[ X ]` button (undoable with ctrl+z).
+
+        Also exits any active slash/shell mode, unlike the Esc-driven clear.
+        """
+        cleared = self.discard_text()
+        self.exit_mode()
+        if cleared:
+            self.app.notify("Input cleared (ctrl+z to undo)", timeout=3, markup=False)
+        if self._text_area is not None:
+            self._text_area.focus()
+
+    def _copy_via_button(self) -> None:
+        """Copy the current draft to the clipboard from the `[ COPY ]` button."""
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        text = expand_paste_refs(self.value, self._pasted_contents)
+        if text:
+            copy_text_with_feedback(
+                self.app,
+                text,
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+        # Refocus the input so clicking the button never strands focus on the
+        # (non-focusable) button.
+        if self._text_area is not None:
+            self._text_area.focus()
+
+    @property
+    def input_widget(self) -> ChatTextArea | None:
+        """Underlying `TextArea` widget.
+
+        Returns:
+            The `ChatTextArea` widget or `None` if not mounted.
+        """
+        return self._text_area
+
+    def set_disabled(self, *, disabled: bool) -> None:
+        """Enable or disable the input widget."""
+        if self._text_area:
+            self._text_area.disabled = disabled
+            if disabled:
+                self._text_area.blur()
+                if self._completion_manager:
+                    self._completion_manager.reset()
+
+    def set_cursor_active(self, *, active: bool) -> None:
+        """Toggle input focus state (e.g., unfocus while agent is working).
+
+        Args:
+            active: Whether the input should be focused and accepting input.
+        """
+        if self._text_area:
+            self._text_area.set_app_focus(has_focus=active)
+
+    def set_cursor_style(self, *, style: CursorStyle) -> None:
+        """Set the input cursor's visual style.
+
+        Args:
+            style: Whether to render a block or underlined character cell.
+        """
+        if self._text_area is not None:
+            self._text_area.set_class(style == "underline", "cursor-underline")
+
+    def set_cursor_blink(self, *, blink: bool) -> None:
+        """Toggle the input's cursor blink without changing focus.
+
+        Args:
+            blink: Whether the cursor should blink.
+        """
+        if self._text_area is not None:
+            self._text_area.cursor_blink = blink
+
+    def _notify_app_blur(self) -> None:
+        """Tell the text area the terminal window lost OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_blur()
+
+    def _notify_app_focus(self) -> None:
+        """Tell the text area the terminal window regained OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_focus()
+
+    def exit_mode(self) -> bool:
+        """Exit the current input mode (command/shell) back to normal.
+
+        Returns:
+            True if mode was non-normal and has been reset.
+        """
+        if self.mode == "normal":
+            return False
+        self.mode = "normal"
+        if self._completion_manager:
+            self._completion_manager.reset()
+        self.clear_completion_suggestions()
+        return True
+
+    def dismiss_completion(self) -> bool:
+        """Dismiss completion: clear view and reset controller state.
+
+        Returns:
+            True if completion was active and has been dismissed.
+        """
+        if not self._current_suggestions:
+            return False
+        if self._completion_manager:
+            self._completion_manager.reset()
+        # Always clear local state so the popup is hidden even if the
+        # manager's active controller was already None (no-op reset).
+        self.clear_completion_suggestions()
+        return True
+
+    # =========================================================================
+    # CompletionView protocol implementation
+    # =========================================================================
+
+    def render_completion_suggestions(
+        self, suggestions: list[tuple[str, str]], selected_index: int
+    ) -> None:
+        """Render completion suggestions in the popup."""
+        prev_suggestions = self._current_suggestions
+        self._current_suggestions = suggestions
+        self._current_selected_index = selected_index
+
+        if self._popup:
+            # If only the selection changed (same items), skip full rebuild
+            if suggestions == prev_suggestions:
+                self._popup.update_selection(selected_index)
+            else:
+                self._popup.update_suggestions(suggestions, selected_index)
+        # Tell TextArea that completion is active so it yields navigation keys
+        if self._text_area:
+            self._text_area.set_completion_active(active=bool(suggestions))
+
+    def clear_completion_suggestions(self) -> None:
+        """Clear/hide the completion popup."""
+        self._current_suggestions = []
+        self._current_selected_index = 0
+
+        if self._popup:
+            self._popup.hide()
+        # Tell TextArea that completion is no longer active
+        if self._text_area:
+            self._text_area.set_completion_active(active=False)
+
+    def on_completion_popup_option_clicked(
+        self, event: CompletionPopup.OptionClicked
+    ) -> None:
+        """Handle click on a completion option."""
+        if not self._current_suggestions or not self._text_area:
+            return
+
+        index = event.index
+        if index < 0 or index >= len(self._current_suggestions):
+            return
+
+        # Get the selected completion
+        label, _ = self._current_suggestions[index]
+        text = self._text_area.text
+        cursor = self._get_cursor_offset()
+
+        # Determine replacement range based on completion type.
+        # Slash completions use completion-space coordinates and are translated
+        # through the completion view adapter.
+        if label.startswith("/"):
+            if self._completion_view is None:
+                logger.warning(
+                    "Slash completion clicked but _completion_view is not "
+                    "initialized; this indicates a widget lifecycle issue."
+                )
+                return
+            _, virtual_cursor = self._completion_text_and_cursor()
+            self._completion_view.replace_completion_range(0, virtual_cursor, label)
+        elif label.startswith("@"):
+            # File mention: replace from @ to cursor
+            at_index = text[:cursor].rfind("@")
+            if at_index >= 0:
+                self.replace_completion_range(at_index, cursor, label)
+
+        # Reset completion state
+        if self._completion_manager:
+            self._completion_manager.reset()
+
+        # Re-focus the text input after click
+        self._text_area.focus()
+
+    def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
+        """Replace text in the input field."""
+        if not self._text_area:
+            return
+
+        text = self._text_area.text
+
+        start = max(0, min(start, len(text)))
+        end = max(start, min(end, len(text)))
+
+        prefix = text[:start]
+        suffix = text[end:]
+
+        # Add space after completion unless it's a directory path
+        if replacement.endswith("/"):
+            insertion = replacement
+        else:
+            insertion = replacement + " " if not suffix.startswith(" ") else replacement
+
+        new_text = f"{prefix}{insertion}{suffix}"
+        self._text_area.text = new_text
+
+        # Calculate new cursor position and move cursor
+        new_offset = start + len(insertion)
+        lines = new_text.split("\n")
+        remaining = new_offset
+        for row, line in enumerate(lines):
+            if remaining <= len(line):
+                self._text_area.move_cursor((row, remaining))
+                break
+            remaining -= len(line) + 1
+
+        # Completion selections should render their final inline hint
+        # immediately, without waiting for the subsequent Changed event.
+        self._update_argument_hint()

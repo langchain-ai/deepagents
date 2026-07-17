@@ -9,13 +9,70 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
+    _looks_like_regex,
+    grep_matches_from_files,
     perform_string_replacement,
+    regex_literal_hint,
     slice_read_response,
     to_posix_path,
     validate_path,
 )
+
+
+class TestLooksLikeRegex:
+    """`_looks_like_regex` flags regex syntax in patterns meant for literal grep."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "foo|bar",
+            "def .*model",
+            "self\\.tools",
+            "a.+b",
+            "\\bword\\b",
+            "\\d+",
+            "\\w",
+            "\\s+",
+            "foo\\(bar\\)",
+        ],
+    )
+    def test_detects_regex(self, pattern: str) -> None:
+        assert _looks_like_regex(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "def __init__(self):",
+            "self.tools",
+            "arr[0]",
+            "plain text",
+            "TODO",
+            "a == b",
+            "",
+            # Metacharacters deliberately treated as literal (see `_REGEX_SIGNAL_RE`
+            # docstring): bare `^`, `$`, `?`, `*`, `+` are common in literal code
+            # searches and must not trip a false hint.
+            "^main",
+            "cost$5",
+            "value?",
+            "a*b",
+            "c++",
+        ],
+    )
+    def test_ignores_literal(self, pattern: str) -> None:
+        assert _looks_like_regex(pattern) is False
+
+    def test_hint_present_for_regex(self) -> None:
+        hint = regex_literal_hint("foo|bar")
+        assert hint is not None
+        assert "literal text, not regex" in hint
+        assert "execute" not in hint
+
+    def test_hint_absent_for_literal(self) -> None:
+        assert regex_literal_hint("plain text") is None
 
 
 class TestToPosixPath:
@@ -195,6 +252,57 @@ class TestGlobSearchFiles:
         assert "/foo/b.txt" not in result
 
 
+class TestGrepIncludeGlob:
+    """Shared grep include-glob semantics (ripgrep-like) across backends.
+
+    These document the contract implemented by `compile_grep_include_glob` and
+    consumed by `grep_matches_from_files` (StateBackend/StoreBackend) and the
+    FilesystemBackend Python fallback:
+
+    - A pattern with no `/` matches the basename at any depth (`*.py` matches
+      `/src/app/main.py`).
+    - A pattern containing `/` matches the path relative to the search root,
+      with `**` support (`src/**/*.py` matches `/src/app/main.py`).
+    """
+
+    @pytest.fixture
+    def sample_files(self) -> dict[str, Any]:
+        """Files whose every line contains the literal token `import`."""
+        return {
+            "/src/app/main.py": {"content": "import os\n"},
+            "/top.py": {"content": "import sys\n"},
+            "/README.md": {"content": "import note\n"},
+        }
+
+    def _paths(self, files: dict[str, Any], glob: str | None, path: str = "/") -> list[str]:
+        result = grep_matches_from_files(files, "import", path, glob=glob)
+        return sorted(m["path"] for m in result.matches)
+
+    def test_directory_glob_matches_nested(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "src/**/*.py") == ["/src/app/main.py"]
+
+    def test_recursive_glob_matches_all_python(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "**/*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_slashless_glob_matches_at_any_depth(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_extension_glob_matches_only_that_extension(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "*.md") == ["/README.md"]
+
+    def test_glob_relative_to_search_root(self, sample_files: dict[str, Any]) -> None:
+        """Path-containing patterns resolve relative to the supplied root."""
+        assert self._paths(sample_files, "app/*.py", path="/src") == ["/src/app/main.py"]
+
+    def test_leading_slash_anchors_to_root(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` anchors to the root; it narrows rather than widens."""
+        assert self._paths(sample_files, "/*.py") == ["/top.py"]
+
+    def test_leading_slash_with_globstar(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` still supports `**` for anchored recursive matches."""
+        assert self._paths(sample_files, "/src/**/*.py") == ["/src/app/main.py"]
+
+
 _content_block_adapter = TypeAdapter(ContentBlock)
 
 
@@ -202,6 +310,22 @@ def test_get_file_type_returns_text_for_unknown_extensions() -> None:
     assert _get_file_type("/foo/bar.txt") == "text"
     assert _get_file_type("/foo/bar.py") == "text"
     assert _get_file_type("/foo/bar") == "text"
+
+
+def test_get_file_type_does_not_recognize_mkv() -> None:
+    """`.mkv` is intentionally absent from the shared multimodal map."""
+    assert _get_file_type("/foo/bar.mkv") == "text"
+
+
+def test_get_backend_read_file_type_forces_mkv_to_binary() -> None:
+    """Backends must read `.mkv` as binary even though it is not in the map."""
+    assert _get_backend_read_file_type("/foo/bar.mkv") == "video"
+
+
+def test_get_backend_read_file_type_matches_get_file_type_for_other_extensions() -> None:
+    """The backend classifier only adds `.mkv`; everything else is unchanged."""
+    for path in ("/foo/bar.mp4", "/foo/bar.png", "/foo/bar.txt", "/foo/bar", "/foo/bar.pdf"):
+        assert _get_backend_read_file_type(path) == _get_file_type(path)
 
 
 def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
@@ -317,39 +441,118 @@ class TestSliceReadResponse:
     def _file(content: str) -> FileData:
         return FileData(content=content, encoding="utf-8")
 
+    @staticmethod
+    def _content(result: ReadResult) -> str:
+        assert result.file_data is not None
+        return result.file_data["content"]
+
     def test_preserves_trailing_newline_when_file_has_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar\n"), offset=0, limit=2000)
-        assert result == "foo\nbar\n"
+        assert self._content(result) == "foo\nbar\n"
 
     def test_preserves_no_trailing_newline_when_file_lacks_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar"), offset=0, limit=2000)
-        assert result == "foo\nbar"
+        assert self._content(result) == "foo\nbar"
 
     def test_normalizes_crlf_to_lf(self) -> None:
         """State/Store callers may carry CRLF; downstream tooling assumes LF."""
         result = slice_read_response(self._file("foo\r\nbar\r\n"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_normalizes_bare_cr_to_lf(self) -> None:
         result = slice_read_response(self._file("foo\rbar\r"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_partial_window_keeps_terminator_on_internal_lines(self) -> None:
         """A window ending on a non-terminal line still ends with that line's terminator."""
         result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
-        assert result == "b\nc\n"
+        assert self._content(result) == "b\nc\n"
+
+    def test_partial_window_normalizes_crlf(self) -> None:
+        """An internal CRLF slice is LF-normalized even though only the window is rewritten."""
+        result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=1, limit=2)
+        content = self._content(result)
+        assert content == "b\nc\n"
+        assert "\r" not in content
 
     def test_partial_window_ending_on_unterminated_last_line(self) -> None:
         """A window covering the last line keeps that line's missing-terminator state."""
         result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)
-        assert result == "c"
+        assert self._content(result) == "c"
+
+    def test_partial_window_includes_pagination_metadata(self) -> None:
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        assert result.total_lines == 4
+        assert result.start_line == 2
+        assert result.end_line == 3
+        assert result.next_offset == 3
+
+    def test_empty_content_returns_result_without_pagination(self) -> None:
+        """Empty files short-circuit to a success result with no pagination metadata."""
+        result = slice_read_response(self._file(""), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_whitespace_only_content_returns_result_without_pagination(self) -> None:
+        """Whitespace-only content takes the empty branch and is returned verbatim."""
+        result = slice_read_response(self._file("   \n\t\n"), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == "   \n\t\n"
+        assert result.total_lines is None
+
+    def test_preserves_timestamps_on_sliced_result(self) -> None:
+        """The sliced copy carries `created_at`/`modified_at` through unchanged."""
+        file_data = FileData(content="a\nb\nc\nd\n", encoding="utf-8")
+        file_data["created_at"] = "t0"
+        file_data["modified_at"] = "t1"
+        result = slice_read_response(file_data, offset=1, limit=2)
+        assert result.file_data is not None
+        assert result.file_data.get("created_at") == "t0"
+        assert result.file_data.get("modified_at") == "t1"
 
     def test_offset_beyond_file_returns_error_result(self) -> None:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
-        assert isinstance(result, ReadResult)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+
+class TestGrepMaxCount:
+    """`max_count` total-cap semantics for `grep_matches_from_files`.
+
+    Backs `StateBackend`/`StoreBackend`, which delegate their `grep` here.
+    """
+
+    @staticmethod
+    def _files() -> dict[str, Any]:
+        # Two files, three matching lines total.
+        return {
+            "/a.txt": {"content": "hit\nhit\n"},
+            "/b.txt": {"content": "hit\n"},
+        }
+
+    def test_over_cap_truncates(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=2)
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
+    def test_exact_cap_not_truncated(self) -> None:
+        """Exactly `max_count` matches with none dropped is reported complete."""
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=3)
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False
+
+    def test_no_cap_returns_all(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/")
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False

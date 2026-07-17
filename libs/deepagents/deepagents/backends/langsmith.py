@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_file_type
+from deepagents.backends.utils import _get_backend_read_file_type
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox
@@ -48,6 +48,10 @@ def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
 class LangSmithSandbox(BaseSandbox):
     """LangSmith sandbox implementation conforming to [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]."""
 
+    # LangSmith sandbox images ship a POSIX shell + coreutils compatible with the
+    # capture wrapper, so opt in to capture-at-source offload for `execute`.
+    enable_capture_offload = True
+
     def __init__(self, sandbox: Sandbox) -> None:
         """Create a backend wrapping an existing LangSmith sandbox.
 
@@ -69,7 +73,8 @@ class LangSmithSandbox(BaseSandbox):
             command: Shell command string to execute.
             timeout: Maximum time in seconds to wait for the command to complete.
 
-                If None, uses the backend's default timeout.
+                If `None`, uses the backend's default timeout.
+
                 A value of 0 disables the command timeout when the
                 `langsmith[sandbox]` extra is installed.
 
@@ -167,7 +172,7 @@ class LangSmithSandbox(BaseSandbox):
         # Route by extension first, mirroring _READ_COMMAND_TEMPLATE: anything
         # not classified as text goes straight to base64 without a decode
         # attempt.
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return _binary_read_result(file_path, raw)
 
         try:
@@ -195,11 +200,13 @@ class LangSmithSandbox(BaseSandbox):
         offset = int(offset)
         limit = int(limit)
 
-        if not lines or offset >= len(lines):
-            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({len(lines)} lines)")
+        total_lines = len(lines)
+        if not lines or offset >= total_lines:
+            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
 
         page = lines[offset : offset + limit]
         content = "\n".join(page)
+        returned_lines = len(page)
 
         # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
         # large pages don't reintroduce the transport-size symptom this
@@ -208,14 +215,32 @@ class LangSmithSandbox(BaseSandbox):
         msg_bytes = TRUNCATION_MSG.encode("utf-8")
         effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
         if len(encoded) > effective_limit:
-            content = encoded[:effective_limit].decode("utf-8", errors="ignore") + TRUNCATION_MSG
+            truncated = encoded[:effective_limit].decode("utf-8", errors="ignore")
+            # The byte cap can drop whole lines from the page and cut the final
+            # rendered line mid-way. Advance the resume offset only past lines
+            # that were fully rendered (each is followed by its "\n"), so a
+            # re-read from `next_offset` never silently skips unshown lines; the
+            # partial boundary line is re-read from its start. Fall back to 1
+            # when even the first line overflows the cap, to guarantee forward
+            # progress instead of re-reading the same truncated page.
+            returned_lines = truncated.count("\n") or 1
+            content = truncated + TRUNCATION_MSG
 
-        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
+        end_line = offset + returned_lines
+        next_offset = end_line if end_line < total_lines else None
+
+        return ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=total_lines,
+            start_line=offset + 1,
+            end_line=end_line,
+            next_offset=next_offset,
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.
 
-        Supports partial success -- individual downloads may fail without
+        Supports partial success. Individual downloads may fail without
         affecting others.
 
         Args:

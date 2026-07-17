@@ -41,38 +41,38 @@ class TestHelpScreenExamples:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with patch("deepagents_code.ui.console", test_console):
-            fn()  # type: ignore[operator]
+            fn()  # ty: ignore
         return buf.getvalue()
 
     def test_list_help_has_examples(self) -> None:
         text = self._render(show_list_help)
         assert "Examples:" in text
-        assert "deepagents list" in text
-        assert "deepagents list --json" in text
+        assert "dcode list" in text
+        assert "dcode list --json" in text
 
     def test_skills_list_help_has_examples(self) -> None:
         text = self._render(show_skills_list_help)
         assert "Examples:" in text
-        assert "deepagents skills list --project" in text
-        assert "deepagents skills list --json" in text
+        assert "dcode skills list --project" in text
+        assert "dcode skills list --json" in text
 
     def test_skills_info_help_has_examples(self) -> None:
         text = self._render(show_skills_info_help)
         assert "Examples:" in text
-        assert "deepagents skills info web-research" in text
-        assert "deepagents skills info my-skill --project" in text
+        assert "dcode skills info web-research" in text
+        assert "dcode skills info my-skill --project" in text
 
     def test_agents_help_has_examples(self) -> None:
         text = self._render(show_agents_help)
         assert "Examples:" in text
-        assert "deepagents agents list" in text
-        assert "deepagents agents reset --agent coder" in text
+        assert "dcode agents list" in text
+        assert "dcode agents reset --agent NAME" in text
 
     def test_update_help_has_examples(self) -> None:
         text = self._render(show_update_help)
         assert "Examples:" in text
-        assert "deepagents update" in text
-        assert "deepagents update --json" in text
+        assert "dcode update" in text
+        assert "dcode update --json" in text
 
     def test_reset_help_has_dry_run(self) -> None:
         text = self._render(show_reset_help)
@@ -517,7 +517,7 @@ class TestErrorMessageHints:
             cli_main()
 
         output = stderr_buf.getvalue()
-        assert "deepagents -n" in output
+        assert "dcode -n" in output
 
     def test_reset_source_not_found_has_hint(self, tmp_path: Path) -> None:
         """Reset with missing source agent should suggest agents list."""
@@ -534,7 +534,7 @@ class TestErrorMessageHints:
                 reset_agent("coder", "nonexistent")
 
         output = buf.getvalue()
-        assert "deepagents agents list" in output
+        assert "dcode agents list" in output
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +567,15 @@ class TestHelpScreenDriftExtended:
         test_console = Console(file=buf, highlight=False, width=200)
         with patch("deepagents_code.ui.console", test_console):
             show_help()
-        assert "deepagents mcp" in buf.getvalue()
+        assert "dcode mcp" in buf.getvalue()
+
+    def test_show_help_includes_tools_subcommand(self) -> None:
+        """show_help should mention the tools subcommand."""
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=200)
+        with patch("deepagents_code.ui.console", test_console):
+            show_help()
+        assert "dcode tools" in buf.getvalue()
 
     def test_show_help_includes_stdin(self) -> None:
         """show_help should mention --stdin."""

@@ -174,6 +174,41 @@ def _upsert_onboarding_name_memory(existing: str, block: str) -> str:
     return f"{base}\n\n## User Preferences\n\n{block}\n"
 
 
+def extract_onboarding_name_block(text: str) -> str | None:
+    """Return the managed onboarding name block (markers included) if present.
+
+    Args:
+        text: Memory file content to inspect.
+
+    Returns:
+        The substring from the start marker through the end marker, or `None`
+            when a well-formed block is absent.
+    """
+    start = text.find(ONBOARDING_NAME_MEMORY_START)
+    end = text.find(ONBOARDING_NAME_MEMORY_END)
+    if start == -1 or end == -1 or start >= end:
+        return None
+    return text[start : end + len(ONBOARDING_NAME_MEMORY_END)]
+
+
+def strip_onboarding_name_markers(text: str) -> str:
+    """Remove every onboarding-name marker occurrence from `text`.
+
+    A partial edit can leave a lone start or end marker behind. Stripping all
+    marker strings before re-inserting the managed block keeps re-insertion from
+    producing orphaned markers that would confuse `extract_onboarding_name_block`.
+
+    Args:
+        text: Memory file content to sanitize.
+
+    Returns:
+        `text` with all start and end marker strings removed.
+    """
+    return text.replace(ONBOARDING_NAME_MEMORY_START, "").replace(
+        ONBOARDING_NAME_MEMORY_END, ""
+    )
+
+
 def should_run_onboarding(state_dir: Path | None = None) -> bool:
     """Return whether onboarding should open at interactive startup.
 

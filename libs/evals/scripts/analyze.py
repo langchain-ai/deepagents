@@ -9,6 +9,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +59,62 @@ def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:
     return task_to_solution
 
 
+def _read_json(path: Path) -> Optional[dict]:
+    """Read and parse a JSON object from a file.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        The parsed object, or None if the file is missing, unreadable, not valid
+        JSON, or does not contain a top-level object. A present-but-malformed file
+        emits a warning so a corrupt input is distinguishable from an absent one.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        # Missing files are expected (e.g. optional config.json/result.json).
+        return None
+    except OSError as exc:
+        print(f"  Warning: could not read {path}: {exc}")
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"  Warning: malformed JSON in {path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"  Warning: expected a JSON object in {path}, got {type(data).__name__}")
+        return None
+    return data
+
+
+@lru_cache(maxsize=None)
+def _task_dir_index(task_source_dir: Path) -> dict[str, Path]:
+    """Map task_name -> task directory for a task source, scanning the tree once.
+
+    Results are cached for the lifetime of the process (the analysis tool is a
+    short-lived, single-pass script), so the task tree is assumed immutable during
+    a run. If a task name appears under multiple hash directories, the first one
+    encountered wins, matching the prior first-match search behavior.
+
+    Args:
+        task_source_dir: Path to the `{task_source}` directory.
+
+    Returns:
+        Mapping from task name to its directory; empty if the source is absent.
+    """
+    index: dict[str, Path] = {}
+    if not task_source_dir.exists():
+        return index
+    for hash_dir in task_source_dir.iterdir():
+        if not hash_dir.is_dir():
+            continue
+        for task_dir in hash_dir.iterdir():
+            if task_dir.is_dir():
+                index.setdefault(task_dir.name, task_dir)
+    return index
+
+
 def find_task_directory(trial_dir: Path, task_name: str, task_source: str) -> Optional[Path]:
     """Find the task directory for a given trial.
 
@@ -69,24 +126,11 @@ def find_task_directory(trial_dir: Path, task_name: str, task_source: str) -> Op
     Returns:
         Path to the task directory if found, None otherwise
     """
-    # Start from the trial directory and search for the task directory
-    # The structure is typically: {task_source}/{hash}/{task_name}
-
-    # Go up to find the task source directory
-    current = trial_dir.parent.parent  # Go up from trial to jobs root
-    task_source_dir = current / task_source
-
-    if not task_source_dir.exists():
-        return None
-
-    # Search for the task in any hash subdirectory
-    for hash_dir in task_source_dir.iterdir():
-        if hash_dir.is_dir():
-            task_dir = hash_dir / task_name
-            if task_dir.exists():
-                return task_dir
-
-    return None
+    # The structure is typically: {task_source}/{hash}/{task_name}.
+    # Build (and cache) a task_name -> dir index per source so repeated trials
+    # don't re-scan the same tree.
+    task_source_dir = trial_dir.parent.parent / task_source
+    return _task_dir_index(task_source_dir).get(task_name)
 
 
 class TrialStatus(Enum):
@@ -120,114 +164,70 @@ async def parse_reward(reward_path: Path) -> bool:
     return reward_value == "1"
 
 
-def extract_task_metadata(trial_dir: Path) -> dict:
+def extract_task_metadata(trial_dir: Path, config: Optional[dict] = None) -> dict:
     """Extract task metadata from config.json and other files.
 
     Args:
         trial_dir: Path to the trial directory
+        config: Pre-parsed config.json contents to reuse instead of re-reading.
+            Only config.json is reusable here; result.json is always read fresh.
 
     Returns:
         Dictionary containing task metadata
     """
-    metadata = {}
+    metadata: dict = {}
 
-    # Read config.json
-    config_path = trial_dir / "config.json"
-    if config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                metadata["task_name"] = config.get("task", {}).get("path", "")
-                metadata["task_source"] = config.get("task", {}).get("source", "")
-                metadata["git_url"] = config.get("task", {}).get("git_url", "")
-                metadata["git_commit_id"] = config.get("task", {}).get("git_commit_id", "")
-        except Exception:
-            pass
+    if config is None:
+        config = _read_json(trial_dir / "config.json")
+    if config:
+        task = config.get("task", {})
+        metadata["task_name"] = task.get("path", "")
+        metadata["task_source"] = task.get("source", "")
+        metadata["git_url"] = task.get("git_url", "")
+        metadata["git_commit_id"] = task.get("git_commit_id", "")
 
     # Read result.json for additional metadata
-    result_path = trial_dir / "result.json"
-    if result_path.exists():
-        try:
-            with open(result_path, "r") as f:
-                result = json.load(f)
-                metadata["reward"] = (
-                    result.get("verifier_result", {}).get("rewards", {}).get("reward", 0.0)
-                )
-                metadata["started_at"] = result.get("started_at", "")
-                metadata["finished_at"] = result.get("finished_at", "")
-        except Exception:
-            pass
+    result = _read_json(trial_dir / "result.json")
+    if result:
+        metadata["reward"] = result.get("verifier_result", {}).get("rewards", {}).get("reward", 0.0)
+        metadata["started_at"] = result.get("started_at", "")
+        metadata["finished_at"] = result.get("finished_at", "")
 
     return metadata
 
 
-def extract_task_instructions(trajectory_path: Path) -> Optional[str]:
-    """Extract the task instructions from the trajectory file.
+def extract_task_instructions(trajectory_data: dict) -> Optional[str]:
+    """Extract the task instructions from parsed trajectory data.
 
-    Looks for the user message in the trajectory steps.
-    """
-    try:
-        with open(trajectory_path, "r") as f:
-            trajectory_data = json.load(f)
-
-        # Find the user message in the steps
-        for step in trajectory_data.get("steps", []):
-            if step.get("source") == "user":
-                return step.get("message", "")
-
-        return None
-    except Exception:
-        return None
-
-
-def count_tool_usage(trajectory_path: Path) -> dict[str, int]:
-    """Count tool usage across all steps in a trajectory.
+    Looks for the first user message in the trajectory steps.
 
     Args:
-        trajectory_path: Path to the trajectory.json file in ATIF format
+        trajectory_data: Parsed trajectory contents (ATIF format).
+
+    Returns:
+        The first user step's message (possibly an empty string), or None if no
+        user step is present.
+    """
+    for step in trajectory_data.get("steps", []):
+        if step.get("source") == "user":
+            return step.get("message", "")
+    return None
+
+
+def count_tool_usage(trajectory_data: dict) -> dict[str, int]:
+    """Count tool usage across all steps in parsed trajectory data (ATIF format).
 
     Returns:
         Dictionary mapping tool names to their usage counts
     """
     tool_counts: dict[str, int] = {}
-
-    try:
-        with open(trajectory_path, "r") as f:
-            trajectory_data = json.load(f)
-
-        # Iterate through all steps
-        for step in trajectory_data.get("steps", []):
-            # Check if this step has tool calls
-            tool_calls = step.get("tool_calls")
-            if tool_calls:
-                # Count each tool call
-                for tool_call in tool_calls:
-                    tool_name = tool_call.get("function_name", "unknown")
-                    tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-
-        return tool_counts
-    except Exception:
-        return {}
-
-
-def get_task_name_from_trial(trial_dir: Path) -> Optional[str]:
-    """Extract the task name from a trial's config.json.
-
-    Args:
-        trial_dir: Path to the trial directory
-
-    Returns:
-        Task name if found, None otherwise
-    """
-    config_path = trial_dir / "config.json"
-    if config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                return config.get("task", {}).get("path", "")
-        except Exception:
-            pass
-    return None
+    for step in trajectory_data.get("steps", []):
+        tool_calls = step.get("tool_calls")
+        if tool_calls:
+            for tool_call in tool_calls:
+                tool_name = tool_call.get("function_name", "unknown")
+                tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+    return tool_counts
 
 
 def enrich_trials_with_solutions(
@@ -244,13 +244,14 @@ def enrich_trials_with_solutions(
     """
     for trial in trials:
         if trial.trial_dir:
-            task_name = get_task_name_from_trial(trial.trial_dir)
+            config = _read_json(trial.trial_dir / "config.json")
+            task_name = config.get("task", {}).get("path", "") if config else None
             if task_name and task_name in solution_mapping:
                 trial.solution_path = solution_mapping[task_name]
     return trials
 
 
-async def analyze_trial(
+def analyze_trial(
     trial_dir: Path, solution_mapping: Optional[dict[str, Path]] = None
 ) -> Optional[Trial]:
     """Analyze a single trial directory.
@@ -267,29 +268,22 @@ async def analyze_trial(
     reward_path = trial_dir / "verifier" / "reward.txt"
     exception_path = trial_dir / "exception.txt"
 
-    # Read config to find the task directory for the solution
-    config_path = trial_dir / "config.json"
+    # Read config once and reuse for both the mapping lookup and the fallback search.
+    config = _read_json(trial_dir / "config.json")
+    task = config.get("task", {}) if config else {}
+    task_name = task.get("path", "")
+    task_source = task.get("source", "")
     solution_path = None
 
     # First try to use the solution_mapping if provided
-    if solution_mapping:
-        task_name = get_task_name_from_trial(trial_dir)
-        if task_name and task_name in solution_mapping:
-            solution_path = solution_mapping[task_name]
+    if solution_mapping and task_name and task_name in solution_mapping:
+        solution_path = solution_mapping[task_name]
 
     # Fall back to searching for the task directory
-    if not solution_path and config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                task_name = config.get("task", {}).get("path", "")
-                task_source = config.get("task", {}).get("source", "")
-                if task_name and task_source:
-                    task_dir = find_task_directory(trial_dir, task_name, task_source)
-                    if task_dir:
-                        solution_path = task_dir / "solution" / "solve.sh"
-        except Exception:
-            pass
+    if not solution_path and task_name and task_source:
+        task_dir = find_task_directory(trial_dir, task_name, task_source)
+        if task_dir:
+            solution_path = task_dir / "solution" / "solve.sh"
 
     traj_exists = trajectory_path.exists()
     reward_exists = reward_path.exists()
@@ -312,12 +306,16 @@ async def analyze_trial(
     else:
         status = TrialStatus.PENDING
 
-    # Count tool usage if trajectory exists
+    # Count tool usage if trajectory exists. Read the file once and reuse both the
+    # raw text (for exit-code extraction) and the parsed data (for tool counts).
     tool_usage = None
     trajectory_text = None
     if traj_exists:
-        tool_usage = count_tool_usage(trajectory_path)
-        trajectory_text = trajectory_path.read_text()
+        try:
+            trajectory_text = trajectory_path.read_text()
+            tool_usage = count_tool_usage(json.loads(trajectory_text))
+        except Exception:
+            tool_usage = {}
 
     # Classify failure category for non-completed trials
     failure_category = None
@@ -376,11 +374,12 @@ async def scan_jobs_directory(
 
     print(f"Found {len(trial_dirs)} trial directories")
 
-    trials: list[Trial] = []
-    for trial_dir in trial_dirs:
-        trial = await analyze_trial(trial_dir, solution_mapping=solution_mapping)
-        trials.append(trial)
-    return trials
+    # Analyze trials concurrently; each call is blocking file I/O, so run them in
+    # threads to overlap the reads.
+    trials = await asyncio.gather(
+        *(asyncio.to_thread(analyze_trial, trial_dir, solution_mapping) for trial_dir in trial_dirs)
+    )
+    return list(trials)
 
 
 def print_summary(trials: list[Trial]) -> None:
@@ -614,13 +613,18 @@ If clear from the trajectory, suggest:
 """  # noqa: E501
 
 
-async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> Optional[str]:
+async def analyze_failed_trial(
+    trial: Trial,
+    analyze_pending: bool = False,
+    trajectory_data: Optional[dict] = None,
+) -> Optional[str]:
     """
     Run deep agent analysis on a failed or pending trial trajectory.
 
     Args:
         trial: The trial to analyze
         analyze_pending: If True, analyze pending trials in addition to failed ones
+        trajectory_data: Pre-parsed trajectory contents, if already loaded
 
     Returns:
         Analysis result as a string, or None if trajectory cannot be read
@@ -636,12 +640,12 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
     if trial.status == TrialStatus.PENDING and not analyze_pending:
         return None
 
-    if not trial.trajectory_path or not trial.trajectory_path.exists():
-        return None
-
-    # Read the trajectory file
-    with open(trial.trajectory_path, "r") as f:
-        trajectory_data = json.load(f)
+    if trajectory_data is None:
+        if not trial.trajectory_path or not trial.trajectory_path.exists():
+            return None
+        trajectory_data = _read_json(trial.trajectory_path)
+        if trajectory_data is None:
+            return None
 
     # Format trajectory as JSON string for the prompt
     trajectory_json = json.dumps(trajectory_data, indent=2)
@@ -704,18 +708,26 @@ async def write_trial_analysis(
     if trial.status == TrialStatus.PENDING and not analyze_pending:
         return None
 
-    # Extract metadata
-    metadata = extract_task_metadata(trial_dir)
+    # Extract metadata (parse config.json once)
+    config = _read_json(trial_dir / "config.json")
+    metadata = extract_task_metadata(trial_dir, config=config)
+
+    # Parse the trajectory once and reuse for instructions + LLM analysis.
+    trajectory_data = None
+    if trial.trajectory_path and trial.trajectory_path.exists():
+        trajectory_data = _read_json(trial.trajectory_path)
 
     # Extract task instructions
     task_instructions = None
-    if trial.trajectory_path:
-        task_instructions = extract_task_instructions(trial.trajectory_path)
+    if trajectory_data is not None:
+        task_instructions = extract_task_instructions(trajectory_data)
 
     # Run the LLM analysis unless summary_only is True
     analysis = None
     if not summary_only:
-        analysis = await analyze_failed_trial(trial, analyze_pending=analyze_pending)
+        analysis = await analyze_failed_trial(
+            trial, analyze_pending=analyze_pending, trajectory_data=trajectory_data
+        )
         if not analysis:
             # If we couldn't get analysis (e.g., missing trajectory), skip this trial
             return None

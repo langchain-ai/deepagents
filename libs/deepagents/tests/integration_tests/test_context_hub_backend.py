@@ -1,6 +1,6 @@
 """Integration tests for ContextHubBackend against a real LangSmith Hub.
 
-Skipped unless ``LANGSMITH_API_KEY`` is set. Each test fixture creates a
+Skipped unless `LANGSMITH_API_KEY` is set. Each test fixture creates a
 uniquely-named throwaway agent repo and deletes it on teardown, so these
 tests are safe to run against a real tenant.
 """
@@ -162,10 +162,10 @@ def test_parent_commit_conflict_surfaces_error(backend: ContextHubBackend, ident
 
 
 def test_upload_files_produces_single_commit(identifier: str) -> None:
-    """Batch upload of N files should make exactly one ``push_agent`` call.
+    """Batch upload of N files should make exactly one `push_agent` call.
 
     Unit tests assert this with a fully-mocked client; this test wraps a
-    real ``langsmith.Client`` so we get the same guarantee against the
+    real `langsmith.Client` so we get the same guarantee against the
     actual Hub API surface, and additionally confirms the resulting commit
     persists every file in one shot.
     """

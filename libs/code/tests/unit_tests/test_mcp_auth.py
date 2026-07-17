@@ -3,19 +3,73 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
+import re
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import anyio
+import httpx
 import pytest
+from mcp.client.auth import TokenStorage
+from mcp.shared.auth import OAuthToken
 
 from deepagents_code.mcp_auth import (
     FileTokenStorage,
     MCPReauthRequiredError,
+    find_oauth_challenge,
     find_reauth_required,
+    format_login_failure,
     resolve_headers,
 )
+
+_RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
+_BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
+"""A minimal RFC 9728 Bearer challenge pointing at the resource metadata."""
+
+
+class TestResolveHeaders:
+    """Compatibility coverage for the public header resolver."""
+
+    def test_delegates_to_shared_interpolation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The legacy helper remains importable and supports shared syntax."""
+        monkeypatch.delenv("MCP_HEADER_TOKEN", raising=False)
+
+        resolved = resolve_headers(
+            {"Authorization": "Bearer ${MCP_HEADER_TOKEN:-fallback}"},
+            server_name="remote",
+        )
+
+        assert resolved == {"Authorization": "Bearer fallback"}
+
+    def test_preserves_original_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Compatibility resolution returns a copy without mutating its input."""
+        monkeypatch.setenv("MCP_HEADER_TOKEN", "resolved")
+        headers = {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
+
+        resolved = resolve_headers(headers)
+
+        assert resolved == {"Authorization": "Bearer resolved"}
+        assert headers == {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
+
+
+def _http_status_error(
+    status_code: int,
+    *,
+    headers: dict[str, str] | list[tuple[str, str]] | None = None,
+) -> httpx.HTTPStatusError:
+    """Build an `httpx.HTTPStatusError` with a canned response."""
+    request = httpx.Request("GET", "https://mcp.example.com/")
+    response = httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
 @pytest.fixture
@@ -36,40 +90,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake
 
 
-class TestResolveHeaders:
-    """Tests for static MCP header interpolation."""
-
-    def test_resolves_single_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A single `${VAR}` placeholder resolves to its env value."""
-        monkeypatch.setenv("FOO", "bar")
-        assert resolve_headers({"Authorization": "Bearer ${FOO}"}) == {
-            "Authorization": "Bearer bar"
-        }
-
-    def test_resolves_multiple_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Multiple placeholders resolve left-to-right."""
-        monkeypatch.setenv("A", "alpha")
-        monkeypatch.setenv("B", "beta")
-        assert resolve_headers({"X-Combo": "${A}-${B}"}) == {"X-Combo": "alpha-beta"}
-
-    def test_non_string_value_raises(self) -> None:
-        """Header values must be strings."""
-        with pytest.raises(TypeError, match="must be a string"):
-            resolve_headers({"X-Bad": 123}, server_name="srv")  # type: ignore[dict-item]
-
-    def test_unset_env_var_raises(self) -> None:
-        """Unset placeholders fail with a helpful message."""
-        with pytest.raises(RuntimeError, match="unset env var"):
-            resolve_headers({"Authorization": "Bearer ${MISSING}"})
-
-    def test_plain_text_value_is_unchanged(self) -> None:
-        """Strings without placeholders pass through unchanged."""
-        assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
-
-
 def _make_tokens(access_token: str = "at"):
-    from mcp.shared.auth import OAuthToken
-
     return OAuthToken(
         access_token=access_token,
         token_type="Bearer",
@@ -84,6 +105,46 @@ def _make_client_info():
     return OAuthClientInformationFull(
         client_id="client-id",
         redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+    )
+
+
+def _make_oauth_metadata(token_endpoint: str = "https://auth.example/token"):
+    from mcp.shared.auth import AnyHttpUrl, OAuthMetadata
+
+    return OAuthMetadata(
+        issuer=AnyHttpUrl("https://auth.example"),
+        authorization_endpoint=AnyHttpUrl("https://auth.example/authorize"),
+        token_endpoint=AnyHttpUrl(token_endpoint),
+        response_types_supported=["code"],
+        grant_types_supported=["authorization_code", "refresh_token"],
+    )
+
+
+def _make_client_info_with_secret(
+    auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    # Public clients (`none`) carry no secret; confidential clients do.
+    client_secret = None if auth_method == "none" else "client-secret"
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        client_secret=client_secret,
+        token_endpoint_auth_method=auth_method,
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+    )
+
+
+def _make_client_info_with_loopback(port: int):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        redirect_uris=[AnyUrl(f"http://localhost:{port}/callback")],
         grant_types=["authorization_code", "refresh_token"],
         response_types=["code"],
     )
@@ -112,6 +173,96 @@ class TestFileTokenStorage:
         assert got_tok is not None
         assert got_ci.client_id == "client-id"
         assert got_tok.access_token == "at"
+
+    async def test_concurrent_instances_preserve_distinct_updates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-file read-modify-write operations retain both updates."""
+        token_storage = FileTokenStorage("notion")
+        client_storage = FileTokenStorage("notion")
+        write_barrier = threading.Barrier(2)
+        physical_write_lock = threading.Lock()
+        loop_thread = threading.get_ident()
+        filesystem_threads: list[int] = []
+        real_write = FileTokenStorage._write
+
+        def _coordinated_write(storage: FileTokenStorage, data: dict[str, Any]) -> None:
+            filesystem_threads.append(threading.get_ident())
+            with contextlib.suppress(threading.BrokenBarrierError):
+                write_barrier.wait(timeout=1)
+            # If the per-file lock regressed and both writers ran concurrently,
+            # serialize the physical writes so the test observes a clean
+            # last-writer-wins lost update rather than a shared-`.tmp` collision.
+            with physical_write_lock:
+                real_write(storage, data)
+
+        monkeypatch.setattr(FileTokenStorage, "_write", _coordinated_write)
+
+        await asyncio.gather(
+            token_storage.set_tokens(_make_tokens()),
+            client_storage.set_client_info(_make_client_info()),
+        )
+
+        stored_tokens = await token_storage.get_tokens()
+        stored_client = await client_storage.get_client_info()
+        assert stored_tokens is not None
+        assert stored_client is not None
+        assert filesystem_threads
+        assert all(thread_id != loop_thread for thread_id in filesystem_threads)
+
+    async def test_concurrent_instances_do_not_overlap_tmp_writes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-file mutations cannot collide while writing the shared `.tmp`."""
+        first = FileTokenStorage("notion")
+        second = FileTokenStorage("notion")
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _collision_detecting_write(
+            storage: FileTokenStorage, data: dict[str, Any]
+        ) -> None:
+            try:
+                write_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                real_write(storage, data)
+                return
+            msg = "concurrent writers collided on the shared temporary file"
+            raise FileExistsError(msg)
+
+        monkeypatch.setattr(
+            FileTokenStorage,
+            "_write",
+            _collision_detecting_write,
+        )
+
+        await asyncio.gather(
+            first.set_tokens(_make_tokens("first")),
+            second.set_tokens(_make_tokens("second")),
+        )
+
+        # Both serialized writes landed rather than colliding on the `.tmp`.
+        assert await first.get_tokens() is not None
+
+    async def test_different_token_files_can_write_concurrently(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per-file synchronization does not serialize unrelated servers."""
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _coordinated_write(storage: FileTokenStorage, data: dict[str, Any]) -> None:
+            write_barrier.wait(timeout=1)
+            real_write(storage, data)
+
+        monkeypatch.setattr(FileTokenStorage, "_write", _coordinated_write)
+
+        await asyncio.gather(
+            FileTokenStorage("alpha").set_tokens(_make_tokens("alpha")),
+            FileTokenStorage("beta").set_tokens(_make_tokens("beta")),
+        )
+
+        assert not write_barrier.broken
 
     async def test_sets_file_permissions_on_posix(self, fake_home: Path) -> None:
         """Token files are created with private user-only permissions."""
@@ -185,6 +336,1869 @@ class TestFileTokenStorage:
         with pytest.raises(ValueError, match="Invalid MCP server name"):
             FileTokenStorage(name)
 
+    async def test_set_tokens_records_absolute_expiry(self) -> None:
+        """`set_tokens` writes an `expires_at` sidecar derived from `expires_in`."""
+        storage = FileTokenStorage("notion")
+        before = time.time()
+        await storage.set_tokens(_make_tokens())
+        after = time.time()
+
+        got = await storage.get_expires_at()
+        assert got is not None
+        # 3600 from `_make_tokens`; widen the wall-clock window to absorb
+        # GC pauses on busy CI runners.
+        assert before + 3600 <= got <= after + 3600 + 1.0
+
+    async def test_set_tokens_and_client_info_records_expiry(self) -> None:
+        """The combined writer also persists `expires_at`."""
+        storage = FileTokenStorage("notion")
+        before = time.time()
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        after = time.time()
+
+        got = await storage.get_expires_at()
+        assert got is not None
+        assert before + 3600 <= got <= after + 3600 + 1.0
+
+    @pytest.mark.parametrize("include_client_info", [False, True])
+    async def test_expiry_is_captured_before_worker_delay(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        include_client_info: bool,
+    ) -> None:
+        """Executor delays do not extend the persisted token lifetime."""
+        storage = FileTokenStorage("notion")
+        clock = {"now": 1_000.0}
+        real_read = storage._read
+
+        def _delayed_read() -> dict[str, Any] | None:
+            # Model time spent waiting for an executor worker or the mutation
+            # lock before the worker begins its read-modify-write operation.
+            clock["now"] = 2_000.0
+            return real_read()
+
+        monkeypatch.setattr(time, "time", lambda: clock["now"])
+        monkeypatch.setattr(storage, "_read", _delayed_read)
+        tokens = OAuthToken(
+            access_token="at",
+            token_type="Bearer",
+            refresh_token="rt",
+            expires_in=60,
+        )
+
+        if include_client_info:
+            await storage.set_tokens_and_client_info(tokens, _make_client_info())
+        else:
+            await storage.set_tokens(tokens)
+
+        data = json.loads(storage.path.read_text())
+        assert data["expires_at"] == pytest.approx(1_060.0)
+
+    async def test_get_expires_at_returns_none_for_legacy_file(
+        self, fake_home: Path
+    ) -> None:
+        """Token files written before this field existed return `None`."""
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"version": 1, "tokens": {"access_token": "x"}}))
+        storage = FileTokenStorage("notion")
+
+        assert await storage.get_expires_at() is None
+
+    async def test_get_expires_at_rejects_non_numeric(self, fake_home: Path) -> None:
+        """A garbage sidecar value falls back to `None` rather than raising."""
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "tokens": {"access_token": "x"},
+                    "expires_at": "soon",
+                }
+            )
+        )
+        storage = FileTokenStorage("notion")
+
+        assert await storage.get_expires_at() is None
+
+    async def test_set_tokens_clears_stale_expiry_when_expires_in_absent(self) -> None:
+        """Writing a token without `expires_in` removes any prior `expires_at`."""
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+        assert await storage.get_expires_at() is not None
+
+        # Some providers omit `expires_in` on refresh; the sidecar must not
+        # linger from the prior write or the next cold start will use a
+        # bogus expiry.
+        await storage.set_tokens(
+            OAuthToken(access_token="x2", token_type="Bearer", refresh_token="rt2")
+        )
+        assert await storage.get_expires_at() is None
+
+    async def test_round_trip_oauth_metadata(self) -> None:
+        """Public OAuth metadata round-trips beside token state."""
+        storage = FileTokenStorage("notion")
+        metadata = _make_oauth_metadata()
+
+        assert await storage.get_oauth_metadata() is None
+        await storage.set_oauth_metadata(metadata)
+
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == "https://auth.example/token"
+
+    async def test_set_tokens_persists_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshed-token persistence must not block the event-loop thread.
+
+        `set_tokens` is awaited from the MCP SDK's async OAuth refresh flow.
+        Its synchronous read-modify-write (including `path.parent.mkdir`)
+        must run in a worker thread; otherwise BlockBuster under
+        `langgraph dev` raises `BlockingError`, which cancels the transport
+        task group and crashes the tool node. Regression for the MCP OAuth
+        refresh failure.
+        """
+        storage = FileTokenStorage("notion")
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+
+        real_write = storage._write
+
+        def _spy_write(data: dict) -> None:
+            write_threads.append(threading.get_ident())
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _spy_write)
+
+        await storage.set_tokens(_make_tokens())
+
+        assert write_threads, "_write should have run"
+        assert all(thread_id != loop_thread for thread_id in write_threads), (
+            "token persistence must run off the event-loop thread"
+        )
+        # The expected state is still written despite the offload.
+        got = await storage.get_tokens()
+        assert got is not None
+        assert got.access_token == "at"
+        assert await storage.get_expires_at() is not None
+
+    async def test_set_tokens_joins_write_despite_repeated_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated cancellation waits for a rotated refresh token to reach disk."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        write_finished = threading.Event()
+        allow_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            try:
+                real_write(data)
+            finally:
+                write_finished.set()
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+        task = asyncio.create_task(storage.set_tokens(_make_tokens()))
+
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), (
+                "cancellation must stay joined to the in-flight token write"
+            )
+
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done(), (
+                    "repeated cancellation must not detach the token write"
+                )
+
+            allow_write.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert write_finished.is_set()
+            got = await storage.get_tokens()
+            assert got is not None
+            assert got.access_token == "at"
+        finally:
+            allow_write.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def test_set_tokens_joins_write_under_anyio_level_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An AnyIO cancelled scope cannot detach in-flight token persistence."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        scopes: list[anyio.CancelScope] = []
+
+        real_write = storage._write
+
+        def _patched_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _patched_write)
+
+        async def _persist_in_cancel_scope() -> bool:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                await storage.set_tokens(_make_tokens())
+            return scope.cancelled_caught
+
+        task = asyncio.create_task(_persist_in_cancel_scope())
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            scopes[0].cancel()
+            await asyncio.sleep(0)
+
+            assert not task.done(), (
+                "level cancellation must stay joined to the in-flight write"
+            )
+            allow_write.set()
+
+            assert await task is True
+            got = await storage.get_tokens()
+            assert got is not None
+            assert got.access_token == "at"
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_set_tokens_reports_write_failure_while_cancelled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A persistence failure takes precedence without leaking to the loop."""
+        storage = FileTokenStorage("notion")
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        loop = asyncio.get_running_loop()
+        loop_contexts: list[dict[str, Any]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: loop_contexts.append(context))
+
+        def _failing_write(data: dict[str, Any]) -> None:
+            del data
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the token write")
+            msg = "token persistence failed"
+            raise OSError(msg)
+
+        monkeypatch.setattr(storage, "_write", _failing_write)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        task = asyncio.create_task(storage.set_tokens(_make_tokens()))
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_write.set()
+            with pytest.raises(OSError, match="token persistence failed"):
+                await task
+            await asyncio.sleep(0)
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+            loop.set_exception_handler(previous_handler)
+
+        assert not loop_contexts
+        # The write error supersedes the deferred cancellation; that loss must
+        # be logged rather than dropped silently.
+        assert any(
+            "a deferred cancellation is superseded by the write error"
+            in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_reads_run_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every async read offloads its blocking `_read` off the loop thread.
+
+        `BlockBuster` under `langgraph dev` trips on any synchronous file read
+        left on the loop, so this pins all of the read accessors — not just
+        `get_tokens` — including `get_expires_at`, which sits on the hot
+        refresh-decision path.
+        """
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        real_read = storage._read
+
+        def _spy_read() -> dict | None:
+            read_threads.append(threading.get_ident())
+            return real_read()
+
+        monkeypatch.setattr(storage, "_read", _spy_read)
+
+        assert await storage.get_tokens() is not None
+        assert await storage.get_client_info() is not None
+        assert await storage.get_oauth_metadata() is not None
+        assert await storage.get_expires_at() is not None
+        assert await storage.get_tokens_with_expiry() != (None, None)
+
+        assert len(read_threads) == 5, "each read accessor should have run once"
+        assert all(thread_id != loop_thread for thread_id in read_threads), (
+            "token reads must run off the event-loop thread"
+        )
+
+    async def test_all_setters_persist_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every setter offloads its blocking `_write` off the loop thread.
+
+        `set_tokens` is covered above; this pins the remaining setters —
+        notably `set_tokens_and_client_info`, the atomic combined write on the
+        primary OAuth-completion path this PR targets.
+        """
+        storage = FileTokenStorage("notion")
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+        real_write = storage._write
+
+        def _spy_write(data: dict) -> None:
+            write_threads.append(threading.get_ident())
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _spy_write)
+
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+
+        assert len(write_threads) == 3, "each setter should have written once"
+        assert all(thread_id != loop_thread for thread_id in write_threads), (
+            "token persistence must run off the event-loop thread"
+        )
+
+    async def test_read_not_blocked_by_in_flight_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read runs lock-free instead of serializing behind a live mutation.
+
+        A mutation holding the per-file lock during its blocking write must not
+        stall a concurrent read, which never takes that lock.
+        """
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+
+        write_holding_lock = threading.Event()
+        release_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict) -> None:
+            # Called while `_set_tokens_sync` holds the per-file lock.
+            write_holding_lock.set()
+            if not release_write.wait(timeout=5):
+                pytest.fail("timed out holding the per-file mutation lock")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+        write_task = asyncio.create_task(storage.set_tokens(_make_tokens("new")))
+        try:
+            assert await asyncio.to_thread(write_holding_lock.wait, 5)
+            # The mutation is parked inside `_write` still holding the lock; a
+            # read must complete instead of serializing behind it.
+            got = await asyncio.wait_for(storage.get_tokens(), timeout=1)
+            assert got is not None
+        finally:
+            release_write.set()
+            await write_task
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestExpiryAwareOAuthClientProvider:
+    """Tests for cold-start expiry restoration on the OAuth client provider."""
+
+    async def test_initialize_restores_expiry_minus_safety_margin(self) -> None:
+        """A live `expires_at` is loaded into `context.token_expiry_time`."""
+        from deepagents_code.mcp_auth import (
+            _REFRESH_SAFETY_MARGIN_SECONDS,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+        expected_expires_at = await storage.get_expires_at()
+        assert expected_expires_at is not None
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        assert provider.context.token_expiry_time == (
+            expected_expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+        )
+        assert provider.context.is_token_valid() is True
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_loads_token_and_expiry_from_same_snapshot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A concurrent rotation cannot pair an old token with a new expiry."""
+        from deepagents_code.mcp_auth import (
+            _REFRESH_SAFETY_MARGIN_SECONDS,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens("old"))
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+        original_get_tokens = storage.get_tokens
+
+        async def _get_old_tokens_then_rotate() -> OAuthToken | None:
+            tokens = await original_get_tokens()
+            await storage.set_tokens(_make_tokens("new"))
+            return tokens
+
+        monkeypatch.setattr(storage, "get_tokens", _get_old_tokens_then_rotate)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+
+        await provider._initialize()
+
+        expected_expires_at = await storage.get_expires_at()
+        assert expected_expires_at is not None
+        assert provider.context.current_tokens is not None
+        assert provider.context.current_tokens.access_token == "new"
+        assert provider.context.token_expiry_time == (
+            expected_expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+        )
+
+    async def test_initialize_treats_expired_token_as_invalid(self) -> None:
+        """A past `expires_at` makes the loaded token report as invalid."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60  # already expired
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        assert provider.context.is_token_valid() is False
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_legacy_file_forces_refresh_when_refresh_token_present(
+        self,
+    ) -> None:
+        """No sidecar + refresh token => assume expired so refresh path fires."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        # Write a legacy-format file (no `expires_at`).
+        path = storage.path
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": json.loads(
+                        _make_client_info().model_dump_json(exclude_none=True)
+                    ),
+                    "tokens": json.loads(
+                        _make_tokens().model_dump_json(exclude_none=True)
+                    ),
+                }
+            )
+        )
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        # The exact sentinel float is documented in the source; assert the
+        # observable behavior (token invalid, refresh path reachable) rather
+        # than pinning the magic value.
+        assert provider.context.is_token_valid() is False
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_legacy_file_without_refresh_token_leaves_expiry_unset(
+        self,
+    ) -> None:
+        """Legacy file without `refresh_token` cannot pre-empt expiry."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        path = storage.path
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": json.loads(
+                        _make_client_info().model_dump_json(exclude_none=True)
+                    ),
+                    "tokens": {"access_token": "stale", "token_type": "Bearer"},
+                }
+            )
+        )
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        # No refresh_token means there's nothing to refresh with, so the
+        # provider must leave token_expiry_time at its default (None). The
+        # stale Bearer will go out, hit 401, and fall into the SDK's full
+        # re-auth path — there's no shortcut available.
+        assert provider.context.token_expiry_time is None
+        assert provider.context.can_refresh_token() is False
+
+    async def test_initialize_with_storage_lacking_get_expires_at(self) -> None:
+        """Custom `TokenStorage` impls without `get_expires_at` still initialize."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        class _MinimalStorage(TokenStorage):
+            """`TokenStorage` that omits the optional `get_expires_at` method."""
+
+            def __init__(self) -> None:
+                self._tokens: OAuthToken | None = _make_tokens()
+                self._client_info = _make_client_info()
+
+            async def get_tokens(self) -> OAuthToken | None:
+                return self._tokens
+
+            async def set_tokens(self, tokens: OAuthToken) -> None:
+                self._tokens = tokens
+
+            async def get_client_info(self):
+                return self._client_info
+
+            async def set_client_info(self, client_info) -> None:
+                self._client_info = client_info
+
+        provider = build_oauth_provider(
+            server_name="custom",
+            server_url="https://mcp.example.com/mcp",
+            storage=_MinimalStorage(),
+        )
+        await provider._initialize()
+
+        # Without the optional sidecar accessor, the provider falls back to
+        # the upstream SDK's behavior: no expiry known, token treated as
+        # valid until a 401 forces re-auth.
+        assert provider.context.token_expiry_time is None
+        assert provider.context.current_tokens is not None
+
+    async def test_delegated_flow_forwards_responses_into_sdk(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Responses sent into the outer flow reach the delegated SDK flow.
+
+        Regression test: the override used to delegate with `async for`, which
+        advances the inner SDK generator via `__anext__()` (`asend(None)`) and
+        discards the HTTP responses httpx feeds back through `asend(response)`.
+        The SDK's `response = yield request` then saw `None` and raised
+        `AttributeError: 'NoneType' object has no attribute 'status_code'`,
+        surfacing as the `ExceptionGroup` users hit on MCP OAuth login. With a
+        valid stored token the pre-emptive discovery branch is skipped, so the
+        first response forwarded is the one whose `status_code` the SDK reads.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        # The valid token is attached and the request is yielded unchanged.
+        first_request = await anext(flow)
+        assert first_request.headers["Authorization"] == "Bearer at"
+
+        # Feeding a 401 back must reach the SDK's `response.status_code` check
+        # and trigger metadata discovery — not raise AttributeError.
+        discovery_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
+        await flow.aclose()
+
+    @pytest.mark.parametrize(
+        ("interactive", "expected"),
+        [(False, True), (True, False)],
+    )
+    async def test_delegated_flow_toggles_reauth_log_suppression(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        interactive: bool,
+        expected: bool,
+    ) -> None:
+        """The contextvar is set during delegation only for non-interactive runs.
+
+        Guards the wiring between `build_oauth_provider(interactive=...)` and the
+        filter: the SDK flow logs synchronously inside the delegated generator,
+        so the suppression flag must be visible there. A fake SDK flow records
+        what the contextvar reads at that point.
+        """
+        del fake_home
+        import httpx
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import (
+            _SUPPRESS_EXPECTED_REAUTH_LOGS,
+            build_oauth_provider,
+        )
+
+        observed: dict[str, bool] = {}
+
+        async def fake_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            del self
+            observed["suppressed"] = _SUPPRESS_EXPECTED_REAUTH_LOGS.get()
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_flow)
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=interactive,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        await anext(flow)
+        await flow.aclose()
+
+        assert observed["suppressed"] is expected
+        # The flag never leaks past the flow.
+        assert _SUPPRESS_EXPECTED_REAUTH_LOGS.get() is False
+
+    async def test_delegated_flow_forwards_responses_on_every_iteration(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """The pump loop forwards responses on every round-trip, not just one.
+
+        Guards against a regression that primes the inner generator correctly
+        but then reverts to discarding subsequent sends (e.g. back toward
+        `async for`): the SDK's protected-resource-metadata discovery walks
+        several URLs, sending a response into the delegated generator each
+        time. Each forwarded response must advance discovery to the next URL.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        first_request = await anext(flow)
+        # First forwarded response (401) advances to the path-scoped PRM URL.
+        prm_path_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert str(prm_path_request.url).endswith(
+            "/.well-known/oauth-protected-resource/mcp"
+        )
+        # Second forwarded response (404) must also reach the SDK and advance
+        # discovery to the root PRM URL — proving the loop didn't stop after
+        # the first send.
+        prm_root_request = await flow.asend(
+            httpx.Response(404, request=prm_path_request)
+        )
+        assert str(prm_root_request.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        await flow.aclose()
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestRefreshTokenSerialization:
+    """Cross-process-safe refresh serialization to avoid refresh-token reuse.
+
+    The LangSmith OAuth server rotates refresh tokens and revokes the entire
+    identity+client token family when an already-rotated token is replayed, so
+    the provider must reload the on-disk token under a lock before refreshing.
+    """
+
+    async def test_refresh_lock_path_is_sibling_of_token_file(self) -> None:
+        """The lock lives beside the token file and never replaces it."""
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        assert storage.refresh_lock_path == storage.path.with_name(
+            f"{storage.path.name}.lock"
+        )
+        assert storage.refresh_lock_path.parent == storage.path.parent
+        assert storage.refresh_lock_path != storage.path
+
+    async def test_skips_refresh_when_peer_already_rotated_on_disk(self) -> None:
+        """A peer's fresh token is reloaded and used instead of refreshing.
+
+        Guards the reuse fix: if this provider still has a stale token in
+        memory but disk already holds a peer's rotated token, it must attach
+        the reloaded token rather than replay its own (now-revoked) refresh
+        token.
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        # Backdate the sidecar so the loaded token reports as expired.
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        # Initialize with the stale token held in memory.
+        await provider._initialize()
+        assert provider.context.is_token_valid() is False
+
+        # A peer rotates the token on disk: fresh access token, future expiry.
+        await storage.set_tokens(
+            OAuthToken(
+                access_token="peer-rotated",
+                token_type="Bearer",
+                refresh_token="rt-new",
+                expires_in=3600,
+            )
+        )
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        first_request = await anext(flow)
+        # No refresh round-trip: the reloaded token is attached directly, and
+        # the first yielded request is the actual server call.
+        assert first_request.headers["Authorization"] == "Bearer peer-rotated"
+        assert str(first_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+    async def test_performs_locked_refresh_and_persists_rotation(self) -> None:
+        """A still-stale token triggers exactly one refresh, then persists it."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        refresh_request = await anext(flow)
+        assert refresh_request.method == "POST"
+        assert str(refresh_request.url) == "https://auth.example/token"
+        body = refresh_request.content.decode()
+        assert "grant_type=refresh_token" in body
+        assert "refresh_token=rt" in body
+
+        token_response = httpx.Response(
+            200,
+            json={
+                "access_token": "at-rotated",
+                "token_type": "Bearer",
+                "refresh_token": "rt-rotated",
+                "expires_in": 3600,
+            },
+            request=refresh_request,
+        )
+        actual_request = await flow.asend(token_response)
+        assert actual_request.headers["Authorization"] == "Bearer at-rotated"
+        assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+        # The rotated pair is persisted so the next process reads it too.
+        persisted = await storage.get_tokens()
+        assert persisted is not None
+        assert persisted.access_token == "at-rotated"
+        assert persisted.refresh_token == "rt-rotated"
+
+    async def test_locked_refresh_rejection_delegates_to_sdk_reauth_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rejected locked refresh does not bypass the SDK re-auth fallback."""
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        delegated: dict[str, bool] = {}
+
+        async def fake_sdk_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            delegated["entered"] = True
+            assert self.context.current_tokens is None
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_sdk_flow)
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+
+        async def raise_refresh_failure(response: httpx.Response) -> bool:
+            msg = "refresh token rejected"
+            raise httpx.HTTPStatusError(
+                msg,
+                request=response.request,
+                response=response,
+            )
+
+        monkeypatch.setattr(
+            provider,
+            "_handle_refresh_response",
+            raise_refresh_failure,
+        )
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        refresh_request = await anext(flow)
+        assert str(refresh_request.url) == "https://auth.example/token"
+
+        actual_request = await flow.asend(httpx.Response(401, request=refresh_request))
+
+        assert delegated == {"entered": True}
+        assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+    async def _build_stale_refreshable_provider(
+        self,
+    ) -> tuple[Any, FileTokenStorage]:
+        """Build a provider whose on-disk token is expired but refreshable.
+
+        Shared setup for the lock-behavior tests: client info and OAuth
+        metadata are persisted and the sidecar expiry is backdated so the
+        refresh branch fires against `https://auth.example/token`.
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        return provider, storage
+
+    async def test_lock_timeout_skips_refresh_token_reuse(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A peer-held lock timeout avoids replaying the refresh token.
+
+        The wait is shrunk so the contended acquire times out promptly; the
+        provider must not fire either its locked refresh or the delegated SDK
+        refresh while a peer may still be using the same rotating refresh token.
+        """
+        from filelock import FileLock
+
+        from deepagents_code import mcp_auth
+
+        provider, storage = await self._build_stale_refreshable_provider()
+        monkeypatch.setattr(mcp_auth, "_REFRESH_LOCK_TIMEOUT_SECONDS", 0.1)
+
+        # A peer holds the refresh lock for the duration of this flow, forcing
+        # the provider's acquire to time out.
+        peer_lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer_lock.acquire()
+        try:
+            caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+            flow = provider.async_auth_flow(
+                httpx.Request("POST", "https://mcp.notion.com/mcp")
+            )
+            actual_request = await anext(flow)
+            assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+            assert "Authorization" not in actual_request.headers
+            await flow.aclose()
+        finally:
+            peer_lock.release()
+
+        assert any(
+            "skipping refresh to avoid refresh-token reuse" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_refresh_waits_for_peer_holding_lock_then_proceeds(self) -> None:
+        """The flow blocks on the refresh lock until the peer releases it.
+
+        Proves the serialization the PR exists for: while a peer holds the file
+        lock the provider cannot reach the refresh, and it proceeds only once
+        the lock is free. Guards against a regression that drops the file lock
+        (e.g. reverting to the per-provider `context.lock`).
+        """
+        from filelock import FileLock
+
+        provider, storage = await self._build_stale_refreshable_provider()
+
+        async def drive_to_refresh() -> httpx.Request:
+            # Keep the whole generator lifecycle on one task: its inner
+            # `anyio` lock is task-affine, so driving `anext` here and
+            # `aclose` on another task would raise on release.
+            flow = provider.async_auth_flow(
+                httpx.Request("POST", "https://mcp.notion.com/mcp")
+            )
+            try:
+                return await anext(flow)
+            finally:
+                await flow.aclose()
+
+        peer_lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer_lock.acquire()
+        task = asyncio.ensure_future(drive_to_refresh())
+        try:
+            # While the peer holds the lock, the flow can't reach the refresh.
+            await asyncio.sleep(0.2)
+            assert not task.done()
+
+            peer_lock.release()
+
+            # Once the lock frees, the provider acquires it and yields the refresh.
+            refresh_request = await asyncio.wait_for(task, timeout=5)
+            assert str(refresh_request.url) == "https://auth.example/token"
+        finally:
+            if peer_lock.is_locked:
+                peer_lock.release()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_refresh_lock_released_after_successful_refresh(self) -> None:
+        """A completed locked refresh frees the lock for the next caller.
+
+        Defends against a self-deadlock regression: if the guard failed to
+        release, the next process to refresh this server would hang.
+        """
+        from filelock import FileLock, Timeout
+
+        provider, storage = await self._build_stale_refreshable_provider()
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        refresh_request = await anext(flow)
+        token_response = httpx.Response(
+            200,
+            json={
+                "access_token": "at-rotated",
+                "token_type": "Bearer",
+                "refresh_token": "rt-rotated",
+                "expires_in": 3600,
+            },
+            request=refresh_request,
+        )
+        await flow.asend(token_response)
+        await flow.aclose()
+
+        # The guard must have released; a fresh holder takes the lock at once.
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            await asyncio.to_thread(probe.acquire, timeout=0)
+        except Timeout:
+            pytest.fail("refresh lock was not released after a successful refresh")
+        else:
+            probe.release()
+
+    async def test_refresh_lock_held_until_cancelled_write_finishes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation cannot release the refresh lock ahead of persistence."""
+        from filelock import FileLock, Timeout
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        real_write = storage._write
+
+        def _blocking_write(data: dict[str, Any]) -> None:
+            write_started.set()
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the token write")
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _blocking_write)
+
+        async def _persist_under_refresh_lock() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                await storage.set_tokens(_make_tokens())
+
+        task = asyncio.create_task(_persist_under_refresh_lock())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            assert await asyncio.to_thread(write_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            with pytest.raises(Timeout):
+                await asyncio.to_thread(probe.acquire, timeout=0)
+
+            allow_write.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            allow_write.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_write_failure_wins_over_level_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cancelled refresh reports persistence failure after releasing its lock."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        loop = asyncio.get_running_loop()
+        write_started = asyncio.Event()
+        allow_write = threading.Event()
+        release_started = asyncio.Event()
+        allow_release = threading.Event()
+        scopes: list[anyio.CancelScope] = []
+        real_release = FileLock.release
+
+        def _failing_write(data: dict[str, Any]) -> None:
+            del data
+            loop.call_soon_threadsafe(write_started.set)
+            if not allow_write.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the token write")
+            msg = "token persistence failed"
+            raise OSError(msg)
+
+        def _blocking_release(lock: FileLock, *, force: bool = False) -> None:
+            if force:
+                real_release(lock, force=True)
+                return
+            loop.call_soon_threadsafe(release_started.set)
+            if not allow_release.wait(timeout=5):
+                pytest.fail("timed out waiting to release the refresh lock")
+            real_release(lock)
+
+        monkeypatch.setattr(storage, "_write", _failing_write)
+        monkeypatch.setattr(FileLock, "release", _blocking_release)
+
+        async def _persist_in_cancel_scope() -> bool:
+            with anyio.CancelScope() as scope:
+                scopes.append(scope)
+                async with provider._refresh_lock_guard(
+                    storage.refresh_lock_path
+                ) as acquired:
+                    assert acquired
+                    await storage.set_tokens(_make_tokens())
+            return scope.cancelled_caught
+
+        task = asyncio.create_task(_persist_in_cancel_scope())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            await asyncio.wait_for(write_started.wait(), timeout=5)
+            scopes[0].cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_write.set()
+            await asyncio.wait_for(release_started.wait(), timeout=5)
+            assert not task.done()
+
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_release.set()
+            with pytest.raises(OSError, match="token persistence failed"):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            allow_write.set()
+            allow_release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_acquisition_joins_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancellation waits for a lock-acquire worker and releases its result."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        acquire_started = asyncio.Event()
+        real_acquire = provider._acquire_refresh_lock
+
+        async def _tracked_acquire(lock: FileLock) -> bool:
+            acquire_started.set()
+            return await real_acquire(lock)
+
+        monkeypatch.setattr(provider, "_acquire_refresh_lock", _tracked_acquire)
+        peer = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer.acquire()
+
+        async def _enter_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        task = asyncio.create_task(_enter_guard())
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            await acquire_started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            peer.release()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            await asyncio.to_thread(probe.acquire, timeout=1)
+        finally:
+            if peer.is_locked:
+                peer.release()
+            await asyncio.gather(task, return_exceptions=True)
+            if probe.is_locked:
+                probe.release()
+
+    async def test_refresh_lock_acquire_timeout_yields_to_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Cancellation deferred through an acquire wins over the acquire timeout.
+
+        When a cancel lands while the acquire worker is still waiting on a
+        peer-held lock that ultimately times out, the guard must surface the
+        `CancelledError` — not swallow it into the "skip refresh" (`False`)
+        path the timeout takes on its own.
+        """
+        from filelock import FileLock
+
+        from deepagents_code import mcp_auth
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        monkeypatch.setattr(mcp_auth, "_REFRESH_LOCK_TIMEOUT_SECONDS", 0.3)
+        acquire_started = asyncio.Event()
+        real_acquire = provider._acquire_refresh_lock
+
+        async def _tracked_acquire(lock: FileLock) -> bool:
+            acquire_started.set()
+            return await real_acquire(lock)
+
+        monkeypatch.setattr(provider, "_acquire_refresh_lock", _tracked_acquire)
+        # A peer holds the lock for the whole flow, so the provider's acquire
+        # can only ever time out.
+        peer = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer.acquire()
+
+        async def _enter_guard() -> None:
+            async with provider._refresh_lock_guard(storage.refresh_lock_path):
+                pass
+
+        task = asyncio.create_task(_enter_guard())
+        try:
+            caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+            await acquire_started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            # The timeout's "skip refresh" warning must not fire: cancellation
+            # took precedence over the timed-out acquire.
+            assert not any(
+                "skipping refresh to avoid refresh-token reuse" in record.getMessage()
+                for record in caplog.records
+            )
+        finally:
+            if peer.is_locked:
+                peer.release()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_refresh_lock_release_failure_preserves_body_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A cleanup failure is reported without replacing the guarded error."""
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _raise_in_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                msg = "guarded operation failed"
+                raise ValueError(msg)
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_auth"),
+            pytest.raises(ValueError, match="guarded operation failed") as exc_info,
+        ):
+            await _raise_in_guard()
+
+        assert any(
+            "release also failed with OSError" in note
+            for note in exc_info.value.__notes__
+        )
+        assert any(
+            "Failed to release the MCP token refresh lock" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_refresh_lock_release_failure_preserves_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A release failure must not mask a cancelled guarded body.
+
+        This is the counterpart to the ``ValueError`` body above: when the
+        guarded operation is cancelled and the lock release then fails, the
+        ``CancelledError`` must still propagate (structured cancellation
+        depends on it) with the release failure attached as a note.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _cancel_in_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_auth"),
+            pytest.raises(asyncio.CancelledError) as exc_info,
+        ):
+            await _cancel_in_guard()
+
+        assert any(
+            "release also failed with OSError" in note
+            for note in getattr(exc_info.value, "__notes__", [])
+        )
+        assert any(
+            "Failed to release the MCP token refresh lock" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_refresh_lock_clean_body_release_failure_propagates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A release failure on a clean refresh surfaces instead of vanishing.
+
+        With no guarded error and no cancellation, the release `OSError` is the
+        only failure in play, so it must propagate rather than be swallowed.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _clean_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with pytest.raises(OSError, match="refresh lock release failed"):
+            await _clean_guard()
+
+    async def test_refresh_lock_clean_body_release_failure_supersedes_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A clean-body release failure supersedes a deferred cancellation.
+
+        When the guarded body succeeds but the lock release then fails, the
+        release error is the primary failure. A cancellation deferred during the
+        release join is dropped in its favor — but that loss must be logged, not
+        silent.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+        release_started = threading.Event()
+        allow_release = threading.Event()
+
+        def _blocking_release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            if force:
+                # Best-effort GC-time release must not block or raise.
+                real_release(lock, force=force)
+                return
+            release_started.set()
+            if not allow_release.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the lock release")
+            real_release(lock)
+            msg = "refresh lock release failed"
+            raise OSError(msg)
+
+        async def _clean_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        monkeypatch.setattr(FileLock, "release", _blocking_release_then_fail)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        task = asyncio.create_task(_clean_guard())
+        try:
+            # The guarded body has exited; cancel while the release worker is
+            # parked so the cancellation is deferred through the release join.
+            assert await asyncio.to_thread(release_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_release.set()
+            with pytest.raises(OSError, match="refresh lock release failed"):
+                await task
+        finally:
+            allow_release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert any(
+            "a deferred cancellation is superseded by the release error"
+            in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_acquire_refresh_lock_oserror_skips_refresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An un-creatable sidecar lock skips the refresh rather than racing it.
+
+        On a hardened host the `.lock` file may be un-openable (read-only or
+        missing tokens dir). `_acquire_refresh_lock` must return `False` — never
+        refresh unlocked — and say why, so an operator can see the refresh was
+        skipped to avoid refresh-token reuse.
+        """
+        from filelock import FileLock
+
+        provider, storage = await self._build_stale_refreshable_provider()
+        lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+
+        def _raise_oserror(*_args: Any, **_kwargs: Any) -> None:
+            msg = "cannot open lock file"
+            raise OSError(msg)
+
+        monkeypatch.setattr(FileLock, "acquire", _raise_oserror)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+
+        assert await provider._acquire_refresh_lock(lock) is False
+        assert any(
+            "skipping refresh to avoid refresh-token reuse" in record.getMessage()
+            for record in caplog.records
+        )
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestJoinTaskDeferringCancellation:
+    """Tests for the cancellation-deferring task join primitive."""
+
+    async def test_defers_caller_cancellation_without_cancelling_task(self) -> None:
+        """A cancelled caller neither cancels the wrapped task nor loses its result.
+
+        The join must let the wrapped task run to completion and hand the
+        deferred `CancelledError` back to the caller to re-raise, so an
+        in-flight write/lock operation is never abandoned mid-flight.
+        """
+        from deepagents_code.mcp_auth import _join_task_deferring_cancellation
+
+        started = threading.Event()
+        allow_finish = threading.Event()
+        captured: dict[str, Any] = {}
+
+        def _blocking() -> str:
+            started.set()
+            if not allow_finish.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the wrapped task")
+            return "done"
+
+        async def _caller() -> None:
+            task = asyncio.create_task(asyncio.to_thread(_blocking))
+            deferred = await _join_task_deferring_cancellation(task)
+            captured["deferred"] = deferred
+            captured["value"] = task.result()
+            if deferred is not None:
+                raise deferred
+
+        caller = asyncio.create_task(_caller())
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            caller.cancel()
+            await asyncio.sleep(0)
+            assert not caller.done(), "the join must defer the caller's cancellation"
+
+            allow_finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+        finally:
+            allow_finish.set()
+            await asyncio.gather(caller, return_exceptions=True)
+
+        # The wrapped task ran to completion despite the caller being cancelled,
+        # and the deferred cancellation was returned (not swallowed) for re-raise.
+        assert captured["value"] == "done"
+        assert isinstance(captured["deferred"], asyncio.CancelledError)
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestBasicAuthClientIdStripping:
+    """Tests for dropping the duplicate body `client_id` under HTTP Basic auth."""
+
+    def _build_provider(
+        self,
+        auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+    ):
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("pylon")
+        provider = build_oauth_provider(
+            server_name="pylon",
+            server_url="https://mcp.usepylon.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        provider.context.client_info = _make_client_info_with_secret(auth_method)
+        return provider
+
+    def test_basic_auth_drops_body_client_id(self) -> None:
+        """`client_secret_basic` carries credentials in the header, not the body.
+
+        This wrapper strips the redundant body `client_id`. The SDK itself
+        already strips `client_secret` for Basic auth, which the final
+        assertion pins (see `test_sdk_still_injects_client_id_under_basic_auth`
+        for the contract the wrapper depends on).
+        """
+        provider = self._build_provider("client_secret_basic")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert "client_id" not in data
+        assert "client_secret" not in data  # stripped by the SDK, not this wrapper
+
+    def test_post_auth_retains_body_client_id(self) -> None:
+        """`client_secret_post` keeps both fields in the body and adds no header."""
+        provider = self._build_provider("client_secret_post")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+        assert data["client_secret"] == "client-secret"
+
+    def test_none_auth_retains_body_client_id(self) -> None:
+        """`none` (public client) sends no header, so the body keeps `client_id`."""
+        provider = self._build_provider("none")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+
+    def test_sdk_still_injects_client_id_under_basic_auth(self) -> None:
+        """Pin the SDK contract this wrapper depends on.
+
+        Unwrapped, the SDK leaves `client_id` in the token-request body under
+        Basic auth (it strips only `client_secret`). If upstream ever strips
+        `client_id` too, this wrapper becomes a silent no-op; this test fails
+        loudly instead, flagging the workaround as obsolete.
+        """
+        from mcp.client.auth.oauth2 import OAuthContext
+
+        provider = self._build_provider("client_secret_basic")
+
+        # Call the SDK's method via the class to bypass the instance-level wrap
+        # installed in `__init__` and observe the SDK's own behavior.
+        data, headers = OAuthContext.prepare_token_auth(
+            provider.context,
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert data["client_id"] == "client-id"
+        assert "client_secret" not in data
+
+
+class TestExpectedReauthLogFilter:
+    """Tests for suppressing noisy SDK OAuth logs during non-interactive reauth."""
+
+    def test_suppresses_expected_sdk_oauth_logs(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expected non-interactive reauth logs are replaced by our login hint."""
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        server = "notion"
+        reauth = MCPReauthRequiredError(server)
+        msg = "boom"
+        unexpected = RuntimeError(msg)
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 400")
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(reauth), reauth, reauth.__traceback__),
+            )
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(unexpected), unexpected, unexpected.__traceback__),
+            )
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["OAuth flow error"]
+        exc_info = caplog.records[0].exc_info
+        assert exc_info is not None
+        assert isinstance(exc_info[1], RuntimeError)
+
+    def test_transient_refresh_failure_is_not_suppressed(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Transient refresh statuses (5xx/429) stay visible, not relabeled reauth.
+
+        The SDK logs `Token refresh failed: <status>` for any non-200. A `503`
+        means the provider is down and the refresh token is still valid, so the
+        operator must see it rather than be steered toward a pointless re-login.
+        """
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 503")
+            sdk_logger.warning("Token refresh failed: 429")
+            sdk_logger.warning("Token refresh failed: 400")
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == [
+            "Token refresh failed: 503",
+            "Token refresh failed: 429",
+        ]
+
+    def test_passes_through_when_not_suppressing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """With the contextvar unset, the process-wide filter is inert.
+
+        The filter is installed on the SDK logger for every consumer of that
+        logger, so its default-off behavior guards against globally swallowing
+        real OAuth errors outside a non-interactive reauth window.
+        """
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        reauth = MCPReauthRequiredError("notion")
+
+        # No `_SUPPRESS_EXPECTED_REAUTH_LOGS.set(...)`: contextvar at default.
+        sdk_logger.warning("Token refresh failed: 400")
+        sdk_logger.error(
+            "OAuth flow error",
+            exc_info=(type(reauth), reauth, reauth.__traceback__),
+        )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["Token refresh failed: 400", "OAuth flow error"]
+
 
 class TestFindReauthRequired:
     """Tests for unwrapping nested re-auth errors."""
@@ -241,6 +2255,225 @@ class TestFindReauthRequired:
         a.__context__ = b
         b.__context__ = a
         assert find_reauth_required(a) is None
+
+
+class TestFindOauthChallenge:
+    """Tests for detecting a 401 OAuth challenge in an exception tree."""
+
+    def test_direct_401_with_challenge(self) -> None:
+        """A 401 carrying an RFC 9728 Bearer challenge yields its URL."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_header_match_is_case_insensitive(self) -> None:
+        """The scheme and parameter matching ignore casing."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "www-authenticate": (
+                    f'bearer resource_METADATA="{_RESOURCE_METADATA_URL}"'
+                )
+            },
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_multiparam_bearer_challenge(self) -> None:
+        """`resource_metadata` is found after other Bearer auth-params."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="The access token expired", '
+                    f'resource_metadata="{_RESOURCE_METADATA_URL}"'
+                )
+            },
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_not_first_in_multischeme_line(self) -> None:
+        """A Bearer challenge behind another scheme on one line is detected."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": f'Basic realm="mcp", {_BEARER_CHALLENGE}'},
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_across_repeated_headers(self) -> None:
+        """A Bearer challenge on a second `WWW-Authenticate` line is detected."""
+        exc = _http_status_error(
+            401,
+            headers=[
+                ("WWW-Authenticate", 'Basic realm="mcp"'),
+                (
+                    "WWW-Authenticate",
+                    _BEARER_CHALLENGE,
+                ),
+            ],
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_without_challenge_header_ignored(self) -> None:
+        """A 401 lacking `WWW-Authenticate` is not an OAuth challenge."""
+        exc = _http_status_error(401)
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_basic_challenge_ignored(self) -> None:
+        """A non-OAuth auth challenge is not treated as an MCP login prompt."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Basic realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_bearer_without_resource_metadata_ignored(self) -> None:
+        """A Bearer challenge with params but no `resource_metadata` is ignored."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_resource_metadata_substring_not_matched(self) -> None:
+        """`resource_metadata` embedded in another token is not a match."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="x_resource_metadata_y"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_non_401_status_ignored(self) -> None:
+        """Other status codes never count as a challenge."""
+        exc = _http_status_error(
+            403,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_found_inside_exception_group(self) -> None:
+        """Nested exception groups are searched recursively."""
+        exc = ExceptionGroup(
+            "outer",
+            [
+                RuntimeError("x"),
+                _http_status_error(
+                    401,
+                    headers={"WWW-Authenticate": (_BEARER_CHALLENGE)},
+                ),
+            ],
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_found_via_cause_chain(self) -> None:
+        """`raise X from HTTPStatusError(...)` is unwrapped."""
+        challenge = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = challenge
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
+
+    def test_found_via_context_chain(self) -> None:
+        """Implicit chaining (`__context__`) is unwrapped, not only `__cause__`."""
+        challenge = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        wrapped = RuntimeError("wrapped")
+        wrapped.__context__ = challenge
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
+
+    def test_returns_none_when_absent(self) -> None:
+        """Trees without a 401 challenge yield `None`."""
+        exc = ExceptionGroup("outer", [RuntimeError("x"), ValueError("y")])
+        assert find_oauth_challenge(exc) is None
+
+    def test_handles_cyclic_chain(self) -> None:
+        """Self-referencing `__context__` cycles terminate without recursion."""
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__context__ = b
+        b.__context__ = a
+        assert find_oauth_challenge(a) is None
+
+
+class TestFormatLoginFailure:
+    """Tests for the token-safe summary helper used in app + CLI logs."""
+
+    def test_returns_reauth_message_for_nested_reauth_error(self) -> None:
+        """ExceptionGroup wrapping `MCPReauthRequiredError` surfaces its message."""
+        exc = ExceptionGroup(
+            "anyio task group",
+            [RuntimeError("upstream"), MCPReauthRequiredError("notion")],
+        )
+        summary = format_login_failure(exc)
+        assert "notion" in summary
+        assert "Run `/mcp login notion`" in summary
+
+    def test_omits_message_for_unknown_exception_types(self) -> None:
+        """Unrecognized exceptions degrade to a class-name chain — no `str()`.
+
+        Tokens can hide in `args`/`repr` of unfamiliar MCP-SDK error types;
+        the helper must never include those payloads.
+        """
+
+        class FakeMcpError(RuntimeError):
+            pass
+
+        sentinel = "TOKEN_PAYLOAD_DO_NOT_LEAK"
+        exc = FakeMcpError(sentinel)
+        summary = format_login_failure(exc)
+        assert sentinel not in summary
+        assert "FakeMcpError" in summary
+
+    def test_preserves_message_for_config_errors(self) -> None:
+        """Config errors are pre-handshake and token-free, so keep the message.
+
+        These carry the actionable field path (e.g. which var is unset);
+        collapsing them to a bare class name would strip the only guidance
+        the user has for fixing their `.mcp.json`.
+        """
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        message = "mcpServers.notion.url references unset env var MCP_GATEWAY_HOST."
+        summary = format_login_failure(MCPConfigError(message))
+        assert summary == message
+
+    def test_includes_message_for_known_loopback_errors(self) -> None:
+        """Loopback-internal exceptions are token-free and may include their message."""
+        from deepagents_code.mcp_auth import _LoopbackCallbackTimeoutError
+
+        exc = _LoopbackCallbackTimeoutError("Callback timed out")
+        summary = format_login_failure(exc)
+        assert "Callback timed out" in summary
+        assert "_LoopbackCallbackTimeoutError" in summary
+
+    def test_walks_cause_chain_into_class_names(self) -> None:
+        """A chained unknown exception still surfaces every link's class name."""
+
+        class OuterError(RuntimeError):
+            pass
+
+        class InnerError(RuntimeError):
+            pass
+
+        inner_msg = "inner-payload"
+        outer_msg = "outer-payload"
+        try:
+            try:
+                raise InnerError(inner_msg)  # noqa: TRY301
+            except InnerError as inner:
+                raise OuterError(outer_msg) from inner
+        except OuterError as exc:
+            summary = format_login_failure(exc)
+        assert "OuterError" in summary
+        assert "InnerError" in summary
+        assert inner_msg not in summary
+        assert outer_msg not in summary
 
 
 class TestAppendQueryParams:
@@ -329,9 +2562,21 @@ class TestBuildOAuthProvider:
         assert _is_slack_mcp_url("https://deep.slack.com/mcp")
         assert not _is_slack_mcp_url("https://mcp.notion.com/mcp")
 
+    def test_slack_provider_uses_fixed_loopback_port(self) -> None:
+        """SlackProvider uses a fixed port matching the Slack app registration."""
+        from deepagents_code.mcp_providers.slack import (
+            _SLACK_LOOPBACK_PORT,
+            SlackProvider,
+        )
+
+        provider = SlackProvider()
+        assert provider.supports_loopback_callback() is True
+        assert provider.loopback_port() == _SLACK_LOOPBACK_PORT
+
     def test_slack_branch_sets_public_client_metadata(self) -> None:
-        """Slack branch configures a public OAuth client (no token secret)."""
+        """Slack branch configures a public OAuth client using the loopback URI."""
         from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
 
         provider = build_oauth_provider(
             server_name="slack",
@@ -341,10 +2586,208 @@ class TestBuildOAuthProvider:
         metadata = provider.context.client_metadata
         assert metadata.token_endpoint_auth_method == "none"
         assert metadata.redirect_uris is not None
-        assert [str(uri) for uri in metadata.redirect_uris] == ["https://localhost/"]
+        assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
 
-    def test_generic_branch_uses_localhost_callback(self) -> None:
-        """Non-Slack URLs use the generic `http://localhost/callback` redirect."""
+    def test_interactive_mode_maps_to_reauth_log_suppression(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Only non-interactive providers suppress expected reauth SDK logs.
+
+        Interactive sessions keep the SDK's OAuth diagnostics; non-interactive
+        runs replace the expected reauth noise with our login hint.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        non_interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=False,
+        )
+        interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=True,
+        )
+
+        assert cast("Any", non_interactive)._suppress_expected_reauth_logs is True
+        assert cast("Any", interactive)._suppress_expected_reauth_logs is False
+
+    async def test_refresh_uses_cached_oauth_metadata_endpoint(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Expired tokens refresh against cached metadata, not guessed `/token`."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        token_endpoint = "https://slack.com/api/oauth.v2.user.access"
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_oauth_metadata(_make_oauth_metadata(token_endpoint))
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        await provider._initialize()
+        refresh_request = await provider._refresh_token()
+
+        assert provider.context.oauth_metadata is not None
+        assert str(refresh_request.url) == token_endpoint
+
+    async def test_refresh_discovers_and_caches_oauth_metadata_endpoint(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Legacy token files discover metadata before refreshing."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        token_endpoint = "https://slack.com/api/oauth.v2.user.access"
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.slack.com/mcp")
+        )
+
+        prm_path_request = await anext(flow)
+        assert str(prm_path_request.url).endswith(
+            "/.well-known/oauth-protected-resource/mcp"
+        )
+        prm_root_request = await flow.asend(
+            httpx.Response(404, request=prm_path_request)
+        )
+        assert str(prm_root_request.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        auth_metadata_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=prm_root_request,
+                json={
+                    "resource": "https://mcp.slack.com",
+                    "authorization_servers": ["https://mcp.slack.com"],
+                },
+            )
+        )
+        assert str(auth_metadata_request.url).endswith(
+            "/.well-known/oauth-authorization-server"
+        )
+        refresh_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=auth_metadata_request,
+                json={
+                    "issuer": "https://slack.com",
+                    "authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
+                    "token_endpoint": token_endpoint,
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                },
+            )
+        )
+
+        assert str(refresh_request.url) == token_endpoint
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == token_endpoint
+        await flow.aclose()
+
+    async def test_refresh_falls_back_when_preemptive_metadata_discovery_raises(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Transient metadata discovery errors still defer to SDK refresh."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.slack.com/mcp")
+        )
+
+        metadata_request = await anext(flow)
+        refresh_request = await flow.athrow(
+            httpx.TransportError("metadata unavailable", request=metadata_request)
+        )
+
+        assert str(refresh_request.url).endswith("/token")
+        await flow.aclose()
+
+    async def test_full_login_persists_discovered_oauth_metadata(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Metadata discovered during full login is cached for later refreshes."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        await provider._initialize()
+        # Simulate the SDK's 401-path discovery populating the context during a
+        # full browser login, just before the token exchange completes.
+        provider.context.oauth_metadata = _make_oauth_metadata()
+
+        assert await storage.get_oauth_metadata() is None
+        token_json = json.loads(_make_tokens().model_dump_json(exclude_none=True))
+        await provider._handle_token_response(httpx.Response(200, json=token_json))
+
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == "https://auth.example/token"
+
+    def test_generic_branch_uses_loopback_callback(self) -> None:
+        """Non-Slack URLs (including Notion) use a local callback server redirect."""
         from deepagents_code.mcp_auth import build_oauth_provider
 
         provider = build_oauth_provider(
@@ -354,13 +2797,150 @@ class TestBuildOAuthProvider:
         )
         metadata = provider.context.client_metadata
         assert metadata.redirect_uris is not None
-        assert [str(uri) for uri in metadata.redirect_uris] == [
-            "http://localhost/callback"
-        ]
+        redirect_uri = str(metadata.redirect_uris[0])
+        assert re.fullmatch(r"http://localhost:\d+/callback", redirect_uri)
         # Generic (non-Slack) providers default to client-secret auth, so the
         # Slack-only `token_endpoint_auth_method="none"` override must not
         # leak into this branch.
         assert metadata.token_endpoint_auth_method != "none"
+
+    def test_generic_branch_reuses_stored_loopback_port(self, fake_home: Path) -> None:
+        """A persisted DCR redirect URI pins the callback port across launches."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(51208)))
+        first = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        second = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        first_metadata = first.context.client_metadata
+        second_metadata = second.context.client_metadata
+        assert first_metadata.redirect_uris is not None
+        assert second_metadata.redirect_uris is not None
+        assert str(first_metadata.redirect_uris[0]) == "http://localhost:51208/callback"
+        assert (
+            str(second_metadata.redirect_uris[0]) == "http://localhost:51208/callback"
+        )
+
+    def test_fixed_loopback_port_wins_over_stored_port(self, fake_home: Path) -> None:
+        """Provider-fixed callback ports take precedence over stored DCR ports."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
+
+        storage = FileTokenStorage("slack")
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(51208)))
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://slack.com/mcp",
+            storage=storage,
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == _SLACK_REDIRECT_URI
+
+    def test_generic_branch_random_port_when_stored_uri_non_loopback(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-loopback stored URI falls back to a fresh random port.
+
+        A token is seeded so the stale-registration self-heal is skipped
+        (`discard_client_info_if_loopback_unusable` only fires when no token is
+        persisted); that keeps this test focused on the random-port fallback,
+        distinct from `test_build_oauth_provider_clears_stale_portless_registration`.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        monkeypatch.setattr(
+            "deepagents_code.mcp_auth._choose_loopback_port", lambda: 60001
+        )
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info()))  # localhost, no port
+        asyncio.run(storage.set_tokens(_make_tokens()))  # blocks self-heal discard
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == "http://localhost:60001/callback"
+        assert "http://localhost/callback" in caplog.text
+        assert "not a reusable loopback callback URI" in caplog.text
+
+    def test_stored_loopback_port(self, fake_home: Path) -> None:
+        """The storage helper extracts ports only from valid loopback URIs."""
+        del fake_home
+
+        storage = FileTokenStorage("notion")
+        # No token file on disk yet.
+        assert storage.stored_loopback_port() is None
+        # Loopback URI with explicit port — reused.
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(54321)))
+        assert storage.stored_loopback_port() == 54321
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "https://localhost:5000/callback",
+            "http://127.0.0.1:5000/callback",
+            "http://localhost:5000/cb",
+            "http://localhost:notaport/callback",
+        ],
+    )
+    def test_stored_loopback_port_rejects_non_reusable_uris(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture, uri: str
+    ) -> None:
+        """Stored ports are reused only for the exact loopback callback shape."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": {
+                        "client_id": "client-id",
+                        "redirect_uris": [uri],
+                        "grant_types": ["authorization_code", "refresh_token"],
+                        "response_types": ["code"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert storage.stored_loopback_port() is None
+        assert uri in caplog.text
+        assert "not a reusable loopback callback URI" in caplog.text
+
+    def test_stored_loopback_port_warns_when_token_file_unreadable(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unreadable token files fall back with a warning breadcrumb."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_bytes(b"{not json")
+
+        assert storage.stored_loopback_port() is None
+        assert "unreadable during loopback port lookup" in caplog.text
+        assert "Failed to read MCP token file" in caplog.text
 
     async def test_non_interactive_reauth_handlers_raise(self) -> None:
         """In non-interactive mode, both OAuth handlers raise re-auth errors."""
@@ -371,6 +2951,289 @@ class TestBuildOAuthProvider:
             await redirect("https://auth.example/")
         with pytest.raises(MCPReauthRequiredError):
             await callback()
+
+
+class TestLoopbackHandlers:
+    """Tests for the local OAuth callback server."""
+
+    async def test_loopback_callback_returns_code_and_state(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A browser callback to the loopback URI completes the handler."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{redirect_uri}?code=abc&state=xyz")
+
+        assert response.status_code == 200
+        code, state = await callback_handler()
+        assert code == "abc"
+        assert state == "xyz"
+
+    async def test_loopback_callback_surfaces_provider_error(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """Provider-side callback errors propagate with a useful message."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                f"{redirect_uri}?error=access_denied&error_description=User%20declined"
+            )
+
+        assert response.status_code == 400
+        with pytest.raises(RuntimeError, match="access_denied"):
+            await callback_handler()
+
+    async def test_loopback_callback_missing_code_raises(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A callback URL missing the `code` parameter sends 400 and raises."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{redirect_uri}?state=xyz")
+
+        assert response.status_code == 400
+        with pytest.raises(RuntimeError, match="missing the 'code' parameter"):
+            await callback_handler()
+
+    async def test_loopback_falls_back_when_browser_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the browser cannot open, callback() falls back to paste-back at once."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
+
+    async def test_loopback_falls_back_on_bind_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bind failure in redirect() causes callback() to fall back to paste-back."""
+        from deepagents_code.mcp_auth import (
+            _LoopbackOAuthCallbackServer,
+            build_oauth_provider,
+        )
+
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr(
+            _LoopbackOAuthCallbackServer,
+            "start",
+            lambda _self: (_ for _ in ()).throw(OSError("Address already in use")),
+        )
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
+
+    async def test_loopback_falls_back_when_webbrowser_get_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No-browser environments (headless, SSH) skip the 300s loopback wait.
+
+        `webbrowser.open` can return `True` in some headless setups even
+        when nothing actually launches. `webbrowser.get` raising
+        `webbrowser.Error` is the reliable signal that no browser is
+        available — the redirect handler must trip the paste-back path
+        without binding a socket or burning the timeout.
+        """
+        import webbrowser
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        def _raise_no_browser(*_a: object, **_kw: object) -> object:
+            no_browser_msg = "no browser"
+            raise webbrowser.Error(no_browser_msg)
+
+        monkeypatch.setattr("webbrowser.get", _raise_no_browser)
+        # Sanity: webbrowser.open intentionally returns True to prove we
+        # never call it when get() fails first.
+        monkeypatch.setattr(
+            "webbrowser.open",
+            lambda _url: pytest.fail("webbrowser.open should not be called"),
+        )
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
+
+    async def test_loopback_falls_back_on_callback_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A loopback callback that never arrives falls through to paste-back.
+
+        Regression guard for `_LoopbackCallbackTimeoutError`. Without this
+        path, a user whose browser opens but never redirects would hang
+        for the full `_LOOPBACK_CALLBACK_TIMEOUT` (300s).
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("deepagents_code.mcp_auth._LOOPBACK_CALLBACK_TIMEOUT", 0.05)
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=after_timeout",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, _state = await callback_handler()
+        assert code == "after_timeout"
+
+    async def test_loopback_repeat_request_after_error_shows_error_page(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A duplicate request after a failed callback must not show success HTML.
+
+        Regression guard: previously `_handle_get` early-returned success
+        whenever the future was done, even if the future resolved with an
+        exception. A second browser hit (prefetch, favicon) would render
+        "You're signed in" while the worker was actually surfacing the
+        underlying error.
+        """
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        assert redirect_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            first = await client.get(f"{redirect_uri}?error=access_denied")
+            second = await client.get(f"{redirect_uri}?code=late")
+
+        assert first.status_code == 400
+        # Second request must surface the prior error state, not success.
+        assert second.status_code == 400
+        assert "You're signed in" not in second.text
+        assert "did not complete" in second.text
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -399,6 +3262,153 @@ class TestFileTokenStorageExtras:
         assert "client_info" in data
         assert data["tokens"]["access_token"] == "at"
         assert data["client_info"]["client_id"] == "client-id"
+
+    async def test_discard_removes_portless_registration_without_tokens(
+        self, fake_home: Path
+    ) -> None:
+        """A portless loopback registration with no tokens is removed."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())  # localhost, no port
+
+        assert storage.discard_client_info_if_loopback_unusable() is True
+        assert await storage.get_client_info() is None
+
+    async def test_discard_keeps_ported_loopback_registration(
+        self, fake_home: Path
+    ) -> None:
+        """A reusable ported loopback registration is left intact."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info_with_loopback(51208))
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert await storage.get_client_info() is not None
+
+    async def test_discard_keeps_registration_when_tokens_present(
+        self, fake_home: Path
+    ) -> None:
+        """A still-usable token blocks discard so refresh isn't downgraded."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        # Portless registration, but a persisted token can still authenticate.
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert await storage.get_client_info() is not None
+
+    async def test_discard_and_token_write_are_serialized_across_instances(
+        self, fake_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The synchronous self-heal cannot race an async token update."""
+        del fake_home
+        token_storage = FileTokenStorage("notion")
+        heal_storage = FileTokenStorage("notion")
+        await token_storage.set_client_info(_make_client_info())
+
+        write_barrier = threading.Barrier(2)
+        real_write = FileTokenStorage._write
+
+        def _collision_detecting_write(
+            storage: FileTokenStorage, data: dict[str, Any]
+        ) -> None:
+            try:
+                write_barrier.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                real_write(storage, data)
+                return
+            msg = "self-heal overlapped another shared-envelope mutation"
+            raise FileExistsError(msg)
+
+        monkeypatch.setattr(
+            FileTokenStorage,
+            "_write",
+            _collision_detecting_write,
+        )
+
+        await asyncio.gather(
+            token_storage.set_tokens(_make_tokens()),
+            asyncio.to_thread(heal_storage.discard_client_info_if_loopback_unusable),
+        )
+
+        assert await token_storage.get_tokens() is not None
+
+    async def test_discard_noop_without_client_info(self, fake_home: Path) -> None:
+        """No persisted registration means nothing to discard."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+
+    def test_discard_returns_false_and_warns_on_unreadable_file(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A corrupt token file is surfaced (not silently swallowed)."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_bytes(b"{not json")
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert "unreadable while checking for a stale client registration" in (
+            caplog.text
+        )
+
+    async def test_discard_returns_false_and_keeps_file_when_write_fails(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed atomic write leaves the registration intact and warns."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())  # portless, no tokens
+        # Occupy the temp path with a directory so the real atomic write fails
+        # with an OSError instead of replacing the token file — no mocks needed.
+        tmp = storage.path.with_suffix(storage.path.suffix + ".tmp")
+        tmp.mkdir()
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        # The original registration must still be on disk.
+        assert await storage.get_client_info() is not None
+        assert "Could not remove stale MCP client registration" in caplog.text
+
+    def test_build_oauth_provider_clears_stale_portless_registration(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Interactive loopback login drops a stale portless registration.
+
+        Regression: a portless `http://localhost/callback` registration (left
+        by an earlier non-loopback login) was reused with a fresh random port,
+        so the authorize request sent the stale `client_id` with a
+        redirect_uri it was never registered for and the server rejected it
+        with "invalid or missing redirect_uri". The build must instead discard
+        the registration so the handshake re-runs DCR with a matching URI.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        monkeypatch.setattr(
+            "deepagents_code.mcp_auth._choose_loopback_port", lambda: 60001
+        )
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info()))  # localhost, no port
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+
+        # Stale registration gone, so the SDK will re-register via DCR.
+        assert asyncio.run(storage.get_client_info()) is None
+        # The authorize request will carry the freshly bound loopback URI.
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == "http://localhost:60001/callback"
 
 
 @pytest.fixture
@@ -641,6 +3651,8 @@ class TestLogin:
             )
             await storage.set_client_info(_make_client_info())
 
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="notion",
@@ -649,6 +3661,7 @@ class TestLogin:
                     "url": "https://mcp.notion.com/mcp",
                     "auth": "oauth",
                 },
+                ui=CliOAuthInteraction(),
             )
 
         storage = FileTokenStorage(
@@ -659,24 +3672,44 @@ class TestLogin:
         assert tokens is not None
         assert tokens.access_token == "new"
 
-    async def test_login_rejects_non_oauth_server(self) -> None:
-        """Only `auth: oauth` servers support the login command."""
+    async def test_login_allows_http_server_without_explicit_oauth(self) -> None:
+        """Auto-detected servers (no `auth: oauth`) can still run OAuth login."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-        with pytest.raises(ValueError, match="does not use OAuth"):
-            await login(
-                server_name="srv",
-                server_config={"transport": "http", "url": "https://example.com"},
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            await storage.set_tokens(
+                OAuthToken(access_token="new", token_type="Bearer")
             )
+            await storage.set_client_info(_make_client_info())
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
+            await login(
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                },
+                ui=CliOAuthInteraction(),
+            )
+
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "new"
 
     async def test_login_rejects_stdio_server(self) -> None:
         """OAuth login is limited to HTTP/SSE transports."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with pytest.raises(ValueError, match="only valid for http/sse"):
             await login(
                 server_name="srv",
                 server_config={"command": "echo", "auth": "oauth"},
+                ui=CliOAuthInteraction(),
             )
 
     async def test_login_propagates_static_headers(
@@ -686,6 +3719,7 @@ class TestLogin:
         """Configured static headers flow into the OAuth handshake connection."""
         from deepagents_code.mcp_auth import login
 
+        monkeypatch.setenv("MCP_GATEWAY_HOST", "mcp.notion.com")
         monkeypatch.setenv("MCP_GATEWAY_TOKEN", "gw-token")
         captured: dict[str, Any] = {}
 
@@ -693,20 +3727,24 @@ class TestLogin:
             await asyncio.sleep(0)
             captured.update(next(iter(connections.values())))
 
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="notion",
                 server_config={
                     "transport": "http",
-                    "url": "https://mcp.notion.com/mcp",
+                    "url": "https://${MCP_GATEWAY_HOST}/mcp",
                     "auth": "oauth",
                     "headers": {
                         "X-Tenant": "acme",
                         "Authorization": "Bearer ${MCP_GATEWAY_TOKEN}",
                     },
                 },
+                ui=CliOAuthInteraction(),
             )
 
+        assert captured["url"] == "https://mcp.notion.com/mcp"
         assert captured["headers"] == {
             "X-Tenant": "acme",
             "Authorization": "Bearer gw-token",
@@ -715,8 +3753,10 @@ class TestLogin:
     async def test_login_unset_env_var_in_headers_raises(self) -> None:
         """Unset env vars in static headers fail before the handshake."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
 
-        with pytest.raises(RuntimeError, match="unset env var"):
+        with pytest.raises(MCPConfigError, match="unset env var"):
             await login(
                 server_name="notion",
                 server_config={
@@ -725,6 +3765,50 @@ class TestLogin:
                     "auth": "oauth",
                     "headers": {"Authorization": "Bearer ${MISSING_VAR}"},
                 },
+                ui=CliOAuthInteraction(),
+            )
+
+    async def test_login_unset_env_var_in_url_raises_config_error(self) -> None:
+        """An unset var in a non-header field fails with its field path."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        with pytest.raises(MCPConfigError, match=r"mcpServers\.notion\.url"):
+            await login(
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://${MISSING_HOST}/mcp",
+                    "auth": "oauth",
+                },
+                ui=CliOAuthInteraction(),
+            )
+
+    async def test_login_non_string_field_raises_config_error(self) -> None:
+        """A non-string supported field is wrapped as `MCPConfigError` too.
+
+        Exercises the `TypeError` arm of `login()`'s resolution wrapper (the
+        unset-var tests only cover the `RuntimeError` arm).
+        """
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        # Deliberately malformed (non-string header value) to hit the
+        # `TypeError` arm; typed separately so the intent is explicit.
+        bad_config: dict[str, Any] = {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "auth": "oauth",
+            "headers": {"X-Bad": 1},
+        }
+
+        with pytest.raises(MCPConfigError, match=r"mcpServers\.notion\.headers\.X-Bad"):
+            await login(
+                server_name="notion",
+                server_config=bad_config,  # ty: ignore
+                ui=CliOAuthInteraction(),
             )
 
     async def test_github_login_runs_device_flow_and_seeds_client(self) -> None:
@@ -740,8 +3824,9 @@ class TestLogin:
             token_url: str,
             client_id: str,
             scope: str | None = None,
+            ui: object | None = None,
         ) -> OAuthToken:
-            del device_code_url, token_url, client_id, scope
+            del device_code_url, token_url, client_id, scope, ui
             return OAuthToken(access_token="gh-tok", token_type="Bearer")
 
         handshake_called = False
@@ -750,6 +3835,8 @@ class TestLogin:
             del connections
             nonlocal handshake_called
             handshake_called = True
+
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with (
             patch(
@@ -768,6 +3855,7 @@ class TestLogin:
                     "url": "https://api.githubcopilot.com/mcp/",
                     "auth": "oauth",
                 },
+                ui=CliOAuthInteraction(),
             )
 
         assert handshake_called is False, (
@@ -784,11 +3872,57 @@ class TestLogin:
         assert client_info is not None
         assert client_info.client_id == _GITHUB_MCP_CLIENT_ID
 
-    async def test_slack_login_routes_team_into_redirect_url(self) -> None:
+    async def test_slack_login_routes_team_into_redirect_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Slack login threads the entered team id into the interactive URL."""
-        from deepagents_code.mcp_auth import login
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
 
-        captured_urls: list[str] = []
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import OAuthInteraction
+
+        class _CapturingUI:
+            def __init__(self) -> None:
+                self.authorize_urls: list[tuple[str, bool]] = []
+
+            async def show_authorize_url(
+                self, url: str, *, opened_in_browser: bool
+            ) -> None:
+                self.authorize_urls.append((url, opened_in_browser))
+
+            async def request_callback_url(self) -> str:
+                msg = "not expected in this test"
+                raise AssertionError(msg)
+
+            async def show_device_code(
+                self, *, verification_uri: str, user_code: str, expires_in: int
+            ) -> None: ...
+
+            async def prompt_slack_team_id(self) -> str | None:
+                return "T01234567"
+
+            async def show_success(self, message: str) -> None: ...
+
+            async def show_notice(self, message: str) -> None: ...
+
+            async def show_error(self, message: str) -> None: ...
+
+        # Structural check: all required protocol methods are present.
+        protocol_methods = [
+            "show_authorize_url",
+            "request_callback_url",
+            "show_device_code",
+            "prompt_slack_team_id",
+            "show_success",
+            "show_notice",
+            "show_error",
+        ]
+        ui_instance = _CapturingUI()
+        assert all(callable(getattr(ui_instance, m, None)) for m in protocol_methods)
+
+        ui = _CapturingUI()
 
         async def _fake_handshake(connections: dict) -> None:
             server_name, connection = next(iter(connections.items()))
@@ -796,29 +3930,9 @@ class TestLogin:
             redirect = provider.context.redirect_handler
             await redirect("https://slack.com/oauth/v2/authorize?client_id=x")
             storage = FileTokenStorage(server_name, server_url=connection["url"])
-            from mcp.shared.auth import OAuthToken
-
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
-        async def _fake_prompt_team() -> str | None:
-            return "T01234567"
-
-        with (
-            patch(
-                "deepagents_code.mcp_providers.slack._prompt_slack_team",
-                _fake_prompt_team,
-            ),
-            patch(
-                "deepagents_code.mcp_auth._drive_handshake",
-                _fake_handshake,
-            ),
-            patch(
-                "builtins.print",
-                lambda *args, **_kwargs: captured_urls.extend(
-                    s for s in args if isinstance(s, str)
-                ),
-            ),
-        ):
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="slack",
                 server_config={
@@ -826,10 +3940,12 @@ class TestLogin:
                     "url": "https://slack.com/mcp",
                     "auth": "oauth",
                 },
+                ui=ui,
             )
 
-        joined = "\n".join(captured_urls)
-        assert "team=T01234567" in joined
+        assert ui.authorize_urls, "authorize URL must be shown"
+        shown_url, _opened = ui.authorize_urls[0]
+        assert "team=T01234567" in shown_url
 
     async def test_slack_preseed_is_idempotent(self) -> None:
         """Preseeding Slack client info a second time reads rather than writes."""

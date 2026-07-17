@@ -6,7 +6,8 @@
     "memory",
     "conversation",
     "summarization",
-    "unit_test"
+    "unit_test",
+    "langchain/middleware"
   ],
   "radar_categories": [
     "file_operations",
@@ -23,6 +24,7 @@
     "memory": "Memory",
     "conversation": "Conversation",
     "summarization": "Summarization",
-    "unit_test": "Unit Test"
+    "unit_test": "Unit Test",
+    "langchain/middleware": "Upstream Middleware"
   }
 }

@@ -14,7 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
@@ -43,7 +44,6 @@ from deepagents.middleware.skills import (
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
-    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -59,7 +59,7 @@ def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
 
 @contextmanager
 def _runtime_context(assistant_id: str | None = None):
-    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    """Set a LangGraph Runtime in the current context so `get_runtime()` resolves."""
     server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
     runtime = Runtime(server_info=server_info)
     token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
@@ -217,103 +217,6 @@ No YAML frontmatter here.
     assert result is None
 
 
-def test_validate_module_path_absent() -> None:
-    """Missing key returns None — the vast majority of skills have no module."""
-    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_valid_bare() -> None:
-    """A bare filename with a supported extension passes through unchanged."""
-    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_strips_dot_slash() -> None:
-    """./index.ts → index.ts so the stored path matches how the loader keys files."""
-    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_nested() -> None:
-    """Subdirectory paths are fine as long as they stay inside the skill dir."""
-    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
-
-
-def test_validate_module_path_all_supported_extensions() -> None:
-    """Every quickjs-rs-accepted extension is accepted here too."""
-    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
-        path = f"index.{ext}"
-        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
-
-
-def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
-    """Non-string values log a warning and return None — don't crash the parse."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
-    assert "non-string 'module'" in caplog.text
-
-
-def test_validate_module_path_rejects_empty_string() -> None:
-    """An empty / whitespace-only value is equivalent to absent."""
-    assert _validate_module_path("", "/skills/x/SKILL.md") is None
-    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
-    """Absolute paths could reach outside the skill dir — reject with a warning."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
-    assert "absolute" in caplog.text
-
-
-def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
-    """Any form of `..` traversal is rejected so skills can't read each other's code."""
-    caplog.set_level(logging.WARNING)
-    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
-        caplog.clear()
-        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
-        assert "escapes" in caplog.text
-
-
-def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
-    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
-    assert "extension" in caplog.text
-
-
-def test_parse_skill_metadata_with_module() -> None:
-    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
-    content = """---
-name: pdf-extract
-description: Parse PDFs
-module: ./index.ts
----
-
-# PDF extract
-"""
-    result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
-    assert result is not None
-    assert result["module"] == "index.ts"
-
-
-def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
-    """An invalid `module` value must not drop the skill.
-
-    The prose is still useful; we just drop the module surface.
-    """
-    content = """---
-name: bad-module
-description: has a bad module path
-module: /etc/passwd
----
-
-# Bad module
-"""
-    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
-    assert result is not None
-    assert "module" not in result
-    assert result["name"] == "bad-module"
-
-
 def test_parse_skill_metadata_invalid_yaml() -> None:
     """Test _parse_skill_metadata with invalid YAML."""
     content = """---
@@ -351,8 +254,8 @@ Content
     assert result is None
 
 
-def test_parse_skill_metadata_description_truncation() -> None:
-    """Test _parse_skill_metadata truncates long descriptions."""
+def test_parse_skill_metadata_description_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """Test _parse_skill_metadata truncates long descriptions with an actionable warning."""
     long_description = "A" * (MAX_SKILL_DESCRIPTION_LENGTH + 100)
     content = f"""---
 name: test-skill
@@ -362,9 +265,15 @@ description: {long_description}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert len(result["description"]) == MAX_SKILL_DESCRIPTION_LENGTH
+    message = caplog.text
+    assert "/skills/test/SKILL.md" in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH + 100) in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH) in message
+    assert "'description'" in message
 
 
 def test_parse_skill_metadata_too_large() -> None:
@@ -399,7 +308,7 @@ Content
     assert result["compatibility"] is None  # Empty string should become None
 
 
-def test_parse_skill_metadata_compatibility_max_length() -> None:
+def test_parse_skill_metadata_compatibility_max_length(caplog: pytest.LogCaptureFixture) -> None:
     """Test _parse_skill_metadata truncates compatibility exceeding 500 chars.
 
     Per Agent Skills spec, compatibility field must be max 500 characters.
@@ -414,10 +323,16 @@ compatibility: {long_compat}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert result["compatibility"] is not None
     assert len(result["compatibility"]) == MAX_SKILL_COMPATIBILITY_LENGTH
+    message = caplog.text
+    assert "/skills/test-skill/SKILL.md" in message
+    assert "600" in message
+    assert str(MAX_SKILL_COMPATIBILITY_LENGTH) in message
+    assert "'compatibility'" in message
 
 
 def test_parse_skill_metadata_whitespace_only_description() -> None:
@@ -565,7 +480,8 @@ def test_validate_metadata_valid_dict_passthrough() -> None:
     assert result == {"author": "acme"}
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list() -> None:
+    """Test _parse_skill_metadata accepts a YAML list of tool names."""
     content = """---
 name: test-skill
 description: A test skill
@@ -580,10 +496,11 @@ Content
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
-    assert result["allowed_tools"] == []
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_skipped() -> None:
+    """Test _parse_skill_metadata skips non-string and blank YAML list items."""
     content = """---
 name: test-skill
 description: A test skill
@@ -594,6 +511,72 @@ allowed-tools:
   -
   - "  "
   - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_trims_items() -> None:
+    """Test _parse_skill_metadata strips surrounding whitespace from kept items."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - "  Read  "
+  - "Write"
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_empty_list() -> None:
+    """Test _parse_skill_metadata handles an empty YAML list."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: []
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == []
+
+
+def test_parse_skill_metadata_allowed_tools_comma_separated_string() -> None:
+    """Test _parse_skill_metadata splits a comma-separated string of tool names."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: Bash,Read,Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_scalar_ignored() -> None:
+    """Test _parse_skill_metadata ignores a non-string, non-list scalar value."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: 42
 ---
 
 Content
@@ -2122,3 +2105,63 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+# --- system_prompt override / suppression --------------------------------
+
+
+def test_init_rejects_non_str_system_prompt() -> None:
+    """`system_prompt` must be str or None."""
+    with pytest.raises(TypeError, match="must be str or None"):
+        SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=0)  # type: ignore[arg-type]
+
+
+def test_init_rejects_template_missing_slot() -> None:
+    """Custom template missing any required slot fails fast at construction."""
+    with pytest.raises(ValueError, match="missing required format slot"):
+        SkillsMiddleware(
+            backend=StateBackend(),
+            sources=[],
+            # Missing `{skills_list}`.
+            system_prompt="{skills_locations} {skills_load_warnings}",
+        )
+
+
+def test_modify_request_returns_unchanged_when_system_prompt_none() -> None:
+    """`system_prompt=None` skips appending; system message identical to input."""
+    middleware = SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=None)
+    base = SystemMessage(content="base")
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=base,
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+
+    assert result is request
+    assert result.system_message is base
+
+
+def test_modify_request_uses_custom_template() -> None:
+    """Custom template flows through `modify_request` instead of the default constant."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="LOC:{skills_locations}|WARN:{skills_load_warnings}|LIST:{skills_list}",
+    )
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    appended = list(result.system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
+
+    assert "LOC:" in appended
+    assert "WARN:" in appended
+    assert "LIST:" in appended
+    assert "## Skills System" not in appended  # default template marker absent

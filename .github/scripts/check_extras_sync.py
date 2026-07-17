@@ -1,4 +1,4 @@
-"""Check that optional extras stay in sync with required dependencies (openai).
+"""Check that optional extras stay in sync with required dependencies.
 
 When a package appears in both [project.dependencies] and
 [project.optional-dependencies], we ensure their version constraints match.
@@ -12,12 +12,17 @@ from pathlib import Path
 from re import compile as re_compile
 
 # Matches the package name at the start of a PEP 508 dependency string.
-# Handles both hyphenated and underscored names (PEP 503 normalizes these).
+# Stops at the first non-name character; downstream code is responsible for
+# stripping extras (`[...]`) and env markers (`; ...`) from the remainder.
 _NAME_RE = re_compile(r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)")
 
 
 def _normalize(name: str) -> str:
-    """PEP 503 normalize a package name for comparison.
+    """Normalize a package name for equality comparison.
+
+    Lowercases and maps `-` and `.` to `_`. Looser than PEP 503
+    (which uses `-` and collapses runs), but sufficient for matching the
+    same package across two PEP 508 strings.
 
     Returns:
         Lowercased, underscore-normalized package name.
@@ -26,42 +31,69 @@ def _normalize(name: str) -> str:
 
 
 def _parse_dep(dep: str) -> tuple[str, str]:
-    """Return (normalized_name, version_spec) from a PEP 508 string.
+    """Return `(normalized_name, version_spec)` from a PEP 508 string.
+
+    Strips extras (`pkg[async]`), environment markers (`; python_version ...`),
+    URL specifiers (`pkg @ git+...`), and whitespace so the returned
+    `version_spec` is directly comparable between a required and optional dep.
 
     Returns:
-        Tuple of normalized package name and version specifier.
+        Tuple of normalized package name and bare version specifier.
 
     Raises:
         ValueError: If the dependency string cannot be parsed.
     """
     match = _NAME_RE.match(dep)
     if not match:
-        msg = f"Cannot parse dependency: {dep}"
+        msg = f"Cannot parse dependency: {dep!r}"
         raise ValueError(msg)
     name = match.group(1)
-    version_spec = dep[match.end() :].strip()
-    return _normalize(name), version_spec
+    rest = dep[match.end() :].strip()
+
+    if rest.startswith("["):
+        close = rest.find("]")
+        if close == -1:
+            msg = f"Unclosed extras bracket in dependency: {dep!r}"
+            raise ValueError(msg)
+        rest = rest[close + 1 :].strip()
+
+    if ";" in rest:
+        rest = rest.split(";", 1)[0].strip()
+
+    # URL specifiers have no comparable version; treat as unconstrained.
+    if rest.startswith("@"):
+        rest = ""
+
+    rest = " ".join(rest.split())
+    return _normalize(name), rest
 
 
 def main(pyproject_path: Path) -> int:
-    """Check extras sync and return exit code (0 = pass, 1 = mismatch).
-
-    Returns:
-        0 if all extras match, 1 if there are mismatches.
-    """
+    """Check extras sync and return `0` on pass, `1` on mismatch or parse error."""
     with pyproject_path.open("rb") as f:
         data = tomllib.load(f)
 
     required: dict[str, str] = {}
     for dep in data.get("project", {}).get("dependencies", []):
-        name, spec = _parse_dep(dep)
+        try:
+            name, spec = _parse_dep(dep)
+        except ValueError as e:
+            print(f"::error file={pyproject_path}::{e}")
+            return 1
         required[name] = spec
 
-    mismatches: list[str] = []
     optional = data.get("project", {}).get("optional-dependencies", {})
+    if not optional:
+        return 0
+
+    mismatches: list[str] = []
     for group, deps in optional.items():
         for dep in deps:
-            name, spec = _parse_dep(dep)
+            try:
+                name, spec = _parse_dep(dep)
+            except ValueError as e:
+                print(f"::error file={pyproject_path}::{e}")
+                return 1
             if name in required and spec != required[name]:
                 mismatches.append(
                     f"  [{group}] {name}: extra has '{spec}' "
@@ -69,7 +101,7 @@ def main(pyproject_path: Path) -> int:
                 )
 
     if mismatches:
-        print("Extra / required dependency version mismatch:")
+        print(f"Extra / required dependency version mismatch in {pyproject_path}:")
         print("\n".join(mismatches))
         print(
             "\nUpdate the optional extras in [project.optional-dependencies] "
@@ -77,10 +109,28 @@ def main(pyproject_path: Path) -> int:
         )
         return 1
 
-    print("All extras are in sync with required dependencies.")
+    print(f"All extras in {pyproject_path} are in sync with required dependencies.")
     return 0
 
 
+def run(argv: list[str]) -> int:
+    """Check each path in `argv`, returning `1` if any fails else `0`.
+
+    Defaults to `pyproject.toml` when `argv` is empty. Every path is checked
+    even after one fails, so all problems surface in a single pass rather than
+    only the first.
+
+    Returns:
+        `0` if every checked file is in sync, `1` if any file mismatches or
+        fails to parse.
+    """
+    paths = [Path(p) for p in argv] or [Path("pyproject.toml")]
+    exit_code = 0
+    for path in paths:
+        if main(path) != 0:
+            exit_code = 1
+    return exit_code
+
+
 if __name__ == "__main__":
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("pyproject.toml")
-    raise SystemExit(main(path))
+    raise SystemExit(run(sys.argv[1:]))

@@ -46,8 +46,8 @@ body:
       description: Which area of the repository does this issue relate to? Select at least one.
       options:
         - label: deepagents (SDK)
-        - label: cli
-        - label: code
+        - label: dcode
+        - label: talon
         - label: acp
         - label: evals
         - label: harbor
@@ -55,6 +55,7 @@ body:
         - label: modal
         - label: quickjs
         - label: runloop
+        - label: vercel
         - label: langsmith-sandbox
         - label: Other / not sure / general
   - type: textarea
@@ -119,6 +120,7 @@ body:
         deepagents: 0.x.y
         deepagents-cli: 0.x.y
         deepagents-code: 0.x.y
+        deepagents-talon: 0.x.y
   - type: markdown
     attributes:
       value: |

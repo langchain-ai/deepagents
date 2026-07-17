@@ -11,6 +11,11 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from typing import Any
 
+import pytest
+from langchain.agents._subagent_transformer import (
+    AsyncSubagentRunStream,
+    SubagentRunStream,
+)
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall
@@ -20,11 +25,9 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field
 
-from deepagents import (
-    AsyncSubagentRunStream,
-    SubagentRunStream,
-    create_deep_agent,
-)
+from deepagents import create_deep_agent
+
+pytestmark = pytest.mark.filterwarnings(r"ignore:The v3 streaming protocol on Pregel is experimental\.")
 
 
 class _Scripted(BaseChatModel):
@@ -182,7 +185,6 @@ class TestCreateDeepAgentAstreamV2:
 
         handles: list[AsyncSubagentRunStream] = []
         async for sub in run.subagents:
-            assert isinstance(sub, AsyncSubagentRunStream)
             handles.append(sub)
             async for _ in sub.messages:
                 pass
@@ -192,8 +194,8 @@ class TestCreateDeepAgentAstreamV2:
 
         assert len(handles) == 1
         (sub,) = handles
+        assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
-        assert sub.task_input == "look something up"
         assert sub.cause == {"type": "toolCall", "tool_call_id": "call-parent-1"}
         assert sub.status == "completed"
         # path is ("tools:<pregel_task_id>",) — the tool node hosting the subagent.
@@ -235,7 +237,7 @@ class TestCreateDeepAgentAstreamV2:
         run = await agent.astream_events({"messages": [HumanMessage(content="hi")]}, version="v3")
 
         # No subagents should surface.
-        handles = [sub async for sub in run.subagents]
+        handles: list[AsyncSubagentRunStream] = [sub async for sub in run.subagents]
         async for _ in run.messages:
             pass
 
@@ -270,7 +272,7 @@ class TestCreateDeepAgentAstreamV2:
         assert parent_message_count > 0
 
     async def test_subagent_error_surfaces_failed_status(self) -> None:
-        """A subagent whose model raises mid-run lands as ``status='failed'``.
+        """A subagent whose model raises mid-run lands as `status='failed'`.
 
         The error propagates up through Pregel into the parent stream, so
         every projection drain may raise — that's fine. The handle should
@@ -300,8 +302,8 @@ class TestCreateDeepAgentAstreamV2:
 
         assert len(handles) == 1
         (sub,) = handles
+        assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
-        assert sub.task_input == "look something up"
         assert sub.status == "failed"
         assert sub.error is not None
 
@@ -331,5 +333,6 @@ class TestCreateDeepAgentStreamV2:
             pass
 
         assert len(handles) == 1
+        assert isinstance(handles[0], SubagentRunStream)
         assert handles[0].name == "researcher"
         assert handles[0].status == "completed"

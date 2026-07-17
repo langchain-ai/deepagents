@@ -9,6 +9,7 @@ from deepagents_code.onboarding import (
     ONBOARDING_MARKER_FILENAME,
     ONBOARDING_NAME_MEMORY_END,
     ONBOARDING_NAME_MEMORY_START,
+    extract_onboarding_name_block,
     has_completed_onboarding,
     mark_onboarding_complete,
     onboarding_marker_path,
@@ -148,7 +149,7 @@ class TestOnboardingState:
             if self.name == ONBOARDING_MARKER_FILENAME:
                 msg = "simulated read-only filesystem"
                 raise PermissionError(msg)
-            return original_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_write_text(self, *args, **kwargs)  # ty: ignore
 
         monkeypatch.setattr(_Path, "write_text", boom)
 
@@ -201,7 +202,7 @@ class TestOnboardingState:
             if self == memory_path:
                 msg = "simulated full disk"
                 raise OSError(msg)
-            return original_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_write_text(self, *args, **kwargs)  # ty: ignore
 
         monkeypatch.setattr(_Path, "write_text", boom)
 
@@ -239,3 +240,53 @@ class TestOnboardingState:
         assert content.count("## User Preferences") == 1
         assert ONBOARDING_NAME_MEMORY_START in content
         assert '- The user\'s preferred name is "Grace Hopper".' in content
+
+
+class TestExtractOnboardingNameBlock:
+    """Tests for `extract_onboarding_name_block`."""
+
+    def test_well_formed_block_returned_with_markers(self) -> None:
+        """A well-formed block is returned inclusive of both markers."""
+        block = (
+            f"{ONBOARDING_NAME_MEMORY_START}\n"
+            '- The user\'s preferred name is "Ada".\n'
+            f"{ONBOARDING_NAME_MEMORY_END}"
+        )
+        text = f"## User Preferences\n\n{block}\n"
+
+        assert extract_onboarding_name_block(text) == block
+
+    def test_trailing_content_after_end_marker_excluded(self) -> None:
+        """Extraction stops at the end marker and drops trailing content."""
+        block = (
+            f"{ONBOARDING_NAME_MEMORY_START}\n"
+            '- The user\'s preferred name is "Ada".\n'
+            f"{ONBOARDING_NAME_MEMORY_END}"
+        )
+        text = f"{block}\n\nUnrelated note after the block.\n"
+
+        assert extract_onboarding_name_block(text) == block
+
+    def test_only_start_marker_returns_none(self) -> None:
+        """A lone start marker is not a well-formed block."""
+        text = f"{ONBOARDING_NAME_MEMORY_START}\n- dangling content\n"
+
+        assert extract_onboarding_name_block(text) is None
+
+    def test_only_end_marker_returns_none(self) -> None:
+        """A lone end marker is not a well-formed block."""
+        text = f"- dangling content\n{ONBOARDING_NAME_MEMORY_END}\n"
+
+        assert extract_onboarding_name_block(text) is None
+
+    def test_end_before_start_returns_none(self) -> None:
+        """Markers in the wrong order are not a well-formed block."""
+        text = (
+            f"{ONBOARDING_NAME_MEMORY_END}\nbetween\n{ONBOARDING_NAME_MEMORY_START}\n"
+        )
+
+        assert extract_onboarding_name_block(text) is None
+
+    def test_no_markers_returns_none(self) -> None:
+        """Text without markers has no managed block."""
+        assert extract_onboarding_name_block("## Notes\n\nfreeform\n") is None

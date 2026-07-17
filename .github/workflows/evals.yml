@@ -83,8 +83,10 @@ on:
           - "fireworks:accounts/fireworks/models/kimi-k2p6"
           - "fireworks:accounts/fireworks/models/glm-5"
           - "fireworks:accounts/fireworks/models/glm-5p1"
+          - "fireworks:accounts/fireworks/models/glm-5p2"
           - "fireworks:accounts/fireworks/models/minimax-m2p5"
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
+          - "fireworks:accounts/fireworks/models/minimax-m3"
           - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a\
             12b-fp8"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
@@ -114,6 +116,7 @@ on:
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
+          - "openrouter:z-ai/glm-5.2"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "openrouter:deepseek/deepseek-v4-pro"
           - "xai:grok-4"
@@ -276,7 +279,7 @@ jobs:
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -844,6 +847,11 @@ jobs:
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest
+    # This job shares eval-assets with unified_evals.yml. Use the same group so
+    # publishers in either workflow cannot race on the branch tip.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
     needs:
       - eval-anthropic
       - eval-baseten
@@ -859,7 +867,7 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "📥 Download eval artifacts"
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -945,6 +953,11 @@ jobs:
       - name: "🖼️ Publish charts to eval-assets branch"
         id: publish-charts
         if: hashFiles('charts/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded, so a transient git/push failure must not fail an otherwise-
+        # successful aggregate. The "Append charts" step gates on this
+        # outcome == 'success'.
+        continue-on-error: true
         env:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
@@ -970,7 +983,10 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory (light + dark variants).
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
           if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then

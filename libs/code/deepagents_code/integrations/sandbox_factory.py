@@ -11,8 +11,9 @@ import shlex
 import string
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
+
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -70,22 +73,14 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     console.print(f"[green]{get_glyphs().checkmark} Setup complete[/green]")
 
 
-_PROVIDER_TO_WORKING_DIR = {
-    "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
-    "daytona": "/home/daytona",
-    "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
-    "modal": "/workspace",
-    "runloop": "/home/user",
-}
-"""Map of sandbox provider names to their default working directories."""
-
-
 @contextmanager
 def create_sandbox(
     provider: str,
     *,
     sandbox_id: str | None = None,
+    snapshot_name: str | None = None,
     setup_script_path: str | None = None,
+    params: dict[str, Any] | None = None,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -93,23 +88,58 @@ def create_sandbox(
     provider abstraction.
 
     Args:
-        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
+            `'langsmith'`, `'modal'`, `'runloop'`, `'vercel'`), entry-point
+            providers, and config-declared providers are all resolved through
+            the registry.
         sandbox_id: Optional existing sandbox ID to reuse
+        snapshot_name: Optional sandbox snapshot name to use or create.
+            Honored by providers whose metadata sets `supports_snapshot_name`
+            (built-ins: `'langsmith'` snapshot, `'runloop'` blueprint); must be
+            `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
+        params: Extra keyword arguments forwarded to `provider.get_or_create()`
+            (e.g. config-declared `[sandboxes.providers.<name>.params]`).
 
     Yields:
         `SandboxBackendProtocol` instance
+
+    Raises:
+        ValueError: If `snapshot_name` is provided for an unsupported provider,
+            or combined with `sandbox_id` (snapshots only apply to fresh sandboxes).
     """
-    # Get provider instance
-    provider_obj = _get_provider(provider)
+    registry = _get_registry()
+    metadata = registry.get_metadata(provider)
+    if snapshot_name is not None and (
+        metadata is None or not metadata.supports_snapshot_name
+    ):
+        msg = (
+            f"snapshot_name is not supported by provider {provider!r} "
+            f"(got snapshot_name={snapshot_name!r})"
+        )
+        raise ValueError(msg)
+    if snapshot_name is not None and sandbox_id is not None:
+        msg = (
+            "snapshot_name cannot be combined with sandbox_id; "
+            "snapshots only apply when creating a fresh sandbox"
+        )
+        raise ValueError(msg)
+
+    # Get provider instance (reuse the registry already built above so we
+    # don't re-read the config file and re-scan entry points).
+    provider_obj = _get_provider(provider, registry=registry)
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
+    provider_kwargs: dict[str, Any] = dict(registry.get_params(provider))
+    if params:
+        provider_kwargs.update(params)
+    if snapshot_name is not None:
+        provider_kwargs["snapshot"] = snapshot_name
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **provider_kwargs)
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
@@ -142,21 +172,27 @@ def create_sandbox(
                 )
 
 
-def _get_available_sandbox_types() -> list[str]:
-    """Get list of available sandbox provider types (internal).
+def _get_registry() -> SandboxRegistry:
+    """Build a `SandboxRegistry` from the current user config.
+
+    Not cached: each call re-reads the config file and re-scans entry points so
+    the registry reflects the latest state. Reuse a single instance within one
+    operation (see `create_sandbox`) rather than calling this repeatedly.
 
     Returns:
-        List of available sandbox provider type names
+        A fresh `SandboxRegistry`.
     """
-    return sorted(_PROVIDER_TO_WORKING_DIR.keys())
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+    return SandboxRegistry.load()
 
 
 def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider name. Resolved through the registry so
+            built-in, entry-point, and config providers are all supported.
 
     Returns:
         Default working directory path as string
@@ -164,10 +200,11 @@ def get_default_working_dir(provider: str) -> str:
     Raises:
         ValueError: If provider is unknown
     """
-    if provider in _PROVIDER_TO_WORKING_DIR:
-        return _PROVIDER_TO_WORKING_DIR[provider]
-    msg = f"Unknown sandbox provider: {provider}"
-    raise ValueError(msg)
+    metadata = _get_registry().get_metadata(provider)
+    if metadata is None:
+        msg = f"Unknown sandbox provider: {provider}"
+        raise ValueError(msg)
+    return metadata.working_dir
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +236,8 @@ def _import_provider_module(
     except ImportError as exc:
         msg = (
             f"The '{provider}' sandbox provider requires the '{package}' package. "
-            f"Install it with: pip install 'deepagents-code[{provider}]'"
+            f"Install it with: /install {provider} (in-app) or "
+            f"dcode --install {provider} (CLI)"
         )
         raise ImportError(msg) from exc
 
@@ -271,10 +309,9 @@ class _LangSmithProvider(SandboxProvider):
             snapshot: Snapshot name to boot from.
 
                 Resolved to a snapshot ID, creating the snapshot from
-                `snapshot_image` if missing. Overridden by the env vars
-                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything)
-                and `LANGSMITH_SANDBOX_SNAPSHOT_NAME` (name, wins over this
-                kwarg).
+                `snapshot_image` if missing. Overrides
+                `LANGSMITH_SANDBOX_SNAPSHOT_NAME`; overridden by
+                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything).
             snapshot_image: Docker image used when building the snapshot.
             fs_capacity_bytes: Filesystem capacity when building the snapshot.
             **kwargs: Additional LangSmith-specific parameters.
@@ -608,11 +645,11 @@ class _ModalProvider(SandboxProvider):
 
 
 class _RunloopProvider(SandboxProvider):
-    """Runloop sandbox provider — lifecycle management for Runloop devboxes."""
+    """Runloop sandbox provider — delegates to `langchain_runloop.RunloopProvider`."""
 
     def __init__(self) -> None:
         runloop_module = _import_provider_module(
-            "runloop_api_client",
+            "langchain_runloop",
             provider="runloop",
             package="langchain-runloop",
         )
@@ -626,64 +663,52 @@ class _RunloopProvider(SandboxProvider):
                 "or DEEPAGENTS_CODE_RUNLOOP_API_KEY."
             )
             raise ValueError(msg)
-        self._client = runloop_module.Runloop(bearer_token=api_key)
+        self._provider = runloop_module.RunloopProvider(
+            api_key=api_key,
+            resolve_env_var=resolve_env_var,
+        )
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get or create a Runloop devbox.
 
         Args:
             sandbox_id: Existing devbox ID, or None to create.
-            timeout: Seconds to wait for startup.
-            **kwargs: Unused.
+            timeout: Accepted for parity with other providers; currently
+                forwarded but unused by the Runloop backend (the SDK manages
+                its own startup wait).
+            **kwargs: Runloop-specific options (`snapshot` blueprint name,
+                `blueprint_dockerfile`).
 
         Returns:
             `RunloopSandbox` instance.
 
         Raises:
-            RuntimeError: If the devbox fails to start.
-            SandboxNotFoundError: If `sandbox_id` does not exist.
+            SandboxNotFoundError: If `sandbox_id` does not exist. `RunloopProvider`
+                translates the SDK's not-found error into a `KeyError`, which is
+                mapped here.
+            KeyError: If a `KeyError` is raised while no `sandbox_id` was supplied
+                (re-raised unchanged rather than mislabeled as not-found).
         """
-        runloop_backend = _import_provider_module(
-            "langchain_runloop",
-            provider="runloop",
-            package="langchain-runloop",
-        )
-        runloop_sdk = _import_provider_module(
-            "runloop_api_client.sdk",
-            provider="runloop",
-            package="langchain-runloop",
-        )
-
-        if sandbox_id:
-            try:
-                self._client.devboxes.retrieve(id=sandbox_id)
-            except KeyError as e:
-                raise SandboxNotFoundError(sandbox_id) from e
-        else:
-            view = self._client.devboxes.create()
-            sandbox_id = view.id
-            for _ in range(timeout // 2):
-                status = self._client.devboxes.retrieve(id=sandbox_id)
-                if status.status == "running":
-                    break
-                time.sleep(2)
-            else:
-                self._client.devboxes.shutdown(id=sandbox_id)
-                msg = f"Devbox failed to start within {timeout} seconds"
-                raise RuntimeError(msg)
-
-        devbox = runloop_sdk.Devbox(self._client, sandbox_id)
-        return runloop_backend.RunloopSandbox(devbox=devbox)
+        try:
+            return self._provider.get_or_create(
+                sandbox_id=sandbox_id,
+                timeout=timeout,
+                **kwargs,
+            )
+        except KeyError as e:
+            if sandbox_id is None:
+                raise
+            raise SandboxNotFoundError(sandbox_id) from e
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Shut down a Runloop devbox by id."""
-        self._client.devboxes.shutdown(id=sandbox_id)
+        self._provider.delete(sandbox_id=sandbox_id)
 
 
 class _AgentCoreProvider(SandboxProvider):
@@ -813,34 +838,240 @@ class _AgentCoreProvider(SandboxProvider):
             )
 
 
-def _get_provider(provider_name: str) -> SandboxProvider:
+_VercelStatus = Literal[
+    "pending",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+    "aborted",
+    "snapshotting",
+]
+"""Vercel sandbox lifecycle statuses (mirrors the SDK's `SandboxStatus` enum)."""
+
+_VERCEL_TERMINAL_STATUSES: frozenset[_VercelStatus] = frozenset(
+    {"aborted", "failed", "stopped"}
+)
+"""Vercel sandbox statuses that cannot become ready without a new sandbox.
+
+Typing the members as `_VercelStatus` turns a typo into a type error rather than
+a silently-never-matching string.
+"""
+
+_VERCEL_DEFAULT_RUNTIME = "python3.13"
+"""Runtime used when creating a fresh Vercel sandbox."""
+
+_VERCEL_SANDBOX_TIMEOUT = timedelta(minutes=30)
+"""Lifetime used for freshly created Vercel sandboxes."""
+
+
+class _VercelSandboxHandle(Protocol):
+    """Minimal Vercel SDK sandbox surface used by the built-in provider."""
+
+    sandbox_id: str
+    status: str
+
+    def wait_for_status(self, status: str, *, timeout: int) -> None:
+        """Wait for the sandbox to reach the requested status."""
+
+    def stop(self) -> None:
+        """Stop the sandbox."""
+
+
+class _VercelProvider(SandboxProvider):
+    """Vercel Sandbox provider implementation."""
+
+    _CREDENTIAL_ENV_NAMES = (
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+    )
+
+    def __init__(self) -> None:
+        self._sdk_kwargs = self._resolve_sdk_kwargs()
+
+    @classmethod
+    def _resolve_sdk_kwargs(cls) -> dict[str, str]:
+        """Resolve explicit Vercel credentials when a prefixed override is set.
+
+        Credentials stay SDK-managed (canonical `VERCEL_*` variables or OIDC)
+        unless at least one of the prefixed overrides
+        `DEEPAGENTS_CODE_VERCEL_TOKEN`, `DEEPAGENTS_CODE_VERCEL_PROJECT_ID`, or
+        `DEEPAGENTS_CODE_VERCEL_TEAM_ID` is present. When triggered, each value
+        still resolves prefixed-first then canonical via `resolve_env_var`.
+
+        Returns:
+            Explicit SDK credential arguments, or an empty mapping to delegate
+            credential resolution to the Vercel SDK.
+        """
+        prefix = "DEEPAGENTS_CODE_"
+        has_override = any(
+            f"{prefix}{name}" in os.environ for name in cls._CREDENTIAL_ENV_NAMES
+        )
+        if not has_override:
+            return {}
+
+        from deepagents_code.model_config import resolve_env_var
+
+        values = {
+            "token": resolve_env_var("VERCEL_TOKEN"),
+            "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
+            "team_id": resolve_env_var("VERCEL_TEAM_ID"),
+        }
+        missing = sorted(key for key, value in values.items() if not value)
+        if missing:
+            logger.warning(
+                "Incomplete explicit Vercel credentials; VERCEL_TOKEN, "
+                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are all required. "
+                "Falling back to default Vercel authentication. Missing: %s",
+                ", ".join(missing),
+            )
+            return {}
+        return {key: value for key, value in values.items() if value}
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get or create a Vercel sandbox.
+
+        Args:
+            sandbox_id: Existing sandbox ID, or None to create.
+            timeout: Seconds to wait for startup.
+            **kwargs: Rejected; passing any keyword argument raises `TypeError`.
+
+        Returns:
+            `VercelSandbox` instance.
+
+        Raises:
+            RuntimeError: If the sandbox fails to start.
+            TypeError: If unsupported keyword arguments are provided.
+        """
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
+
+        vercel_backend = _import_provider_module(
+            "langchain_vercel_sandbox",
+            provider="vercel",
+            package="langchain-vercel-sandbox",
+        )
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+
+        # The SDK is imported dynamically, so `Sandbox.get`/`create` are typed
+        # `Any`. Annotating pins the result to the Protocol so the type checker
+        # verifies the `.status`/`.wait_for_status`/`.stop` calls below.
+        sandbox: _VercelSandboxHandle
+        try:
+            if sandbox_id:
+                sandbox = vercel_sandbox.Sandbox.get(
+                    sandbox_id=sandbox_id,
+                    **self._sdk_kwargs,
+                )
+            else:
+                sandbox = vercel_sandbox.Sandbox.create(
+                    runtime=_VERCEL_DEFAULT_RUNTIME,
+                    timeout=_VERCEL_SANDBOX_TIMEOUT,
+                    **self._sdk_kwargs,
+                )
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Keep the message generic so SDK errors cannot leak credentials,
+            # but chain the original exception so tracebacks retain root cause.
+            action = "connect to existing" if sandbox_id else "create"
+            msg = f"Failed to {action} Vercel sandbox."
+            raise RuntimeError(msg) from exc
+
+        try:
+            self._wait_until_running(sandbox, timeout=timeout)
+        except Exception:
+            if sandbox_id is None:
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
+            raise
+
+        return vercel_backend.VercelSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # **kwargs required by SandboxProvider interface
+        """Stop a Vercel sandbox by id.
+
+        Raises:
+            RuntimeError: If the Vercel SDK cannot find or stop the sandbox.
+        """
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+        try:
+            sandbox = vercel_sandbox.Sandbox.get(
+                sandbox_id=sandbox_id,
+                **self._sdk_kwargs,
+            )
+            sandbox.stop()
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
+            msg = "Failed to stop Vercel sandbox."
+            raise RuntimeError(msg) from exc
+
+    @staticmethod
+    def _wait_until_running(
+        sandbox: _VercelSandboxHandle,
+        *,
+        timeout: int,
+    ) -> None:
+        """Wait for a Vercel sandbox to become ready.
+
+        Raises:
+            RuntimeError: If the sandbox reaches a terminal state or does not
+                become ready before the timeout.
+        """
+        status = str(sandbox.status)
+        if status == "running":
+            return
+        if status in _VERCEL_TERMINAL_STATUSES:
+            msg = f"Vercel sandbox {sandbox.sandbox_id} is in terminal state {status!r}"
+            raise RuntimeError(msg)
+
+        try:
+            sandbox.wait_for_status("running", timeout=timeout)
+        except TimeoutError as exc:
+            status = str(sandbox.status)
+            msg = (
+                f"Vercel sandbox {sandbox.sandbox_id} failed to start within "
+                f"{timeout} seconds; current status is {status!r}"
+            )
+            raise RuntimeError(msg) from exc
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
+            msg = "Failed while waiting for Vercel sandbox startup."
+            raise RuntimeError(msg) from exc
+
+
+def _get_provider(
+    provider_name: str,
+    registry: SandboxRegistry | None = None,
+) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider_name: Name of the provider. Resolved through the registry so
+            built-in, entry-point, and config providers are all supported.
+        registry: An already-built registry to reuse. A fresh one is loaded
+            when omitted.
 
     Returns:
-        `SandboxProvider` instance
-
-    Raises:
-        ValueError: If `provider_name` is unknown.
+        `SandboxProvider` instance. Propagates `ValueError` from the registry
+            if `provider_name` is unknown.
     """
-    if provider_name == "agentcore":
-        return _AgentCoreProvider()
-    if provider_name == "daytona":
-        return _DaytonaProvider()
-    if provider_name == "langsmith":
-        return _LangSmithProvider()
-    if provider_name == "modal":
-        return _ModalProvider()
-    if provider_name == "runloop":
-        return _RunloopProvider()
-    msg = (
-        f"Unknown sandbox provider: {provider_name}. "
-        f"Available providers: {', '.join(_get_available_sandbox_types())}"
-    )
-    raise ValueError(msg)
+    reg = registry if registry is not None else _get_registry()
+    return reg.create_provider(provider_name)
 
 
 def verify_sandbox_deps(provider: str) -> None:
@@ -849,7 +1080,8 @@ def verify_sandbox_deps(provider: str) -> None:
     Uses `importlib.util.find_spec` for a lightweight check with no actual
     imports. Call this in the app's process *before* spawning the server
     subprocess so users get a clear, actionable error instead of an opaque
-    server crash.
+    server crash. The backend module to probe and the install hint both come
+    from provider metadata.
 
     Args:
         provider: Sandbox provider name (e.g. `'daytona'`).
@@ -857,38 +1089,31 @@ def verify_sandbox_deps(provider: str) -> None:
     Raises:
         ImportError: If the provider's backend package is not installed.
     """
-    if not provider or provider in {"none", "langsmith"}:
+    if not provider or provider == "none":
         return
 
-    # Map provider name → (backend module, pip extra).
-    # Only the backend module is checked because the underlying SDK is a
-    # transitive dependency of the backend package.
-    backend_modules: dict[str, tuple[str, str]] = {
-        "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
-        "daytona": ("langchain_daytona", "daytona"),
-        "modal": ("langchain_modal", "modal"),
-        "runloop": ("langchain_runloop", "runloop"),
-    }
-
-    entry = backend_modules.get(provider)
-    if entry is None:
+    metadata = _get_registry().get_metadata(provider)
+    if metadata is None or metadata.backend_module is None:
         logger.debug(
-            "No backend_modules entry for provider %r; skipping pre-flight check",
+            "No backend module to probe for provider %r; skipping pre-flight check",
             provider,
         )
         return
 
-    module_name, extra = entry
     try:
-        found = importlib.util.find_spec(module_name) is not None
+        found = importlib.util.find_spec(metadata.backend_module) is not None
     except (ImportError, ValueError):
         found = False
 
     if not found:
-        msg = (
-            f"Missing dependencies for '{provider}' sandbox. "
-            f"Install with: pip install 'deepagents-code[{extra}]'"
-        )
+        if metadata.install is not None:
+            install_hint = (
+                f"Install with: {metadata.install.command(in_app=True)} (in-app) "
+                f"or {metadata.install.command(in_app=False)} (CLI)"
+            )
+        else:
+            install_hint = "Install the provider's package."
+        msg = f"Missing dependencies for '{provider}' sandbox. {install_hint}"
         raise ImportError(msg)
 
 

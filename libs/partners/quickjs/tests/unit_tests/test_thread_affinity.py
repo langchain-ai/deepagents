@@ -9,8 +9,6 @@ from collections.abc import (
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.middleware.subagents import SubAgentMiddleware
-from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
@@ -105,8 +103,12 @@ async def test_quickjs_async_ptc_runs_tools_on_outer_loop() -> None:
     _assert_result_contains(tool_message.content, outer_loop_id)
 
 
-async def test_quickjs_async_ptc_task_subagent_loop_affinity_e2e() -> None:
-    """E2E: PTC `task` runs compiled subagents on the caller loop."""
+async def test_quickjs_async_task_global_subagent_loop_affinity_e2e() -> None:
+    """E2E: the top-level `task()` global runs compiled subagents on the caller loop.
+
+    `task` is reserved and cannot be exposed via `ptc` (it is always the global),
+    so the loop-affinity guarantee is exercised through the global dispatch path.
+    """
     outer_loop_id = id(asyncio.get_running_loop())
     owner_loop = asyncio.get_running_loop()
     subagent_loop_ids: list[int] = []
@@ -126,35 +128,75 @@ async def test_quickjs_async_ptc_task_subagent_loop_affinity_e2e() -> None:
         return {"messages": [AIMessage(content="subagent-ok")]}
 
     subagent_runnable = RunnableLambda(_subagent_sync, afunc=_subagent_async)
-    agent = create_agent(
+    agent = create_deep_agent(
         model=_FakeChatModel(
             messages=_script(
-                "await tools.task({"
-                "description: 'say hi', subagent_type: 'researcher'"
-                "})",
+                "await task({description: 'say hi', "
+                "subagentType: 'researcher', label: 'greet'})",
                 final_message="done",
             )
         ),
+        subagents=[
+            {
+                "name": "researcher",
+                "description": "returns one short answer",
+                "runnable": subagent_runnable,
+            }
+        ],
         middleware=[
-            SubAgentMiddleware(
-                backend=None,
-                subagents=[
-                    {
-                        "name": "researcher",
-                        "description": "returns one short answer",
-                        "runnable": subagent_runnable,
-                    }
-                ],
-            ),
-            CodeInterpreterMiddleware(ptc=["task"]),
+            CodeInterpreterMiddleware(),
         ],
     )
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="Use eval and call task for researcher")]},
-        config={"configurable": {"thread_id": "ptc-task-loop-affinity"}},
+        config={"configurable": {"thread_id": "task-global-loop-affinity"}},
     )
     tool_message = _eval_tool_message(result)
     _assert_result_contains(tool_message.content, "subagent-ok")
     assert subagent_loop_ids
     assert all(loop_id == outer_loop_id for loop_id in subagent_loop_ids)
+
+
+async def test_quickjs_task_global_available_without_ptc_e2e() -> None:
+    """E2E: top-level `task()` works without exposing PTC tools."""
+
+    def _subagent_sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"messages": [AIMessage(content="subagent-ok")]}
+
+    async def _subagent_async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"messages": [AIMessage(content="subagent-ok")]}
+
+    subagent_runnable = RunnableLambda(_subagent_sync, afunc=_subagent_async)
+    agent = create_deep_agent(
+        model=_FakeChatModel(
+            messages=_script(
+                "await task({description: 'say hi', "
+                "subagentType: 'researcher', label: 'greet'})",
+                final_message="done",
+            )
+        ),
+        subagents=[
+            {
+                "name": "researcher",
+                "description": "returns one short answer",
+                "runnable": subagent_runnable,
+            }
+        ],
+        middleware=[
+            CodeInterpreterMiddleware(),
+        ],
+    )
+
+    result = await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="Use eval and call the researcher through task.")
+            ]
+        },
+        config={"configurable": {"thread_id": "task-global-no-ptc"}},
+    )
+    tool_message = _eval_tool_message(result)
+    _assert_result_contains(tool_message.content, "subagent-ok")

@@ -1,4 +1,7 @@
-"""Deep Agents CLI - Interactive AI coding assistant."""
+"""Deep Agents CLI - deployment tooling (`init`, `dev`, `deploy`).
+
+For the interactive coding agent, install the `deepagents-code` package.
+"""
 
 from __future__ import annotations
 
@@ -16,17 +19,16 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Callable[[], None]:
-    """Lazy import for `cli_main` to avoid loading `main.py` at package import.
+    """Lazy import for `cli_main` to keep `import deepagents_cli` cheap.
 
-    `main.py` pulls in `argparse`, signal handling, and other startup machinery
-    that isn't needed when submodules like `config` or `widgets` are
-    imported directly.
+    Args:
+        name: Attribute being looked up on the package.
 
     Returns:
-        The requested callable.
+        The requested attribute (only `cli_main` is provided lazily).
 
     Raises:
-        AttributeError: If *name* is not a lazily-provided attribute.
+        AttributeError: If `name` is not a lazily-provided attribute.
     """
     if name == "cli_main":
         from deepagents_cli.main import cli_main

@@ -2,9 +2,9 @@
 
 # Keep the `x-release-please-version` annotation — release-please uses it to
 # bump `__version__` in sync with `pyproject.toml` on every release PR.
-__version__ = "0.1.0"  # x-release-please-version
+__version__ = "0.1.42"  # x-release-please-version
 
-DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
+DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/code"
 """URL for `deepagents-code` documentation."""
 
 PYPI_URL = "https://pypi.org/pypi/deepagents-code/json"

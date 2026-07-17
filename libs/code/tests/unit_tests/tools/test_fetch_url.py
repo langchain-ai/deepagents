@@ -1,14 +1,97 @@
-"""Tests for tools module."""
+"""Tests for the `fetch_url` tool."""
 
+from __future__ import annotations
+
+import socket
+from typing import TYPE_CHECKING, Any
+from unittest import mock
+
+import markdownify as markdownify_module
+import pytest
 import requests
 import responses
 
-from deepagents_code.tools import fetch_url
+from deepagents_code import tools
+from deepagents_code.tools import (
+    _html_to_markdown_content,
+    _TextExtractor,
+    _UrlValidationError,
+    _validate_url,
+    fetch_url,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def _make_resolver(
+    *ips: str,
+) -> tuple[Callable[..., list[tuple[Any, ...]]], list[str]]:
+    """Return a `socket.getaddrinfo` stand-in plus the list of hostnames it saw.
+
+    Each call returns a single-entry result so callers can simulate multi-hop
+    redirect resolution by passing more than one IP. The returned `calls`
+    list grows as the stub is invoked, allowing tests to assert that
+    `_validate_url` ran on every redirect hop.
+    """
+    iterator = iter(ips)
+    calls: list[str] = []
+
+    def _impl(
+        host: str,
+        port: int | None,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[tuple[Any, ...]]:
+        calls.append(host)
+        ip = next(iterator)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
+
+    return _impl, calls
+
+
+def _make_multi_record_resolver(
+    *ips: str,
+) -> Callable[..., list[tuple[Any, ...]]]:
+    """Return a resolver that yields *all* `ips` in a single call.
+
+    Simulates real DNS responses that include multiple A/AAAA records for
+    one hostname.
+    """
+
+    def _impl(
+        _host: str,
+        port: int | None,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[tuple[Any, ...]]:
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0)) for ip in ips
+        ]
+
+    return _impl
+
+
+@pytest.fixture
+def resolve_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub `socket.getaddrinfo` to always return a public IP."""
+    public_ip = "93.184.216.34"
+
+    def _impl(
+        _host: str,
+        port: int | None,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[tuple[Any, ...]]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (public_ip, port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _impl)
 
 
 @responses.activate
+@pytest.mark.usefixtures("resolve_public")
 def test_fetch_url_success() -> None:
-    """Test successful URL fetch and HTML to markdown conversion."""
+    """Successful fetch converts HTML to markdown."""
     responses.add(
         responses.GET,
         "http://example.com",
@@ -25,8 +108,131 @@ def test_fetch_url_success() -> None:
 
 
 @responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_falls_back_when_markdownify_recurses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive markdown conversion falls back to extracted text."""
+    body = "<html><body><p>Hello <strong>world</strong></p><p>Second</p></body></html>"
+    responses.add(
+        responses.GET,
+        "http://example.com/deep",
+        body=body,
+        status=200,
+    )
+
+    def recursive_markdownify(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    monkeypatch.setattr(markdownify_module, "markdownify", recursive_markdownify)
+
+    result = fetch_url("http://example.com/deep")
+
+    assert result["status_code"] == 200
+    content = result["markdown_content"]
+    assert "Hello" in content
+    assert "world" in content
+    assert "Second" in content
+    # The fallback extracts text rather than passing raw HTML through: the
+    # markup that was present in the body must be gone. Substring assertions
+    # alone would also pass if the raw HTML leaked, so check tags are stripped.
+    assert "<strong>" not in content
+    assert "<p>" not in content
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_handles_deeply_nested_html() -> None:
+    """Deeply nested real HTML degrades gracefully instead of crashing.
+
+    Exercises the real `markdownify` (no monkeypatch) against markup deep
+    enough to exhaust its recursion limit, proving the premise of the fix:
+    `fetch_url` returns the inner text instead of propagating a crash.
+    """
+    depth = 6000
+    inner = "deep content here"
+    body = "<div>" * depth + inner + "</div>" * depth
+    responses.add(
+        responses.GET,
+        "http://example.com/nested",
+        body=body,
+        status=200,
+    )
+
+    result = fetch_url("http://example.com/nested")
+
+    assert result["status_code"] == 200
+    assert inner in result["markdown_content"]
+
+
+def test_text_extractor_skips_script_and_style() -> None:
+    """Script and style source is not emitted as extracted text."""
+    parser = _TextExtractor()
+    parser.feed(
+        "<style>.a{color:red}</style>"
+        "<script>var x = 1; alert('hi');</script>"
+        "<p>Hello</p>"
+    )
+    parser.close()
+
+    text = parser.get_text()
+    assert text == "Hello"
+    assert "color" not in text
+    assert "alert" not in text
+
+
+def test_text_extractor_collapses_whitespace_and_drops_empty() -> None:
+    """Internal whitespace is collapsed and empty fragments are dropped."""
+    parser = _TextExtractor()
+    parser.feed("<p>  Hello   world  </p><p>   </p>")
+    parser.close()
+
+    assert parser.get_text() == "Hello world"
+
+
+def test_text_extractor_empty_input_returns_empty_string() -> None:
+    """An empty document yields an empty string, not an error."""
+    parser = _TextExtractor()
+    parser.feed("")
+    parser.close()
+
+    assert parser.get_text() == ""
+
+
+def test_html_to_markdown_content_returns_markdownify_output() -> None:
+    """The happy path returns the injected converter's output verbatim."""
+
+    def fake_markdownify(html: str) -> str:
+        return f"converted:{html}"
+
+    assert (
+        _html_to_markdown_content("<p>x</p>", fake_markdownify) == "converted:<p>x</p>"
+    )
+
+
+def test_html_to_markdown_content_returns_empty_when_fallback_fails() -> None:
+    """If text extraction itself fails, the helper returns an empty string."""
+
+    def recursive_markdownify(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    class _BoomExtractor(_TextExtractor):
+        def feed(self, data: str) -> None:  # noqa: ARG002  # override signature
+            msg = "fallback parser blew up"
+            raise ValueError(msg)
+
+    with mock.patch.object(tools, "_TextExtractor", _BoomExtractor):
+        result = _html_to_markdown_content("<p>x</p>", recursive_markdownify)
+
+    assert result == ""
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
 def test_fetch_url_http_error() -> None:
-    """Test handling of HTTP errors."""
+    """4xx responses surface as structured errors."""
     responses.add(
         responses.GET,
         "http://example.com/notfound",
@@ -38,11 +244,13 @@ def test_fetch_url_http_error() -> None:
     assert "error" in result
     assert "Fetch URL error" in result["error"]
     assert result["url"] == "http://example.com/notfound"
+    assert result["category"] == "network"
 
 
 @responses.activate
+@pytest.mark.usefixtures("resolve_public")
 def test_fetch_url_timeout() -> None:
-    """Test handling of request timeout."""
+    """Timeouts surface as structured errors."""
     responses.add(
         responses.GET,
         "http://example.com/slow",
@@ -54,11 +262,13 @@ def test_fetch_url_timeout() -> None:
     assert "error" in result
     assert "Fetch URL error" in result["error"]
     assert result["url"] == "http://example.com/slow"
+    assert result["category"] == "network"
 
 
 @responses.activate
+@pytest.mark.usefixtures("resolve_public")
 def test_fetch_url_connection_error() -> None:
-    """Test handling of connection errors."""
+    """Connection errors surface as structured errors."""
     responses.add(
         responses.GET,
         "http://example.com/error",
@@ -70,3 +280,326 @@ def test_fetch_url_connection_error() -> None:
     assert "error" in result
     assert "Fetch URL error" in result["error"]
     assert result["url"] == "http://example.com/error"
+    assert result["category"] == "network"
+
+
+def test_fetch_url_disables_environment_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pinned direct connection must not be replaced by an env proxy."""
+    resolver, _ = _make_resolver("93.184.216.34")
+    trust_env_values: list[bool] = []
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+
+    class RecordingSession:
+        """Minimal `requests.Session` stand-in that records proxy trust."""
+
+        def __init__(self) -> None:
+            self.trust_env = True
+
+        def get(self, url: str, **_kwargs: Any) -> requests.Response:
+            trust_env_values.append(self.trust_env)
+            response = requests.Response()
+            response.status_code = 200
+            response.url = url
+            response._content = b"<html><body><h1>Proxied</h1></body></html>"
+            return response
+
+    monkeypatch.setattr(requests, "Session", RecordingSession)
+
+    result = fetch_url("http://example.com/proxy")
+
+    assert result["status_code"] == 200
+    assert trust_env_values == [False]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "gopher://example.com/",
+        "ftp://example.com/",
+        "javascript:alert(1)",
+    ],
+)
+def test_validate_url_rejects_disallowed_schemes(url: str) -> None:
+    """Only http(s) is allowed."""
+    with pytest.raises(_UrlValidationError, match="scheme not allowed"):
+        _validate_url(url)
+
+
+def test_validate_url_rejects_missing_hostname() -> None:
+    """URLs without a hostname are rejected."""
+    with pytest.raises(_UrlValidationError, match="missing a hostname"):
+        _validate_url("http:///path")
+
+
+@pytest.mark.parametrize(
+    "blocked_ip",
+    [
+        # IPv4 loopback / RFC1918 / link-local (IMDS) / unspecified
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.5",
+        "192.168.1.1",
+        "169.254.169.254",
+        "0.0.0.0",
+        # IPv6 loopback / link-local / unique-local
+        "::1",
+        "fe80::1",
+        "fc00::1",
+        # IPv4-mapped IPv6 — loopback and IMDS encoded inside ::ffff:/96
+        "::ffff:127.0.0.1",
+        "::ffff:169.254.169.254",
+        "::ffff:10.0.0.1",
+        # 6to4 wrapping private v4 (2002::/16 prefix + private v4 in next 32 bits)
+        "2002:a9fe:a9fe::1",
+    ],
+)
+def test_validate_url_rejects_private_addresses(
+    monkeypatch: pytest.MonkeyPatch, blocked_ip: str
+) -> None:
+    """Hostnames that resolve to private/internal IPs are rejected."""
+    resolver, _ = _make_resolver(blocked_ip)
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    with pytest.raises(_UrlValidationError, match="blocked address"):
+        _validate_url("http://evil.example.com/")
+
+
+def test_validate_url_allows_public_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public IP passes validation and is returned."""
+    resolver, _ = _make_resolver("93.184.216.34")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    validated = _validate_url("https://example.com/")
+    assert validated == ["93.184.216.34"]
+
+
+def test_validate_url_rejects_when_any_record_is_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dual-stack DNS where one record is private must still be rejected."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        _make_multi_record_resolver("93.184.216.34", "127.0.0.1"),
+    )
+
+    with pytest.raises(_UrlValidationError, match="blocked address"):
+        _validate_url("http://example.com/")
+
+
+def test_validate_url_handles_dns_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unresolvable hostnames raise `_UrlValidationError`."""
+
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
+        msg = "nodename nor servname provided"
+        raise socket.gaierror(8, msg)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _raise)
+
+    with pytest.raises(_UrlValidationError, match="Could not resolve hostname"):
+        _validate_url("https://does-not-exist.invalid/")
+
+
+def test_validate_url_strips_ipv6_scope_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scope-suffixed sockaddrs (`fe80::1%eth0`) parse cleanly and are blocked."""
+
+    def _impl(
+        _host: str,
+        port: int | None,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[tuple[Any, ...]]:
+        sockaddr = ("fe80::1%eth0", port or 0, 0, 2)
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", sockaddr)]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _impl)
+
+    with pytest.raises(_UrlValidationError, match="blocked address"):
+        _validate_url("http://router.example/")
+
+
+def test_fetch_url_blocks_imds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """IMDS endpoint via hostname is blocked before any HTTP request."""
+    resolver, _ = _make_resolver("169.254.169.254")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    result = fetch_url("http://metadata.example/latest/meta-data/")
+
+    assert "error" in result
+    assert "blocked address" in result["error"]
+    assert result["url"] == "http://metadata.example/latest/meta-data/"
+    assert result["category"] == "validation"
+
+
+def test_fetch_url_blocks_file_scheme() -> None:
+    """`file://` URLs are rejected without a network call."""
+    result = fetch_url("file:///etc/passwd")
+
+    assert "error" in result
+    assert "scheme not allowed" in result["error"]
+    assert result["category"] == "validation"
+
+
+def test_fetch_url_blocks_ipv4_mapped_ipv6_imds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IPv4-mapped IPv6 wrapping IMDS (`::ffff:169.254.169.254`) is blocked."""
+    resolver, _ = _make_resolver("::ffff:169.254.169.254")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    result = fetch_url("http://metadata.example/latest/meta-data/")
+
+    assert "error" in result
+    assert "blocked address" in result["error"]
+    assert result["category"] == "validation"
+
+
+def test_fetch_url_blocks_numeric_ip_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decimal-encoded loopback (`2130706433` = `127.0.0.1`) is blocked.
+
+    `getaddrinfo` would normally resolve the numeric form to `127.0.0.1`;
+    we simulate that here so the test does not depend on platform DNS.
+    """
+    resolver, _ = _make_resolver("127.0.0.1")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    result = fetch_url("http://2130706433/")
+
+    assert "error" in result
+    assert "blocked address" in result["error"]
+    assert result["category"] == "validation"
+
+
+@responses.activate
+def test_fetch_url_rejects_redirect_to_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public URL that redirects to a private host is blocked on the hop."""
+    resolver, calls = _make_resolver("93.184.216.34", "169.254.169.254")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    responses.add(
+        responses.GET,
+        "http://example.com/redir",
+        status=302,
+        headers={"Location": "http://internal.example/secrets"},
+    )
+
+    result = fetch_url("http://example.com/redir")
+
+    assert "error" in result
+    assert "blocked address" in result["error"]
+    assert result["category"] == "validation"
+    # Both hops were validated — initial public host AND the redirect target.
+    assert len(calls) == 2  # two hops: initial + one redirect
+
+
+@responses.activate
+def test_fetch_url_rejects_redirect_scheme_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redirect to a non-http(s) scheme (e.g., `file://`) is rejected."""
+    resolver, _ = _make_resolver("93.184.216.34")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    responses.add(
+        responses.GET,
+        "http://example.com/redir",
+        status=302,
+        headers={"Location": "file:///etc/passwd"},
+    )
+
+    result = fetch_url("http://example.com/redir")
+
+    assert "error" in result
+    assert "scheme not allowed" in result["error"]
+    assert result["category"] == "validation"
+
+
+@responses.activate
+def test_fetch_url_follows_relative_redirect_to_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relative `Location` resolves against the current URL and succeeds."""
+    resolver, calls = _make_resolver("93.184.216.34", "93.184.216.34")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    responses.add(
+        responses.GET,
+        "http://example.com/redir",
+        status=302,
+        headers={"Location": "/landing"},
+    )
+    responses.add(
+        responses.GET,
+        "http://example.com/landing",
+        body="<html><body><h1>Landed</h1></body></html>",
+        status=200,
+    )
+
+    result = fetch_url("http://example.com/redir")
+
+    assert result["status_code"] == 200
+    assert "Landed" in result["markdown_content"]
+    assert result["url"].endswith("/landing")
+    assert len(calls) == 2  # initial + one redirect hop
+
+
+@responses.activate
+def test_fetch_url_rejects_redirect_without_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3xx without Location surfaces a structured error, not a redirect-cap message."""
+    resolver, _ = _make_resolver("93.184.216.34")
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    responses.add(
+        responses.GET,
+        "http://example.com/broken",
+        status=302,
+    )
+
+    result = fetch_url("http://example.com/broken")
+
+    assert "error" in result
+    assert "missing a Location" in result["error"]
+    assert result["category"] == "validation"
+
+
+@responses.activate
+def test_fetch_url_redirect_cap_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exceeding the redirect cap raises a structured `redirects` error."""
+    # `_MAX_FETCH_REDIRECTS + 1` total hops are allowed (initial + 5 redirects).
+    # Make every hop a redirect so the loop falls through.
+    public_ip = "93.184.216.34"
+    resolver, _ = _make_resolver(*([public_ip] * 10))
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+
+    for i in range(8):
+        responses.add(
+            responses.GET,
+            f"http://example.com/hop/{i}",
+            status=302,
+            headers={"Location": f"/hop/{i + 1}"},
+        )
+
+    result = fetch_url("http://example.com/hop/0")
+
+    assert "error" in result
+    assert "Exceeded" in result["error"]
+    assert result["category"] == "redirects"

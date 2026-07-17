@@ -1,6 +1,6 @@
-name: "Deep Agents"
-description: "Run Deep Agents CLI coding assistant in GitHub workflows"
-author: "LangChain AI"
+name: "Deep Agents Code"
+description: "Run dcode in GitHub workflows"
+author: "LangChain"
 branding:
   icon: "cpu"
   color: "blue"
@@ -10,8 +10,20 @@ inputs:
     description: "The prompt/instruction to send to the agent"
     required: true
   model:
-    description: "Model to use (claude-*, gpt-*, gemini-*). Auto-detects provider."
+    description: "Model to use, as provider:model (e.g. openai:gpt-5.5, anthropic:claude-opus-4-6) or a bare name (claude-*, gpt-*, gemini-*) with the provider auto-detected."
     required: false
+  model_params:
+    description: "JSON model kwargs passed to --model-params"
+    required: false
+    default: ""
+  max_retries:
+    description: "Maximum transient model retries passed to --max-retries"
+    required: false
+    default: ""
+  profile_override:
+    description: "JSON model profile overrides passed to --profile-override"
+    required: false
+    default: ""
   anthropic_api_key:
     description: "Anthropic API key"
     required: false
@@ -30,7 +42,7 @@ inputs:
     required: false
     default: "."
   cli_version:
-    description: "deepagents-cli version (empty = latest)"
+    description: "deepagents-code version (empty = latest)"
     required: false
     default: ""
   skills_repo:
@@ -53,8 +65,88 @@ inputs:
     description: "Comma-separated shell allow list passed to --shell-allow-list (default: recommended,git,gh)"
     required: false
     default: "recommended,git,gh"
+  skill:
+    description: "Skill name to invoke before running the prompt"
+    required: false
+    default: ""
+  startup_cmd:
+    description: "Shell command to run at startup before the prompt"
+    required: false
+    default: ""
+  sandbox:
+    description: "Sandbox provider passed to --sandbox (empty = local execution)"
+    required: false
+    default: ""
+  sandbox_id:
+    description: "Existing sandbox ID passed to --sandbox-id"
+    required: false
+    default: ""
+  sandbox_snapshot_name:
+    description: "Snapshot or blueprint name passed to --sandbox-snapshot-name"
+    required: false
+    default: ""
+  sandbox_setup:
+    description: "Setup script path passed to --sandbox-setup"
+    required: false
+    default: ""
+  mcp_config:
+    description: "MCP config path passed to --mcp-config"
+    required: false
+    default: ""
+  no_mcp:
+    description: "Pass --no-mcp to disable MCP loading"
+    required: false
+    default: "false"
+  trust_project_mcp:
+    description: "Pass --trust-project-mcp to skip project MCP approval"
+    required: false
+    default: "false"
+  interpreter:
+    description: "Set to true for --interpreter, false for --no-interpreter, empty for dcode default"
+    required: false
+    default: ""
+  interpreter_tools:
+    description: "PTC allowlist passed to --interpreter-tools"
+    required: false
+    default: ""
+  max_turns:
+    description: "Maximum agentic turns passed to --max-turns"
+    required: false
+    default: ""
+  task_timeout:
+    description: "dcode task timeout in seconds passed to --timeout"
+    required: false
+    default: ""
+  rubric:
+    description: "Acceptance criteria passed to --rubric (literal text or @path)"
+    required: false
+    default: ""
+  rubric_model:
+    description: "Model passed to --rubric-model"
+    required: false
+    default: ""
+  rubric_max_iterations:
+    description: "Maximum rubric grader iterations passed to --rubric-max-iterations"
+    required: false
+    default: ""
+  quiet:
+    description: "Pass --quiet for clean stdout"
+    required: false
+    default: "false"
+  no_stream:
+    description: "Pass --no-stream to buffer the full response"
+    required: false
+    default: "false"
+  json:
+    description: "Pass --json for machine-readable dcode output"
+    required: false
+    default: "false"
+  stdin:
+    description: "Pass --stdin and pipe prompt as standard input instead of using --non-interactive"
+    required: false
+    default: "false"
   timeout:
-    description: "Maximum agent runtime in minutes (default: 30)"
+    description: "Maximum action runtime in minutes (default: 30)"
     required: false
     default: "30"
 
@@ -90,7 +182,6 @@ runs:
         PREFIX="deepagents-memory-${INPUT_AGENT_NAME}"
         case "$INPUT_MEMORY_SCOPE" in
           pr)
-            # Use PR number if available, fall back to ref
             if [ -n "$EVENT_PR_NUMBER" ]; then
               SCOPE_KEY="pr-${EVENT_PR_NUMBER}"
             else
@@ -104,7 +195,7 @@ runs:
             SCOPE_KEY="repo"
             ;;
           *)
-            # Fallback to pr-scoped (most conservative) rather than repo-scoped to limit blast radius
+            # Fall back to pr-scoped (most conservative) rather than repo-scoped to limit blast radius
             echo "::warning::Unknown memory_scope '${INPUT_MEMORY_SCOPE}', defaulting to 'pr'"
             if [ -n "$EVENT_PR_NUMBER" ]; then
               SCOPE_KEY="pr-${EVENT_PR_NUMBER}"
@@ -120,24 +211,30 @@ runs:
     - name: Restore agent memory
       if: inputs.enable_memory == 'true'
       id: restore-memory
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/
-          ~/.deepagents/sessions.db
+          ~/.deepagents/.state/sessions.db
+          ~/.deepagents/.state/sessions.db-wal
+          ~/.deepagents/.state/sessions.db-shm
           ${{ inputs.working_directory }}/.deepagents/AGENTS.md
         key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}
         restore-keys: |
           ${{ steps.cache-key.outputs.key }}-
           ${{ steps.cache-key.outputs.restore-keys }}
 
-    - name: Install deepagents-cli
+    - name: Install deepagents-code
       shell: bash
       env:
         INPUT_CLI_VERSION: ${{ inputs.cli_version }}
       run: |
-        # Action requires --agent, --shell-allow-list, -n (available since 0.0.31)
-        MIN_CLI_VERSION="0.0.31"
+        # 0.1.0 is the floor for the always-present flags (--agent,
+        # --shell-allow-list, --non-interactive). Optional inputs below may map
+        # to flags added in later releases, so pinning an old cli_version while
+        # setting a newer optional input can still hit an "unknown flag" error
+        # from dcode that this floor check won't catch.
+        MIN_CLI_VERSION="0.1.0"
 
         if [ -n "$INPUT_CLI_VERSION" ]; then
           if ! printf '%s\n%s' "$MIN_CLI_VERSION" "$INPUT_CLI_VERSION" \
@@ -145,9 +242,9 @@ runs:
             echo "::error::cli_version '${INPUT_CLI_VERSION}' is below the minimum '${MIN_CLI_VERSION}' required by this action"
             exit 1
           fi
-          uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents --version
+          uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version
         else
-          uvx --from deepagents-cli deepagents --version
+          uvx --from deepagents-code dcode --version
         fi
 
     - name: Install skills
@@ -188,7 +285,6 @@ runs:
           exit 1
         fi
 
-        # Copy skill directories (those containing SKILL.md) into the skills dir
         SKILL_COUNT=0
         while IFS= read -r skill_file; do
           skill_dir=$(dirname "$skill_file")
@@ -203,7 +299,7 @@ runs:
           exit 1
         fi
 
-    - name: Run Deep Agents
+    - name: Run dcode
       id: run-agent
       shell: bash
       working-directory: ${{ inputs.working_directory }}
@@ -213,61 +309,231 @@ runs:
         GOOGLE_API_KEY: ${{ inputs.google_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MODEL_PARAMS: ${{ inputs.model_params }}
+        INPUT_MAX_RETRIES: ${{ inputs.max_retries }}
+        INPUT_PROFILE_OVERRIDE: ${{ inputs.profile_override }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_AGENT_NAME: ${{ inputs.agent_name }}
         INPUT_CLI_VERSION: ${{ inputs.cli_version }}
         INPUT_TIMEOUT: ${{ inputs.timeout }}
         INPUT_SHELL_ALLOW_LIST: ${{ inputs.shell_allow_list }}
+        INPUT_SKILL: ${{ inputs.skill }}
+        INPUT_STARTUP_CMD: ${{ inputs.startup_cmd }}
+        INPUT_SANDBOX: ${{ inputs.sandbox }}
+        INPUT_SANDBOX_ID: ${{ inputs.sandbox_id }}
+        INPUT_SANDBOX_SNAPSHOT_NAME: ${{ inputs.sandbox_snapshot_name }}
+        INPUT_SANDBOX_SETUP: ${{ inputs.sandbox_setup }}
+        INPUT_MCP_CONFIG: ${{ inputs.mcp_config }}
+        INPUT_NO_MCP: ${{ inputs.no_mcp }}
+        INPUT_TRUST_PROJECT_MCP: ${{ inputs.trust_project_mcp }}
+        INPUT_INTERPRETER: ${{ inputs.interpreter }}
+        INPUT_INTERPRETER_TOOLS: ${{ inputs.interpreter_tools }}
+        INPUT_MAX_TURNS: ${{ inputs.max_turns }}
+        INPUT_TASK_TIMEOUT: ${{ inputs.task_timeout }}
+        INPUT_RUBRIC: ${{ inputs.rubric }}
+        INPUT_RUBRIC_MODEL: ${{ inputs.rubric_model }}
+        INPUT_RUBRIC_MAX_ITERATIONS: ${{ inputs.rubric_max_iterations }}
+        INPUT_QUIET: ${{ inputs.quiet }}
+        INPUT_NO_STREAM: ${{ inputs.no_stream }}
+        INPUT_JSON: ${{ inputs.json }}
+        INPUT_STDIN: ${{ inputs.stdin }}
       run: |
-        # Build command (pin version if specified, matching the install step)
+        append_value_flag() {
+          local value="$1"
+          local flag="$2"
+          if [ -n "$value" ]; then
+            CMD+=("$flag" "$value")
+          fi
+        }
+
+        append_bool_flag() {
+          local value="$1"
+          local flag="$2"
+          case "$value" in
+            true)
+              CMD+=("$flag")
+              ;;
+            false|"")
+              ;;
+            *)
+              echo "::error::Input for ${flag} must be 'true' or 'false', got '${value}'"
+              exit 1
+              ;;
+          esac
+        }
+
+        validate_positive_int() {
+          local value="$1"
+          local input_name="$2"
+          # 10#$value forces base-10 so leading-zero values (e.g. 08) don't trip
+          # bash's octal parsing in the -eq test.
+          if [ -n "$value" ] && { ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$((10#$value))" -eq 0 ]; }; then
+            echo "::error::Invalid ${input_name} '${value}' — must be a positive integer"
+            exit 1
+          fi
+        }
+
+        validate_non_negative_int() {
+          local value="$1"
+          local input_name="$2"
+          if [ -n "$value" ] && ! [[ "$value" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid ${input_name} '${value}' — must be a non-negative integer"
+            exit 1
+          fi
+        }
+
+        validate_json_object() {
+          local value="$1"
+          local input_name="$2"
+          # Best-effort: only validate when jq is present. dcode still rejects
+          # malformed JSON, but this surfaces an error naming the offending input.
+          if [ -n "$value" ] && command -v jq >/dev/null 2>&1; then
+            if ! printf '%s' "$value" | jq -e 'type == "object"' >/dev/null 2>&1; then
+              echo "::error::Invalid ${input_name} — must be a JSON object"
+              exit 1
+            fi
+          fi
+        }
+
         if [ -n "$INPUT_CLI_VERSION" ]; then
-          CMD=(uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents)
+          CMD=(uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode)
         else
-          CMD=(uvx --from deepagents-cli deepagents)
+          CMD=(uvx --from deepagents-code dcode)
         fi
 
-        CMD+=(--agent "$INPUT_AGENT_NAME")
-        CMD+=(--shell-allow-list "$INPUT_SHELL_ALLOW_LIST")
+        validate_positive_int "$INPUT_TIMEOUT" "timeout"
+        validate_non_negative_int "$INPUT_MAX_RETRIES" "max_retries"
+        validate_positive_int "$INPUT_MAX_TURNS" "max_turns"
+        validate_positive_int "$INPUT_TASK_TIMEOUT" "task_timeout"
+        validate_positive_int "$INPUT_RUBRIC_MAX_ITERATIONS" "rubric_max_iterations"
+        validate_json_object "$INPUT_MODEL_PARAMS" "model_params"
+        validate_json_object "$INPUT_PROFILE_OVERRIDE" "profile_override"
 
-        if [ -n "$INPUT_MODEL" ]; then
-          CMD+=(--model "$INPUT_MODEL")
+        append_value_flag "$INPUT_AGENT_NAME" "--agent"
+        append_value_flag "$INPUT_SHELL_ALLOW_LIST" "--shell-allow-list"
+        append_value_flag "$INPUT_MODEL" "--model"
+        append_value_flag "$INPUT_MODEL_PARAMS" "--model-params"
+        append_value_flag "$INPUT_MAX_RETRIES" "--max-retries"
+        append_value_flag "$INPUT_PROFILE_OVERRIDE" "--profile-override"
+        append_value_flag "$INPUT_SKILL" "--skill"
+        append_value_flag "$INPUT_STARTUP_CMD" "--startup-cmd"
+        append_value_flag "$INPUT_SANDBOX" "--sandbox"
+        append_value_flag "$INPUT_SANDBOX_ID" "--sandbox-id"
+        append_value_flag "$INPUT_SANDBOX_SNAPSHOT_NAME" "--sandbox-snapshot-name"
+        append_value_flag "$INPUT_SANDBOX_SETUP" "--sandbox-setup"
+        append_value_flag "$INPUT_MCP_CONFIG" "--mcp-config"
+        append_bool_flag "$INPUT_NO_MCP" "--no-mcp"
+        append_bool_flag "$INPUT_TRUST_PROJECT_MCP" "--trust-project-mcp"
+        case "$INPUT_INTERPRETER" in
+          true)
+            CMD+=("--interpreter")
+            ;;
+          false)
+            CMD+=("--no-interpreter")
+            ;;
+          "")
+            ;;
+          *)
+            echo "::error::Input for interpreter must be 'true', 'false', or empty, got '${INPUT_INTERPRETER}'"
+            exit 1
+            ;;
+        esac
+        append_value_flag "$INPUT_INTERPRETER_TOOLS" "--interpreter-tools"
+        append_value_flag "$INPUT_MAX_TURNS" "--max-turns"
+        append_value_flag "$INPUT_TASK_TIMEOUT" "--timeout"
+        append_value_flag "$INPUT_RUBRIC" "--rubric"
+        append_value_flag "$INPUT_RUBRIC_MODEL" "--rubric-model"
+        append_value_flag "$INPUT_RUBRIC_MAX_ITERATIONS" "--rubric-max-iterations"
+        append_bool_flag "$INPUT_QUIET" "--quiet"
+        append_bool_flag "$INPUT_NO_STREAM" "--no-stream"
+        append_bool_flag "$INPUT_JSON" "--json"
+        case "$INPUT_STDIN" in
+          true|false|"")
+            ;;
+          *)
+            echo "::error::Input for stdin must be 'true' or 'false', got '${INPUT_STDIN}'"
+            exit 1
+            ;;
+        esac
+
+        # stdin + skill can't run headless: with --skill and no positional prompt,
+        # dcode routes piped input to the interactive TUI path. The non-stdin path
+        # passes the prompt via --non-interactive, which supports --skill fine.
+        if [ "$INPUT_STDIN" = "true" ] && [ -n "$INPUT_SKILL" ]; then
+          echo "::error::stdin cannot be combined with skill — use stdin: false so the prompt is passed via --non-interactive"
+          exit 1
         fi
 
-        # Validate timeout is a positive integer
-        if ! [[ "$INPUT_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$INPUT_TIMEOUT" -eq 0 ]; then
-          echo "::error::Invalid timeout '${INPUT_TIMEOUT}' — must be a positive integer (minutes)"
+        if [ -z "$INPUT_PROMPT" ]; then
+          echo "::error::prompt is empty — provide the task for dcode to run"
           exit 1
         fi
 
         OUTPUT_FILE=$(mktemp)
         trap 'rm -f "$OUTPUT_FILE"' EXIT
 
-        # set +e: allow non-zero exit so we can capture the code; pipefail: propagate the agent's exit code through tee
-        TIMEOUT_SECS=$((INPUT_TIMEOUT * 60))
+        # 10#$INPUT_TIMEOUT forces base-10: validate_positive_int accepts
+        # leading-zero values (e.g. 08), which bare arithmetic would misparse as
+        # octal and abort on (8 and 9 aren't valid octal digits).
+        TIMEOUT_SECS=$((10#$INPUT_TIMEOUT * 60))
+        # set +e: let a non-zero agent exit through so we can capture it below
+        # instead of aborting the step (composite bash runs with set -e).
         set +e
-        set -o pipefail
-        timeout "${TIMEOUT_SECS}" "${CMD[@]}" -n "$INPUT_PROMPT" 2>&1 | tee "$OUTPUT_FILE"
-        EXIT_CODE=$?
-        set +o pipefail
-        set -e
+        if [ "$INPUT_STDIN" = "true" ]; then
+          # stdin is special-cased: the prompt is piped in rather than passed
+          # positionally. Feed it via process substitution so the agent — not
+          # printf — is the pipeline head; a classic `printf | timeout` pipe
+          # would surface printf's SIGPIPE (agent closes stdin early on a large
+          # prompt) as the captured exit code.
+          timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--stdin" < <(printf '%s' "$INPUT_PROMPT") 2>&1 | tee "$OUTPUT_FILE"
+        else
+          timeout "${TIMEOUT_SECS}" "${CMD[@]}" "--non-interactive" "$INPUT_PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+        fi
+        # PIPESTATUS[0] is the agent/timeout stage (the pipeline head), so tee's
+        # exit can't mask the agent's real code. Read before any other command
+        # runs, since PIPESTATUS reflects the most recent pipeline.
+        EXIT_CODE=${PIPESTATUS[0]}
 
-        # Set outputs using heredoc with random delimiter
-        DELIMITER="DEEPAGENTS_$(openssl rand -hex 16)"
-        {
-          echo "exit_code=$EXIT_CODE"
-          echo "response<<${DELIMITER}"
-          cat "$OUTPUT_FILE"
-          echo "${DELIMITER}"
-        } >> "$GITHUB_OUTPUT"
+        # The random delimiter stops untrusted agent output from forging extra
+        # $GITHUB_OUTPUT entries (a line equal to the delimiter would close the
+        # heredoc early). If openssl is unavailable, fall back to /dev/urandom
+        # rather than silently degrading to the guessable constant "DEEPAGENTS_".
+        RAND_HEX=$(openssl rand -hex 16 2>/dev/null)
+        if [ -z "$RAND_HEX" ]; then
+          RAND_HEX=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        fi
+        if [ -z "$RAND_HEX" ]; then
+          echo "::error::could not generate a random output delimiter"
+          # Preserve a failing agent code; otherwise fail with 1 since we can't
+          # safely emit output.
+          [ "$EXIT_CODE" -ne 0 ] && exit "$EXIT_CODE"
+          exit 1
+        fi
+        DELIMITER="DEEPAGENTS_${RAND_HEX}"
 
-        exit $EXIT_CODE
+        # Keep `set -e` disabled while writing outputs so a write failure can't
+        # mask the agent's exit code — but surface it as a warning so an empty
+        # or truncated `response` output isn't mistaken for the agent producing
+        # no output.
+        if ! {
+              echo "exit_code=$EXIT_CODE"
+              echo "response<<${DELIMITER}"
+              cat "$OUTPUT_FILE"
+              echo "${DELIMITER}"
+            } >> "$GITHUB_OUTPUT"; then
+          echo "::warning::failed to write agent output to \$GITHUB_OUTPUT — the 'response' output may be empty or truncated"
+        fi
+
+        exit "$EXIT_CODE"
 
     - name: Save agent memory
       if: inputs.enable_memory == 'true' && steps.cache-key.outputs.key != '' && always()
-      uses: actions/cache/save@v5
+      uses: actions/cache/save@v6
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/
-          ~/.deepagents/sessions.db
+          ~/.deepagents/.state/sessions.db
+          ~/.deepagents/.state/sessions.db-wal
+          ~/.deepagents/.state/sessions.db-shm
           ${{ inputs.working_directory }}/.deepagents/AGENTS.md
         key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}

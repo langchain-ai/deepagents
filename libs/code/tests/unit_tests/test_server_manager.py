@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -13,8 +14,7 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-from deepagents_code.project_utils import ProjectContext
-from deepagents_code.server_manager import (
+from deepagents_code.client.launch.server_manager import (
     _apply_server_config,
     _preflight_validate_mcp_config,
     _runtime_package_dependency,
@@ -22,6 +22,7 @@ from deepagents_code.server_manager import (
     server_session,
     start_server_and_get_agent,
 )
+from deepagents_code.project_utils import ProjectContext
 
 
 class TestServerConfigRoundTrip:
@@ -108,6 +109,7 @@ class TestApplyServerConfig:
             auto_approve=False,
             sandbox_type="none",
             sandbox_id=None,
+            sandbox_snapshot_name=None,
             sandbox_setup=None,
             enable_shell=True,
             enable_ask_user=False,
@@ -135,10 +137,10 @@ class TestApplyServerConfig:
 class TestStartServerAndGetAgent:
     """Tests for server bootstrap wiring."""
 
-    async def test_uses_relative_graph_and_checkpointer_refs(
+    async def test_uses_package_graph_and_relative_checkpointer_refs(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Generated LangGraph config should use relative paths (Windows compat)."""
+        """Generated LangGraph config should import the package graph."""
         project_root = tmp_path / "project"
         project_root.mkdir()
         monkeypatch.chdir(project_root)
@@ -148,23 +150,29 @@ class TestStartServerAndGetAgent:
 
         mock_server = MagicMock()
         mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
         mock_server.url = "http://127.0.0.1:2024"
         mock_agent = object()
 
         with (
             patch.dict(os.environ, {}, clear=False),
             patch(
-                "deepagents_code.server_manager.tempfile.mkdtemp",
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
                 return_value=str(work_dir),
             ),
-            patch("deepagents_code.server_manager.shutil.copy2"),
-            patch("deepagents_code.server_manager._write_checkpointer"),
-            patch("deepagents_code.server_manager._write_pyproject"),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
             patch(
-                "deepagents_code.server.generate_langgraph_json"
+                "deepagents_code.client.launch.server.generate_langgraph_json"
             ) as mock_generate_langgraph_json,
-            patch("deepagents_code.server.ServerProcess", return_value=mock_server),
-            patch("deepagents_code.remote_client.RemoteAgent", return_value=mock_agent),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent",
+                return_value=mock_agent,
+            ),
         ):
             agent, server, manager = await start_server_and_get_agent(
                 assistant_id="agent",
@@ -174,10 +182,209 @@ class TestStartServerAndGetAgent:
         assert agent is mock_agent
         assert server is mock_server
         assert manager is None
+        assert mock_server.wait_for_graph_ready.await_args_list == [call("agent")]
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
-        assert kwargs["graph_ref"] == "./server_graph.py:graph"
+        assert kwargs["graph_ref"] == "deepagents_code.server_graph:make_graph"
+        assert "additional_graphs" not in kwargs
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
+
+        # The graph is imported as a package module, so the scaffold must not
+        # copy server_graph.py into the runtime workdir (a relic of the old
+        # file-copy approach). `_scaffold_workspace` runs for real here — only
+        # its file-writing helpers are patched — so a reintroduced copy would
+        # surface as a stray file and fail this assertion.
+        assert not (work_dir / "server_graph.py").exists()
+
+    async def test_passes_scaffold_hook_to_server_process(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """ServerProcess should receive the scaffold hook for restart recovery."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager._scaffold_workspace"
+            ) as mock_scaffold,
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ) as mock_server_process,
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent",
+                return_value=object(),
+            ),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
+
+    async def test_stops_server_when_graph_readiness_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Lazy graph initialization failures should fail startup before return."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock(
+            side_effect=RuntimeError("graph failed")
+        )
+        mock_server.stop = MagicMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent") as mock_agent,
+            pytest.raises(RuntimeError, match="graph failed"),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.start.assert_awaited_once()
+        mock_server.wait_for_graph_ready.assert_awaited_once_with("agent")
+        mock_server.stop.assert_called_once()
+        mock_agent.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "interrupt",
+        [asyncio.CancelledError, KeyboardInterrupt, SystemExit],
+    )
+    async def test_stops_server_when_start_interrupted(
+        self, interrupt: type[BaseException], tmp_path: Path, monkeypatch
+    ) -> None:
+        """A quit during startup must still reap the half-started server.
+
+        The langgraph subprocess is spawned inside `ServerProcess.start()`
+        before this function returns, so the caller has not yet stored a
+        reference to it (`DeepAgentsApp._server_proc` is assigned only on
+        successful return). When the background startup worker is interrupted
+        mid-`start()` — e.g. the user presses Ctrl+D before the health check
+        completes — this `except` clause is the only thing that can stop the
+        orphaned subprocess. The interrupts covered here are all `BaseException`
+        subclasses rather than `Exception`, so an `except Exception` guard would
+        leak the process (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=interrupt)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent") as mock_agent,
+            pytest.raises(interrupt),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.start.assert_awaited_once()
+        mock_server.stop.assert_called_once()
+        # The interrupt must propagate: graph readiness is never reached, and
+        # no client is handed back to a caller that is being torn down.
+        mock_server.wait_for_graph_ready.assert_not_awaited()
+        mock_agent.assert_not_called()
+
+    async def test_start_cleanup_error_does_not_mask_interrupt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure inside `stop()` must not replace the in-flight interrupt.
+
+        Cleanup runs while a `BaseException` (here `CancelledError`) is
+        propagating. If `stop()` itself raises, that error is swallowed and
+        logged so the original cancellation stays the propagated exception,
+        preserving cancellation semantics instead of surfacing the teardown
+        error (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock(side_effect=RuntimeError("kill failed"))
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.stop.assert_called_once()
 
     def test_relative_paths_written_verbatim_to_langgraph_json(
         self, tmp_path: Path
@@ -185,15 +392,15 @@ class TestStartServerAndGetAgent:
         """Relative refs must appear verbatim in the generated config."""
         import json
 
-        from deepagents_code.server import generate_langgraph_json
+        from deepagents_code.client.launch.server import generate_langgraph_json
 
         generate_langgraph_json(
             tmp_path,
-            graph_ref="./server_graph.py:graph",
+            graph_ref="./server_graph.py:make_graph",
             checkpointer_path="./checkpointer.py:create_checkpointer",
         )
         config = json.loads((tmp_path / "langgraph.json").read_text())
-        assert config["graphs"]["agent"] == "./server_graph.py:graph"
+        assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
 
@@ -212,12 +419,62 @@ class TestWritePyproject:
 
         assert dependency == f"deepagents-code @ {package_root.as_uri()}"
 
+    def test_runtime_dependency_default_uses_package_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default root should not depend on `server_manager.py` depth."""
+        from pathlib import Path
+
+        import deepagents_code
+
+        # Derive the expected project root independently, from this test file's
+        # own location (libs/code/tests/unit_tests/ -> libs/code), rather than
+        # reusing the implementation's package-anchored expression. Mirroring the
+        # implementation would let a bug in that expression pass unnoticed.
+        project_root = Path(__file__).resolve().parents[2]
+        monkeypatch.setattr(
+            deepagents_code,
+            "__file__",
+            str(project_root / "deepagents_code" / "__init__.py"),
+        )
+
+        dependency = _runtime_package_dependency()
+
+        assert dependency == f"deepagents-code @ {project_root.as_uri()}"
+
+    def test_runtime_dependency_ignores_cwd_when_package_root_unknown(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Unknown package root falls back to the version, never the launch cwd.
+
+        On frozen/zipimport builds `deepagents_code.__file__` is unset. The
+        dependency must then pin the installed distribution version rather than
+        resolve against an unrelated project that happens to sit in the launch
+        directory.
+        """
+        import deepagents_code
+
+        # A stray project in the launch dir must not be mistaken for the source
+        # tree and turned into a local-path dependency.
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(deepagents_code, "__file__", None)
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.version",
+            return_value="9.9.9",
+        ):
+            dependency = _runtime_package_dependency()
+
+        assert dependency == "deepagents-code==9.9.9"
+        assert "file://" not in dependency
+
     def test_runtime_pyproject_excludes_langgraph_cli_dependency(
         self, tmp_path: Path
     ) -> None:
         """The runtime project should rely on the app package dependency only."""
         with patch(
-            "deepagents_code.server_manager._runtime_package_dependency",
+            "deepagents_code.client.launch.server_manager._runtime_package_dependency",
             return_value="deepagents-code==1.2.3",
         ):
             _write_pyproject(tmp_path)
@@ -234,7 +491,9 @@ class TestWritePyproject:
         site_packages = tmp_path / "site-packages"
         site_packages.mkdir()
 
-        with patch("deepagents_code.server_manager.version", return_value="1.2.3"):
+        with patch(
+            "deepagents_code.client.launch.server_manager.version", return_value="1.2.3"
+        ):
             dependency = _runtime_package_dependency(site_packages)
 
         assert dependency == "deepagents-code==1.2.3"
@@ -251,7 +510,7 @@ class TestServerSession:
         mock_server.stop = MagicMock()
 
         with patch(
-            "deepagents_code.server_manager.start_server_and_get_agent",
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
             new_callable=AsyncMock,
             return_value=(mock_agent, mock_server, None),
         ):
@@ -265,7 +524,7 @@ class TestServerSession:
         mock_server.stop = MagicMock()
 
         with patch(
-            "deepagents_code.server_manager.start_server_and_get_agent",
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
             new_callable=AsyncMock,
             return_value=(MagicMock(), mock_server, None),
         ):
@@ -281,7 +540,7 @@ class TestServerSession:
 
         with (  # noqa: PT012
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(MagicMock(), mock_server, None),
             ),
@@ -300,7 +559,7 @@ class TestServerSession:
         mock_mcp = AsyncMock()
 
         with patch(
-            "deepagents_code.server_manager.start_server_and_get_agent",
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
             new_callable=AsyncMock,
             return_value=(MagicMock(), mock_server, mock_mcp),
         ):

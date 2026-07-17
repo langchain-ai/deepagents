@@ -3,7 +3,8 @@
 import logging
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlparse
@@ -118,62 +119,65 @@ class MediaTracker:
         self.next_image_id: int = 1
         self.next_video_id: int = 1
 
-    def add_media(self, data: ImageData | VideoData, kind: MediaKind) -> str:
+    def add_media(
+        self,
+        data: ImageData | VideoData,
+        kind: MediaKind,
+        *,
+        existing_text: str = "",
+    ) -> str:
         """Add a media item and return its placeholder text.
 
         Args:
             data: The image or video data to track.
             kind: Media type key.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[image 1]" or "[video 1]".
         """
         if kind == "image":
+            while f"[image {self.next_image_id}]" in existing_text:
+                self.next_image_id += 1
             placeholder = f"[image {self.next_image_id}]"
             data.placeholder = placeholder
-            self.images.append(data)  # type: ignore[arg-type]
+            self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
         else:
+            while f"[video {self.next_video_id}]" in existing_text:
+                self.next_video_id += 1
             placeholder = f"[video {self.next_video_id}]"
             data.placeholder = placeholder
-            self.videos.append(data)  # type: ignore[arg-type]
+            self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
         return placeholder
 
-    def add_image(self, image_data: ImageData) -> str:
+    def add_image(self, image_data: ImageData, *, existing_text: str = "") -> str:
         """Add an image and return its placeholder text.
 
         Args:
             image_data: The image data to track.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[image 1]".
         """
-        return self.add_media(image_data, "image")
+        return self.add_media(image_data, "image", existing_text=existing_text)
 
-    def add_video(self, video_data: VideoData) -> str:
+    def add_video(self, video_data: VideoData, *, existing_text: str = "") -> str:
         """Add a video and return its placeholder text.
 
         Args:
             video_data: The video data to track.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[video 1]".
         """
-        return self.add_media(video_data, "video")
-
-    def get_media(self, kind: MediaKind) -> list[ImageData] | list[VideoData]:
-        """Get all tracked media of a given type.
-
-        Args:
-            kind: Media type key.
-
-        Returns:
-            Copy of the list of tracked media items.
-        """
-        if kind == "image":
-            return list(self.images)
-        return list(self.videos)
+        return self.add_media(video_data, "video", existing_text=existing_text)
 
     def get_images(self) -> list[ImageData]:
         """Get all tracked images.
@@ -198,28 +202,102 @@ class MediaTracker:
         self.next_image_id = 1
         self.next_video_id = 1
 
-    def sync_to_text(self, text: str) -> None:
+    def snapshot(self) -> "MediaTracker":
+        """Return an independent copy of the currently tracked media."""
+        tracker = MediaTracker()
+        tracker.images = [replace(img) for img in self.images]
+        tracker.videos = [replace(vid) for vid in self.videos]
+        tracker.next_image_id = self.next_image_id
+        tracker.next_video_id = self.next_video_id
+        return tracker
+
+    def restore(self, snapshot: "MediaTracker") -> None:
+        """Replace current media state with an independent snapshot copy.
+
+        Args:
+            snapshot: Previously captured media state to restore.
+        """
+        self.images = [replace(img) for img in snapshot.images]
+        self.videos = [replace(vid) for vid in snapshot.videos]
+        self.next_image_id = snapshot.next_image_id
+        self.next_video_id = snapshot.next_video_id
+
+    def sync_to_text(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> None:
         """Retain only media still referenced by placeholders in current text.
 
         Args:
             text: Current input text shown to the user.
+            previous_text: Previous input text, used to keep tracking the same
+                placeholder occurrence when duplicate literal tokens are added.
+            cursor_offset: Current cursor offset, used to disambiguate whole-paste
+                edits that create duplicate placeholder tokens.
         """
-        img_found = self._sync_kind_images(text)
-        vid_found = self._sync_kind_videos(text)
+        img_found = self._sync_kind_images(
+            text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
+        vid_found = self._sync_kind_videos(
+            text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
         if not img_found and not vid_found:
             self.clear()
 
-    def _sync_kind_images(self, text: str) -> bool:
+    def remap_spans_to_text(self, text: str, *, previous_text: str) -> None:
+        """Re-map tracked placeholder spans onto a transformed copy of the text.
+
+        Submission rewrites the draft before the display placeholders are
+        stripped from the model-facing text: whitespace is trimmed, collapsed
+        pastes expand back to full content, dropped paths become placeholders,
+        and a mode prefix may be prepended. Every one of those shifts character
+        offsets, so a `placeholder_span` captured against the draft would be
+        stale by the time `strip_media_placeholders` consumes it — silently
+        stripping the wrong occurrence when a user-typed duplicate is present.
+
+        Re-mapping each span through the same before/after diff keeps it pointing
+        at its own display token in `text`. Spans that cannot be cleanly mapped
+        become `None`, degrading to the token-count fallback rather than a wrong
+        strip.
+
+        Args:
+            text: The transformed text the spans must line up with.
+            previous_text: The draft text the current spans were captured
+                against.
+        """
+        for item in (*self.images, *self.videos):
+            if item.placeholder_span is None:
+                continue
+            item.placeholder_span = self._map_placeholder_span(
+                item.placeholder_span, previous_text, text
+            )
+
+    def _sync_kind_images(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> bool:
         """Sync image list to surviving placeholders in text.
 
         Args:
             text: Current input text.
+            previous_text: Previous input text, used to map existing spans.
+            cursor_offset: Current cursor offset for duplicate disambiguation.
 
         Returns:
             Whether any image placeholders were found.
         """
-        placeholders = {m.group(0) for m in IMAGE_PLACEHOLDER_PATTERN.finditer(text)}
+        matches = list(IMAGE_PLACEHOLDER_PATTERN.finditer(text))
+        placeholders = {m.group(0) for m in matches}
         self.images = [img for img in self.images if img.placeholder in placeholders]
+        self._update_placeholder_spans(
+            self.images, matches, text, previous_text, cursor_offset
+        )
         if not self.images:
             self.next_image_id = 1
         else:
@@ -228,17 +306,29 @@ class MediaTracker:
             )
         return bool(placeholders)
 
-    def _sync_kind_videos(self, text: str) -> bool:
+    def _sync_kind_videos(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> bool:
         """Sync video list to surviving placeholders in text.
 
         Args:
             text: Current input text.
+            previous_text: Previous input text, used to map existing spans.
+            cursor_offset: Current cursor offset for duplicate disambiguation.
 
         Returns:
             Whether any video placeholders were found.
         """
-        placeholders = {m.group(0) for m in VIDEO_PLACEHOLDER_PATTERN.finditer(text)}
+        matches = list(VIDEO_PLACEHOLDER_PATTERN.finditer(text))
+        placeholders = {m.group(0) for m in matches}
         self.videos = [vid for vid in self.videos if vid.placeholder in placeholders]
+        self._update_placeholder_spans(
+            self.videos, matches, text, previous_text, cursor_offset
+        )
         if not self.videos:
             self.next_video_id = 1
         else:
@@ -246,6 +336,109 @@ class MediaTracker:
                 self.videos, VIDEO_PLACEHOLDER_PATTERN, len(self.videos)
             )
         return bool(placeholders)
+
+    def _update_placeholder_spans(
+        self,
+        items: list[ImageData] | list[VideoData],
+        matches: list[re.Match[str]],
+        text: str,
+        previous_text: str | None,
+        cursor_offset: int | None,
+    ) -> None:
+        """Refresh tracked placeholder spans for surviving media items.
+
+        Args:
+            items: Surviving tracked media items.
+            matches: Placeholder regex matches in the current text.
+            text: Current input text.
+            previous_text: Previous input text, used to map existing spans.
+            cursor_offset: Current cursor offset for duplicate disambiguation.
+        """
+        spans_by_token: dict[str, list[tuple[int, int]]] = {}
+        for match in matches:
+            spans_by_token.setdefault(match.group(0), []).append(match.span())
+
+        for item in items:
+            spans = spans_by_token.get(item.placeholder, [])
+            cursor_span = self._placeholder_span_after_cursor(spans, cursor_offset)
+            mapped = self._map_placeholder_span(
+                item.placeholder_span, previous_text, text
+            )
+            had_duplicate = (
+                previous_text is not None and previous_text.count(item.placeholder) > 1
+            )
+            if had_duplicate and mapped is not None and mapped in spans:
+                item.placeholder_span = mapped
+            elif cursor_span is not None and (
+                item.placeholder_span is None or mapped != item.placeholder_span
+            ):
+                item.placeholder_span = cursor_span
+            elif len(spans) == 1:
+                item.placeholder_span = spans[0]
+            elif mapped is not None and mapped in spans:
+                item.placeholder_span = mapped
+            elif item.placeholder_span not in spans:
+                item.placeholder_span = None
+
+    @staticmethod
+    def _placeholder_span_after_cursor(
+        spans: list[tuple[int, int]], cursor_offset: int | None
+    ) -> tuple[int, int] | None:
+        """Return the first duplicate placeholder span at or after the cursor.
+
+        Only meaningful when the token is duplicated (`len(spans) > 1`); returns
+        `None` otherwise, or when no span starts at/after the cursor.
+
+        Args:
+            spans: Placeholder spans for one token in current text.
+            cursor_offset: Current cursor offset, or `None` when unknown.
+        """
+        if cursor_offset is None or len(spans) <= 1:
+            return None
+        for span in spans:
+            start, _end = span
+            if start >= cursor_offset:
+                return span
+        return None
+
+    @staticmethod
+    def _map_placeholder_span(
+        span: tuple[int, int] | None,
+        previous_text: str | None,
+        text: str,
+    ) -> tuple[int, int] | None:
+        """Map a placeholder span from the previous text into current text.
+
+        Uses a `SequenceMatcher` diff so the span survives edits elsewhere in the
+        text: it returns the shifted span only when its whole range falls inside
+        an unchanged (`equal`) block, and `None` when the token's own characters
+        were edited or the span cannot be located.
+
+        Args:
+            span: The placeholder span in `previous_text`, or `None`.
+            previous_text: Text the span was captured against, or `None`.
+            text: Text to map the span into.
+
+        Returns:
+            The mapped span when the same placeholder occurrence survives,
+            otherwise `None`.
+        """
+        if span is None or previous_text is None:
+            return None
+        start, end = span
+        if not (0 <= start < end <= len(previous_text)):
+            return None
+
+        matcher = SequenceMatcher(a=previous_text, b=text, autojunk=False)
+        for tag, old_start, old_end, new_start, _new_end in matcher.get_opcodes():
+            if tag == "equal" and old_start <= start and end <= old_end:
+                offset = new_start - old_start
+                return start + offset, end + offset
+            if old_start <= start and end <= old_end:
+                return None
+            if old_start > end:
+                break
+        return None
 
     @staticmethod
     def _max_placeholder_id(
@@ -685,6 +878,67 @@ def _normalize_posix_pasted_path(text: str) -> Path | None:
     return None
 
 
+def _safe_exists(path: Path) -> bool:
+    """Return whether `path` exists, treating OS rejections as non-existent.
+
+    Filesystem probes (`exists`/`is_file`/`is_dir`) issue an `os.stat` that can
+    raise `OSError` for inputs the OS refuses outright — notably `ENAMETOOLONG`
+    when a path component exceeds the filesystem limit. Whether `pathlib`
+    swallows such an error is version-dependent (Python <=3.13 ignores only a
+    small set of errnos and lets `ENAMETOOLONG` propagate; 3.14 routes these
+    through `os.path.*`, which swallows more), so we guard unconditionally for
+    uniform behavior. Callers here only care whether the path is usable, so a
+    failed probe is equivalent to "not there".
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path exists, `False` if it does not or cannot be probed.
+    """
+    try:
+        return path.exists()
+    except OSError as e:
+        logger.debug("exists() check failed for %r: %s", path, e)
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    """Return whether `path` is an existing file, ignoring stat failures.
+
+    See `_safe_exists` for why probes are guarded.
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path is a regular file, `False` otherwise or on failure.
+    """
+    try:
+        return path.is_file()
+    except OSError as e:
+        logger.debug("is_file() check failed for %r: %s", path, e)
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Return whether `path` is an existing directory, ignoring stat failures.
+
+    See `_safe_exists` for why probes are guarded.
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path is a directory, `False` otherwise or on failure.
+    """
+    try:
+        return path.is_dir()
+    except OSError as e:
+        logger.debug("is_dir() check failed for %r: %s", path, e)
+        return False
+
+
 def _resolve_existing_pasted_path(path: Path) -> Path | None:
     """Resolve a pasted path candidate to an existing file.
 
@@ -701,7 +955,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
-    if resolved.exists() and resolved.is_file():
+    if _safe_is_file(resolved):
         return resolved
 
     fuzzy = _resolve_with_unicode_space_variants(path)
@@ -712,7 +966,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
-    if resolved_fuzzy.exists() and resolved_fuzzy.is_file():
+    if _safe_is_file(resolved_fuzzy):
         return resolved_fuzzy
     return None
 
@@ -748,11 +1002,11 @@ def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
 
     for index, part in enumerate(parts):
         candidate = current / part
-        if candidate.exists():
+        if _safe_exists(candidate):
             current = candidate
             continue
 
-        if not current.exists() or not current.is_dir():
+        if not _safe_is_dir(current):
             return None
         if " " not in part and "\u00a0" not in part and "\u202f" not in part:
             return None
@@ -773,11 +1027,11 @@ def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
 
         is_last = index == len(parts) - 1
         if is_last:
-            file_matches = [entry for entry in matches if entry.is_file()]
+            file_matches = [entry for entry in matches if _safe_is_file(entry)]
             if file_matches:
                 matches = file_matches
         else:
-            dir_matches = [entry for entry in matches if entry.is_dir()]
+            dir_matches = [entry for entry in matches if _safe_is_dir(entry)]
             if dir_matches:
                 matches = dir_matches
 

@@ -1,4 +1,29 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        # Types mirror `.github/workflows/pr_lint.yml`. Scopes are validated in
+        # CI on the PR title, not here — keeps the local hook lean and avoids
+        # drift on the partner-scope list.
+        args:
+          - feat
+          - fix
+          - docs
+          - style
+          - refactor
+          - perf
+          - test
+          - build
+          - ci
+          - chore
+          - revert
+          - release
+          - hotfix
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.3.0
     hooks:
@@ -8,17 +33,17 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
-        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/repl/tests/unit_tests/smoke_tests/snapshots/|libs/deepagents/tests/unit_tests/smoke_tests/snapshots/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/|libs/repl/tests/unit_tests/smoke_tests/snapshots/|libs/deepagents/tests/unit_tests/smoke_tests/snapshots/
       - id: trailing-whitespace # remove trailing whitespace from lines
-        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/
+        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
 
   - repo: https://github.com/sirosen/texthooks
     rev: 0.6.8
     hooks:
       - id: fix-smartquotes
-        exclude: libs/evals/tests/evals/tau2_airline/data/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
       - id: fix-spaces
-        exclude: libs/evals/tests/evals/tau2_airline/data/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
 
   - repo: local
     hooks:
@@ -34,6 +59,12 @@ repos:
         entry: make -C libs/cli format lint
         files: ^libs/cli/
         pass_filenames: false
+      - id: deepagents-code
+        name: format and lint deepagents-code
+        language: system
+        entry: make -C libs/code format lint
+        files: ^libs/code/
+        pass_filenames: false
       - id: evals
         name: format and lint evals
         language: system
@@ -46,18 +77,22 @@ repos:
         entry: make -C libs/acp format lint
         files: ^libs/acp/
         pass_filenames: false
+      - id: commands-catalog
+        name: regenerate deepagents-code COMMANDS.md
+        language: system
+        entry: make -C libs/code commands-catalog
+        files: ^libs/code/(deepagents_code/command_registry\.py|COMMANDS\.md|scripts/generate_commands_catalog\.py)$
+        pass_filenames: false
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: make -C libs lock-check
+        entry: python3 .github/scripts/check_lockfiles_pre_commit.py
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
-        pass_filenames: false
       - id: extras-sync
         name: check extras sync with required deps
         language: system
-        entry: python3 .github/scripts/check_extras_sync.py libs/cli/pyproject.toml
-        files: ^libs/cli/pyproject\.toml$
-        pass_filenames: false
+        entry: python3 .github/scripts/check_extras_sync.py
+        files: ^libs/.*/pyproject\.toml$
       - id: version-equality
         name: check pyproject.toml and _version.py match
         language: system

@@ -60,7 +60,7 @@ class TestFailuresCapture:
             duration=1.5,
             longreprtext="Expected 'TurboWidget' in final text, got 'unknown'",
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
 
         assert len(reporter._FAILURES) == 1
         failure = reporter._FAILURES[0]
@@ -75,7 +75,7 @@ class TestFailuresCapture:
             outcome="passed",
             duration=0.5,
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
         assert reporter._FAILURES == []
 
     def test_skipped_test_does_not_append(self):
@@ -85,7 +85,7 @@ class TestFailuresCapture:
             outcome="skipped",
             duration=0.0,
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
         assert reporter._FAILURES == []
 
     def test_setup_phase_ignored(self):
@@ -96,7 +96,7 @@ class TestFailuresCapture:
             duration=0.0,
             longreprtext="fixture error",
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
         assert reporter._FAILURES == []
 
     def test_missing_category_defaults_to_empty(self):
@@ -107,7 +107,7 @@ class TestFailuresCapture:
             duration=1.0,
             longreprtext="some failure",
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
 
         assert len(reporter._FAILURES) == 1
         assert reporter._FAILURES[0]["category"] == ""
@@ -121,7 +121,7 @@ class TestFailuresCapture:
                 duration=1.0,
                 longreprtext=f"failure {i}",
             )
-            reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+            reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
 
         assert len(reporter._FAILURES) == 3
         assert [f["failure_message"] for f in reporter._FAILURES] == [
@@ -139,7 +139,7 @@ class TestFailuresCapture:
             duration=1.0,
             longreprtext=long_msg,
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
 
         assert len(reporter._FAILURES) == 1
         msg = reporter._FAILURES[0]["failure_message"]
@@ -162,18 +162,18 @@ class TestSessionExitStatus:
     def test_exit_1_swallowed_when_tests_ran(self):
         reporter._RESULTS.update(passed=2, failed=1, total=3)
         session = _FakeSession(exitstatus=1)
-        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        reporter.pytest_sessionfinish(session, 1)  # ty: ignore[invalid-argument-type]
         assert session.exitstatus == 0
 
     def test_exit_1_preserved_when_no_tests_ran(self):
         session = _FakeSession(exitstatus=1)
-        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        reporter.pytest_sessionfinish(session, 1)  # ty: ignore[invalid-argument-type]
         assert session.exitstatus == 1
 
     def test_exit_0_unchanged(self):
         reporter._RESULTS.update(passed=3, total=3)
         session = _FakeSession(exitstatus=0)
-        reporter.pytest_sessionfinish(session, 0)  # type: ignore[arg-type]
+        reporter.pytest_sessionfinish(session, 0)  # ty: ignore[invalid-argument-type]
         assert session.exitstatus == 0
 
     def test_exit_1_preserved_when_only_marked_skips(self):
@@ -188,11 +188,11 @@ class TestSessionExitStatus:
             outcome="skipped",
             duration=0.0,
         )
-        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        reporter.pytest_runtest_logreport(report)  # ty: ignore[invalid-argument-type]
         assert reporter._RESULTS["total"] == 0
 
         session = _FakeSession(exitstatus=1)
-        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        reporter.pytest_sessionfinish(session, 1)  # ty: ignore[invalid-argument-type]
         assert session.exitstatus == 1
 
     @pytest.mark.parametrize("exitstatus", [2, 3, 4, 5])
@@ -202,7 +202,7 @@ class TestSessionExitStatus:
         """
         reporter._RESULTS.update(passed=3, total=3)
         session = _FakeSession(exitstatus=exitstatus)
-        reporter.pytest_sessionfinish(session, exitstatus)  # type: ignore[arg-type]
+        reporter.pytest_sessionfinish(session, exitstatus)  # ty: ignore[invalid-argument-type]
         assert session.exitstatus == exitstatus
 
 
@@ -318,7 +318,7 @@ class TestFilterByMarker:
         # The excluded item must be reported via `pytest_deselected`, otherwise
         # pytest's CLI summary loses the "deselected" line.
         assert len(deselected) == 1
-        deselected_mark = deselected[0].get_closest_marker("eval_category")  # type: ignore[attr-defined]
+        deselected_mark = deselected[0].get_closest_marker("eval_category")  # ty: ignore[unresolved-attribute]
         assert deselected_mark is not None
         assert deselected_mark.args == ("valid_cat",)
 

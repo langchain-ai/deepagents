@@ -27,10 +27,10 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, code, daytona, deepagents, deepagents-acp, deepagents-cli,
-#   deepagents-code, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
-#   langchain-quickjs, langchain-runloop, langsmith-sandbox, modal,
-#   quickjs, runloop, sdk
+#   acp, ci, cli, code, daytona, dcode-gha, deepagents, deepagents-acp, deepagents-cli,
+#   deepagents-code, deepagents-talon, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
+#   langchain-quickjs, langchain-runloop, langchain-vercel-sandbox, langsmith-sandbox, modal,
+#   quickjs, repo, runloop, sdk, talon, vercel
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -63,6 +63,21 @@ jobs:
     name: "validate format"
     runs-on: ubuntu-latest
     steps:
+      - name: "🚫 Reject leading/trailing whitespace"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The semantic-pull-request action reports a confusing "No release
+          # type found" error when the title is otherwise valid but has
+          # surrounding whitespace (e.g., " feat(sdk): ..."). Catch that here
+          # with a clearer message before delegating to the action.
+          trimmed="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+          if [[ "$PR_TITLE" != "$trimmed" ]]; then
+            echo "::error::PR title has leading or trailing whitespace: '$PR_TITLE'"
+            echo "Edit the PR title to remove surrounding whitespace. Suggested title: '$trimmed'"
+            exit 1
+          fi
       - name: "🚫 Reject empty scope"
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -95,13 +110,14 @@ jobs:
             acp
             ci
             cli
-            cli-gha
             code
+            dcode-gha
             daytona
             deepagents
             deepagents-acp
             deepagents-cli
             deepagents-code
+            deepagents-talon
             deps
             deps-dev
             evals
@@ -112,11 +128,15 @@ jobs:
             langchain-modal
             langchain-quickjs
             langchain-runloop
+            langchain-vercel-sandbox
             langsmith-sandbox
             modal
             quickjs
+            repo
             runloop
             sdk
+            talon
+            vercel
           requireScope: true
           disallowScopes: |
             release

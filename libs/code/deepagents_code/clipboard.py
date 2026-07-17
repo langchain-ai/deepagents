@@ -6,7 +6,9 @@ import base64
 import logging
 import os
 import pathlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from textual.dom import NoScreen
 
 from deepagents_code.config import get_glyphs
 
@@ -78,7 +80,12 @@ def copy_text_to_clipboard(app: App, text: str) -> tuple[bool, str | None]:
     for copy_fn in copy_methods:
         try:
             copy_fn(text)
-        except (OSError, RuntimeError, TypeError) as e:
+        # ValueError covers UnicodeEncodeError from the `text.encode("utf-8")`
+        # done by both `_copy_osc52` and `App.copy_to_clipboard` on draft text
+        # containing lone surrogates, so a bad code point degrades to the next
+        # backend instead of escaping the (success, error) contract and crashing
+        # the caller.
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
             last_error = str(e) or type(e).__name__
             logger.debug(
                 "Clipboard copy method %s failed: %s",
@@ -93,6 +100,47 @@ def copy_text_to_clipboard(app: App, text: str) -> tuple[bool, str | None]:
     return False, last_error
 
 
+def copy_text_with_feedback(
+    app: App,
+    text: str,
+    *,
+    failure_noun: Literal["input", "selection"],
+    success_message: str | None = None,
+) -> bool:
+    """Copy text to the clipboard and surface the outcome as a toast.
+
+    Centralizes the copy-then-notify pattern shared by the Ctrl+C and
+    `[ COPY ]` paths so the success/failure messaging stays consistent.
+
+    Args:
+        app: The active Textual app, used for the clipboard backend and toasts.
+        text: Text to copy.
+        failure_noun: Noun used in the warning toast (e.g. `"input"`,
+            `"selection"`).
+        success_message: Toast shown on success. When `None`, success is silent
+            (used by the selection-copy path, which has no visible draft to
+            confirm).
+
+    Returns:
+        `True` when the copy succeeded.
+    """
+    success, error = copy_text_to_clipboard(app, text)
+    if success:
+        if success_message is not None:
+            app.notify(success_message, timeout=3, markup=False)
+    else:
+        # markup=False so the dynamic error string is never parsed as markup.
+        app.notify(
+            f"Failed to copy {failure_noun}: {error}"
+            if error
+            else f"Failed to copy {failure_noun} - no clipboard method available",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+    return success
+
+
 def copy_selection_to_clipboard(app: App) -> None:
     """Copy selected text from app widgets to clipboard.
 
@@ -102,12 +150,26 @@ def copy_selection_to_clipboard(app: App) -> None:
     selected_texts = []
 
     for widget in app.query("*"):
-        if not hasattr(widget, "text_selection") or not widget.text_selection:
+        # Skip detached widgets before touching `text_selection` — the
+        # property reads `widget.screen.selections`, which raises `NoScreen`
+        # for transient toasts mid-mount. `hasattr` is not a safe precheck
+        # because it would itself invoke the property and propagate
+        # `NoScreen`. The try/except handles lifecycle races between the
+        # `is_attached` check and the property read.
+        if not getattr(widget, "is_attached", False):
             continue
 
-        selection = widget.text_selection
+        try:
+            selection = widget.text_selection
+        except (NoScreen, AttributeError) as e:
+            logger.debug(
+                "Skipping widget %s during selection copy: %s",
+                type(widget).__name__,
+                e,
+            )
+            continue
 
-        if selection.end is None:
+        if not selection:
             continue
 
         try:

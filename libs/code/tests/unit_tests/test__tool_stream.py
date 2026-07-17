@@ -1,0 +1,503 @@
+"""Tests for the shared streaming tool-call buffer and hook-payload builders.
+
+`_tool_stream` is the single source of truth for reassembling streamed tool-call
+arguments and building `tool.use` / `tool.result` / `tool.error` payloads across
+both execution surfaces, so its contract is exercised directly here (the two
+surfaces additionally exercise it end-to-end in their own suites).
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from deepagents_code._tool_stream import (
+    TOOL_OUTPUT_TRUNCATION_MARKER,
+    ToolCallBuffer,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
+from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
+
+
+class TestToolCallBufferKey:
+    """Precedence of the buffer key: index, then id, then placeholder."""
+
+    def test_index_preferred_over_id(self) -> None:
+        """A present index wins even when an id is also available."""
+        assert tool_call_buffer_key(0, "toolu_1", 3) == 0
+
+    def test_falls_back_to_id_when_no_index(self) -> None:
+        """The tool id keys the buffer when no streaming index is present."""
+        assert tool_call_buffer_key(None, "toolu_1", 3) == "toolu_1"
+
+    def test_placeholder_when_no_index_or_id(self) -> None:
+        """A count-based placeholder keeps unrelated id-less calls distinct."""
+        assert tool_call_buffer_key(None, None, 2) == "unknown-2"
+        assert tool_call_buffer_key(None, None, 5) == "unknown-5"
+
+    def test_zero_index_is_not_treated_as_missing(self) -> None:
+        """Index 0 is a valid key, not a falsy stand-in for absent."""
+        assert tool_call_buffer_key(0, None, 0) == 0
+
+
+class TestToolCallBufferConstruction:
+    """The `args` XOR `args_parts` invariant is enforced at construction."""
+
+    def test_both_args_and_args_parts_rejected(self) -> None:
+        """Constructing with both populated raises, making the state unrepresentable.
+
+        `ingest` maintains the XOR on every chunk; `__post_init__` guarantees no
+        buffer can be built in the illegal both-set state that `parse_args` would
+        otherwise mask via read order.
+        """
+        with pytest.raises(ValueError, match="cannot hold both"):
+            ToolCallBuffer(args={"a": 1}, args_parts=['{"a":'])
+
+    def test_only_args_allowed(self) -> None:
+        """A whole value alone is a legal buffer."""
+        assert ToolCallBuffer(args={"a": 1}).args == {"a": 1}
+
+    def test_only_args_parts_allowed(self) -> None:
+        """Fragments alone are a legal buffer."""
+        assert ToolCallBuffer(args_parts=['{"a":']).args_parts == ['{"a":']
+
+
+class TestToolCallBufferIngest:
+    """Folding streamed chunk fields into the buffer."""
+
+    def test_name_and_id_captured(self) -> None:
+        """Name and id from a chunk populate the buffer."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name="write_file", tool_id="toolu_1", args=None)
+        assert buffer.name == "write_file"
+        assert buffer.tool_id == "toolu_1"
+
+    def test_dict_args_replace_accumulated_fragments(self) -> None:
+        """A whole-value dict delivery discards any partial fragments."""
+        buffer = ToolCallBuffer(args_parts=['{"partial": '])
+        buffer.ingest(name=None, tool_id=None, args={"path": "foo.py"})
+        assert buffer.args == {"path": "foo.py"}
+        assert buffer.args_parts == []
+
+    def test_string_fragments_accumulate(self) -> None:
+        """String fragments append in order."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name=None, tool_id=None, args='{"a":')
+        buffer.ingest(name=None, tool_id=None, args=" 1}")
+        assert buffer.args_parts == ['{"a":', " 1}"]
+
+    def test_empty_string_fragment_skipped(self) -> None:
+        """An empty fragment carries no payload and is not appended."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name=None, tool_id=None, args="")
+        assert buffer.args_parts == []
+
+    def test_adjacent_identical_fragments_preserved(self) -> None:
+        """Repeated identical fragments are real content, not de-duplicated."""
+        buffer = ToolCallBuffer()
+        for fragment in ('{"content": "', "hi", "hi", '"}'):
+            buffer.ingest(name=None, tool_id=None, args=fragment)
+        assert buffer.parse_args() == {"content": "hihi"}
+
+    def test_non_string_non_dict_scalar_stored(self) -> None:
+        """A non-None scalar that is neither dict nor str is stored as-is."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name=None, tool_id=None, args=7)
+        assert buffer.args == 7
+
+    def test_same_tool_id_keeps_accumulating(self) -> None:
+        """Repeated chunks of one call (same id, then id-less) keep appending."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name="write_file", tool_id="toolu_1", args='{"a":')
+        buffer.ingest(name=None, tool_id="toolu_1", args=" 1}")
+        buffer.ingest(name=None, tool_id=None, args="")
+        assert buffer.parse_args() == {"a": 1}
+
+    def test_new_tool_id_resets_stale_call_state(self) -> None:
+        """A differing id (reused streaming index) discards old call state.
+
+        Indices restart per message, so a buffer retained from an earlier call
+        (e.g. one whose args never parsed) can be handed to a new call via the
+        same key. The new id must reset the old call's arguments and metadata so
+        they cannot leak into chunks for the new call.
+        """
+        buffer = ToolCallBuffer(
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
+        )
+        buffer.ingest(name=None, tool_id="toolu_b", args='{"x": 1}')
+        assert buffer.tool_id == "toolu_b"
+        assert buffer.name is None
+        assert buffer.displayed is False
+        assert buffer.parse_args() == {"x": 1}
+
+    def test_idless_named_chunk_resets_stale_tool_id(self) -> None:
+        """A delayed-id new call must not parse under the prior call's id.
+
+        A retained malformed buffer can be reused by the next call's stream index
+        before the provider emits the new id. The new name is the first boundary
+        signal available, so it must clear the old id before args are parsed.
+        """
+        buffer = ToolCallBuffer(
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
+        )
+
+        buffer.ingest(name="write_file", tool_id=None, args='{"x": 1}')
+
+        assert buffer.tool_id is None
+        assert buffer.name == "write_file"
+        assert buffer.displayed is False
+        assert buffer.parse_args() == {"x": 1}
+
+    def test_delayed_tool_id_attaches_to_idless_new_call_args(self) -> None:
+        """The real id attaches without discarding args collected before it."""
+        buffer = ToolCallBuffer(
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
+        )
+
+        buffer.ingest(name="write_file", tool_id=None, args='{"x": 1}')
+        buffer.ingest(name=None, tool_id="toolu_b", args="")
+
+        assert buffer.tool_id == "toolu_b"
+        assert buffer.name == "write_file"
+        assert buffer.parse_args() == {"x": 1}
+
+    def test_new_tool_id_resets_warned_latch(self) -> None:
+        """A reused index resets the `warned` latch.
+
+        The new call's own malformed payload is still surfaced once, rather than
+        being suppressed by the previous call's latch.
+        """
+        buffer = ToolCallBuffer(tool_id="toolu_a", args_parts=["{bad json}"])
+        assert buffer.parse_args() is None  # sets warned for call a
+        assert buffer.warned is True
+        buffer.ingest(name="write_file", tool_id="toolu_b", args="{also bad}")
+        assert buffer.warned is False
+
+    def test_string_fragment_clears_prior_whole_value(self) -> None:
+        """A fragment supersedes a prior whole value.
+
+        Enforces the `args` XOR `args_parts` invariant at write time rather than
+        leaving both populated for `parse_args` read-order to disambiguate.
+        """
+        buffer = ToolCallBuffer(args={"stale": True})
+        buffer.ingest(name=None, tool_id=None, args='{"real":')
+        assert buffer.args is None
+        assert buffer.args_parts == ['{"real":']
+
+    def test_scalar_clears_prior_fragments(self) -> None:
+        """A whole scalar value discards accumulated fragments (XOR invariant)."""
+        buffer = ToolCallBuffer(args_parts=['{"partial":'])
+        buffer.ingest(name=None, tool_id=None, args=7)
+        assert buffer.args == 7
+        assert buffer.args_parts == []
+
+
+class TestNormalizeToolStatus:
+    """Fail-closed mapping of a raw `ToolMessage.status` to the hook domain."""
+
+    def test_success_passthrough(self) -> None:
+        assert normalize_tool_status("success", "read_file") == "success"
+
+    def test_error_passthrough(self) -> None:
+        assert normalize_tool_status("error", "read_file") == "error"
+
+    def test_unexpected_status_treated_as_error_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unknown present status fails closed to error and is logged."""
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert normalize_tool_status("cancelled", "execute") == "error"
+        assert any("Unexpected ToolMessage.status" in r.message for r in caplog.records)
+
+    def test_none_status_treated_as_error(self) -> None:
+        """An explicit `None` status is unexpected, not a silent success."""
+        assert normalize_tool_status(None, "execute") == "error"
+
+    def test_success_default_not_warned(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The missing-status caller default (`"success"`) must not warn."""
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            normalize_tool_status("success", "read_file")
+        assert not any(
+            "Unexpected ToolMessage.status" in r.message for r in caplog.records
+        )
+
+
+class TestToolCallBufferParseArgs:
+    """Argument reassembly and completeness gating."""
+
+    def test_dict_returned_as_is(self) -> None:
+        buffer = ToolCallBuffer(args={"path": "foo.py"})
+        assert buffer.parse_args() == {"path": "foo.py"}
+
+    def test_scalar_wrapped(self) -> None:
+        buffer = ToolCallBuffer(args=42)
+        assert buffer.parse_args() == {"value": 42}
+
+    def test_fragments_joined_and_parsed(self) -> None:
+        buffer = ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
+        assert buffer.parse_args() == {"command": "uv run pytest"}
+
+    def test_incomplete_object_returns_none(self) -> None:
+        buffer = ToolCallBuffer(args_parts=['{"command": "uv run'])
+        assert buffer.parse_args() is None
+
+    def test_non_object_json_wrapped(self) -> None:
+        buffer = ToolCallBuffer(args_parts=["[1, 2, 3]"])
+        assert buffer.parse_args() == {"value": [1, 2, 3]}
+
+    def test_empty_and_whitespace_return_none(self) -> None:
+        assert ToolCallBuffer().parse_args() is None
+        assert ToolCallBuffer(args_parts=["   "]).parse_args() is None
+
+    def test_malformed_complete_json_warns_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A complete-but-invalid payload logs exactly once via the latch.
+
+        The buffer is retained across chunks on failure, so `parse_args` runs
+        again on every later chunk; the `warned` latch keeps that from spamming
+        an identical warning per fragment.
+        """
+        buffer = ToolCallBuffer(args_parts=["{bad json}"])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+            assert buffer.parse_args() is None
+            assert buffer.parse_args() is None
+        warnings = [
+            r
+            for r in caplog.records
+            if "look complete but failed to parse" in r.message
+        ]
+        assert len(warnings) == 1
+        assert buffer.warned is True
+
+    def test_midstream_nested_json_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A partial nested payload that happens to end in `}` is not warned.
+
+        A chunk boundary landing right after an inner object closes leaves the
+        outer container open (`{"edits": [{"a": 1}`). The old "starts with {/[
+        and ends with }/]" heuristic mistook this for a complete-but-malformed
+        value and logged a WARNING on a perfectly healthy stream. The
+        string-aware balance check treats it as still-incomplete: no warning,
+        `warned` stays unset, and the next fragment can still complete it.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"edits": [{"a": 1}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is False
+        assert not any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+        # The completing fragments still parse once they arrive.
+        buffer.ingest(name=None, tool_id=None, args=', {"b": 2}]}')
+        assert buffer.parse_args() == {"edits": [{"a": 1}, {"b": 2}]}
+
+    def test_trailing_brace_inside_open_string_not_warned(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `}` that lives inside an unterminated string is not "complete".
+
+        The payload ends in `}` (so it clears the cheap pre-check and reaches
+        `json.loads`), but that brace is inside an open string literal, so the
+        outer object is still unbalanced. The string-aware balance check must
+        report it incomplete — no warning — rather than treating the trailing
+        brace as a real close.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"content": "a } b}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is False
+        assert not any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+
+    def test_pathologically_nested_json_is_skipped_not_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Deeply nested model output is one skipped call, not an escaped error.
+
+        `json.loads` raises `RecursionError` (not `JSONDecodeError`) on input
+        nested past the interpreter limit. That must be caught like any other
+        malformed-but-complete payload — returning `None` and logging once —
+        rather than escaping `parse_args` and aborting the whole turn.
+        """
+        depth = 100_000
+        nested = "[" * depth + "]" * depth
+        buffer = ToolCallBuffer(args_parts=[nested])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is True
+        assert any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+
+    def test_over_closed_json_warns_via_balance_check(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A payload with more closers than openers is complete-but-malformed.
+
+        `{"a": 1}}` ends in `}` (so it clears the cheap pre-check and reaches
+        `json.loads`, which rejects the trailing brace). The string-aware balance
+        scan hits the `depth < 0` branch and reports the value complete — a stray
+        closer can never be finished by more input — so the failed parse is
+        warned once rather than mistaken for a still-open mid-stream fragment.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"a": 1}}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is True
+        assert any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+
+    def test_both_args_and_args_parts_raises_at_read(self) -> None:
+        """Violating the XOR invariant after construction fails loudly at read.
+
+        `__post_init__` only guards construction, and the fields are public and
+        mutable, so a direct assignment can reach the illegal both-populated
+        state. `parse_args` re-checks the invariant and raises rather than
+        silently reading `args` first and discarding the accumulated
+        `args_parts`.
+        """
+        buffer = ToolCallBuffer(args={"a": 1})
+        buffer.args_parts = ['{"b":', " 2}"]
+        with pytest.raises(ValueError, match="cannot hold both"):
+            buffer.parse_args()
+
+
+class TestPayloadBuilders:
+    """Fixed-shape hook payloads and the output truncation invariant."""
+
+    def test_tool_use_payload_shape(self) -> None:
+        assert build_tool_use_payload("write_file", "toolu_1", {"path": "f"}) == {
+            "tool_name": "write_file",
+            "tool_id": "toolu_1",
+            "tool_args": {"path": "f"},
+        }
+
+    def test_tool_error_payload_shape(self) -> None:
+        assert build_tool_error_payload("execute") == {"tool_names": ["execute"]}
+
+    def test_tool_result_payload_shape(self) -> None:
+        assert build_tool_result_payload(
+            "write_file", "toolu_1", {"path": "f"}, "success", "ok"
+        ) == {
+            "tool_name": "write_file",
+            "tool_id": "toolu_1",
+            "tool_args": {"path": "f"},
+            "tool_status": "success",
+            "tool_output": "ok",
+        }
+
+    def test_tool_output_truncated_to_limit(self) -> None:
+        """`tool_output` is capped at `HOOK_TOOL_OUTPUT_LIMIT` and marked."""
+        payload = build_tool_result_payload(
+            "read_file", "toolu_1", {}, "success", "x" * (HOOK_TOOL_OUTPUT_LIMIT + 500)
+        )
+        # The marker is counted within the cap, so the total length never exceeds
+        # the limit, and its presence lets a consumer tell it was truncated.
+        assert len(payload["tool_output"]) == HOOK_TOOL_OUTPUT_LIMIT
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
+    def test_tool_output_at_limit_not_marked(self) -> None:
+        """Output exactly at the cap is passed through unmarked (no truncation)."""
+        exact = "x" * HOOK_TOOL_OUTPUT_LIMIT
+        payload = build_tool_result_payload(
+            "read_file", "toolu_1", {}, "success", exact
+        )
+        assert payload["tool_output"] == exact
+        assert not payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
+    def test_tool_output_one_over_limit_is_marked(self) -> None:
+        """The first length that trips the cap (`LIMIT + 1`) is truncated + marked.
+
+        Pins the exact `>` boundary: `LIMIT` is passed through (test above) and
+        `LIMIT + 1` must be the first value that truncates, guarding against a
+        `>=`/`>` off-by-one in the builder.
+        """
+        payload = build_tool_result_payload(
+            "read_file", "toolu_1", {}, "success", "x" * (HOOK_TOOL_OUTPUT_LIMIT + 1)
+        )
+        assert len(payload["tool_output"]) == HOOK_TOOL_OUTPUT_LIMIT
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
+    def test_tool_args_not_truncated(self) -> None:
+        """`tool_args` is passed through in full; only output is capped."""
+        big_content = "y" * (HOOK_TOOL_OUTPUT_LIMIT + 500)
+        payload = build_tool_result_payload(
+            "write_file", "toolu_1", {"content": big_content}, "success", ""
+        )
+        assert payload["tool_args"]["content"] == big_content
+
+
+class TestCountUnemittedToolCalls:
+    """Classification of buffered tool calls that never fired a `tool.use`."""
+
+    def test_empty_iterable_counts_zero(self) -> None:
+        """No buffers means nothing unemitted."""
+        assert count_unemitted_tool_calls([]) == (0, 0)
+
+    def test_unnamed_buffer_ignored(self) -> None:
+        """A buffer that never even got a name is not counted either way.
+
+        Without a name no tool call was ever recognizable, so it is neither an
+        unparsed nor an id-less unemitted call.
+        """
+        unnamed = ToolCallBuffer()
+        unnamed.ingest(name=None, tool_id="t", args='{"a": ')
+        assert count_unemitted_tool_calls([unnamed]) == (0, 0)
+
+    def test_classifies_unparsed_and_idless_parsed(self) -> None:
+        """Named buffers split into unparsed vs parsed-but-id-less; others skip.
+
+        A named buffer whose args parsed *and* carries an id would have emitted a
+        `tool.use`, so it is counted in neither bucket.
+        """
+        unparsed = ToolCallBuffer()
+        unparsed.ingest(name="f", tool_id="t1", args='{"a": ')  # never closes
+
+        parsed_with_id = ToolCallBuffer()
+        parsed_with_id.ingest(name="g", tool_id="t2", args='{"a": 1}')
+
+        idless_parsed = ToolCallBuffer()
+        idless_parsed.ingest(name="h", tool_id=None, args='{"b": 2}')
+
+        assert count_unemitted_tool_calls(
+            [unparsed, parsed_with_id, idless_parsed]
+        ) == (1, 1)
+
+    def test_asymmetric_counts_pin_slot_order(self) -> None:
+        """Distinct per-bucket counts catch a swapped-counter transposition.
+
+        The other cases all assert symmetric tuples (`(0, 0)`, `(1, 1)`), which a
+        swap of the two return values would pass unchanged. Two unparsed buffers
+        against one id-less-parsed buffer pins which count is which — both via the
+        positional tuple and the named fields.
+        """
+        unparsed_a = ToolCallBuffer()
+        unparsed_a.ingest(name="a", tool_id="t1", args='{"x": ')  # never closes
+        unparsed_b = ToolCallBuffer()
+        unparsed_b.ingest(name="b", tool_id="t2", args='{"y": ')  # never closes
+
+        idless_parsed = ToolCallBuffer()
+        idless_parsed.ingest(name="c", tool_id=None, args='{"z": 3}')
+
+        result = count_unemitted_tool_calls([unparsed_a, unparsed_b, idless_parsed])
+        assert result == (2, 1)
+        assert result.unparsed == 2
+        assert result.idless_parsed == 1

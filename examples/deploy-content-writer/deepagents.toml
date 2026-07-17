@@ -1,6 +1,0 @@
-[agent]
-name = "deepagents-deploy-content-writer"
-model = "openai:gpt-4.1"
-
-[auth]
-provider = "supabase"

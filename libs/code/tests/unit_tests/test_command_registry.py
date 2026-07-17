@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
@@ -10,12 +11,13 @@ from deepagents_code.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
-    HIDDEN_DEBUG,
+    HIDDEN_COMMANDS,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
-    SLASH_COMMANDS,
+    STARTUP_RECOVERY_COMMANDS,
     CommandEntry,
+    get_slash_commands,
 )
 
 
@@ -69,7 +71,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
-            | HIDDEN_DEBUG
+            | HIDDEN_COMMANDS
         )
 
     def test_aliases_in_correct_tier(self) -> None:
@@ -86,15 +88,27 @@ class TestBypassTiers:
                     f"Alias {alias!r} of {cmd.name} not in any tier"
                 )
 
+    def test_startup_recovery_commands_are_queue_bound(self) -> None:
+        # The recovery exemption is orthogonal to the normal tier: every
+        # recovery command keeps its QUEUED tier and only gains an extra
+        # failed-startup bypass. If one drifts to another tier, the comment
+        # in STARTUP_RECOVERY_COMMANDS (and the bypass rationale) goes stale.
+        assert STARTUP_RECOVERY_COMMANDS <= QUEUE_BOUND
+
+    def test_startup_recovery_commands_are_known(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert names >= STARTUP_RECOVERY_COMMANDS
+
 
 class TestSlashCommands:
-    """Validate the SLASH_COMMANDS autocomplete list."""
+    """Validate the get_slash_commands() autocomplete list."""
 
-    def test_length_matches_commands(self) -> None:
-        assert len(SLASH_COMMANDS) == len(COMMANDS)
+    def test_length_matches_public_commands(self) -> None:
+        entries = get_slash_commands()
+        assert len(entries) <= len(COMMANDS)
 
     def test_entry_format(self) -> None:
-        for entry in SLASH_COMMANDS:
+        for entry in get_slash_commands():
             assert isinstance(entry, CommandEntry)
             assert isinstance(entry.name, str)
             assert entry.name.startswith("/")
@@ -103,17 +117,52 @@ class TestSlashCommands:
             assert isinstance(entry.argument_hint, str)
 
     def test_excludes_aliases(self) -> None:
-        names = {entry.name for entry in SLASH_COMMANDS}
+        names = {entry.name for entry in get_slash_commands()}
         for cmd in COMMANDS:
             for alias in cmd.aliases:
                 assert alias not in names, (
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
 
-    def test_to_entry_matches_slash_commands(self) -> None:
-        """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
-        for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
-            assert cmd.to_entry() == entry
+    def test_entries_come_from_commands(self) -> None:
+        """Every public entry is derived from the command registry."""
+        command_entries = {command.to_entry() for command in COMMANDS}
+        assert set(get_slash_commands()) <= command_entries
+
+    def test_plugin_commands_visible_by_default(self) -> None:
+        names = {entry.name for entry in get_slash_commands()}
+        assert "/plugins" in names
+
+
+class TestHiddenCommands:
+    """`HIDDEN_COMMANDS` membership and autocomplete absence."""
+
+    def test_debug_error_is_hidden(self) -> None:
+        assert "/debug-error" in HIDDEN_COMMANDS
+
+    def test_hidden_not_in_autocomplete(self) -> None:
+        names = {entry.name for entry in get_slash_commands()}
+        for hidden in HIDDEN_COMMANDS:
+            assert hidden not in names, (
+                f"Hidden command {hidden!r} leaked into get_slash_commands()"
+            )
+
+
+class TestRestartCommand:
+    """Validate the `/restart` entry specifically."""
+
+    def test_restart_registered_for_autocomplete(self) -> None:
+        restart_entry = next(
+            entry for entry in get_slash_commands() if entry.name == "/restart"
+        )
+
+        # Exact wording is pinned by TestCommandsCatalogDrift; here we only
+        # assert the entry is registered with a non-empty description.
+        assert restart_entry.description
+
+    def test_restart_classified_as_always_immediate(self) -> None:
+        assert "/restart" in ALWAYS_IMMEDIATE
+        assert "/restart" not in HIDDEN_COMMANDS
 
 
 class TestAgentsCommand:
@@ -137,65 +186,151 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestMCPCommand:
+    """Validate the `/mcp` entry specifically.
+
+    `/mcp` now accepts an optional `login <server>` subcommand, so the
+    entry must expose an argument hint that surfaces this in autocomplete
+    without breaking the bare-form viewer invocation.
+    """
+
+    def test_mcp_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/mcp" in names
+
+    def test_mcp_argument_hint_advertises_login(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "login" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_oauth(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "oauth" in keywords or "authenticate" in keywords
+
+    def test_mcp_argument_hint_advertises_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "reconnect" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "reconnect" in keywords
+
+
+class TestToolsCommand:
+    """Validate the `/tools` entry specifically."""
+
+    def test_tools_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/tools" in names
+
+    def test_tools_classified_as_queue_bound(self) -> None:
+        assert "/tools" in QUEUE_BOUND
+        assert "/tools" not in HIDDEN_COMMANDS
+
+    def test_tools_hidden_keywords_cover_mcp(self) -> None:
+        tools_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/tools")
+        assert "mcp" in tools_cmd.hidden_keywords.split()
+
+
+class TestGoalCommand:
+    """Validate the `/goal` entry specifically.
+
+    `/goal` aliases the shared rubric grader controls (`model`,
+    `max-iterations`), so the entry must advertise them in the argument hint
+    and surface them via keyword search so goal-first users can discover
+    grader tuning without knowing about `/rubric`.
+    """
+
+    def test_goal_argument_hint_advertises_grader_aliases(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        assert "model" in goal_cmd.argument_hint
+        assert "max-iterations" in goal_cmd.argument_hint
+
+    def test_goal_hidden_keywords_cover_grader_search(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        keywords = goal_cmd.hidden_keywords.split()
+        assert {"grader", "grading", "model", "iterations"} <= set(keywords)
+
+    def test_goal_hidden_keywords_retain_acceptance(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        assert "acceptance" in goal_cmd.hidden_keywords.split()
+
+
 class TestCopyCommand:
     """Validate the `/copy` entry specifically."""
 
     def test_copy_registered_for_autocomplete(self) -> None:
-        copy_entry = next(entry for entry in SLASH_COMMANDS if entry.name == "/copy")
+        copy_entry = next(
+            entry for entry in get_slash_commands() if entry.name == "/copy"
+        )
 
-        assert copy_entry.description == "Copy latest assistant message to clipboard"
+        # Exact wording is pinned by TestCommandsCatalogDrift; here we only
+        # assert the entry is registered with a non-empty description.
+        assert copy_entry.description
 
     def test_copy_classified_as_side_effect_free(self) -> None:
-        copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
-
-        assert copy_cmd.description == "Copy latest assistant message to clipboard"
         assert "/copy" in SIDE_EFFECT_FREE
 
 
-class TestHelpBodyDrift:
-    """Ensure the /help body in app.py stays in sync with COMMANDS.
+class TestCommandsCatalogDrift:
+    """Ensure `COMMANDS.md` stays in sync with the registry.
 
-    The "Commands: ..." line in the `/help` handler is hand-maintained
-    separately from the `COMMANDS` tuple in `command_registry.py`.  This
-    test catches drift — e.g. a new command added to the registry but
-    forgotten in the help output.
+    `COMMANDS.md` is generated by `scripts/generate_commands_catalog.py` from
+    `COMMANDS`/`HIDDEN_COMMANDS`. The `commands-catalog-check` make target is
+    not wired into CI, so without this test a reworded description (or a
+    forgotten `make commands-catalog`) would silently leave the catalog stale.
+    This is also the canonical home for exact-wording coverage, which is why
+    the per-command tests above assert only that descriptions are non-empty.
     """
 
-    def test_help_body_lists_all_commands(self) -> None:
-        """Every command in COMMANDS must appear in the /help body."""
+    def test_catalog_matches_registry(self) -> None:
+        code_dir = Path(__file__).resolve().parents[2]
+        script = code_dir / "scripts" / "generate_commands_catalog.py"
+
+        spec = importlib.util.spec_from_file_location(
+            "generate_commands_catalog", script
+        )
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        catalog = (code_dir / "COMMANDS.md").read_text(encoding="utf-8")
+        assert catalog == module.generate(), (
+            "COMMANDS.md is stale. Run `make commands-catalog` from libs/code/."
+        )
+
+
+class TestHelpBodyDrift:
+    """Ensure `/help` stays wired to the public slash-command registry.
+
+    Help text is composed at runtime from `get_slash_commands()`, so drift is
+    no longer a stale hard-coded name list — it is someone reintroducing a
+    hand-maintained command string in `app.py`.
+    """
+
+    def test_help_handler_builds_command_list_from_registry(self) -> None:
+        """`/help` must iterate `get_slash_commands()`, not a hard-coded list."""
         app_src = (
             Path(__file__).resolve().parents[2] / "deepagents_code" / "app.py"
         ).read_text()
 
-        # Isolate the "Commands: ..." section (before "Interactive Features")
-        match = re.search(
-            r'"Commands:\s*(.*?)(?=Interactive Features)',
-            app_src,
-            re.DOTALL,
+        help_handler = app_src.split('elif cmd == "/help":', 1)[1].split(
+            "elif cmd in", 1
+        )[0]
+        assert "get_slash_commands()" in help_handler
+        assert "for entry in get_slash_commands()" in help_handler
+
+    def test_help_command_line_includes_every_public_entry(self) -> None:
+        """The same join used by `/help` must list every public registry entry."""
+        command_names = ", ".join(
+            f"{entry.name} {entry.argument_hint}".rstrip()
+            for entry in get_slash_commands()
         )
-        assert match, "Could not locate Commands section in help_body"
-        commands_section = match.group(1)
-
-        help_cmds = set(re.findall(r"/[a-z][-a-z]*", commands_section))
-        registry_cmds = {cmd.name for cmd in COMMANDS}
-
-        # Commands intentionally omitted from the help body
-        excluded = {"/version"}
-
-        # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
-        help_cmds.discard("/skill")
-
-        missing = registry_cmds - help_cmds - excluded
-        extra = help_cmds - registry_cmds
-
-        assert not missing, (
-            f"Commands in COMMANDS but missing from /help body: {missing}\n"
-            "Add them to help_body in app.py _handle_command()."
-        )
-        assert not extra, (
-            f"Commands in /help body but missing from COMMANDS: {extra}\n"
-            "Remove them from help_body or add to COMMANDS in command_registry.py."
-        )
+        help_line = f"Commands: {command_names}, /skill:<name>"
+        for entry in get_slash_commands():
+            assert entry.name in help_line
 
     def test_help_body_describes_incognito_shell_prefix(self) -> None:
         """The `/help` body should document local-only incognito shell mode."""

@@ -32,7 +32,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Resolve current and latest uv versions
         id: versions
@@ -59,7 +59,10 @@ jobs:
           echo "Current pin: $current"
           echo "Latest uv:   $latest"
 
-      - name: Skip if already up to date
+      - name: Log if already up to date
+        # The actual skip is implemented by the `if:` guards on every
+        # subsequent step; this step only emits a log line so the run
+        # history shows why no PR was opened.
         if: steps.versions.outputs.current == steps.versions.outputs.latest
         run: echo "uv pin already at ${{ steps.versions.outputs.latest }}; nothing to do."
 
@@ -86,16 +89,40 @@ jobs:
           set -euo pipefail
           # The mirror can lag GitHub Releases. If it hasn't replicated yet,
           # defer the bump rather than landing a pin that races the mirror
-          # on every CI run. `|| echo "000"` keeps a connection failure
-          # (DNS, TCP refused) on the deferral path instead of aborting.
-          url="https://releases.astral.sh/github/uv/releases/download/${LATEST}/uv-x86_64-unknown-linux-gnu.tar.gz"
-          status=$(curl -sIo /dev/null -w '%{http_code}' --max-time 30 "$url" || echo "000")
-          echo "Mirror HEAD $url -> $status"
-          if [ "$status" = "200" ]; then
+          # on every CI run. We probe several arches because partial
+          # replication (linux ready, macOS/aarch64 not) would still race
+          # CI on other runners.
+          assets=(
+            "uv-x86_64-unknown-linux-gnu.tar.gz"
+            "uv-aarch64-unknown-linux-gnu.tar.gz"
+            "uv-x86_64-apple-darwin.tar.gz"
+            "uv-aarch64-apple-darwin.tar.gz"
+          )
+          ready=true
+          for asset in "${assets[@]}"; do
+            url="https://releases.astral.sh/github/uv/releases/download/${LATEST}/${asset}"
+            # `curl -sI` returns nothing on stderr at -s; capture exit code so a
+            # permanently broken DNS/TLS path is surfaced instead of collapsing
+            # to an opaque "000".
+            set +e
+            status=$(curl -sIo /dev/null -w '%{http_code}' --max-time 30 "$url" 2>/tmp/curl.err)
+            curl_rc=$?
+            set -e
+            echo "Mirror HEAD $url -> HTTP $status (curl exit=$curl_rc)"
+            if [ "$status" != "200" ]; then
+              ready=false
+              if [ "$curl_rc" -ne 0 ]; then
+                echo "::warning::curl failed for $asset (exit=$curl_rc): $(cat /tmp/curl.err 2>/dev/null || true)"
+              else
+                echo "::warning::astral mirror has not replicated $asset for uv $LATEST yet (HTTP $status)."
+              fi
+            fi
+          done
+          if [ "$ready" = "true" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::astral mirror has not replicated uv $LATEST yet (HTTP $status); skipping bump."
+            echo "::warning::Deferring uv bump to $LATEST until all probed arches are mirrored."
           fi
 
       - name: Open bump PR
@@ -110,13 +137,31 @@ jobs:
           set -euo pipefail
           action_file=".github/actions/uv_setup/action.yml"
 
-          before=$(grep -cE "version: \"${CURRENT}\"" "$action_file" || true)
+          # `grep -c` returns 1 on no-match and 2 on read errors. We want
+          # "no match" surfaced as the explicit count-of-zero check below;
+          # read errors must abort. Capture the exit code separately so
+          # `set -e` doesn't swallow either case.
+          set +e
+          before=$(grep -cE "version: \"${CURRENT}\"" "$action_file")
+          before_rc=$?
+          set -e
+          if [ "$before_rc" -gt 1 ]; then
+            echo "::error::grep read error on $action_file (exit=$before_rc)"
+            exit 1
+          fi
           if [ "$before" -ne 1 ]; then
             echo "::error::Expected exactly 1 'version: \"$CURRENT\"' in $action_file, found $before"
             exit 1
           fi
           sed -i -E "s/version: \"${CURRENT}\"/version: \"${LATEST}\"/" "$action_file"
-          after=$(grep -cE "version: \"${LATEST}\"" "$action_file" || true)
+          set +e
+          after=$(grep -cE "version: \"${LATEST}\"" "$action_file")
+          after_rc=$?
+          set -e
+          if [ "$after_rc" -gt 1 ]; then
+            echo "::error::grep read error on $action_file (exit=$after_rc)"
+            exit 1
+          fi
           if [ "$after" -ne 1 ]; then
             echo "::error::Expected exactly 1 'version: \"$LATEST\"' after sed, found $after"
             exit 1
@@ -128,9 +173,15 @@ jobs:
 
           # Reuse-or-recreate orphan branch from a prior run that pushed
           # but failed before `gh pr create` (no open PR sits on it).
+          # The delete can race a concurrent run (manual workflow_dispatch
+          # firing while the cron is mid-flight, since concurrency group
+          # does not cancel-in-progress); fall through with a warning so a
+          # losing race does not kill an otherwise-clean job mid-state.
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
             echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
-            git push origin --delete "$BRANCH"
+            if ! git push origin --delete "$BRANCH"; then
+              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+            fi
           fi
 
           git config --local user.name "github-actions[bot]"

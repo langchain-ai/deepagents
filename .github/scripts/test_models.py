@@ -99,6 +99,35 @@ def test_harbor_matrix_output_stays_flat(models: ModuleType) -> None:
     }
 
 
+def test_clbench_matrix_output_stays_flat(models: ModuleType) -> None:
+    """clbench shares Harbor's single-matrix output contract (flat, no per-provider)."""
+    outputs = models._matrix_outputs("clbench", ["openai:gpt-5.4"])
+
+    assert outputs == {
+        "matrix": {
+            "include": [
+                {
+                    "model": "openai:gpt-5.4",
+                    "provider": "openai",
+                    "artifact_key": "openai-gpt-5.4",
+                }
+            ]
+        }
+    }
+
+
+def test_clbench_resolves_models_like_harbor(models: ModuleType) -> None:
+    """clbench reuses Harbor's presets, so selections must resolve identically.
+
+    Encodes the design intent of the shared `_HARBOR_PRESETS`: the two
+    benchmarks stay in lockstep on which models belong to each group.
+    """
+    for selection in ("all", "openai:gpt-5.4"):
+        assert models._resolve_models("clbench", selection) == models._resolve_models(
+            "harbor", selection
+        )
+
+
 def test_eval_matrix_outputs_with_no_models(models: ModuleType) -> None:
     """Empty model list emits empty includes for every declared provider.
 
@@ -410,16 +439,26 @@ def test_workflow_models_dropdown_matches_registry(
     triggers = workflow.get(True, workflow.get("on"))
     options = triggers["workflow_dispatch"]["inputs"]["models"]["options"]
     declared = {str(o) for o in options}
-    expected = _expected_dropdown_options(models)
+
+    if workflow_path == HARBOR_WORKFLOW:
+        # harbor.yml evaluates a SINGLE model, so its dropdown lists explicit
+        # specs only — no presets/providers/all/empty, which resolve to more than
+        # one model and are rejected at dispatch. It must still surface every
+        # registered spec so users can pick any one without typing an override.
+        expected = {m.spec for m in models.REGISTRY}
+        allow_empty: set[str] = set()
+        kind = "REGISTRY specs"
+    else:
+        expected = _expected_dropdown_options(models)
+        allow_empty = {""}  # empty sentinel handled by default
+        kind = "REGISTRY/presets/providers"
 
     orphan = declared - expected
-    missing = expected - declared - {""}  # empty sentinel handled by default
+    missing = expected - declared - allow_empty
 
     assert not orphan, (
-        f"{workflow_path.name}: dropdown contains options not in REGISTRY/presets/providers: "
-        f"{sorted(orphan)}"
+        f"{workflow_path.name}: dropdown contains options not in {kind}: {sorted(orphan)}"
     )
     assert not missing, (
-        f"{workflow_path.name}: REGISTRY/presets/providers missing from dropdown: "
-        f"{sorted(missing)}"
+        f"{workflow_path.name}: {kind} missing from dropdown: {sorted(missing)}"
     )

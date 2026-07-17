@@ -27,20 +27,28 @@ class SkillInvocationEnvelope:
 
 def discover_skills_and_roots(
     assistant_id: str,
+    *,
+    plugin_skill_sources: tuple[tuple[Path, str], ...] = (),
+    plugin_skill_roots: tuple[Path, ...] = (),
 ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
     """Discover skills and build pre-resolved containment roots.
 
     Args:
         assistant_id: Agent identifier used to resolve user skill directories.
+        plugin_skill_sources: Plugin-owned skill directories and namespaces,
+            supplied by the plugin composition layer.
+        plugin_skill_roots: Plugin-owned roots allowed for content loading.
 
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
     """
     from deepagents_code.config import settings
     from deepagents_code.skills.load import list_skills
+    from deepagents_code.skills.trust import load_trusted_skill_dirs
 
     skills = list_skills(
         built_in_skills_dir=settings.get_built_in_skills_dir(),
+        plugin_skill_sources=plugin_skill_sources,
         user_skills_dir=settings.get_user_skills_dir(assistant_id),
         project_skills_dir=settings.get_project_skills_dir(),
         user_agent_skills_dir=settings.get_user_agent_skills_dir(),
@@ -52,6 +60,7 @@ def discover_skills_and_roots(
         path.resolve()
         for path in (
             settings.get_built_in_skills_dir(),
+            *plugin_skill_roots,
             settings.get_user_skills_dir(assistant_id),
             settings.get_project_skills_dir(),
             settings.get_user_agent_skills_dir(),
@@ -62,6 +71,14 @@ def discover_skills_and_roots(
         if path is not None
     ]
     roots.extend(path.resolve() for path in settings.get_extra_skills_dirs())
+    # Persisted in-the-moment approvals extend the containment allowlist just
+    # like the declarative `extra_allowed_dirs`, but are managed by the trust
+    # store rather than hand-edited config. These entries are already the
+    # canonical approved directories and are verified against post-approval
+    # symlink swaps by `load_trusted_skill_dirs`, so they are added as-is
+    # rather than re-resolved (re-resolving would follow an injected symlink to
+    # a directory the user never approved).
+    roots.extend(load_trusted_skill_dirs())
     return skills, roots
 
 

@@ -32,13 +32,18 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_external_benchmarks",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
-    "conversation": ["test_followup_quality", "test_tau2_airline"],
+    "conversation": [
+        "test_followup_quality",
+        "test_tau2_airline",
+        "test_iterative_constraint_satisfaction",
+    ],
     "summarization": ["test_summarization"],
     "unit_test": [
         "test_system_prompt",
         "test_subagents",
         "test_skills",
     ],
+    "langchain/middleware": ["test_langchain_middleware_todo"],
 }
 
 
@@ -85,8 +90,8 @@ def _is_eval_category_call(node: object) -> str | None:
 def test_expected_modules_match_filesystem():
     """Discover eval_category markers on disk and assert they match `EXPECTED_CATEGORY_MODULES`.
 
-    Scans both module-level ``pytestmark`` assignments and per-function
-    ``@pytest.mark.eval_category(...)`` decorators so that files with
+    Scans both module-level `pytestmark` assignments and per-function
+    `@pytest.mark.eval_category(...)` decorators so that files with
     mixed per-function categories (e.g. test_external_benchmarks,
     test_file_operations) are detected correctly.
     """

@@ -100,6 +100,7 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 #uv.lock
+.local_deps/
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -137,13 +138,30 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
 .envrc
+env.local
+*.env.local
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local credentials and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+credentials.json
+token.json
+Cookies
+Cookies.db
+cookies.sqlite
+cookies.txt
 
 # Spyder project settings
 .spyderproject
@@ -233,3 +251,6 @@ CLAUDE.md
 libs/cli/frontend/node_modules/
 libs/cli/frontend/dist/
 node_modules/
+
+# Generated at build time by libs/code/hatch_build.py (stamps the release commit)
+libs/code/deepagents_code/_build_info.py

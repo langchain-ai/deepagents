@@ -20,6 +20,7 @@ import tempfile
 import urllib.parse
 import uuid
 from collections.abc import Awaitable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -35,8 +36,11 @@ from langsmith.utils import LangSmithError, LangSmithNotFoundError
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 """Base URL for LangSmith API requests, overridable via `LANGSMITH_ENDPOINT`."""
 
-_API_KEY_ENV_VARS = ("LANGSMITH_SANDBOX_API_KEY", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Environment variables checked (in priority order) when resolving an API key."""
+
+_FEEDBACK_MAX_WORKERS = 8
+"""Upper bound on concurrent trial-feedback workers in `add_feedback`."""
 
 
 class _RegistryClient(Protocol):
@@ -55,9 +59,8 @@ class _RegistryClient(Protocol):
 def resolve_langsmith_api_key() -> tuple[str, str] | None:
     """Resolve the LangSmith API key from environment variables.
 
-    Checks, in order: `LANGSMITH_SANDBOX_API_KEY`, `LANGSMITH_API_KEY`,
-    `LANGCHAIN_API_KEY`. Returns a `(value, env_var_name)` tuple for the
-    first non-empty value, or `None`.
+    Checks, in order: `LANGSMITH_API_KEY`, `LANGCHAIN_API_KEY`. Returns a
+    `(value, env_var_name)` tuple for the first non-empty value, or `None`.
     """
     for var in _API_KEY_ENV_VARS:
         value = os.getenv(var)
@@ -103,10 +106,7 @@ def _headers() -> dict[str, str]:
     """
     result = resolve_langsmith_api_key()
     if not result:
-        msg = (
-            "No LangSmith API key found. Set one of: "
-            "LANGSMITH_SANDBOX_API_KEY, LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
-        )
+        msg = "No LangSmith API key found. Set one of: LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
         raise ValueError(msg)
     return {"x-api-key": result[0]}
 
@@ -221,19 +221,19 @@ def _scan_downloaded_tasks(
     return examples
 
 
-def _dataset_ref(dataset_name: str, version: str) -> str:
+def _dataset_ref(dataset_name: str, _version: str | None = None) -> str:
     """Return the Harbor dataset reference accepted by current registry clients.
 
     Args:
-        dataset_name: Harbor dataset name, with or without an embedded version.
-        version: Harbor dataset version to append when `dataset_name` is unversioned.
+        dataset_name: Harbor dataset reference, such as
+            `terminal-bench/terminal-bench-2`.
+        _version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
 
     Returns:
-        A Harbor dataset reference in `name@version` form when needed.
+        The Harbor dataset reference.
     """
-    if "@" in dataset_name or not version:
-        return dataset_name
-    return f"{dataset_name}@{version}"
+    return dataset_name
 
 
 async def _await_download_result(
@@ -246,7 +246,7 @@ async def _await_download_result(
 def _download_dataset(
     dataset_name: str,
     *,
-    version: str,
+    version: str | None = None,
     overwrite: bool,
     output_dir: Path,
 ) -> list[DownloadedDatasetItem]:
@@ -257,8 +257,9 @@ def _download_dataset(
     boundary keeps the rest of the module unchanged.
 
     Args:
-        dataset_name: Harbor dataset name.
-        version: Harbor dataset version.
+        dataset_name: Harbor dataset reference.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks.
         output_dir: Directory where Harbor should download tasks.
 
@@ -277,20 +278,22 @@ def _download_dataset(
     return result
 
 
-def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
+def create_dataset(dataset_name: str, version: str | None = None, overwrite: bool = False) -> None:
     """Create a LangSmith dataset from Harbor tasks.
 
     Args:
-        dataset_name: Dataset name (used for both Harbor download and
-            LangSmith dataset).
-        version: Harbor dataset version.
+        dataset_name: Dataset reference used for both Harbor download and
+            LangSmith dataset.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks.
     """
     langsmith_client = Client()
     output_dir = Path(tempfile.mkdtemp(prefix="harbor_tasks_"))
     print(f"Using temporary directory: {output_dir}")
 
-    print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
+    ref = _dataset_ref(dataset_name, version)
+    print(f"Downloading dataset '{ref}' from Harbor registry...")
     downloaded_tasks = _download_dataset(
         dataset_name,
         version=version,
@@ -319,12 +322,13 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Dataset ID: {dataset.id}")
 
 
-def ensure_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
+def ensure_dataset(dataset_name: str, version: str | None = None, overwrite: bool = False) -> None:
     """Create the dataset if it does not already exist.
 
     Args:
         dataset_name: Dataset name to look up in LangSmith.
-        version: Harbor dataset version to use when creating the dataset.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks when creating
             the dataset.
     """
@@ -656,15 +660,35 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     results = {"success": 0, "fallback": 0, "skipped": 0, "error": 0}
     client = Client()
 
-    for i, trial_dir in enumerate(trial_dirs, 1):
-        print(f"[{i}/{len(trial_dirs)}] Processing {trial_dir.name}...")
+    # Each trial issues up to three blocking, data-dependent LangSmith calls
+    # (list runs -> list feedback -> create feedback). The trials themselves are
+    # independent, so process them concurrently with a bounded thread pool instead
+    # of serializing them. Pre-fill with a valid-shaped sentinel so the consumer
+    # below never sees a slot missing the "status"/"message" keys.
+    max_workers = min(_FEEDBACK_MAX_WORKERS, len(trial_dirs)) or 1
+    processed: list[dict[str, str]] = [
+        {"status": "error", "message": "Trial was not processed"} for _ in trial_dirs
+    ]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_trial,
+                trial_dir=trial_dir,
+                project_name=project_name,
+                client=client,
+                dry_run=dry_run,
+            ): idx
+            for idx, trial_dir in enumerate(trial_dirs)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                processed[idx] = future.result()
+            except Exception as exc:  # noqa: BLE001  # surface unexpected errors per-trial
+                processed[idx] = {"status": "error", "message": f"Unexpected error: {exc}"}
 
-        result = _process_trial(
-            trial_dir=trial_dir,
-            project_name=project_name,
-            client=client,
-            dry_run=dry_run,
-        )
+    for i, (trial_dir, result) in enumerate(zip(trial_dirs, processed, strict=True), 1):
+        print(f"[{i}/{len(trial_dirs)}] Processing {trial_dir.name}...")
 
         status = result["status"]
         message = result["message"]

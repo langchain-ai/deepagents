@@ -96,7 +96,7 @@ jobs:
     name: "Python ${{ matrix.python-version }} (${{ matrix.os }})"
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🐍 Set up Python ${{ matrix.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
@@ -109,6 +109,11 @@ jobs:
       - name: "📦 Install Test Dependencies"
         shell: bash
         run: uv sync --group test
+
+      - name: "🔍 Install ripgrep"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: "🧪 Run Unit Tests"
         if: runner.os != 'Windows'

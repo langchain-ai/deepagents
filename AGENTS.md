@@ -2,6 +2,8 @@
 
 This document provides context to understand the Deep Agents Python project and assist with development.
 
+For environment setup, pre-commit installation, and the standard edit-test-lint loop, see [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md). The rest of this document covers conventions and architecture reference.
+
 ## Project architecture and context
 
 ### Monorepo structure
@@ -47,6 +49,15 @@ make lint
 make format
 ```
 
+#### Environment and dependency management
+
+Use `uv` for all environment and dependency operations in this monorepo. Do not invoke `pip`, `poetry`, or `conda` directly.
+
+- Let `uv` manage the interpreter and virtual environments — `uv sync` and `uv run` operate without manual `source .venv/bin/activate`. Do not create ad-hoc virtual environments outside the package directory.
+- Each package targets its own supported Python range via its `pyproject.toml`; do not pin a global Python version. If you need an interpreter explicitly, defer to the package's `requires-python` rather than assuming system Python.
+- Install dependencies explicitly through `uv sync` (optionally `--group <name>` / `--all-groups`); never let them install implicitly.
+- Don't mix environments within a session, and don't add new dependencies unless strictly required — when you do, justify them (recent releases/commits, adoption).
+
 #### Suppressing ruff lint rules
 
 Prefer inline `# noqa: RULE` over `[tool.ruff.lint.per-file-ignores]` for individual exceptions. `per-file-ignores` silences a rule for the *entire* file — If you add it for one violation, all future violations of that rule in the same file are silently ignored. Inline `# noqa` is precise to the line, self-documenting, and keeps the safety net intact for the rest of the file. Add comments to justify silencing. If you can't make a good justification for the ignore, it is probably code smell and should be re-evaluated.
@@ -74,6 +85,8 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
+- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
 
@@ -88,28 +101,53 @@ style(cli): strip trailing annotations from `ask_user` questions
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
 
+#### Branch naming
+
+Branches should be prefixed `<github-username>/<scope>/<short-description>`:
+
+- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<short-description>` — kebab-case, brief, no trailing slash.
+
+Examples:
+
+```txt
+mdrxy/sdk/concrete-toolruntime-middleware-tools
+mdrxy/code/help-screen-drift-test
+mdrxy/cli/startup-cmd-flag
+```
+
 #### PR descriptions
 
-The description *is* the summary — do not add a `# Summary` header.
+Do not add a `# Summary` or `## Release note` heading. Use an opening block ("frontmatter") in this order:
 
-- When the PR closes an issue, lead with the closing keyword on its own line at the very top, followed by a horizontal rule and then the body:
+```md
+Closes #123
 
-  ```txt
-  Closes #123
+A high-level, plain-English summary of the user-visible change.
 
-  ---
+---
 
-  <rest of description>
-  ```
+<rest of PR body>
+```
 
-  Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced issue on merge. `Related:` or similar labels are informational and do not close anything.
-
-- Explain the *why*: the motivation and why this solution is the right one. Limit prose.
+- The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
+- For net new features or behavior-changing bugfixes, include the high-level user-facing summary in this opening block. Write it in release-note-ready plain English without a label or heading. Omit it for chores, refactors, or test-only changes.
+- Explain the *why* in the rest of the body: the motivation and why this solution is the right one. Limit prose.
 - Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
 - Wrap class, function, method, parameter, and variable names in backticks.
-- Skip dedicated "Test plan" or "Testing" sections in most cases. Mention tests only when coverage is non-obvious, risky, or otherwise notable.
+- Do not include a dedicated "Test plan" or "Testing" section unless the PR is large or the changes are highly consequential. When one is warranted, keep it collapsed with GitHub's `<details>` and `<summary>` elements:
+
+  ```html
+  <details>
+  <summary>Test plan</summary>
+
+  - Describe the verification performed.
+
+  </details>
+  ```
 - Call out areas of the change that require careful review.
 
 ## Core development principles
@@ -218,95 +256,70 @@ Always use the latest generally available models when referencing LLMs in docstr
 
 ## Package-specific guidance
 
+### Deep Agents SDK (`libs/deepagents/`)
+
+For SDK questions about `create_deep_agent`, middleware, tools, subagents, or agent construction, start in:
+
+- `libs/deepagents/deepagents/graph.py`
+  - `create_deep_agent` is the public construction entry point.
+  - It builds the Deep Agents middleware stack and delegates to `langchain.agents.create_agent(...)`.
+  - The final call currently happens near the end of `create_deep_agent`, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
+- `libs/deepagents/deepagents/middleware/`
+  - Built-in Deep Agents middleware lives here.
+  - `subagents.py` handles subagent middleware and nested `create_agent` use.
+  - `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py` are feature-specific middleware modules.
+- `libs/deepagents/tests/`
+  - Unit tests for SDK behavior.
+
+If investigating LangChain `create_agent` internals, Deep Agents usually delegates into LangChain rather than owning the graph node assembly itself. Resolve the installed dependency source directly rather than searching the whole repo.
+
+### Search hygiene
+
+Avoid broad repo-level `glob` / `grep` for normal SDK work. This repo contains package `.venv`s, hidden worktrees, generated metadata, and scratch files that make broad searches noisy.
+
+Prefer targeted paths:
+
+- SDK source: `libs/deepagents/deepagents`
+- SDK tests: `libs/deepagents/tests`
+- Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
+- CLI deploy package: `libs/cli`
+- ACP package: `libs/acp`
+
+Avoid searching these unless explicitly needed:
+
+- `.venv/`
+- `.worktrees/`
+- `.claude/worktrees/`
+- `deepagents.egg-info/`
+- benchmark result JSONs and scratch scripts at repo root
+
+For dependency internals, first locate the dependency file from the package environment, then read that exact file instead of grepping all `site-packages`.
+
+### Deep Agents Code (`libs/code/`)
+
+The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).
+
+See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
+
 ### Deep Agents CLI (`libs/cli/`)
 
-#### Textual (terminal UI framework)
+As of `deepagents-cli==0.1.0` this package contains only the deployment subcommands — `init`, `dev`, and `deploy`. The interactive Textual REPL moved to `libs/code/` (`deepagents-code`); see [Deep Agents Code](#deep-agents-code-libscode) above for Textual/widget/slash-command guidance.
 
-`deepagents-cli` uses [Textual](https://textual.textualize.io/).
+#### Surface
 
-**Key Textual resources:**
+- Entry points: `deepagents` and `deepagents-cli` console scripts → `deepagents_cli.cli_main`.
+- Subcommands: `init` (scaffold project), `dev` (`langgraph dev` against a bundled project), `deploy` (`langgraph deploy` to LangGraph Platform).
+- Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero.
 
-- **Guide:** https://textual.textualize.io/guide/
-- **Widget gallery:** https://textual.textualize.io/widget_gallery/
-- **CSS reference:** https://textual.textualize.io/styles/
-- **API reference:** https://textual.textualize.io/api/
+#### Layout
 
-**Styled text in widgets:**
+- `deepagents_cli/main.py` — argparse wiring + `cli_main` dispatch.
+- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
+- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
+- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
+- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
 
-Prefer Textual's `Content` (`textual.content`) over Rich's `Text` for widget rendering. `Content` is immutable (like `str`) and integrates natively with Textual's rendering pipeline. Rich `Text` is still correct for code that renders via Rich's `Console.print()` (e.g., `non_interactive.py`, `main.py`).
-
-IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for rendering, not Rich's `Style` (`rich.style.Style`). Mixing Rich `Style` objects into `Content` spans will cause `TypeError` during widget rendering. String styles (`"bold cyan"`, `"dim"`) work for non-link styling. For links, use `TStyle(link=url)`.
-
-**Never use f-string interpolation in Rich markup** (e.g., `f"[bold]{var}[/bold]"`). If `var` contains square brackets, the markup breaks or throws. Use `Content` methods instead:
-
-- `Content.from_markup("[bold]$var[/bold]", var=value)` — for inline markup templates. `$var` substitution auto-escapes dynamic content. **Use when the variable is external/user-controlled** (tool args, file paths, user messages, diff content, error messages from exceptions).
-- `Content.styled(text, "bold")` — single style applied to plain text. No markup parsing. Use for static strings or when the variable is internal/trusted (glyphs, ints, enum-like status values). Avoid `Content.styled(f"..{var}..", style)` when `var` is user-controlled — while `styled` doesn't parse markup, the f-string pattern is fragile and inconsistent with the `from_markup` convention.
-- `Content.assemble("prefix: ", (text, "bold"), " ", other_content)` — for composing pre-built `Content` objects, `(text, style)` tuples, and plain strings. Plain strings are treated as plain text (no markup parsing). Use for structural composition, especially when parts use `TStyle(link=url)`.
-- `content.join(parts)` — like `str.join()` for `Content` objects.
-
-**Decision rule:** if the value could ever come from outside the codebase (user input, tool output, API responses, file contents), use `from_markup` with `$var`. If it's a hardcoded string, glyph, or computed int, `styled` is fine.
-
-**`App.notify()` defaults to `markup=True`:** Textual's `App.notify(message)` parses the message string as Rich markup by default. Any dynamic content (exception messages, file paths, user input, command strings) containing brackets `[]`, ANSI escape codes, or `=` will cause a `MarkupError` crash in Textual's Toast renderer. Always pass `markup=False` when the message contains f-string interpolated variables. Hardcoded string literals are safe with the default.
-
-**Rich `console.print()` and number highlighting:**
-
-`console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
-
-**Textual patterns used in this codebase:**
-
-- **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
-- **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
-- **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
-
-**Testing Textual apps:**
-
-- Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
-- Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
-
-#### SDK dependency pin
-
-The CLI pins an exact `deepagents==X.Y.Z` version in `libs/cli/pyproject.toml`. When developing CLI features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
-
-#### Startup performance
-
-The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents`, LangChain, LangGraph) at module level or in the argument-parsing path. These imports pull in large dependency trees and add seconds to every invocation, including trivial commands like `deepagents -v`.
-
-- Keep top-level imports in `main.py` and other entry-point modules minimal.
-- Defer heavy imports to the point where they are actually needed (inside functions/methods).
-- To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
-- Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
-- When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
-- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
-- Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
-
-#### CLI help screen
-
-The `deepagents --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
-
-#### Splash screen tips
-
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `libs/cli/deepagents_cli/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
-
-#### Slash commands
-
-Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `libs/cli/deepagents_cli/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
-
-To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
-
-#### Adding a new model provider
-
-The CLI supports LangChain-based chat model providers as optional dependencies. To add a new provider, update these files (all entries alphabetically sorted):
-
-1. `libs/cli/deepagents_cli/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
-2. `libs/cli/pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-3. `libs/cli/tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`
-
-**Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
-
-- `detect_provider()` in `config.py` — only needed for auto-detection from bare model names
-- `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
-
-Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.
+Everything else (REPL widgets, Textual app, MCP, skills, sandbox bootstrap, agent picker, slash commands, splash tips, help-screen drift test, model-provider drift test, SDK-pin check) lived under `libs/cli/` before 0.1.0 and now lives under `libs/code/`.
 
 ### Evals (`libs/evals/`)
 
@@ -326,7 +339,7 @@ make -C libs/deepagents bench
 make -C libs/cli bench
 
 # All benched packages in one go:
-make bench-all
+make -C libs bench-all
 
 # Existing `benchmark` target (no CodSpeed instrumentation, faster, suitable
 # for ad-hoc local tuning with pytest-benchmark):
@@ -359,6 +372,10 @@ See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overridi
 
 See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
 
+#### Developing a new version line
+
+See [Developing a new version line](.github/RELEASING.md#developing-a-new-version-line) in `RELEASING.md` before creating a version branch (e.g. staging `0.7` while `main` stays `0.6.x`, or maintaining `0.6.x` after `main` moves on). Branches must be named `vX.Y` to match the protection ruleset (CI-passing PRs required like `main`, but `v[0-9].*` additionally allows merge commits — `main` stays squash-only); release-please only runs on `main`; keep a staging branch current by opening forward-merge PRs from `main` (a merge commit, not squash), reserving cherry-pick for when the branch deliberately diverges; and the cutover is an admin merge-commit to `main` that preserves individual commits (don't squash) so the changelog stays itemized.
+
 ### PR labeling and linting
 
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
@@ -387,7 +404,7 @@ When adding a new partner package, update these files:
 - `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
 - `.github/workflows/release-please.yml` – Add release detection output and trigger job
 - `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add initial version entry
+- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
 - `.github/RELEASING.md` – Add to Managed Packages table
 - `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
 

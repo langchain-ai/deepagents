@@ -12,18 +12,18 @@
 
 - `deepagents_code/` — all Python source modules shipped as the `deepagents-code` package
 - CLI entry point (`main.py`, `__init__.py`)
-- Interactive TUI (`app.py`, `textual_adapter.py`, `widgets/`)
-- Non-interactive pipeline runner (`non_interactive.py`)
+- Interactive TUI (`app.py`, `tui/textual_adapter.py`, `tui/widgets/`)
+- Non-interactive pipeline runner (`client/non_interactive.py`)
 - Agent creation (`agent.py`)
 - Built-in tools (`tools.py`: `http_request`, `web_search`, `fetch_url`)
-- MCP config loader and trust store (`mcp_tools.py`, `mcp_trust.py`)
+- MCP config loader and per-server allow/deny lists (`mcp_tools.py`, `model_config.py`)
 - Hook dispatcher (`hooks.py`)
 - Sandbox integration factory (`integrations/sandbox_factory.py`, `integrations/sandbox_provider.py`)
 - Session persistence (`sessions.py`)
 - Configuration system (`config.py`, `model_config.py`)
 - Unicode/URL safety helpers (`unicode_security.py`)
-- LangGraph dev server subprocess management (`server.py`, `server_manager.py`, `server_graph.py`)
-- Remote agent client (`remote_client.py`)
+- LangGraph dev server subprocess management (`client/launch/server.py`, `client/launch/server_manager.py`, `server_graph.py`)
+- Remote agent client (`client/remote_client.py`)
 - Local context middleware (`local_context.py`)
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
@@ -47,7 +47,7 @@
 3. `~/.deepagents/` is only writable by the authenticated local user — no multi-user shared home directories.
 4. Sandbox backends are trusted third-party services. CLI responsibility ends at correctly constructing and dispatching requests to them.
 5. LangSmith tracing, if enabled, is user-opted-in via environment variables.
-6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
+6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`client/launch/server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
 7. `DA_SERVER_*` environment variables are readable only by the CLI process and its child server subprocess (OS process isolation assumption).
 8. Users who set `class_path` in `config.toml` accept the same trust model as `pyproject.toml` build scripts — they control their own machine.
 
@@ -68,19 +68,19 @@
 │                 ┌────────────────┼─────────────────────┐             │
 │                 ▼                ▼                     ▼             │
 │        C2: TUI (app.py)  C2b: Non-interactive   C13: Config Channel  │
-│                 │         (non_interactive.py)  (DA_SERVER_* env vars)│
+│                 │      (client/non_interactive.py) (DA_SERVER_* vars) │
 │ - - - - - - - - - - TB8: CLI / Server IPC - - - - - │ - - - - - - - │
 │                 │                                     ▼              │
-│                 │               C11: Server Manager (server_manager) │
+│                 │        C11: Server Manager (client/launch)          │
 │                 │                      │ spawns                      │
 │                 │                      ▼                             │
 │                 │           C11b: LangGraph Dev Server               │
-│                 │           (server.py:ServerProcess)                │
+│                 │     (client/launch/server.py:ServerProcess)        │
 │                 │           LANGGRAPH_AUTH_TYPE=noop                 │
 │ - - - - - - - - │ - - - - - TB10: RemoteAgent / Dev Server - - - -  │
 │                 │                      ▲                             │
 │                 └─►C12: RemoteAgent────┘ (HTTP+SSE on 127.0.0.1)    │
-│                     (remote_client.py)                               │
+│                     (client/remote_client.py)                        │
 │                            │                                         │
 │                     C3: Agent Engine (server_graph.py)               │
 │                     (create_cli_agent, deepagents SDK)               │
@@ -122,17 +122,17 @@
 | ID  | Component                   | Description                                                                                                         | Trust Level          | Default? | Entry Points                                                                                      |
 |-----|-----------------------------|---------------------------------------------------------------------------------------------------------------------|----------------------|----------|---------------------------------------------------------------------------------------------------|
 | C1  | CLI Entry Point             | Parses argv, loads config/env, bootstraps session                                                                   | framework-controlled | Yes      | `main.cli_main`, `main.parse_args`                                                                |
-| C2  | TUI / Non-interactive       | Textual UI for interactive chat; `non_interactive.py` for headless pipelines (both use `RemoteAgent`)               | framework-controlled | Yes      | `app.DeepAgentsApp.run`, `non_interactive.run_non_interactive`                                    |
+| C2  | TUI / Non-interactive       | Textual UI for interactive chat; `client/non_interactive.py` for headless pipelines (both use `RemoteAgent`)        | framework-controlled | Yes      | `app.DeepAgentsApp.run`, `client.non_interactive.run_non_interactive`                             |
 | C3  | Agent Engine                | LangGraph agent graph running inside `langgraph dev` server, assembled by `create_cli_agent`                        | framework-controlled | Yes      | `agent.create_cli_agent`, `agent._add_interrupt_on`, `server_graph.make_graph`                    |
 | C4  | Built-in Tools              | `http_request`, `web_search` (Tavily), `fetch_url` (HTML→markdown)                                                 | framework-controlled | Partial¹ | `tools.http_request`, `tools.web_search`, `tools.fetch_url`                                       |
-| C5  | MCP Loader & Trust          | Discovers/loads `.mcp.json`, validates server configs, manages trust store                                          | framework-controlled | No²      | `mcp_tools.resolve_and_load_mcp_tools`, `mcp_trust.compute_config_fingerprint`                   |
+| C5  | MCP Loader & Trust          | Discovers/loads `.mcp.json`, validates server configs, applies per-server allow/deny lists + interactive approval    | framework-controlled | No²      | `mcp_tools.resolve_and_load_mcp_tools`, `model_config.load_mcp_server_trust_lists`, `main._check_mcp_project_trust` |
 | C6  | Hook Dispatcher             | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.dispatch_hook`, `hooks._run_single_hook`                                                   |
 | C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, LangSmith, Modal, Runloop, AgentCore)                                  | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
 | C8  | Session Persistence         | SQLite checkpoint store for LangGraph thread state                                                                  | framework-controlled | Yes      | `sessions.get_db_path`, `sessions.generate_thread_id`                                             |
 | C9  | Configuration System        | TOML config, env vars, `AGENTS.md` system prompts, model config                                                    | user-controlled      | N/A      | `config.settings`, `model_config.ModelConfig`, `~/.deepagents/config.toml`                        |
 | C10 | Unicode/URL Safety          | Detects hidden Unicode, checks URL domain spoofing for approval UI warnings                                         | framework-controlled | Yes      | `unicode_security.detect_dangerous_unicode`, `unicode_security.check_url_safety`                  |
-| C11 | LangGraph Dev Server        | Subprocess running `langgraph dev` with `LANGGRAPH_AUTH_TYPE=noop`; managed by `ServerProcess`                      | framework-controlled | Yes⁵     | `server.ServerProcess.start`, `server.generate_langgraph_json`, `server_manager.start_server_and_get_agent` |
-| C12 | Remote Agent Client         | HTTP+SSE client wrapping `RemoteGraph`; connects to C11 on localhost                                                | framework-controlled | Yes⁵     | `remote_client.RemoteAgent.astream`, `remote_client.RemoteAgent.aget_state`                       |
+| C11 | LangGraph Dev Server        | Subprocess running `langgraph dev` with `LANGGRAPH_AUTH_TYPE=noop`; managed by `ServerProcess`                      | framework-controlled | Yes⁵     | `client.launch.server.ServerProcess.start`, `client.launch.server.generate_langgraph_json`, `client.launch.server_manager.start_server_and_get_agent` |
+| C12 | Remote Agent Client         | HTTP+SSE client wrapping `RemoteGraph`; connects to C11 on localhost                                                | framework-controlled | Yes⁵     | `client.remote_client.RemoteAgent.astream`, `client.remote_client.RemoteAgent.aget_state`         |
 | C13 | Server Config Channel       | Passes CLI config to server subprocess via `DA_SERVER_*` environment variables                                      | framework-controlled | Yes      | `_server_config.ServerConfig.to_env`, `_server_config.ServerConfig.from_env`                      |
 | C14 | Async Subagent Config       | Loads remote LangGraph deployment specs from `[async_subagents]` in `config.toml`                                  | user-controlled      | No       | `agent.load_async_subagents`                                                                      |
 | C15 | LocalContext Middleware      | Runs a bash detection script via backend; injects git/project/env context into system prompt each turn              | framework-controlled | Yes⁶     | `local_context.LocalContextMiddleware.before_agent`, `local_context.build_detect_script`          |
@@ -156,7 +156,6 @@
 | DC1 | API Keys / Credentials | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGGRAPH_API_KEY` | Critical | Process environment only; never written to disk by CLI code | N/A (in-memory) | Process lifetime | All — breach trigger |
 | DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results   | High        | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
-| DC4 | MCP Trust Fingerprints | `mcp_trust.projects.*` in `config.toml`          | Low         | `~/.deepagents/config.toml`      | No                | Until revoked      | None       |
 | DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/{thread_id}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
 
 ### Data Classification Details
@@ -164,7 +163,7 @@
 #### DC1: API Keys / Credentials
 
 - **Fields**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGGRAPH_API_KEY`, and any provider-specific keys in the user's environment.
-- **Storage**: Loaded from environment at process start (`config.py`). The CLI explicitly strips `LANGGRAPH_CLOUD_LICENSE_KEY` and related auth vars from the server subprocess environment (`server.py:_build_server_env`) but passes the remaining env vars (including provider API keys) to the server subprocess via `os.environ.copy()`.
+- **Storage**: Loaded from environment at process start (`config.py`). The CLI explicitly strips `LANGGRAPH_CLOUD_LICENSE_KEY` and related auth vars from the server subprocess environment (`client/launch/server.py:_build_server_env`) but passes the remaining env vars (including provider API keys) to the server subprocess via `os.environ.copy()`.
 - **Access**: Available to both the CLI process and the server subprocess (which inherits the full environment minus stripped vars).
 - **Encryption**: Not encrypted — in-memory process environment only.
 - **Retention**: Process lifetime; cleared on CLI exit.
@@ -200,26 +199,26 @@
 | TB1  | User Input → Agent Engine             | Where user-typed prompts enter the agent graph                             | Prompt routing, session threading, UI rendering                                 | Prompt content — any text accepted                            |
 | TB2  | LLM Decision → Tool Execution         | HITL gate on all side-effecting tool calls                                 | Interrupt map, allow-list check, auto-approve toggle                            | LLM reasoning; what user approves                             |
 | TB3  | Tool Result → LLM Context             | Tool outputs re-enter the context window                                   | Unicode warnings on URLs in args; markdownify HTML conversion                   | Content of fetched web pages, MCP responses, search results   |
-| TB4  | MCP Config → Process / Network        | `.mcp.json` triggers subprocess spawn or network connection                | Schema validation, SHA-256 fingerprint trust gate                               | What the MCP process does once trusted and running            |
+| TB4  | MCP Config → Process / Network        | `.mcp.json` triggers subprocess spawn or network connection                | Schema validation; per-server allow/deny lists + interactive approval prompt    | What the MCP process does once trusted and running            |
 | TB5  | Hooks Config → Subprocess             | `hooks.json` commands execute as local subprocesses                        | JSON structure validation, 5-second timeout                                     | Command content (user-authored); env vars available to child  |
 | TB6  | Setup Script → Sandbox Execution      | User-supplied script runs inside sandbox at startup                        | `shlex.quote()` wrapping; `string.Template.safe_substitute`                     | Script content (user-authored); sandbox network access        |
 | TB7  | External LLM API → Agent State        | LLM API responses drive tool call decisions                                | LLM client configuration, model selection, request params                       | LLM output content; provider-side safety                      |
 | TB8  | CLI → Server Subprocess IPC           | Config passed from CLI to `langgraph dev` subprocess via `DA_SERVER_*` env vars | `ServerConfig.to_env()` serialization; env var scoping to parent+child process | Subprocess environment post-fork; /proc visibility to same-uid processes |
 | TB9  | LocalContextMiddleware → Host Env     | Bash detect script output (git info, project files, Makefile) injected into system prompt | Script is framework-generated static code; 30s timeout; exit-code check | Content of Makefile, pyproject.toml, git branch names, directory listing |
-| TB10 | RemoteAgent → LangGraph Dev Server    | CLI communicates with agent via HTTP+SSE on localhost                       | Server bound to `127.0.0.1` (`server.py:_DEFAULT_HOST`); ephemeral per session | No authentication (`LANGGRAPH_AUTH_TYPE=noop`); any localhost process can reach the API |
-| TB11 | Config File → Code Execution          | `class_path` in `config.toml` triggers `importlib.import_module()` to load arbitrary Python modules | Format validation (`module:ClassName`); `issubclass(BaseChatModel)` check | Module-level side effects execute during import; user controls config file |
+| TB10 | RemoteAgent → LangGraph Dev Server    | CLI communicates with agent via HTTP+SSE on localhost                       | Server bound to `127.0.0.1` (`client/launch/server.py:_DEFAULT_HOST`); ephemeral per session | No authentication (`LANGGRAPH_AUTH_TYPE=noop`); any localhost process can reach the API |
+| TB11 | Config File → Code Execution          | `class_path` in `config.toml` triggers `importlib.import_module()`; project/global `.env` values are loaded into the process environment and can reach Bash startup hooks | Format validation (`module:ClassName`); `issubclass(BaseChatModel)` check; dotenv loading denies shell startup / environment-hijack keys (`BASH_ENV`, `ENV`) | Module-level side effects execute during import; user controls config file; project files in the working directory influence execution |
 
 ### Boundary Details
 
 #### TB1: User Input → Agent Engine
 
-- **Inside**: `app.DeepAgentsApp` routes keystrokes to message queue; `non_interactive.run_non_interactive` reads from stdin/argv. Both paths now go through `RemoteAgent.astream` to the server. Session ID assigned per thread (`sessions.generate_thread_id`).
+- **Inside**: `app.DeepAgentsApp` routes keystrokes to message queue; `client.non_interactive.run_non_interactive` reads from stdin/argv. Both paths now go through `RemoteAgent.astream` to the server. Session ID assigned per thread (`sessions.generate_thread_id`).
 - **Outside**: Prompt content — the agent accepts any text the user types. No content filtering at this layer (HITL handles downstream tool calls, not prompt intent).
-- **Crossing mechanism**: HTTP POST to `127.0.0.1:{port}` via `remote_client.RemoteAgent.astream`.
+- **Crossing mechanism**: HTTP POST to `127.0.0.1:{port}` via `client.remote_client.RemoteAgent.astream`.
 
 #### TB2: LLM Decision → Tool Execution Gate (HITL)
 
-- **Inside**: `agent._add_interrupt_on` registers interrupt configs for `execute`, `write_file`, `edit_file`, `web_search`, `fetch_url`, `task`, `compact_conversation`, `launch_async_subagent`, `update_async_subagent`, `cancel_async_subagent`. In non-interactive mode, `non_interactive._handle_action_request` enforces the shell allow-list via `config.is_shell_command_allowed`.
+- **Inside**: `agent._add_interrupt_on` registers interrupt configs for `execute`, `write_file`, `edit_file`, `web_search`, `fetch_url`, `task`, `compact_conversation`, `launch_async_subagent`, `update_async_subagent`, `cancel_async_subagent`. In non-interactive mode, `client.non_interactive._handle_action_request` enforces the shell allow-list via `config.is_shell_command_allowed`.
 - **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
 - **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
 - **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
@@ -232,13 +231,13 @@
 
 #### TB4: MCP Config → Process / Network
 
-- **Inside**: `mcp_tools._validate_server_config` validates JSON structure and field types. `mcp_trust.compute_config_fingerprint` computes SHA-256 over config file contents. Project-level stdio servers require trust approval (fingerprint prompt) unless `--trust-project-mcp` is set.
+- **Inside**: `mcp_tools._validate_server_config` validates JSON structure and field types. Project-level servers (stdio and remote) require approval: an interactive prompt (`main._check_mcp_project_trust`) that offers allow-for-this-session ("y"), remember a chosen subset of servers ("r"), or deny ("N") — unless `--trust-project-mcp` is set, which trusts the whole config for the run. Whole-config trust is never persisted; it exists only as in-memory run state, set by `--trust-project-mcp` or by an interactive allow-once/remember decision. The remembered subset governs only what is persisted for future runs — both allow-once and remember load every prompted server for the current session. Persistent "remember" (a.k.a. "always allow") decisions are stored in `[mcp].enabled_project_server_approvals` with project root, server name, and server definition fingerprint, so a different project or changed command/URL under the same name requires re-approval. Users can reject individual project server names via `[mcp].disabled_project_servers` (or `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS`). There is also an explicit process-wide escape hatch, `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`, that approves matching names globally and intentionally bypasses the project/fingerprint binding. Reject wins over approval and over full trust, with one documented exception: if the user's `config.toml` is unreadable (see below), any deny defined *only* there is lost, so a name that is both TOML-`disabled` and exported in `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` survives — an accepted footgun (`load_mcp_server_trust_lists` documents it inline) that requires a self-contradicting config plus the explicit dangerous opt-in, and the read error is surfaced to the user. These policies are read by `model_config.load_mcp_server_trust_lists` only from user-controlled sources — the user-level `~/.deepagents/config.toml`, the global `~/.deepagents/.env`, and shell-exported env — never from `.mcp.json` or any repo-committed file, so a committed config cannot self-approve its own servers. In particular, the env forms (`DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` / `..._DISABLED_...`) are added to `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, so a committed *project* `.env` cannot inject them into `os.environ` even though it is loaded at bootstrap. The dangerous enable env var replaces TOML approvals when set, while disabled *unions* TOML and env so a deny can never be silently emptied by the other source. If the user's `config.toml` exists but cannot be read or parsed, the loader fails closed (project configs are treated as untrusted and the error is surfaced) rather than proceeding with an empty deny list. Only scoped-approved, dangerously env-enabled, or fully trusted names survive into the merged config, so a non-approved remote entry is never preflighted and its interpolated headers are never resolved.
 - **Outside**: Stdio server `command`, `args`, and `env` fields are user-controlled strings passed directly to `StdioConnection`. The `env` dict from MCP config is forwarded without filtering — users can set arbitrary environment variables (including `PATH`, `LD_PRELOAD`, `PYTHONPATH`) for the MCP subprocess.
 - **Crossing mechanism**: `subprocess.Popen` (via `langchain_mcp_adapters`) for stdio; HTTP/SSE for remote servers.
 
 #### TB8: CLI → Server Subprocess IPC
 
-- **Inside**: `ServerConfig.to_env()` serializes all config (model, assistant_id, system_prompt, sandbox settings, cwd, MCP config path, shell-enable flags) to `DA_SERVER_*` env vars. `server_manager._apply_server_config` writes these to `os.environ` before `subprocess.Popen`. `server.py:_build_server_env` strips cloud auth vars (`LANGGRAPH_CLOUD_LICENSE_KEY`, `LANGSMITH_CONTROL_PLANE_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGGRAPH_AUTH`).
+- **Inside**: `ServerConfig.to_env()` serializes all config (model, assistant_id, system_prompt, sandbox settings, cwd, MCP config path, shell-enable flags) to `DA_SERVER_*` env vars. `client.launch.server_manager._apply_server_config` writes these to `os.environ` before `subprocess.Popen`. `client/launch/server.py:_build_server_env` strips cloud auth vars (`LANGGRAPH_CLOUD_LICENSE_KEY`, `LANGSMITH_CONTROL_PLANE_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGGRAPH_AUTH`).
 - **Outside**: The full parent environment including provider API keys flows to the child via `os.environ.copy()`. The system prompt string becomes `DA_SERVER_SYSTEM_PROMPT`. After process start, the env is fixed — no runtime mutation across processes.
 - **Crossing mechanism**: `subprocess.Popen` env kwarg; subsequent `os.environ` reads in `_server_config.ServerConfig.from_env`.
 
@@ -250,7 +249,7 @@
 
 #### TB10: RemoteAgent → LangGraph Dev Server
 
-- **Inside**: Server bound to `127.0.0.1` by default; `server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Port defaults to 2024 but auto-selects a free port if occupied.
+- **Inside**: Server bound to `127.0.0.1` by default; `client/launch/server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Binds a free ephemeral port by default (`client/launch/server.py:_EPHEMERAL_PORT`); an explicit port is honored but still falls back to a free port if occupied.
 - **Outside**: `LANGGRAPH_AUTH_TYPE=noop` disables all LangGraph server authentication. Any process on localhost that discovers the port can submit requests, read thread state, or inject messages.
 - **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph`.
 
@@ -259,6 +258,8 @@
 - **Inside**: `config._create_model_from_class` validates `class_path` format (`module:ClassName`), imports the module via `importlib.import_module()`, and checks `issubclass(cls, BaseChatModel)` before instantiation.
 - **Outside**: Module-level code in the imported module executes unconditionally during `import_module()`. The `issubclass` check only runs after import. Any side effects (file I/O, network calls, subprocess spawning) in the module's top-level scope execute before the type check.
 - **Crossing mechanism**: `importlib.import_module(module_path)` in `config._create_model_from_class`.
+- **Inside (dotenv)**: `config._load_dotenv` loads project and global `.env` values with `override=False` and drops shell startup / environment-hijack keys (`BASH_ENV`, `ENV`, and related) so a project `.env` cannot register a script that Bash would source at startup. The preview path (`_preview_dotenv_environ`) applies the same denylist so a dry-run config change cannot report a value a real reload would reject.
+- **Outside (dotenv)**: All other `.env` keys are applied to the process environment, and any project file in the working directory (`.env`, `Makefile`, build scripts) can still influence execution. See T12.
 
 ---
 
@@ -303,7 +304,7 @@
 #### DF11: MCP Tool Results → Agent Context
 
 - **Data**: Arbitrary strings/objects from MCP tool calls.
-- **Validation**: MCP config fingerprinted at load time. Tool result content not validated after server is trusted.
+- **Validation**: MCP config approved at load time (per-server allow-list or interactive prompt). Tool result content not validated after server is trusted.
 - **Trust assumption**: User trusted the MCP server; its outputs are as reliable as the server.
 
 #### DF18: DA_SERVER_* Env Vars
@@ -328,7 +329,7 @@
 
 - **Data**: Arbitrary key-value pairs from the `"env"` field of stdio server definitions in `.mcp.json`.
 - **Validation**: Type check only — `env` must be a dict (`mcp_tools._validate_server_config`). No filtering of key names or values. Forwarded directly to `StdioConnection` which passes to `subprocess.Popen`.
-- **Trust assumption**: User authored or approved the MCP config. Project-level configs go through fingerprint trust gate before loading.
+- **Trust assumption**: User authored or approved the MCP config. Project-level configs go through the approval gate (allow-list or interactive prompt) before loading.
 
 ---
 
@@ -337,7 +338,7 @@
 | ID  | Data Flow | Classification | Threat                                                                                      | Boundary | Severity | Validation | Code Reference                                                         |
 |-----|-----------|----------------|---------------------------------------------------------------------------------------------|----------|----------|------------|------------------------------------------------------------------------|
 | T1  | DF8, DF9  | —              | Prompt injection via fetched web content causes LLM to request harmful actions              | TB3      | Medium   | Likely     | `tools.fetch_url`, `agent._add_interrupt_on`                          |
-| T2  | DF7       | —              | `--shell-allow-list all` removes pattern checks; LLM-injected shell commands execute without approval in non-interactive mode | TB2 | Medium | Verified | `config.is_shell_command_allowed`, `non_interactive._handle_action_request` |
+| T2  | DF7       | —              | `--shell-allow-list all` removes pattern checks; LLM-injected shell commands execute without approval in non-interactive mode | TB2 | Medium | Verified | `config.is_shell_command_allowed`, `client.non_interactive._handle_action_request` |
 | T3  | DF7       | —              | Unicode-homoglyph URL in LLM-generated tool args deceives user during approval              | TB2      | Low      | Disproven  | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` |
 | T4  | DF5, DF9  | —              | Auto-approve mode bypasses all HITL gates; any LLM-initiated tool call executes             | TB2      | Low      | Verified   | `agent.create_cli_agent` (`auto_approve` param), `agent._add_interrupt_on` |
 | T5  | DF13, DF14| DC2            | Local SQLite checkpoint file tampered with to inject adversarial content into future LLM context | None | Low   | Unverified | `sessions.get_db_path`                                                 |
@@ -346,6 +347,7 @@
 | T8  | DF21      | DC3            | Custom subagent AGENTS.md body used verbatim as system_prompt without content validation   | None     | Low      | Verified   | `subagents._parse_subagent_file`, `agent.create_cli_agent`            |
 | T9  | DF23      | —              | `class_path` in config.toml triggers arbitrary Python code execution via `importlib.import_module()` | TB11 | Low | Verified | `config._create_model_from_class`, `model_config.ProviderConfig`      |
 | T10 | DF24      | DC1            | MCP stdio subprocess env dict accepts arbitrary keys including `PATH`, `LD_PRELOAD`, `PYTHONPATH` without filtering | TB4 | Low | Verified | `mcp_tools._validate_server_config`, `mcp_tools._load_tools_from_config` |
+| T12 | DF10      | —              | Project `.env` sets shell startup-hook variables (`BASH_ENV`, `ENV`) that run attacker-controlled scripts when `dcode` spawns Bash, before any HITL approval | TB11 | High | Verified | `config._load_dotenv`, `local_context.build_detect_script` |
 
 ### Threat Details
 
@@ -382,7 +384,7 @@
 #### T6: Unauthenticated LangGraph Dev Server on Localhost
 
 - **Flow**: DF3/DF4 (CLI ↔ LangGraph dev server)
-- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (default port 2024, or a random free port if 2024 is occupied). Any local process that discovers the port can: send arbitrary inputs to the running agent thread, read the agent's conversation state (including tool results that may contain file contents or secrets), inject messages into the conversation history, or trigger state updates. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
+- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`client/launch/server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (a free ephemeral port by default, so it no longer squats the well-known `langgraph dev` port 2024). Any local process that discovers the port can: send arbitrary inputs to the running agent thread, read the agent's conversation state (including tool results that may contain file contents or secrets), inject messages into the conversation history, or trigger state updates. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
 - **Preconditions**: (1) Attacker has a local process running as the same user (or as root); (2) Attacker discovers the server port (port scan on localhost, or reads process arguments).
 
 #### T7: LocalContextMiddleware Injects Host File Contents into System Prompt
@@ -407,7 +409,20 @@
 
 - **Flow**: DF24 (MCP config → subprocess environment)
 - **Description**: The `"env"` field in stdio MCP server definitions (`.mcp.json`) accepts an arbitrary key-value dict. `mcp_tools._validate_server_config` only checks that the field is a dict — it does not filter key names or values. The dict is forwarded directly to `StdioConnection(env=...)` which passes it to the subprocess. An attacker who can modify a project-level `.mcp.json` could set `PATH` to redirect command resolution, `LD_PRELOAD` to inject shared libraries, or `PYTHONPATH` to hijack Python imports in the MCP subprocess.
-- **Preconditions**: (1) Attacker has write access to a project-level `.mcp.json`; (2) The project MCP config must be trusted by the user (fingerprint approval gate via `mcp_trust`). For user-level `~/.deepagents/.mcp.json`, the attacker already has home directory write access. Note: the `env` dict from MCP config is passed to `StdioConnection` — whether it replaces or merges with `os.environ` depends on the `langchain_mcp_adapters` library implementation.
+- **Preconditions**: (1) Attacker has write access to a project-level `.mcp.json`; (2) The project MCP config must be approved by the user (the interactive prompt, `--trust-project-mcp`, or the server approved via `[mcp].enabled_project_server_approvals` / the `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env var). For user-level `~/.deepagents/.mcp.json`, the attacker already has home directory write access. Note: the `env` dict from MCP config is passed to `StdioConnection` — whether it replaces or merges with `os.environ` depends on the `langchain_mcp_adapters` library implementation.
+
+#### T11: Auto-Installed ripgrep Binary from Upstream Release
+
+- **Flow**: Download performed by `managed_tools.ensure_ripgrep` when `rg` is not on `PATH` — either on first run, or eagerly at install time via `dcode tools install` (invoked by `scripts/install.sh`).
+- **Description**: Without a system `rg`, Deep Agents Code fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `~/.deepagents/bin/rg`. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`). The same verified path backs the `dcode tools install` verb, so the install script reuses it rather than re-encoding the version + checksum table in bash.
+- **Mitigations**: (1) SHA-256 verified against the pinned hash table before move — a mismatch aborts the install and leaves `BIN_DIR` clean. (2) Network egress is limited to `github.com`. (3) Opt-out via `DEEPAGENTS_CODE_OFFLINE` for air-gapped environments, or `DEEPAGENTS_CODE_RIPGREP_INSTALLER=system` to defer to the OS package manager instead of the managed binary. (4) Pinned version + checksums are bumped in-tree, so a compromised upstream release is detected on the next Deep Agents Code release rather than silently propagating. (5) Atomic move-into-place avoids partial installs when concurrent CLI invocations race. (6) The eager install-script path is non-`sudo` (no system package manager is invoked in the default `managed` mode).
+- **Preconditions**: User has not installed `rg` via their package manager, `DEEPAGENTS_CODE_OFFLINE` is unset, `DEEPAGENTS_CODE_RIPGREP_INSTALLER` is not `system`, and the host can reach `github.com`. The pinned SHA-256 in `RIPGREP_ASSETS` would need to be incorrect (a supply-chain compromise of the deepagents-code release) for a tampered binary to be installed.
+
+#### T12: Project `.env` Injects Shell Interpreter Startup Hooks
+
+- **Flow**: DF10 (project `.env` → process environment) → bash subprocess startup (DF19)
+- **Description**: `config._load_dotenv` discovers the nearest project `.env` by walking up from the working directory and applies its values to the process environment (`override=False`, so shell-exported values still win). Bash treats several environment variables as startup hooks — `BASH_ENV` and `ENV` name a file that is sourced when a non-interactive shell starts. Because Deep Agents Code runs its own local-context detection through Bash at startup (`local_context.build_detect_script`) and spawns shells for the `execute` tool, a project `.env` that sets one of these keys could run attacker-controlled scripts inside the `dcode` process *before* any model-requested tool call or HITL approval prompt. The broader trust boundary is that running `dcode` in a project directory lets that project influence the process environment.
+- **Preconditions**: (1) User launches `dcode` in a directory containing an attacker-controlled `.env` (for example, a freshly cloned untrusted repository); (2) the `.env` sets a shell startup-hook key that is not already exported in the user's shell (dotenv uses `override=False`).
 
 ---
 
@@ -419,7 +434,7 @@
 | LLM output            | DF6, DF7              | T1, T2, T3, T4| HITL gate; shell allow-list; Unicode/URL warnings on tool args             | Project        | LLM-generated tool args not scanned for injection beyond Unicode/URL                        |
 | Tool/function results | DF9, DF11             | T1            | Unicode warning on URL args; `markdownify` HTML conversion                 | Shared         | Tool *results* pass to context without prompt-injection scan                                 |
 | URL-fetched content   | DF8, DF9              | T1            | `check_url_safety` on URL arg; HTML→markdown conversion                    | Shared         | Markup-embedded instructions survive markdownify; no LLM-layer guardrail                    |
-| Configuration         | DF10, DF12, DF15, DF23| T9, T10       | TOML schema; MCP schema + fingerprint; JSON structure check; `class_path` format check | User | `class_path` executes module code before type check; MCP env dict unfiltered               |
+| Configuration         | DF10, DF12, DF15, DF23| T9, T10, T12  | Dotenv shell-env precedence; TOML schema; MCP schema + allow/deny lists; JSON structure check; `class_path` format check | User | Project `.env` can set shell startup-hook vars; `class_path` executes module code before type check; MCP env dict unfiltered |
 | Session restore       | DF14                  | T5            | OS file permissions; SQLite                                                | Project        | Unencrypted at rest                                                                           |
 | Server IPC (env vars) | DF18                  | T6            | `ServerConfig` serialization; parent env passed to child                   | Project        | Provider API keys flow to server subprocess; system prompt in env                            |
 | Host environment      | DF19, DF20            | T7            | Static script; exit code check; 30s timeout                                | Shared         | Makefile content injected into system prompt without sanitization                            |
@@ -438,13 +453,13 @@ Threats that appear valid in isolation but fall outside project responsibility b
 |-------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
 | Prompt injection leading to arbitrary code execution (interactive mode) | In interactive mode, every side-effecting tool call requires explicit user approval via the HITL dialog. The user is the final gatekeeper.                                          | Providing HITL for all side-effecting tools (`agent._add_interrupt_on`) and Unicode/URL warnings in the approval dialog. |
 | API key exfiltration via LLM-directed `http_request`                   | `http_request` requires HITL in interactive mode. Keys it could exfiltrate are user-supplied env vars. In non-interactive mode, user has opted into autonomous operation.             | Providing HITL gate for HTTP tools. Users control which env vars are in scope.                                      |
-| Malicious MCP server injecting prompt instructions                     | Users configure MCP servers and explicitly trust project-level configs. Once trusted, MCP tool outputs are data from a system the user controls.                                     | Fingerprint-based trust prompts for project-level stdio configs (`mcp_trust.compute_config_fingerprint`).           |
+| Malicious MCP server injecting prompt instructions                     | Users configure MCP servers and explicitly trust project-level configs. Once trusted, MCP tool outputs are data from a system the user controls.                                     | Interactive approval prompt + per-server allow/deny lists for project-level configs (`main._check_mcp_project_trust`, `model_config.load_mcp_server_trust_lists`). |
 | LLM jailbreak / safety bypass                                          | Model selection and safety configuration are user-controlled. The project routes prompts to the configured LLM but cannot guarantee model behavior.                                   | Correctly routing prompts to the configured LLM; applying the system prompt from `agent.get_system_prompt`.         |
 | Sandbox provider security vulnerabilities                              | Daytona, LangSmith, Modal, Runloop, and AgentCore are third-party services. Their internal security is not this project's responsibility.                                            | Correctly initializing sandbox sessions via `integrations.sandbox_factory.create_sandbox`.                          |
 | Hook commands doing harmful things                                     | Hooks in `~/.deepagents/hooks.json` are 100% user-authored. The payload is data-only (JSON on stdin).                                                                               | JSON structure validation (`hooks._load_hooks`); 5-second timeout.                                                 |
 | Async subagent traffic interception / MitM                             | Async subagents connect to user-configured LangGraph deployment URLs. The project does not control those endpoints or their TLS certificates.                                        | Accepting URL/headers from user config and passing them to the LangGraph SDK (`agent.load_async_subagents`).        |
-| LangGraph dev server port enumeration / discovery                     | Discovering the local dev server port requires local access. Port scanning localhost is a general OS security concern, not a framework vulnerability.                                 | Binding to `127.0.0.1` by default (`server._DEFAULT_HOST`); ephemeral server lifetime.                              |
-| `.env` file from parent directory changes behavior                     | `config._find_dotenv_from_start_path` walks up the directory tree to find `.env` files. This is standard `python-dotenv` behavior for project discovery. The user controls their filesystem. | Finding `.env` from the project root (`config._find_dotenv_from_start_path`); `override=False` by default (existing env vars preserved). |
+| LangGraph dev server port enumeration / discovery                     | Discovering the local dev server port requires local access. Port scanning localhost is a general OS security concern, not a framework vulnerability.                                 | Binding to `127.0.0.1` by default (`server._DEFAULT_HOST`); ephemeral server lifetime; OS-assigned ephemeral port (`server._EPHEMERAL_PORT`) is not predictable across runs. |
+| `.env` file from parent directory changes app/API configuration        | `config._find_dotenv_from_start_path` walks up the directory tree to find `.env` files. Discovering ordinary configuration values (API keys, `DEEPAGENTS_CODE_*` settings) this way is standard `python-dotenv` behavior, and the user controls their filesystem. The *code-execution* implication of a project `.env` (shell startup hooks) is tracked in-scope as T12. | Finding `.env` from the project root (`config._find_dotenv_from_start_path`); `override=False` by default (existing env vars preserved); shell startup / environment-hijack keys (`BASH_ENV`, `ENV`) denied during dotenv loading. |
 
 ### Rationale
 
@@ -476,3 +491,6 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-03-10 | langster-threat-model (automated)  | Initial threat model                                                                             |
 | 2026-03-27 | langster-threat-model (automated)  | Deep expansion: added C11-C16 (server subprocess, RemoteAgent, LocalContextMiddleware, async subagent config, custom subagent loader); added TB8-TB10 (CLI/server IPC, LocalContext/host env, RemoteAgent/dev server); added DF18-DF22; added T6 (unauthenticated dev server), T7 (Makefile injection), T8 (subagent body injection); updated T5 (upstream msgpack fix confirmed); added data classification; added Investigated and Dismissed section; updated architecture diagram to reflect server-subprocess model |
 | 2026-03-28 | langster-threat-model (automated)  | Deep validation pass: added C17 (Model Config Loader with class_path), TB11 (Config→Code Execution); added DC5 (offloaded conversation history); added DF23-DF25 (class_path flow, MCP env dict flow, offload flow); added T9 (class_path arbitrary code execution), T10 (MCP env dict unfiltered); added D3 (SSRF dismissed — HITL is intended control), D4 (offload path injection dismissed — UUID7); **removed Status column and Mitigations/Residual Risk fields from all threats** (open source visibility compliance — mitigation status must not appear in public threat models); updated T6 validation from Likely to Verified (port is deterministic at 2024 default, discoverable via /proc); updated external context (no published advisories found); updated architecture diagram |
+| 2026-06-25 | manual update                      | Added T12 (project `.env` injects shell interpreter startup hooks) under TB11; extended the TB11 boundary controls and details with the dotenv shell-startup-hook denylist (`BASH_ENV`, `ENV`); clarified the `.env` out-of-scope row to separate ordinary config discovery from the in-scope code-execution implication |
+| 2026-06-25 | manual update                      | Updated T6 and TB10 to reflect the dev server binding an OS-assigned ephemeral port by default (`server._EPHEMERAL_PORT`) instead of squatting the well-known `langgraph dev` port 2024; noted unpredictable-port-across-runs as added defense-in-depth in the port-discovery dismissal row |
+| 2026-07-08 | manual update                      | Removed the SHA-256 config fingerprint trust store (`mcp_trust.py`, `~/.deepagents/.state/mcp_trust.json`, DC4). Project MCP trust is now the interactive approval prompt (allow-for-session / always-allow scoped to project root + server-definition fingerprint / deny), the `--trust-project-mcp` run flag, the `[mcp].enabled_project_server_approvals` and `[mcp].disabled_project_servers` lists, and the process-wide `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` name-based escape hatch. The legacy flat `[mcp].enabled_project_servers` key is ignored. Persisted approvals bind to a server definition's fingerprint rather than a whole-config fingerprint. Updated C5, TB4, T10, the configuration input-coverage row, and the malicious-MCP-server dismissal accordingly |

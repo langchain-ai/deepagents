@@ -4,7 +4,7 @@
 # - Linting for changed packages
 # - Unit Tests for changed packages
 #
-# Only packages with changes are tested. SDK changes also trigger CLI tests.
+# Only packages with changes are tested. SDK changes also trigger CLI and ACP tests.
 # Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
@@ -22,8 +22,6 @@ concurrency:
 
 permissions:
   contents: read
-  # Required for CodSpeed OIDC authentication in _benchmark.yml
-  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -37,19 +35,22 @@ jobs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
+      talon: ${{ steps.filter.outputs.talon }}
       evals: ${{ steps.filter.outputs.evals }}
+      acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
+      vercel: ${{ steps.filter.outputs.vercel }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -74,17 +75,41 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             code:
               - 'libs/code/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
+              - '.github/actions/**'
+            talon:
+              - 'libs/talon/**'
+              - 'libs/deepagents/**'
+              - 'libs/code/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
+              # The evals test suite asserts on its own workflow files (e.g.
+              # test_harbor_langsmith_integration.py reads harbor.yml and
+              # _eval.yml), so editing any eval workflow must run the evals
+              # tests that validate it — otherwise the change skips its guard.
+              - '.github/workflows/evals.yml'
+              - '.github/workflows/harbor.yml'
+              - '.github/workflows/_harbor_run.yml'
+              - '.github/workflows/unified_evals.yml'
+              - '.github/workflows/clbench.yml'
+              - '.github/workflows/evals_trials.yml'
+              - '.github/workflows/_eval.yml'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            acp:
+              - 'libs/acp/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -107,12 +132,17 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            vercel:
+              - 'libs/partners/vercel/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             quickjs:
               - 'libs/partners/quickjs/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
   # Run linting on changed packages
   lint-deepagents:
@@ -142,6 +172,15 @@ jobs:
       working-directory: "libs/code"
       python-version: "3.11"
 
+  lint-talon:
+    name: "🧹 Lint talon"
+    needs: changes
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/talon"
+      python-version: "3.11"
+
   lint-evals:
     name: "🧹 Lint evals"
     needs: changes
@@ -150,6 +189,15 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-version: "3.13"
+
+  lint-acp:
+    name: "🧹 Lint acp"
+    needs: changes
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/acp"
+      python-version: "3.11"
 
   lint-daytona:
     name: "🧹 Lint daytona"
@@ -176,6 +224,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-vercel:
+    name: "🧹 Lint vercel"
+    needs: changes
+    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/vercel"
       python-version: "3.11"
 
   lint-quickjs:
@@ -219,6 +276,16 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
+  test-talon:
+    name: "🧪 Test deepagents-talon"
+    needs: changes
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/talon"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
   test-evals:
     name: "🧪 Test evals"
     needs: changes
@@ -227,6 +294,16 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-versions: '["3.12", "3.13"]'
+      coverage-python-version: "3.12"
+
+  test-acp:
+    name: "🧪 Test acp"
+    needs: changes
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/acp"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
   test-daytona:
@@ -259,6 +336,16 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
+  test-vercel:
+    name: "🧪 Test vercel"
+    needs: changes
+    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/vercel"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
   test-quickjs:
     name: "🧪 Test quickjs"
     needs: changes
@@ -269,52 +356,104 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.11"
 
-  # Run CodSpeed benchmarks on SDK changes
-  benchmark-deepagents:
-    name: "⏱️ Benchmark deepagents"
+  # Catch SDK -> quickjs prompt-snapshot drift: when the deepagents SDK
+  # changes but the quickjs partner is untouched, the full test-quickjs suite
+  # does NOT run (it gates on the quickjs filter), so nothing would validate
+  # quickjs's vendored system-prompt snapshots against the new SDK. This job
+  # fills that gap by re-running just the prompt smoke tests against the
+  # editable local SDK (resolved via [tool.uv.sources] in quickjs).
+  #
+  # Skipped when:
+  #   - deepagents != 'true': the SDK is unchanged, so there is no new prompt
+  #     wording for the snapshots to drift against.
+  #   - quickjs == 'true': the full test-quickjs suite already runs these
+  #     snapshots via `make test`, so this would be redundant.
+  #   - push: test-quickjs runs on every push regardless of the filter, so
+  #     the full suite covers the snapshots there too.
+  test-quickjs-sdk-smoke:
+    name: "🧪 Test quickjs SDK smoke"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/deepagents"
-    secrets: inherit
+    if: >-
+      github.event_name != 'push' &&
+      needs.changes.outputs.deepagents == 'true' &&
+      needs.changes.outputs.quickjs != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # Match the canonical test path (_test.yml) and the quickjs Makefile:
+    # freeze against uv.lock so `uv sync` cannot rewrite the lockfile (which
+    # would dirty the tree and trip the clean-working-directory check below).
+    # The editable SDK path dep still reflects the checkout regardless.
+    env:
+      UV_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: "libs/partners/quickjs"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-  # Run CodSpeed benchmarks on code changes
-  benchmark-code:
-    name: "⏱️ Benchmark code"
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/code"
-    secrets: inherit
+      - name: "🐍 Set up Python 3.11 + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: test-quickjs-sdk-smoke
+          working-directory: "libs/partners/quickjs"
 
-  # # TODO(hntrl): re-enable when bench flakiness is under control
-  # benchmark-quickjs:
-  #   name: "⏱️ Benchmark quickjs"
-  #   needs: changes
-  #   if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-  #   uses: ./.github/workflows/_benchmark.yml
-  #   with:
-  #     working-directory: "libs/partners/quickjs"
-  #     has-memory-benchmarks: true
-  #   secrets: inherit
+      - name: "📦 Install Test Dependencies"
+        shell: bash
+        run: uv sync --group test
 
-  # Validates every helper script under .github/scripts/test_*.py — currently
-  # `test_release_options.py` (release dropdown ↔ package directories) and
-  # `test_models.py` (eval matrix outputs ↔ evals.yml). Job id/name are kept
-  # for branch-protection compatibility; rename only with a coordinated PR.
+      # Fail loudly if the smoke test file is moved or renamed. Because any
+      # change under libs/partners/quickjs/** flips the quickjs filter to
+      # 'true' (skipping this job), such a rename lands on a PR that never
+      # runs this job — so without this guard a stale path would silently
+      # collect zero tests on some later SDK-only PR instead of failing here.
+      - name: "🔍 Verify Smoke Test Path"
+        shell: bash
+        run: |
+          set -eu
+          test -f tests/unit_tests/smoke_tests/test_system_prompt.py || {
+            echo "::error::quickjs smoke test file moved or renamed; update its path in ci.yml"
+            exit 1
+          }
+
+      - name: "🧪 Run quickjs prompt smoke tests"
+        shell: bash
+        run: >-
+          uv run --group test pytest
+          --disable-socket
+          --allow-unix-socket
+          tests/unit_tests/smoke_tests/test_system_prompt.py
+
+      - name: "🧹 Verify Clean Working Directory"
+        shell: bash
+        run: |
+          set -eu
+          STATUS="$(git status)"
+          echo "$STATUS"
+          echo "$STATUS" | grep 'nothing to commit, working tree clean'
+
+  # Validates every helper script under .github/scripts/test_*.py. Job id/name
+  # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
     name: "Validate Release Options"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
+      # test_dcode_release_notes.py shells out to `node --test`; pin Node so the
+      # helper-script tests don't rely on whatever the runner image preinstalls.
+      - name: "🟢 Setup Node"
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
       - name: "📦 Install Dependencies"
-        run: python -m pip install pyyaml pytest
+        run: python -m pip install packaging pyyaml pytest
       - name: "🔍 Check workflow helper scripts"
         run: python -m pytest .github/scripts/test_*.py -v
 
@@ -326,21 +465,26 @@ jobs:
       - lint-deepagents
       - lint-cli
       - lint-code
+      - lint-talon
       - lint-evals
+      - lint-acp
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-vercel
       - lint-quickjs
       - test-deepagents
       - test-cli
       - test-code
+      - test-talon
       - test-evals
+      - test-acp
       - test-daytona
       - test-modal
       - test-runloop
+      - test-vercel
       - test-quickjs
-      - benchmark-deepagents
-      - benchmark-code
+      - test-quickjs-sdk-smoke
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

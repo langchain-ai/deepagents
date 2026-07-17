@@ -5,14 +5,17 @@ import io
 import logging
 import os
 import pathlib
+import re
 import shutil
 
 # S404: subprocess needed for clipboard access via pngpaste/osascript
 import subprocess  # noqa: S404
 import sys
 import tempfile
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.messages.content import VideoContentBlock
@@ -50,6 +53,118 @@ MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
 """Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
 
 
+def strip_media_placeholders(
+    text: str,
+    placeholders: Iterable[str],
+    *,
+    placeholder_spans: Iterable[tuple[int, int]] | None = None,
+) -> str:
+    """Remove display-only media placeholders from user text.
+
+    Placeholders like `[image 1]` are inserted into the terminal input purely for
+    display; the actual media travels as structured content blocks. They must not
+    leak into the canonical model-facing message or LangSmith trace as if the user
+    typed them.
+
+    When available, tracked placeholder spans identify the exact display tokens to
+    strip so user-authored literal duplicates with the same token are preserved.
+    The token fallback removes one matching occurrence per tracked media item for
+    callers that only have placeholder text.
+
+    Args:
+        text: Raw user text that may contain media placeholders.
+        placeholders: Exact placeholder tokens for the media actually attached to
+            this message (e.g. ``["[image 1]", "[video 1]"]``).
+        placeholder_spans: Exact `(start, end)` spans for tracked display tokens
+            in `text`, when known.
+
+    Returns:
+        Text with the given media placeholders removed and surrounding whitespace
+        tidied. Newlines are preserved so multi-line prompts keep their structure.
+        Returns an empty string when only whitespace remains after removal, so
+        callers can treat a placeholder-only message as having no text block.
+    """
+    tokens = [p for p in placeholders if p]
+    if not tokens:
+        return text
+
+    valid_spans = _valid_placeholder_spans(text, tokens, placeholder_spans)
+    spans = [(start, end) for start, end, _token in valid_spans]
+    counts = Counter(tokens)
+    for _start, _end, token in valid_spans:
+        counts[token] -= 1
+    for token, count in counts.items():
+        if count <= 0:
+            continue
+        pattern = re.compile(r"[ \t]*" + re.escape(token))
+        matches = list(pattern.finditer(text))
+        if len(matches) > count:
+            # No (or too few) tracked spans, yet the token appears more times
+            # than we intend to strip: we can't tell the display token from a
+            # user-typed literal and fall back to removing the leading
+            # occurrence(s). That guess can strip a literal and leave the real
+            # display token behind, so leave a breadcrumb (never the text).
+            logger.debug(
+                "Ambiguous media placeholder strip: removing %d of %d "
+                "occurrences of %r with no tracked span to disambiguate",
+                count,
+                len(matches),
+                token,
+            )
+        for index, match in enumerate(matches):
+            if index >= count:
+                break
+            spans.append(match.span())
+
+    # Only strip spaces/tabs (not newlines) so code indentation on lines after a
+    # removed placeholder is preserved. A full .strip() would collapse
+    # "[image 1]\n    def foo():" to "def foo():", losing the leading indent.
+    cleaned = text
+    for start, end in sorted(spans, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = cleaned.strip(" \t")
+    return cleaned if cleaned.strip() else ""
+
+
+def _valid_placeholder_spans(
+    text: str,
+    tokens: list[str],
+    spans: Iterable[tuple[int, int]] | None,
+) -> list[tuple[int, int, str]]:
+    """Return valid display placeholder spans expanded over adjacent padding.
+
+    A span is kept only when it is in range and its slice equals one of the
+    bound tokens, so a stale span (e.g. left by an offset shift) is dropped
+    rather than used to delete arbitrary text; the caller then falls back to
+    token matching for that item.
+
+    Args:
+        text: Text the spans index into.
+        tokens: Bound placeholder tokens for the attached media.
+        spans: Candidate `(start, end)` display-token spans, or `None`.
+
+    Returns:
+        `(start, end, token)` triples with `start` expanded left over any
+        adjacent spaces/tabs, for spans that validate against `text`.
+    """
+    if spans is None:
+        return []
+
+    token_set = set(tokens)
+    valid: list[tuple[int, int, str]] = []
+    for start, end in spans:
+        if not (0 <= start < end <= len(text)):
+            continue
+        token = text[start:end]
+        if token not in token_set:
+            continue
+        expanded_start = start
+        while expanded_start > 0 and text[expanded_start - 1] in " \t":
+            expanded_start -= 1
+        valid.append((expanded_start, end, token))
+    return valid
+
+
 def _get_executable(name: str) -> str | None:
     """Get full path to an executable using shutil.which().
 
@@ -69,6 +184,7 @@ class ImageData:
     base64_data: str
     format: str  # "png", "jpeg", etc.
     placeholder: str  # Display text like "[image 1]"
+    placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> dict:
         """Convert to LangChain message content format.
@@ -89,6 +205,7 @@ class VideoData:
     base64_data: str
     format: str  # "mp4", "quicktime", etc.
     placeholder: str  # Display text like "[video 1]"
+    placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> "VideoContentBlock":
         """Convert to LangChain `VideoContentBlock` format.
@@ -451,7 +568,7 @@ def encode_to_base64(data: bytes) -> str:
 
 def create_multimodal_content(
     text: str, images: list[ImageData], videos: list[VideoData] | None = None
-) -> list[dict]:
+) -> list[Any]:
     """Create multimodal message content with text, images, and videos.
 
     Args:
@@ -464,9 +581,26 @@ def create_multimodal_content(
     """
     content_blocks = []
 
-    # Add text block
-    if text.strip():
-        content_blocks.append({"type": "text", "text": text})
+    # Add text block. Strip only the display-only placeholders bound to the media
+    # actually attached here (e.g. "[image 1]") so the canonical/model-facing text
+    # never contains fake user-authored placeholder text. When a span is known,
+    # text that merely resembles the schema is preserved exactly; without a span
+    # `strip_media_placeholders` falls back to removing one occurrence per item,
+    # which can catch a look-alike literal. The media itself is carried by the
+    # structured blocks below.
+    #
+    # `placeholders` and `spans` are passed as parallel-but-unzipped lists on
+    # purpose: `strip_media_placeholders` recovers each span's token from the
+    # text slice, and each tracked media item has a unique token, so it never
+    # needs index alignment between the two.
+    media = [*images, *(videos or [])]
+    placeholders = [item.placeholder for item in media]
+    spans = [
+        item.placeholder_span for item in media if item.placeholder_span is not None
+    ]
+    clean_text = strip_media_placeholders(text, placeholders, placeholder_spans=spans)
+    if clean_text:
+        content_blocks.append({"type": "text", "text": clean_text})
 
     # Add image blocks
     content_blocks.extend(image.to_message_content() for image in images)

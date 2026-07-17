@@ -38,11 +38,13 @@ class AsyncSubAgent(TypedDict):
     LangGraph SDK. They run as background tasks that the main agent can
     monitor and update.
 
-    Compatible with LangGraph Platform (managed) and self-hosted servers.
-    Authentication for LangGraph Platform is handled automatically by the SDK
-    via environment variables (`LANGGRAPH_API_KEY`, `LANGSMITH_API_KEY`, or
-    `LANGCHAIN_API_KEY`). For self-hosted servers, pass custom auth via
-    `headers`.
+    Compatible with LangGraph Platform / LangSmith Deployment (managed) and
+    self-hosted servers.
+
+    Authentication for LangGraph Platform / LangSmith Deployment is handled
+    automatically by the SDK via environment variables (`LANGGRAPH_API_KEY`,
+    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`). For self-hosted servers,
+    pass custom auth via `headers`.
     """
 
     name: str
@@ -177,14 +179,16 @@ ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
 
 You have access to async subagent tools that launch background tasks on remote LangGraph servers.
 
-### Tools:
+### Tools
+
 - `start_async_task`: Start a new background task. Returns a task ID immediately.
 - `check_async_task`: Get current status and result of a task. Returns status + result (if complete).
 - `update_async_task`: Send new instructions to a running task. Returns confirmation + updated status.
 - `cancel_async_task`: Stop a running task. Returns confirmation.
 - `list_async_tasks`: List all tracked tasks with live statuses. Returns summary of all tasks.
 
-### Workflow:
+### Workflow
+
 1. **Start** — Use `start_async_task` to start a task. Report the task ID to the user and stop.
    Do NOT immediately check the status — the task runs in the background while you and the user continue other work.
 2. **Check (on request)** — Only use `check_async_task` when the user explicitly asks for a status update or
@@ -195,7 +199,8 @@ You have access to async subagent tools that launch background tasks on remote L
 5. **Collect** — When `check_async_task` returns status "success", the result is included in the response.
 6. **List** — Use `list_async_tasks` to see live statuses for all tasks at once, or to recall task IDs after context compaction.
 
-### Critical rules:
+### Critical rules
+
 - After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
 - Never poll `check_async_task` in a loop. Check once per user request, then stop.
 - If a check returns "running", tell the user and wait for them to ask again.
@@ -205,7 +210,8 @@ You have access to async subagent tools that launch background tasks on remote L
   use `check_async_task` when the user asks about a specific task.
 - Always show the full task_id — never truncate or abbreviate it.
 
-### When to use async subagents:
+### When to use async subagents
+
 - Long-running tasks that would block the main agent
 - Tasks that benefit from running on specialized remote deployments
 - When you want to run multiple tasks concurrently and collect results later"""
@@ -445,10 +451,10 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         if isinstance(task, str):
             return task
 
-        client = clients.get_sync(task["agent_name"])
         try:
+            client = clients.get_sync(task["agent_name"])
             run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -614,10 +620,10 @@ def _build_cancel_tool(
         if isinstance(tracked, str):
             return tracked
 
-        client = clients.get_sync(tracked["agent_name"])
         try:
+            client = clients.get_sync(tracked["agent_name"])
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncTask(
@@ -843,7 +849,7 @@ def _build_async_subagent_tools(
         agents: List of async subagent specifications.
 
     Returns:
-        List of StructuredTools for launch, check, update, cancel, and list operations.
+        List of `StructuredTools` for launch, check, update, cancel, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)
@@ -923,7 +929,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
-            self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n" + agents_desc
+            self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
 

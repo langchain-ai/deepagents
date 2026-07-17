@@ -234,6 +234,11 @@ def _token_file_lock(path: Path) -> LockType:
     whole new file and has no modify step to lose. The reads are already
     offloaded via `asyncio.to_thread`, so guarding them would only add needless
     worker-thread contention without preventing any lost update.
+
+    The cache is never pruned, but it is not a leak: it holds one lock per
+    distinct token-file path — effectively the set of configured MCP servers —
+    so it is bounded by config, not by request volume. Pruning would also race a
+    thread mid-`with` on an entry, so entries are kept for the process lifetime.
     """
     with _TOKEN_FILE_LOCKS_GUARD:
         lock = _TOKEN_FILE_LOCKS.get(path)
@@ -284,7 +289,8 @@ async def _join_task_deferring_cancellation(
     cancellation: asyncio.CancelledError | None = None
     try:
         # Unlike awaiting the task directly, cancelling `asyncio.wait` does not
-        # cancel the member task. It also avoids Python 3.14's shield-failure log.
+        # cancel the member task. It also sidesteps the spurious shield-failure
+        # log that awaiting a shielded task emits on newer CPython.
         await asyncio.wait((task,))
     except asyncio.CancelledError as exc:
         cancellation = exc
@@ -394,7 +400,19 @@ class FileTokenStorage(TokenStorage):
         # A refresh may rotate the refresh token. Observe persistence before
         # propagating cancellation so the refresh lock cannot be released while
         # a new token is still queued, and so a write failure is not discarded.
-        write_task.result()
+        try:
+            write_task.result()
+        except Exception:
+            # The write failure takes precedence and is re-raised, but log that
+            # it supersedes a deferred cancellation so the dropped edge is not
+            # silent (parity with `_refresh_lock_guard`).
+            if cancellation is not None:
+                logger.warning(
+                    "MCP token write for %s failed; a deferred cancellation is "
+                    "superseded by the write error.",
+                    self._server_name,
+                )
+            raise
         if cancellation is not None:
             raise cancellation
 
@@ -1440,8 +1458,11 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         """Hold the cross-process refresh lock across the serialized refresh.
 
         Acquires the lock (waiting up to `_REFRESH_LOCK_TIMEOUT_SECONDS`; on
-        timeout it yields `False` so the caller can avoid the refresh grant) and
-        always releases it on exit. Acquisition and release are joined before
+        timeout it yields `False` so the caller can avoid the refresh grant).
+        Release is gated on `lock.is_locked` rather than the acquire result, so
+        a cancellation that lands *after* the worker thread took the lock still
+        frees it instead of orphaning it, while a timed-out/failed acquisition
+        skips the release. Acquisition and release are each joined before
         cancellation escapes, so neither worker can acquire or retain the lock
         after the guard has returned.
 
@@ -1497,8 +1518,21 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         type(pending_exception).__name__,
                         exc_info=True,
                     )
-                if cancellation is not None and pending_exception is None:
-                    raise cancellation
+                else:
+                    # Release succeeded. Re-raise a deferred cancellation unless
+                    # a guarded error is already propagating, in which case the
+                    # guarded error wins; log the superseded cancellation so the
+                    # dropped edge is not silent (parity with the failure path).
+                    if cancellation is not None:
+                        if pending_exception is None:
+                            raise cancellation
+                        logger.warning(
+                            "MCP token refresh lock for %s released cleanly, but "
+                            "a deferred cancellation is superseded by the "
+                            "in-flight %s.",
+                            self.context.server_url,
+                            type(pending_exception).__name__,
+                        )
 
     async def _persist_oauth_metadata(self) -> None:
         """Persist discovered public OAuth metadata when storage supports it."""

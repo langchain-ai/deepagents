@@ -1177,6 +1177,55 @@ class TestMCPSessionManager:
             "the cleanup failure must be logged with its traceback"
         )
 
+    async def test_cancelled_teardown_supersedes_original_init_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `CancelledError` from teardown supersedes an ordinary init error.
+
+        The inner `except Exception` around `aclose()` deliberately does not
+        catch a `CancelledError` raised *by* teardown: an in-flight cancellation
+        must win over the original error, matching structured-cancellation
+        semantics. So a plain init `Exception` is replaced by the teardown
+        `CancelledError`, and the swallowed-cleanup warning must not fire because
+        the cancellation was not swallowed.
+        """
+
+        class _InitError(Exception):
+            pass
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=_InitError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            try:
+                yield session
+            finally:
+                raise asyncio.CancelledError
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert not manager._entries
+        assert not any(
+            "Failed to close a partially initialized MCP session" in record.getMessage()
+            for record in caplog.records
+        ), "a teardown cancellation supersedes rather than being swallowed+logged"
+
 
 class TestTransientErrorDetection:
     """Tests for `_is_transient_session_error` classification."""

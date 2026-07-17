@@ -82,6 +82,10 @@ dependencies = [
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
     # on the async server graph startup path.
     "filelock>=3.12,<3.30",
+    # `CancelScope` shields MCP token writes/lock ops from cancellation in
+    # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
+    # because we import it directly.
+    "anyio>=4.0.0,<5.0.0",
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",

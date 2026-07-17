@@ -581,7 +581,9 @@ class TestFileTokenStorage:
             await asyncio.gather(task, return_exceptions=True)
 
     async def test_set_tokens_reports_write_failure_while_cancelled(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A persistence failure takes precedence without leaking to the loop."""
         storage = FileTokenStorage("notion")
@@ -601,6 +603,7 @@ class TestFileTokenStorage:
             raise OSError(msg)
 
         monkeypatch.setattr(storage, "_write", _failing_write)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
         task = asyncio.create_task(storage.set_tokens(_make_tokens()))
         try:
             assert await asyncio.to_thread(write_started.wait, 5)
@@ -620,6 +623,13 @@ class TestFileTokenStorage:
             loop.set_exception_handler(previous_handler)
 
         assert not loop_contexts
+        # The write error supersedes the deferred cancellation; that loss must
+        # be logged rather than dropped silently.
+        assert any(
+            "a deferred cancellation is superseded by the write error"
+            in record.getMessage()
+            for record in caplog.records
+        )
 
     async def test_reads_run_off_event_loop_thread(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1798,6 +1808,204 @@ class TestRefreshTokenSerialization:
             "Failed to release the MCP token refresh lock" in record.getMessage()
             for record in caplog.records
         )
+
+    async def test_refresh_lock_clean_body_release_failure_propagates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A release failure on a clean refresh surfaces instead of vanishing.
+
+        With no guarded error and no cancellation, the release `OSError` is the
+        only failure in play, so it must propagate rather than be swallowed.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _clean_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with pytest.raises(OSError, match="refresh lock release failed"):
+            await _clean_guard()
+
+    async def test_refresh_lock_clean_body_release_failure_supersedes_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A clean-body release failure supersedes a deferred cancellation.
+
+        When the guarded body succeeds but the lock release then fails, the
+        release error is the primary failure. A cancellation deferred during the
+        release join is dropped in its favor — but that loss must be logged, not
+        silent.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+        release_started = threading.Event()
+        allow_release = threading.Event()
+
+        def _blocking_release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            if force:
+                # Best-effort GC-time release must not block or raise.
+                real_release(lock, force=force)
+                return
+            release_started.set()
+            if not allow_release.wait(timeout=5):
+                pytest.fail("timed out waiting to fail the lock release")
+            real_release(lock)
+            msg = "refresh lock release failed"
+            raise OSError(msg)
+
+        async def _clean_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+
+        monkeypatch.setattr(FileLock, "release", _blocking_release_then_fail)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        task = asyncio.create_task(_clean_guard())
+        try:
+            # The guarded body has exited; cancel while the release worker is
+            # parked so the cancellation is deferred through the release join.
+            assert await asyncio.to_thread(release_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            allow_release.set()
+            with pytest.raises(OSError, match="refresh lock release failed"):
+                await task
+        finally:
+            allow_release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert any(
+            "a deferred cancellation is superseded by the release error"
+            in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_acquire_refresh_lock_oserror_skips_refresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An un-creatable sidecar lock skips the refresh rather than racing it.
+
+        On a hardened host the `.lock` file may be un-openable (read-only or
+        missing tokens dir). `_acquire_refresh_lock` must return `False` — never
+        refresh unlocked — and say why, so an operator can see the refresh was
+        skipped to avoid refresh-token reuse.
+        """
+        from filelock import FileLock
+
+        provider, storage = await self._build_stale_refreshable_provider()
+        lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+
+        def _raise_oserror(*_args: Any, **_kwargs: Any) -> None:
+            msg = "cannot open lock file"
+            raise OSError(msg)
+
+        monkeypatch.setattr(FileLock, "acquire", _raise_oserror)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+
+        assert await provider._acquire_refresh_lock(lock) is False
+        assert any(
+            "skipping refresh to avoid refresh-token reuse" in record.getMessage()
+            for record in caplog.records
+        )
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestJoinTaskDeferringCancellation:
+    """Tests for the cancellation-deferring task join primitive."""
+
+    async def test_defers_caller_cancellation_without_cancelling_task(self) -> None:
+        """A cancelled caller neither cancels the wrapped task nor loses its result.
+
+        The join must let the wrapped task run to completion and hand the
+        deferred `CancelledError` back to the caller to re-raise, so an
+        in-flight write/lock operation is never abandoned mid-flight.
+        """
+        from deepagents_code.mcp_auth import _join_task_deferring_cancellation
+
+        started = threading.Event()
+        allow_finish = threading.Event()
+        captured: dict[str, Any] = {}
+
+        def _blocking() -> str:
+            started.set()
+            if not allow_finish.wait(timeout=5):
+                pytest.fail("timed out waiting to finish the wrapped task")
+            return "done"
+
+        async def _caller() -> None:
+            task = asyncio.create_task(asyncio.to_thread(_blocking))
+            deferred = await _join_task_deferring_cancellation(task)
+            captured["deferred"] = deferred
+            captured["value"] = task.result()
+            if deferred is not None:
+                raise deferred
+
+        caller = asyncio.create_task(_caller())
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            caller.cancel()
+            await asyncio.sleep(0)
+            assert not caller.done(), "the join must defer the caller's cancellation"
+
+            allow_finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+        finally:
+            allow_finish.set()
+            await asyncio.gather(caller, return_exceptions=True)
+
+        # The wrapped task ran to completion despite the caller being cancelled,
+        # and the deferred cancellation was returned (not swallowed) for re-raise.
+        assert captured["value"] == "done"
+        assert isinstance(captured["deferred"], asyncio.CancelledError)
 
 
 @pytest.mark.usefixtures("fake_home")

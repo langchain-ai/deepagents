@@ -579,7 +579,7 @@ class TestRunDoctorCommand:
         assert "Tracing" in output
         assert "Configuration" in output
         assert "deepagents-code" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
@@ -675,7 +675,7 @@ class TestDoctorHelp:
         output = buf.getvalue()
         assert "dcode doctor [options]" in output
         assert "Usage:" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output

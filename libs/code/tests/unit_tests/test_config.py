@@ -1883,7 +1883,7 @@ class TestGetLangsmithProjectName:
     def test_agrees_with_config_manifest_resolution(self) -> None:
         """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
 
-        The `fallback_env_vars` mechanism exists so `config show`/`get` report
+        The `fallback_env_vars` mechanism exists so `config`/`config get` report
         the project agent traces actually route to. This pins that parity for
         the bare-env and unset cases, catching future drift between the two
         resolution paths.

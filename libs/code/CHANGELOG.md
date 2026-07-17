@@ -2,6 +2,29 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.42](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.41...deepagents-code==0.1.42) (2026-07-17)
+
+
+### Features
+
+* **code:** add `reconnect`/`connect` hidden keywords for `/restart` ([#4807](https://github.com/langchain-ai/deepagents/issues/4807)) ([99250ee](https://github.com/langchain-ai/deepagents/commit/99250ee1749c977e95389baafde3d358c953ea0f))
+* **code:** add Kimi K3 to model selector under OpenRouter ([#4803](https://github.com/langchain-ai/deepagents/issues/4803)) ([fc94bb7](https://github.com/langchain-ai/deepagents/commit/fc94bb7da9e66218de063aa4415dcf9717f15fce))
+* **code:** add plugin list search ([#4765](https://github.com/langchain-ai/deepagents/issues/4765)) ([a6c20b1](https://github.com/langchain-ai/deepagents/commit/a6c20b1a4d2a8b8a03690460a30c501ab7fbb6cb))
+* **code:** Debug Console thread ID click-to-copy with LangSmith link ([#4760](https://github.com/langchain-ai/deepagents/issues/4760)) ([2d35507](https://github.com/langchain-ai/deepagents/commit/2d35507b5c7ff7f504f3d294ac499140752c4f59))
+* **code:** make plugins generally available ([#4797](https://github.com/langchain-ai/deepagents/issues/4797)) ([3da6e47](https://github.com/langchain-ai/deepagents/commit/3da6e471c26f1da4cddeb12a435bab92bd7866c6))
+* **code:** summarize plugin changes on reload ([#4767](https://github.com/langchain-ai/deepagents/issues/4767)) ([9cad2f0](https://github.com/langchain-ai/deepagents/commit/9cad2f00dd0473828f80f782c889b939483727f6))
+* **code:** trace auto-approve (YOLO) mode in trace metadata ([#4764](https://github.com/langchain-ai/deepagents/issues/4764)) ([d88601e](https://github.com/langchain-ai/deepagents/commit/d88601ed582b89d4a5b517e842029d06370c0891))
+
+
+### Bug Fixes
+
+* **code:** add marketplaces asynchronously ([#4766](https://github.com/langchain-ai/deepagents/issues/4766)) ([0d1bb6a](https://github.com/langchain-ai/deepagents/commit/0d1bb6a1224b91cae9dcdb7014a6410a82b79001))
+* **code:** avoid blocking MCP OAuth token refresh ([#4770](https://github.com/langchain-ai/deepagents/issues/4770)) ([3b2ffce](https://github.com/langchain-ai/deepagents/commit/3b2ffce923e06370efe177e9ca91f70e86f19602))
+* **code:** clarify plugin component discovery and reload status ([#4774](https://github.com/langchain-ai/deepagents/issues/4774)) ([7d707b8](https://github.com/langchain-ai/deepagents/commit/7d707b840f132ad65e5ac8443ec7fece393180f8))
+* **code:** dismiss startup tip on `-m` initial submission ([#4779](https://github.com/langchain-ai/deepagents/issues/4779)) ([8acd414](https://github.com/langchain-ai/deepagents/commit/8acd414a2e712d8b8b1968e40bff40483196856b))
+* **code:** improve empty marketplace onboarding and list polish ([#4759](https://github.com/langchain-ai/deepagents/issues/4759)) ([ab2e101](https://github.com/langchain-ai/deepagents/commit/ab2e101d02d0fc5be45b0581c4e04d441402dc29))
+* **code:** restore marketplace details keyboard focus [closes DCD-50] ([#4763](https://github.com/langchain-ai/deepagents/issues/4763)) ([e821d3d](https://github.com/langchain-ai/deepagents/commit/e821d3dd26e8cd0c6ada1a44ceaceddad9f5ee80))
+
 ## [0.1.41](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.40...deepagents-code==0.1.41) (2026-07-16)
 
 ### Bug Fixes

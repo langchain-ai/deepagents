@@ -1994,21 +1994,29 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.clear()
                                     any_rejected = True
                                 else:
-                                    # The run resumes, so reject only the rows
-                                    # this interrupt owns — every row for a
-                                    # main-agent checkpoint, otherwise just the
-                                    # nested interrupt's action requests. An
-                                    # unrelated in-flight `task` row keeps running
-                                    # instead of being frozen as rejected (and
-                                    # then stuck there, since `set_success`
-                                    # ignores an already-rejected row).
-                                    for tool_msg in _interrupt_tool_rows(
-                                        namespace,
+                                    # The run resumes, so only reviewed calls are
+                                    # terminally rejected. A main-agent checkpoint
+                                    # also paused ungated siblings in the parallel
+                                    # batch; resume those because they can still run
+                                    # after the rejected calls are replaced with
+                                    # synthetic ToolMessages.
+                                    tracked_tool_msgs = adapter._current_tool_messages
+                                    rejected_tool_msgs = _interrupt_owned_tool_rows(
                                         action_requests,
-                                        adapter._current_tool_messages,
-                                    ):
+                                        tracked_tool_msgs,
+                                    )
+                                    rejected_ids = {
+                                        id(tool_msg) for tool_msg in rejected_tool_msgs
+                                    }
+                                    for tool_msg in rejected_tool_msgs:
                                         tool_msg.set_rejected(reason=reject_message)
                                         adapter._sync_tool_widget(tool_msg)
+                                    if not namespace:
+                                        for tool_msg in tracked_tool_msgs.values():
+                                            if id(tool_msg) in rejected_ids:
+                                                continue
+                                            tool_msg.set_running()
+                                            adapter._sync_tool_widget(tool_msg)
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",

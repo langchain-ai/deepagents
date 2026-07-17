@@ -4006,6 +4006,108 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         assert rows["execute"]._status == "running"
         assert rows["read_file"]._status == "running"
 
+    async def test_main_reasoned_reject_resumes_ungated_sibling_task(self) -> None:
+        """A resumed rejection does not poison an ungated sibling task row."""
+        snapshot: dict[str, tuple[str, float | None]] = {}
+        rows: dict[str, ToolCallMessage] = {}
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                rows[widget.tool_name] = widget
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            for tool_id in ("exec-1", "task-1"):
+                row = adapter._current_tool_messages[tool_id]
+                snapshot[tool_id] = (row._status, row._start_time)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "exec-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    self._task_chunk("task-1", "research the repo"),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Tool approval rejected",
+                                name="execute",
+                                tool_call_id="exec-1",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="research complete",
+                                name="task",
+                                tool_call_id="task-1",
+                                status="success",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot == {
+            "exec-1": ("pending", None),
+            "task-1": ("pending", None),
+        }
+        assert rows["execute"]._status == "rejected"
+        assert rows["task"]._status == "success"
+        assert rows["task"]._duration is not None
+
     async def test_completed_task_duration_spans_full_execution(self) -> None:
         """A task's `Took …` covers full run time, not just post-approval.
 

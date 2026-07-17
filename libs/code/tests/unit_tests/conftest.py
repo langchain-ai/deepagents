@@ -89,10 +89,13 @@ def _restore_os_environ() -> Generator[None, None, None]:
 def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent LangSmith env vars loaded from .env from leaking into tests.
 
-    `dotenv.load_dotenv()` runs at `deepagents_code.config` import time and
-    may inject `LANGSMITH_*` variables from a local `.env` file.  These
-    cause spurious failures in unit tests that run with `--disable-socket`
-    because the LangSmith client attempts real HTTP requests.
+    `deepagents_code.config` loads dotenv lazily on first `settings` access
+    (via `_ensure_bootstrap()` / `_load_dotenv()`, which reads values with
+    `dotenv.dotenv_values()`) and may inject `LANGSMITH_*` variables from a
+    local `.env` file. Because those mutations persist in `os.environ`, they
+    can be present before this fixture runs, causing spurious failures in unit
+    tests that run with `--disable-socket` because the LangSmith client
+    attempts real HTTP requests.
 
     Each test that *needs* LangSmith variables should set them explicitly via
     `monkeypatch.setenv` or `patch.dict("os.environ", ...)`.
@@ -133,8 +136,9 @@ def _disable_langsmith_batching(monkeypatch: pytest.MonkeyPatch) -> None:
 def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent a Tavily key loaded from .env from leaking into tests.
 
-    Like `LANGSMITH_*`, `dotenv.load_dotenv()` at `deepagents_code.config`
-    import time may inject `TAVILY_API_KEY` from a developer's local `.env`.
+    Like `LANGSMITH_*`, the lazy dotenv load on first `settings` access (see
+    `_clear_langsmith_env`) may inject `TAVILY_API_KEY` from a developer's
+    local `.env`.
     A leaked key flips `settings.has_tavily` to `True`, which silently changes
     onboarding behavior: the launch sequence short-circuits the Tavily step on
     a dev machine but runs it on CI, so a test that reaches the step passes
@@ -149,13 +153,39 @@ def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent developer MCP trust decisions from changing unit-test behavior."""
+    """Prevent developer MCP trust decisions from changing unit-test behavior.
+
+    These may already be present in `os.environ` before any fixture runs:
+    `deepagents_code.config` loads dotenv lazily on first `settings` access
+    (via `_ensure_bootstrap()` / `_load_dotenv()`) and injects them from the
+    developer's global `~/.deepagents/.env`. The dangerous allowlist
+    intentionally replaces the scoped TOML approvals used by trust-list and
+    selective-project-trust tests, so leaving it set breaks those assertions.
+    Removing them here (rather than relying on each test) keeps the MCP,
+    model-config, and main suites hermetic. `_isolate_global_dotenv` below
+    prevents a later dotenv reread (e.g. via `/reload`) from restoring them.
+    """
     for key in (
         "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS",
         "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
         "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_debug_notifications_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent the debug-notifications override from changing suppression tests.
+
+    `DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS` may be loaded from the developer's
+    global `~/.deepagents/.env` when `deepagents_code.config` loads dotenv
+    lazily on first `settings` access, before fixtures run. When set, the
+    notification suppression path skips persistence -- it removes the entry
+    without calling `suppress_warning` -- so tests asserting that a suppression
+    is persisted (or that a failed suppression keeps the row) break. Tests that
+    exercise the debug path set it explicitly.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -338,6 +368,30 @@ def _provide_app_context() -> Generator[None]:
         yield
     finally:
         active_app.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the global dotenv path at a nonexistent temp file.
+
+    `deepagents_code.config._GLOBAL_DOTENV_PATH` defaults to the developer's
+    real `~/.deepagents/.env`. Code paths like `/reload` call
+    `_load_dotenv(refresh_loaded=True)`, which rereads that file and can restore
+    ambient variables the isolation fixtures cleared (e.g.
+    `DEEPAGENTS_CODE_EXPERIMENTAL` or the MCP trust vars). Redirecting it to a
+    guaranteed-absent path under `tmp_path` makes dotenv rereads inert without
+    touching production behavior. Tests that exercise global dotenv loading set
+    this attribute explicitly after this fixture runs.
+
+    This only stops a reread from *restoring* cleared vars; a var already
+    loaded into `os.environ` before this fixture runs is removed only if it is
+    on one of the `_clear_*` denylists above. New config vars that must not
+    leak from the developer's environment need to be added there.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.config._GLOBAL_DOTENV_PATH",
+        tmp_path / "nonexistent-global.env",
+    )
 
 
 @pytest.fixture(autouse=True)

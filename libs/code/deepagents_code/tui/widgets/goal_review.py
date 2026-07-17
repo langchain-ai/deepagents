@@ -363,7 +363,7 @@ class GoalReviewMenu(Container):
         glyphs = get_glyphs()
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
-            "Shift+Enter newline"
+            f"Shift+Enter newline {glyphs.bullet} Ctrl+X external editor"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:
@@ -388,13 +388,15 @@ class GoalReviewMenu(Container):
         if self._input_mode == "edit":
             self._help_widget.update(
                 f"Enter save edits {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"Shift+Enter newline {glyphs.bullet} "
+                f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return
         if self._input_mode == "reject":
             self._help_widget.update(
                 f"Enter regenerate {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} Esc back"
+                f"Shift+Enter newline {glyphs.bullet} "
+                f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return
         self._help_widget.update(

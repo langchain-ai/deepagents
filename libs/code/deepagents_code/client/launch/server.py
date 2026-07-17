@@ -15,6 +15,7 @@ import signal
 import subprocess  # noqa: S404
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -584,6 +585,8 @@ class ServerProcess:
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
         self._persistent_env_overrides: dict[str, str] = {}
+        self._stop_lock = threading.Lock()
+        self._stopped = False
 
     @property
     def url(self) -> str:
@@ -631,6 +634,10 @@ class ServerProcess:
         """
         if self.running:
             return
+
+        # A fresh process invalidates any prior terminal `stop()`, so re-arm
+        # the idempotency guard (covers a `stop()` followed by a reuse).
+        self._stopped = False
 
         work_dir = self.config_dir
         if work_dir is None:
@@ -868,26 +875,42 @@ class ServerProcess:
             self._log_file = None
 
     def stop(self) -> None:
-        """Stop the server process and clean up all resources."""
-        self._stop_process()
+        """Stop the server process and clean up all resources.
 
-        if self._temp_dir is not None:
-            try:
-                self._temp_dir.cleanup()
-            except OSError:
-                logger.debug("Failed to clean up temp dir", exc_info=True)
-            self._temp_dir = None
+        Idempotent and safe to call concurrently. A `threading.Lock` serializes
+        callers and a `_stopped` flag short-circuits repeat calls, so process
+        teardown and resource cleanup never run twice or interleave. This is
+        relied on at app shutdown, where the coordinated teardown task (which
+        offloads `stop()` to a worker thread) and the outer `finally` fallback
+        may both invoke it: the second caller blocks on the lock until the
+        first finishes, then returns immediately because `_stopped` is set.
+        """
+        with self._stop_lock:
+            if self._stopped:
+                return
+            self._stopped = True
 
-        if self._owns_config_dir and self.config_dir is not None:
-            import shutil
+            self._stop_process()
 
-            try:
-                shutil.rmtree(self.config_dir)
-            except OSError:
-                logger.debug(
-                    "Failed to clean up config dir %s", self.config_dir, exc_info=True
-                )
-            self._owns_config_dir = False
+            if self._temp_dir is not None:
+                try:
+                    self._temp_dir.cleanup()
+                except OSError:
+                    logger.debug("Failed to clean up temp dir", exc_info=True)
+                self._temp_dir = None
+
+            if self._owns_config_dir and self.config_dir is not None:
+                import shutil
+
+                try:
+                    shutil.rmtree(self.config_dir)
+                except OSError:
+                    logger.debug(
+                        "Failed to clean up config dir %s",
+                        self.config_dir,
+                        exc_info=True,
+                    )
+                self._owns_config_dir = False
 
     def update_env(self, **overrides: str) -> None:
         """Stage env var overrides to apply on the next `restart()`.

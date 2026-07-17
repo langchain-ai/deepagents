@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -1079,6 +1080,74 @@ class TestServerProcess:
         assert os.environ.get("DEEPAGENTS_CODE_SERVER_MODEL") == old_value
         # Overrides NOT cleared (available for retry)
         assert "DEEPAGENTS_CODE_SERVER_MODEL" in server._env_overrides
+
+
+class TestServerProcessStopIdempotency:
+    """`stop()` must be idempotent and safe against concurrent callers.
+
+    The interactive shutdown path may invoke `stop()` from two places — the
+    coordinated teardown task (offloaded to a worker thread) and the outer
+    `finally` fallback in `run_textual_app` — so process teardown and resource
+    cleanup must run exactly once and never interleave.
+    """
+
+    def test_stop_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated `stop()` calls tear the process down only once."""
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        calls: list[int] = []
+        monkeypatch.setattr(server, "_stop_process", lambda: calls.append(1))
+
+        server.stop()
+        server.stop()
+        server.stop()
+
+        assert calls == [1]
+
+    def test_concurrent_stop_runs_teardown_once(self) -> None:
+        """Two threads calling `stop()` at once run teardown exactly once.
+
+        The first caller holds the lock across `_stop_process`; the second
+        blocks on it and then short-circuits on the `_stopped` flag instead of
+        re-running teardown, so there is no double cleanup and no interleave.
+        """
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow_stop_process() -> None:
+            calls.append(1)
+            entered.set()
+            release.wait(timeout=2.0)
+
+        server._stop_process = slow_stop_process  # ty: ignore[invalid-assignment]
+
+        first = threading.Thread(target=server.stop)
+        second = threading.Thread(target=server.stop)
+        first.start()
+        # Wait until the first caller is inside the locked teardown, then start
+        # the second so it is guaranteed to contend for the lock.
+        assert entered.wait(timeout=2.0)
+        second.start()
+        release.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert calls == [1]
+        assert server._stopped is True
+
+    async def test_start_rearms_stop_guard(self) -> None:
+        """A fresh `start()` clears the idempotency guard set by `stop()`."""
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server.stop()
+        assert server._stopped is True
+
+        # `start()` re-arms the guard before doing any real work; the missing
+        # langgraph.json then aborts startup, which is fine for this assertion.
+        with contextlib.suppress(RuntimeError):
+            await server.start()
+
+        assert server._stopped is False
 
 
 class TestServerSessionIsolation:

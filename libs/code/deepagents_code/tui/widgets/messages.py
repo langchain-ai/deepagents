@@ -2995,8 +2995,10 @@ class ToolGroupSummary(Static):
     progress ("Running 1 shell command…") and flips to the past tense
     ("Ran 1 shell command") once every tool finishes. The live line counts only
     the tools still in progress, so finished calls drop out of it as they
-    complete; the past-tense line summarizes every tool that ran. Clicking the
-    line or pressing Ctrl+O expands the underlying tool rows (and their diffs).
+    complete; the past-tense line summarizes the tools that succeeded — failed,
+    rejected, and skipped tools are evicted to standalone rows (see
+    `_evict_failed`) so errors stay visible. Clicking the line or pressing
+    Ctrl+O expands the underlying tool rows (and their diffs).
 
     Two modes:
 
@@ -3057,9 +3059,9 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
-        # The set of in-progress tool names the cached present line was built
-        # from. The live line counts only running tools, so it must be rebuilt
-        # whenever a member finishes, not just when membership grows.
+        # The tuple of in-progress tool names the cached present line was built
+        # from. The live line counts only in-progress tools, so it must be
+        # rebuilt whenever a member finishes, not just when membership grows.
         self._present_key: tuple[str, ...] | None = None
 
     def on_mount(self) -> None:
@@ -3076,7 +3078,7 @@ class ToolGroupSummary(Static):
         for widget in extra:
             widget.add_class("-grouped")
             self._collapsible.append(widget)
-        self._present_text = self._past_text = None
+        self._present_text = self._past_text = self._present_key = None
         self._apply_visibility()
         self._render_line()
         self._sync_timer()
@@ -3113,7 +3115,7 @@ class ToolGroupSummary(Static):
             tool.remove_class("-grouped")
             if tool.is_attached and not tool._awaiting_approval:
                 tool.display = True
-        self._present_text = self._past_text = None
+        self._present_text = self._past_text = self._present_key = None
         if self._tools:
             self._render_line()
             self._sync_timer()
@@ -3175,7 +3177,7 @@ class ToolGroupSummary(Static):
             tool.remove_class("-grouped")
             if tool.is_attached:
                 tool.display = True
-        self._present_text = self._past_text = None
+        self._present_text = self._past_text = self._present_key = None
 
     def _sync_timer(self) -> None:
         """Run the spinner timer only while live members are in progress."""
@@ -3209,8 +3211,8 @@ class ToolGroupSummary(Static):
             in_progress = self._in_progress()
             if not in_progress:
                 self._stop_timer()
-            # A bare spinner advance keeps the line height; only relayout when
-            # membership changed (eviction) or the line flips to past tense.
+            # A bare spinner advance keeps the line height. `_render_line`
+            # promotes this to a layout update if the pending summary changed.
             self._render_line(
                 in_progress=in_progress, layout=evicted or not in_progress
             )
@@ -3237,9 +3239,9 @@ class ToolGroupSummary(Static):
         Args:
             in_progress: Pre-computed progress state to avoid re-scanning members
                 on the spinner hot path; recomputed when omitted.
-            layout: Whether the update may change the line's height. The spinner
-                hot path passes False so a bare glyph swap doesn't relayout the
-                whole transcript 10x/second.
+            layout: Whether to force a layout update. A changed summary always
+                triggers layout; the spinner hot path passes False so a bare
+                glyph swap doesn't relayout the whole transcript 10x/second.
         """
         if not self.is_attached:
             return
@@ -3252,14 +3254,15 @@ class ToolGroupSummary(Static):
         if not self._finalized and in_progress:
             pending = [tool.tool_name for tool in self._tools if tool.is_pending]
             key = tuple(pending)
-            if self._present_text is None or key != self._present_key:
+            summary_changed = self._present_text is None or key != self._present_key
+            if summary_changed:
                 self._present_text = summarize_tool_group(pending, tense="present")
                 self._present_key = key
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
             self.update(
                 Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"),
-                layout=layout,
+                layout=layout or summary_changed,
             )
         else:
             mark = (

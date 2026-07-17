@@ -4056,6 +4056,23 @@ class _LiveToolGroupApp(App[None]):
         yield t2
 
 
+class _LiveToolGroupSameCategoryApp(App[None]):
+    """Live group with two tools of the same category (both shell commands)."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("execute", {"command": "ls"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("execute", {"command": "pwd"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
 
@@ -4111,6 +4128,53 @@ class TestLiveToolGroupSummary:
             assert isinstance(rendered, Content)
             assert "Reading 1 file" in rendered.plain
             assert "shell command" not in rendered.plain
+
+    async def test_live_line_decrements_same_category_count(self) -> None:
+        """One of two shell commands finishing drops the live count 2 -> 1."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupSameCategoryApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)
+            running = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(done)
+            summary.add_member(running)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 2 shell commands" in rendered.plain
+
+            # One command finishes; the surviving pending tuple shrinks from
+            # ("execute", "execute") to ("execute",), which must invalidate the
+            # cached line even though the category (and membership) is unchanged.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command" in rendered.plain
+            assert "2 shell commands" not in rendered.plain
+
+    async def test_live_line_relayouts_only_when_summary_changes(self) -> None:
+        """A shorter pending summary recalculates height on the next tick."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)
+            running = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(done)
+            summary.add_member(running)
+            summary._stop_timer()
+            done.set_success("done")
+
+            with patch.object(summary, "update", wraps=summary.update) as update:
+                summary._tick()
+                assert update.call_args.kwargs["layout"] is True
+
+                update.reset_mock()
+                summary._tick()
+                assert update.call_args.kwargs["layout"] is False
 
     async def test_pending_member_is_revealed_for_approval(self) -> None:
         """Only unfinished calls leave the collapsed group before approval."""

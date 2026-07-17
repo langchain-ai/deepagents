@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code.app import AppResult
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
@@ -118,12 +119,25 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+        format_sdk_version_annotation,
+    )
 
-    sdk_version_value, status = resolve_sdk_version()
-    sdk_version = sdk_version_value if status == "resolved" else "unknown"
+    report = collect_version_report()
+    cli_annotation = format_cli_version_annotation(report.cli)
+    if report.sdk.status == "resolved":
+        sdk_version = report.sdk.primary_version
+        sdk_annotation = format_sdk_version_annotation(report)
+    else:
+        sdk_version = "unknown"
+        sdk_annotation = ""
 
-    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+    text = (
+        f"deepagents-code {__version__}{cli_annotation}\n"
+        f"deepagents (SDK) {sdk_version}{sdk_annotation}"
+    )
 
     editable = False
     try:
@@ -700,26 +714,163 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether the interactive TUI should auto-approve tool calls.
+def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
+    """Resolve explicit flags and `[startup].mode` into a typed mode.
 
-    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
-    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
-    (`args.auto_approve is None`), the persistent `[startup].mode` config
-    default decides — `dangerously-auto` enables auto-approval, anything else
-    (including missing/invalid config) keeps human-in-the-loop approvals on.
+    Args:
+        args: Parsed CLI arguments.
 
-    Extracted from the `cli_main` body so it is unit-testable without
-    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    Returns:
+        Explicit `--yolo`, explicit `-y`/`--auto-approve` as `auto`, or the
+        validated startup config value. Invalid config remains fail-closed.
     """
-    if args.auto_approve is not None:
-        return args.auto_approve
-    from deepagents_code.model_config import (
-        STARTUP_MODE_DANGEROUSLY_AUTO,
-        load_startup_mode,
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+    from deepagents_code.model_config import load_startup_mode
+
+    if getattr(args, "yolo", False):
+        return ApprovalMode.YOLO
+    if args.auto_approve is True:
+        return ApprovalMode.AUTO
+    return coerce_approval_mode(load_startup_mode())
+
+
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return the compatibility Boolean for callers using the old resolver.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Whether startup resolves to either autonomous mode.
+    """
+    from deepagents_code.approval_mode import ApprovalMode
+
+    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
+
+
+def _prompt_yolo_acknowledgement(console: "Console") -> bool:
+    """Show an inline fail-closed selector for unrestricted execution.
+
+    Args:
+        console: Rich console used for warning and fallback text.
+
+    Returns:
+        Whether the user explicitly accepted the warning.
+    """
+    console.print()
+    console.print("[bold red]YOLO mode runs gated actions without review.[/bold red]")
+    console.print(
+        "It can execute arbitrary commands, modify files, call external tools, and "
+        "follow hostile retrieved instructions. Auto does not provide sandbox "
+        "containment either; YOLO removes its action decision boundary entirely."
+    )
+    console.print()
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return False
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+
+        from deepagents_code.config import get_glyphs
+
+        choices = [(False, "Use Manual"), (True, "Acknowledge and enable YOLO")]
+        selected_index = 0
+        glyphs = get_glyphs()
+
+        def rows() -> FormattedText:
+            fragments: list[tuple[str, str]] = [
+                (
+                    "class:prompt.help",
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Enter select · Esc Manual\n"
+                    ),
+                )
+            ]
+            for index, (_value, label) in enumerate(choices):
+                active = index == selected_index
+                cursor = glyphs.cursor if active else " "
+                style = "class:item.current" if active else "class:item"
+                suffix = "\n" if index < len(choices) - 1 else ""
+                fragments.append((style, f"{cursor} {label}{suffix}"))
+            return FormattedText(fragments)
+
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        @bindings.add("s-tab")
+        def move_up(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index - 1) % len(choices)
+
+        @bindings.add("down")
+        @bindings.add("tab")
+        def move_down(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index + 1) % len(choices)
+
+        @bindings.add("enter")
+        def choose(event: KeyPressEvent) -> None:
+            event.app.exit(result=choices[selected_index][0])
+
+        @bindings.add("escape")
+        @bindings.add("c-c")
+        def decline(event: KeyPressEvent) -> None:
+            event.app.exit(result=False)
+
+        app: Application[bool] = Application(
+            layout=Layout(
+                Window(
+                    FormattedTextControl(rows),
+                    height=len(choices) + 1,
+                    dont_extend_height=True,
+                )
+            ),
+            key_bindings=bindings,
+            style=Style.from_dict(
+                {"prompt.help": "ansibrightblack", "item.current": "reverse"}
+            ),
+            full_screen=False,
+            erase_when_done=True,
+            output=create_output(stdout=sys.stderr),
+        )
+        return bool(app.run())
+    except (EOFError, KeyboardInterrupt, OSError, RuntimeError, ImportError):
+        logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
+        return False
+
+
+def _ensure_yolo_acknowledged(console: "Console") -> bool:
+    """Ensure the current local YOLO policy has been accepted and persisted.
+
+    Args:
+        console: Console used for the acknowledgement UI.
+
+    Returns:
+        `True` only when an existing or newly persisted acknowledgement exists.
+    """
+    from deepagents_code.approval_mode import (
+        has_yolo_acknowledgement,
+        save_yolo_acknowledgement,
     )
 
-    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+    if has_yolo_acknowledgement():
+        return True
+    if not _prompt_yolo_acknowledgement(console):
+        return False
+    if save_yolo_acknowledgement():
+        return True
+    console.print(
+        "[yellow]YOLO acknowledgement could not be saved; using Manual.[/yellow]"
+    )
+    return False
 
 
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
@@ -1223,7 +1374,6 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
-    "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
 }
@@ -1238,19 +1388,22 @@ Each value is `(subcommand_dest, ui_help_fn_name)`:
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
-When adding a new top-level command group with sub-subparsers, register it
-here and add a corresponding `show_<group>_help` to `ui.py`. The drift
-test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+Command groups whose bare invocation performs an action instead belong in
+`_BARE_ACTION_GROUPS`. The drift test in
+`tests/unit_tests/test_startup_fast_paths.py` requires every group to be in
+exactly one collection.
 """
+
+_BARE_ACTION_GROUPS = frozenset({"config"})
+"""Command groups that perform their primary action without a subcommand."""
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
-    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
-    commands when no subcommand was given.
+    invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
+    this path because their bare invocation has useful behavior.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1261,7 +1414,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
             when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    if not isinstance(command, str):
+    if not isinstance(command, str) or command in _BARE_ACTION_GROUPS:
         return False
     spec = _HELP_SPECS.get(command)
     if spec is None:
@@ -1419,25 +1572,13 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.plugins.commands_cli import setup_plugin_parser
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.plugins.commands_cli import setup_plugin_parser
-
-        setup_plugin_parser(
-            subparsers,
-            make_help_action=_make_help_action,
-            add_output_args=add_json_output_arg,
-        )
-    else:
-        plugin_parser = subparsers.add_parser(
-            "plugin",
-            aliases=["plugins"],
-            add_help=False,
-            help=argparse.SUPPRESS,
-        )
-        plugin_parser.add_argument("plugin_command", nargs="?")
-        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
+    setup_plugin_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     setup_config_parser(
         subparsers,
@@ -1763,20 +1904,23 @@ def parse_args() -> argparse.Namespace:
 
     add_json_output_arg(parser, default="text")
 
-    parser.add_argument(
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
         "-y",
         "--auto-approve",
         action="store_true",
         default=None,
         help=(
-            "Interactive mode only: auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell execution, file "
-            "writes/edits, web search, and URL fetch. Headless mode approves "
-            "non-shell tools; shell is disabled unless allowed via "
-            "--shell-allow-list. "
-            "Use with caution — the agent can execute arbitrary commands. When "
-            "omitted, the launch default comes from [startup].mode in "
-            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
+            "Interactive local TUI only: enable beta classifier-backed Auto mode. "
+            "Requires DEEPAGENTS_CODE_EXPERIMENTAL=1."
+        ),
+    )
+    approval_group.add_argument(
+        "--yolo",
+        action="store_true",
+        help=(
+            "Interactive mode only: run gated actions without review after the "
+            "one-time local risk acknowledgement."
         ),
     )
 
@@ -2007,7 +2151,8 @@ def _resolve_and_validate_sandbox(
 async def run_textual_cli_async(
     assistant_id: str,
     *,
-    auto_approve: bool = False,
+    approval_mode: "ApprovalMode | str" = "manual",
+    auto_approve: bool | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_snapshot_name: str | None = None,
@@ -2035,8 +2180,10 @@ async def run_textual_cli_async(
     `langgraph-sdk` client.
 
     Args:
-        assistant_id: Agent identifier for memory storage
-        auto_approve: Whether to auto-approve tool usage
+        assistant_id: Agent identifier for memory storage.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for callers using the previous Boolean
+            API. `True` maps to unrestricted `yolo`.
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2095,6 +2242,7 @@ async def run_textual_cli_async(
     from rich.text import Text
 
     from deepagents_code.app import AppResult, run_textual_app
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
@@ -2106,6 +2254,12 @@ async def run_textual_cli_async(
         NoCredentialsConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
+
+    resolved_approval_mode = coerce_approval_mode(approval_mode)
+    if auto_approve is not None:
+        resolved_approval_mode = (
+            ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+        )
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -2145,11 +2299,8 @@ async def run_textual_cli_async(
             "profile_overrides": profile_override,
         }
 
-    # Build kwargs for deferred server startup (runs inside the TUI).
-    # Never pass auto_approve to the server — the interactive server must
-    # always configure full HITL interrupts so that Shift+Tab can toggle
-    # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in `tui.textual_adapter`.
+    # Build kwargs for deferred server startup. Approval mode remains a live
+    # per-thread Store record, so graph construction is independent of startup mode.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2181,7 +2332,7 @@ async def run_textual_cli_async(
         result = await run_textual_app(
             assistant_id=assistant_id,
             backend=None,
-            auto_approve=auto_approve,
+            approval_mode=resolved_approval_mode,
             cwd=Path.cwd(),
             thread_id=thread_id,
             resume_thread=resume_thread,
@@ -3375,6 +3526,12 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
+                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+                sys.stderr.write(
+                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -3428,13 +3585,16 @@ def cli_main() -> None:
         # predicate that selects the headless branch below), so this reliably
         # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
         # leaving interactive launches untouched.
-        if args.auto_approve and args.non_interactive_message:
+        if (
+            args.auto_approve or getattr(args, "yolo", False)
+        ) and args.non_interactive_message:
             from rich.console import Console as _Console
 
+            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-approve is only supported in "
-                "interactive mode. Headless mode already approves non-shell tools; "
-                "use --shell-allow-list to control shell access."
+                f"[bold red]Error:[/bold red] {flag} is only supported in "
+                "interactive mode. Headless mode uses fail-closed MCP routing and "
+                "--shell-allow-list for shell access."
             )
             sys.exit(2)
 
@@ -4081,15 +4241,6 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command in {"plugin", "plugins"}:
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                print(EXPERIMENTAL_HINT)  # noqa: T201
-                sys.exit(2)
             from deepagents_code.plugins.commands_cli import execute_plugin_command
 
             execute_plugin_command(args)
@@ -4367,14 +4518,33 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                # An explicit -y/--auto-approve wins; otherwise the persistent
-                # [startup].mode config default decides the launch mode.
-                auto_approve = _resolve_auto_approve(args)
+                from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+                from deepagents_code.approval_mode import ApprovalMode
+
+                approval_mode = _resolve_approval_mode(args)
+                if approval_mode is ApprovalMode.AUTO and (
+                    not is_env_truthy(EXPERIMENTAL)
+                    or (args.sandbox and args.sandbox != "none")
+                ):
+                    reason = (
+                        "Auto is unavailable with a sandbox"
+                        if args.sandbox and args.sandbox != "none"
+                        else f"Auto is an opt-in beta; set {EXPERIMENTAL}=1"
+                    )
+                    console.print(f"[yellow]{reason}. Using Manual.[/yellow]")
+                    approval_mode = ApprovalMode.MANUAL
+                if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
+                    console
+                ):
+                    console.print(
+                        "[yellow]YOLO was not enabled; using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
 
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=auto_approve,
+                        approval_mode=approval_mode,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,

@@ -184,7 +184,7 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10 (with concurrency capped at 4 and a single model, at most 40 concurrent sandboxes)."
+        description: "Split the dataset's tasks across N shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). May be set as high as the task count (one task per shard) for dynamic dispatch — shards drain through a derived pool (shard_parallel), not all at once. Capped at 200 (shard_matrix.MAX_SHARDS); the pool is bounded so shard_parallel * concurrency <= 40 concurrent sandboxes."
         required: false
         default: "10"
         type: string
@@ -220,6 +220,9 @@ jobs:
       # Eval category derived from the dataset inputs, consumed by the leaf
       # workflow's unified reporting (autonomous | conversation | context).
       category: ${{ steps.category.outputs.category }}
+      # Derived shard pool (dynamic dispatch) from the "🔒 Validate single
+      # model + resource limits" step, for the run job's shard_parallel input.
+      shard_parallel: ${{ steps.limits.outputs.shard_parallel }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -274,13 +277,18 @@ jobs:
       - name: "🔒 Validate single model + resource limits"
         # This workflow evaluates exactly ONE model. Fail fast (before the matrix
         # fans out) if the resolved model set is not a single model, or if the
-        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; with one
-        # model their product bounds concurrent sandboxes to 40). Inputs are read
+        # per-run limits are exceeded (n_shards <= shard_matrix.MAX_SHARDS=200,
+        # concurrency <= 4). n_shards may be set high for dynamic dispatch (one
+        # task per shard); shards drain through a derived shard_parallel pool
+        # instead of all running at once, bounded so shard_parallel *
+        # concurrency <= 40 concurrent sandboxes. Inputs are read
         # via env (no shell interpolation) and int-parsed in the script.
         # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
+        id: limits
         env:
           N_SHARDS: ${{ inputs.n_shards || '10' }}
           CONCURRENCY: ${{ inputs.concurrency || '4' }}
+          ROLLOUTS: ${{ inputs.rollouts_per_task }}
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
         run: python .github/scripts/validate_harbor_limits.py
 
@@ -329,8 +337,9 @@ jobs:
       langsmith_dataset: ""
       rollouts: ${{ inputs.rollouts_per_task }}
       n_shards: ${{ inputs.n_shards }}
-      # Run every shard in parallel (cap = n_shards).
-      shard_parallel: ${{ inputs.n_shards }}
+      # Derived pool the shards drain through (dynamic dispatch), not n_shards
+      # itself — see the prep job's "🔒 Validate single model + resource limits" step.
+      shard_parallel: ${{ needs.prep.outputs.shard_parallel }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       n_retries: ${{ inputs.n_retries }}

@@ -180,12 +180,9 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
     Returns:
         `True` only for an explicitly and consistently read-only MCP tool.
     """
-    metadata = getattr(tool, "metadata", None)
-    return (
-        isinstance(metadata, dict)
-        and metadata.get("readOnlyHint") is True
-        and metadata.get("destructiveHint") is not True
-    )
+    from deepagents_code.auto_mode import mcp_tool_is_coherently_read_only
+
+    return mcp_tool_is_coherently_read_only(tool)
 
 
 async def _make_graph() -> Any:  # noqa: ANN401
@@ -282,6 +279,13 @@ async def _make_graph() -> Any:  # noqa: ANN401
 
     def _create_cli_agent_sync() -> Any:  # noqa: ANN401
         async_subagents = load_async_subagents() or None
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        auto_mode_enabled = (
+            config.interactive
+            and sandbox_backend is None
+            and is_env_truthy(EXPERIMENTAL)
+        )
 
         # These process-global settings writes are safe here because `make_graph`
         # is lock-serialized and caches one graph for the server process lifetime.
@@ -296,11 +300,13 @@ async def _make_graph() -> Any:  # noqa: ANN401
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
+            mcp_tools=mcp_tools,
             sandbox=sandbox_backend,
             sandbox_type=config.sandbox_type,
             system_prompt=config.system_prompt,
             interactive=config.interactive,
             auto_approve=config.auto_approve,
+            auto_mode_enabled=auto_mode_enabled,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
             enable_ask_user=config.enable_ask_user,

@@ -74,7 +74,10 @@ jobs:
         working-directory: pr-preflight
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # Fetch the exact event-time base without making it a shallow boundary.
+          # A depth-limited fetch hides its parents and breaks the three-dot diff
+          # whenever the base branch has advanced past the PR's merge base.
+          git fetch --no-tags origin "$BASE_SHA"
           # Three-dot diff = changes introduced on the PR head relative to the
           # merge base, i.e. exactly what this PR changed. Under `set -e` a
           # failure to compute it (e.g. an unreachable merge base) aborts the

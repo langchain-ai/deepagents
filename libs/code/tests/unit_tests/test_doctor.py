@@ -77,13 +77,103 @@ class TestCollectSections:
         """The Diagnostics section reports the running CLI version."""
         from deepagents_code._version import __version__
 
-        diagnostics = collect_sections()[0]
+        # Isolate the SDK requirement check so the workspace pin cannot inject a
+        # mismatch annotation into the CLI value under test.
+        with patch(
+            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            return_value=None,
+        ):
+            diagnostics = collect_sections()[0]
         labels = {item.label: item.value for item in diagnostics.items}
         assert labels["deepagents-code"] == __version__
         assert "Commit hash" in labels
         assert labels["Commit hash"]
         assert "Platform" in labels
         assert "Install method" in labels
+
+
+class TestDiagnosticsVersionReport:
+    """Tests for how the Diagnostics section renders version-report facts."""
+
+    def _diagnostics(self, report: object) -> dict[str, DiagnosticItem]:
+        from deepagents_code.doctor import _collect_diagnostics
+
+        with (
+            patch(
+                "deepagents_code.extras_info.collect_version_report",
+                return_value=report,
+            ),
+            patch("deepagents_code.doctor._commit_hash", return_value="abc1234"),
+        ):
+            section = _collect_diagnostics()
+        return {item.label: item for item in section.items}
+
+    def test_sdk_requirement_mismatch_is_unhealthy(self) -> None:
+        """An unsatisfied declared SDK requirement makes the SDK item unhealthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, __version__, True, "~/src", "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", "0.6.12", "0.6.12", True, "~/src/sdk", "resolved"
+            ),
+            sdk_requirement=Requirement("deepagents==0.7.0a7"),
+            sdk_requirement_satisfied=False,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert "required by deepagents-code: 0.7.0a7 — mismatch" in sdk.value
+
+    def test_source_metadata_drift_is_informational(self) -> None:
+        """Source/metadata drift annotates the values but stays healthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, "0.1.40", True, "~/src", "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", "0.6.13", "0.6.12", True, "~/src/sdk", "resolved"
+            ),
+            sdk_requirement=Requirement("deepagents>=0.6"),
+            sdk_requirement_satisfied=True,
+        )
+        items = self._diagnostics(report)
+        cli = items["deepagents-code"]
+        sdk = items["deepagents (SDK)"]
+        assert cli.ok is True
+        assert cli.value == f"{__version__} (installed metadata: 0.1.40)"
+        assert sdk.ok is True
+        assert "installed metadata: 0.6.12" in sdk.value
+
+    def test_sdk_not_installed_is_unhealthy(self) -> None:
+        """A missing SDK is reported as not installed and unhealthy."""
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, __version__, False, None, "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", None, None, False, None, "not_installed"
+            ),
+            sdk_requirement=None,
+            sdk_requirement_satisfied=None,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert sdk.value == "not installed"
 
 
 class TestCollectTracing:
@@ -475,14 +565,21 @@ class TestRunDoctorCommand:
 
     def test_text_output_contains_sections(self) -> None:
         """Text output renders each section title and key facts."""
-        code, output = self._run_text()
+        # Isolate the SDK requirement check so a workspace where the declared
+        # `deepagents` pin intentionally leads the installed SDK does not make
+        # the section unhealthy; the mismatch path has dedicated coverage.
+        with patch(
+            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            return_value=None,
+        ):
+            code, output = self._run_text()
         assert code == 0
         assert "Diagnostics" in output
         assert "Updates" in output
         assert "Tracing" in output
         assert "Configuration" in output
         assert "deepagents-code" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
@@ -490,7 +587,13 @@ class TestRunDoctorCommand:
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
         args = argparse.Namespace(output_format="json")
-        code = run_doctor_command(args)
+        # Isolate the SDK requirement check (see text-output test) so the
+        # envelope reports the healthy shape regardless of the workspace pin.
+        with patch(
+            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            return_value=None,
+        ):
+            code = run_doctor_command(args)
         assert code == 0
 
         captured = capsys.readouterr()
@@ -572,7 +675,7 @@ class TestDoctorHelp:
         output = buf.getvalue()
         assert "dcode doctor [options]" in output
         assert "Usage:" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output

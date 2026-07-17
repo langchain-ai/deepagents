@@ -7,6 +7,7 @@ structured way to define available models and providers.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import json
 import logging
@@ -26,7 +27,17 @@ import tomli_w
 from deepagents_code import _env_vars, auth_store
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
+    from typing import TypeAlias
+
+    # A parsed-JSON value. An MCP server definition is one of these (in practice
+    # a dict), but a malformed `.mcp.json` entry can be any JSON scalar/array, so
+    # the trust helpers accept the whole shape rather than lying with `Mapping`.
+    # String form keeps the recursive reference valid on Python 3.11 (no PEP 695
+    # `type` statement).
+    JSONValue: TypeAlias = (
+        "str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | None"
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -3340,26 +3351,219 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     return True
 
 
+@dataclass(frozen=True, order=True)
+class McpProjectServerApproval:
+    """A project-scoped, definition-bound MCP server approval.
+
+    Membership in a `McpServerTrustLists.approvals` set *is* the trust decision
+    (`is_enabled` reconstructs an approval and tests `approval in approvals`), so
+    value equality on the three raw strings must line up between the write side
+    (`add_enabled_project_mcp_servers`) and the read side (`is_enabled`). Build
+    runtime approvals through `create` and persisted ones through `from_toml`,
+    never the raw constructor, so every path normalizes the root and computes the
+    fingerprint identically. `order=True` exists only so `sorted()` yields
+    deterministic TOML output.
+
+    The raw constructor only enforces non-emptiness (`__post_init__`), not that
+    `project_root` is normalized or that `fingerprint` is a real digest. A
+    hand-built instance is therefore *safe but useless*: with a mismatched root
+    or fingerprint it simply never equals a `create`/`from_toml` peer, so it
+    fails closed (nothing is trusted) rather than granting stray access — but it
+    also won't authorize anything. Always go through the factories.
+    """
+
+    project_root: str
+    """Resolved project root that originated the approval."""
+
+    name: str
+    """MCP server name within the project config."""
+
+    fingerprint: str
+    """Fingerprint of the approved MCP server definition."""
+
+    def __post_init__(self) -> None:
+        """Reject degenerate approvals so a bad one can't silently never match.
+
+        An empty `project_root`, `name`, or `fingerprint` can only ever equal a
+        malformed peer, so forbid the state entirely rather than let it persist.
+
+        Raises:
+            ValueError: If any field is empty or whitespace-only.
+        """
+        if not (
+            self.project_root.strip() and self.name.strip() and self.fingerprint.strip()
+        ):
+            msg = (
+                "McpProjectServerApproval requires non-empty project_root, name, "
+                "and fingerprint"
+            )
+            raise ValueError(msg)
+
+    @classmethod
+    def create(
+        cls, *, project_root: str | Path | None, name: str, server: JSONValue
+    ) -> McpProjectServerApproval | None:
+        """Build an approval, normalizing the root and fingerprinting `server`.
+
+        The single construction path for runtime approvals, so the write and read
+        sides cannot drift on how the root is normalized or the server hashed.
+
+        Args:
+            project_root: Project root to normalize.
+            name: MCP server name.
+            server: Parsed MCP server definition to fingerprint.
+
+        Returns:
+            The approval, or `None` when `project_root` cannot be normalized.
+        """
+        normalized_root = normalize_mcp_project_root(project_root)
+        if normalized_root is None:
+            return None
+        return cls(
+            project_root=normalized_root,
+            # Strip so the read side matches the write side and `from_toml`,
+            # both of which persist/compare a stripped name — otherwise a
+            # whitespace-padded server key would never match its own approval.
+            name=name.strip(),
+            fingerprint=fingerprint_mcp_server_config(server),
+        )
+
+    @classmethod
+    def from_toml(cls, item: Mapping[str, object]) -> McpProjectServerApproval | None:
+        """Deserialize a persisted approval table, normalizing the root.
+
+        The read-side counterpart to `as_toml`. Applies the *same* root
+        normalization as `create` so a persisted approval and a freshly built
+        runtime one compare equal for the same project and definition — the
+        write/read symmetry the trust decision depends on lives here, not in the
+        caller.
+
+        Args:
+            item: A parsed TOML table with `project_root`, `name`, and
+                `fingerprint` string fields.
+
+        Returns:
+            The approval, or `None` for a malformed table (missing, blank, or
+                non-string field) — fail-closed for an allowlist.
+        """
+        project_root = item.get("project_root")
+        name = item.get("name")
+        fingerprint = item.get("fingerprint")
+        if not (
+            isinstance(project_root, str)
+            and project_root.strip()
+            and isinstance(name, str)
+            and name.strip()
+            and isinstance(fingerprint, str)
+            and fingerprint.strip()
+        ):
+            return None
+        normalized_root = normalize_mcp_project_root(project_root)
+        if normalized_root is None:
+            return None
+        return cls(
+            project_root=normalized_root,
+            name=name.strip(),
+            fingerprint=fingerprint.strip(),
+        )
+
+    def as_toml(self) -> dict[str, str]:
+        """Return a TOML-serializable representation."""
+        return {
+            "project_root": self.project_root,
+            "name": self.name,
+            "fingerprint": self.fingerprint,
+        }
+
+
+def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
+    """Normalize a project root for persisted MCP trust comparisons.
+
+    Args:
+        project_root: Project root path to normalize.
+
+    Returns:
+        Resolved absolute project root string, or `None` when `project_root`
+            is `None`, cannot be expanded, or resolution detects a path loop.
+            On an `OSError` from `resolve()`, returns the expanded but
+            *unresolved* path as a fallback; a transient failure on only one of
+            the write/read sides then yields different strings and a spurious
+            re-prompt (fail-closed), never a false match.
+    """
+    if project_root is None:
+        return None
+    try:
+        expanded_root = Path(project_root).expanduser()
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not expand MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+    try:
+        return str(expanded_root.resolve())
+    except OSError:
+        logger.warning(
+            "Could not resolve MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return str(expanded_root)
+    except RuntimeError:
+        logger.warning(
+            "Could not resolve MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+
+def fingerprint_mcp_server_config(server: JSONValue) -> str:
+    """Return a stable fingerprint for an MCP server definition.
+
+    The contract is a JSON-serializable value (in practice the `dict` parsed
+    from `.mcp.json`, though a malformed entry may be any JSON scalar/array); a
+    non-serializable input raises `TypeError` from `json.dumps`. `sort_keys=True`
+    makes the digest independent of key order, so reordering fields in the config
+    does not force a re-prompt.
+
+    Args:
+        server: Parsed MCP server config (a JSON-serializable value).
+
+    Returns:
+        A SHA-256 fingerprint over the canonical JSON representation.
+    """
+    encoded = json.dumps(
+        server,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 @dataclass(frozen=True)
 class McpServerTrustLists:
-    """User-level allow/deny lists for project MCP servers, by server name.
+    """User-level allow/deny lists for project MCP servers.
 
     Sourced only from the user's own configuration — the home `config.toml`, the
     global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
-    committed `.mcp.json` cannot self-approve. A committed *project* `.env` is
-    specifically prevented from setting the env forms of these lists (see
-    `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). See `load_mcp_server_trust_lists`.
+    committed `.mcp.json` cannot self-approve. Persisted approvals are scoped to
+    a resolved project root and the approved server definition's fingerprint.
+    Env-sourced approvals remain explicit process-wide name approvals.
 
-    The "reject wins" invariant — a name in both lists is only rejected — is
-    enforced in `__post_init__`, so every instance is disjoint no matter how it
-    was constructed; callers need not pre-subtract.
+    The "reject wins" invariant — a name in both approval and rejection data is
+    only rejected — is enforced in `__post_init__`, so every instance is disjoint
+    no matter how it was constructed; callers need not pre-subtract.
     """
 
     enabled: frozenset[str]
-    """Server names pre-approved to load from an untrusted project config."""
+    """Env-sourced server names pre-approved for any project config."""
 
     disabled: frozenset[str]
-    """Server names always rejected; reject wins over `enabled` and over trust."""
+    """Server names always rejected; reject wins over approvals and over trust."""
 
     read_error: str | None = field(default=None, compare=False)
     """Non-`None` when the user's `config.toml` existed but its trust policy
@@ -3373,15 +3577,56 @@ class McpServerTrustLists:
     continue to apply. Excluded from equality so a failed load still compares
     equal to empty lists for tests that only care about the resolved names."""
 
-    def __post_init__(self) -> None:
-        """Enforce reject precedence by removing disabled names from enabled.
+    approvals: frozenset[McpProjectServerApproval] = field(
+        default_factory=frozenset, kw_only=True
+    )
+    """Project-scoped approvals loaded from user `config.toml`."""
 
-        A rejected name must never survive in `enabled`, whatever the caller
-        passed, so a future allow-first consumer can't be tricked into loading
-        a denied server. Frozen dataclass, so assign via `object.__setattr__`.
+    legacy_ignored: frozenset[str] = field(
+        default_factory=frozenset, compare=False, kw_only=True
+    )
+    """Names found in a legacy `[mcp].enabled_project_servers` list that this
+    build no longer honors. Non-empty means the user relied on the removed flat
+    allowlist, so those servers silently stopped loading; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) so
+    non-interactive paths can explain the change. Diagnostic, not resolved
+    policy — excluded from equality like `read_error`."""
+
+    legacy_env_ignored: bool = field(default=False, compare=False, kw_only=True)
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. It was renamed to the `DANGEROUSLY_`-prefixed var and is no longer
+    read, so its names silently stopped pre-approving. The diagnostic twin of
+    `legacy_ignored` for the env surface; callers should surface the rename so the
+    change is not silent. Excluded from equality like `read_error`."""
+
+    malformed_approvals: int = field(default=0, compare=False, kw_only=True)
+    """Count of `[mcp].enabled_project_server_approvals` rows that were dropped as
+    malformed (wrong-typed key, non-table entry, or a table missing/blank
+    `project_root`/`name`/`fingerprint`). Non-zero means a persisted approval
+    could not be read, so its server silently re-prompts; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) for parity with
+    `legacy_ignored`. Diagnostic, not resolved policy — excluded from equality."""
+
+    def __post_init__(self) -> None:
+        """Enforce reject precedence by stripping disabled names from both sets.
+
+        A rejected name must never survive in `enabled` or `approvals`, whatever
+        the caller passed, so a future allow-first consumer can't be tricked
+        into loading a denied server. Frozen dataclass, so assign via
+        `object.__setattr__`.
         """
         if self.enabled & self.disabled:
             object.__setattr__(self, "enabled", self.enabled - self.disabled)
+        if any(approval.name in self.disabled for approval in self.approvals):
+            object.__setattr__(
+                self,
+                "approvals",
+                frozenset(
+                    approval
+                    for approval in self.approvals
+                    if approval.name not in self.disabled
+                ),
+            )
 
     @property
     def load_failed(self) -> bool:
@@ -3394,6 +3639,46 @@ class McpServerTrustLists:
         sentinel.
         """
         return self.read_error is not None
+
+    def is_enabled(
+        self,
+        name: str,
+        *,
+        project_root: str | Path | None,
+        server: JSONValue,
+    ) -> bool:
+        """Return whether `server` is approved by name or scoped fingerprint.
+
+        Args:
+            name: MCP server name.
+            project_root: Resolved project root for the config that defined it.
+            server: Parsed MCP server config for fingerprint comparison.
+
+        Returns:
+            `True` when the server is approved and not disabled.
+        """
+        if not name.strip():
+            # A blank name can only come from a malformed config. Fail closed
+            # here rather than let `McpProjectServerApproval.create` raise
+            # `ValueError` from its non-empty invariant out of the trust filter.
+            return False
+        # These membership tests use the raw (unstripped) `name`, while the
+        # approval path below strips it via `create`. Reject precedence for a
+        # whitespace-padded name (e.g. `" docs "` vs `disabled={"docs"}`) does
+        # NOT rest on this check — it survives only because `__post_init__`
+        # already stripped every disabled name out of `enabled` and `approvals`
+        # (it compares the always-stripped `approval.name`). Keep that stripping
+        # in sync with this check: a padded name sails past both lines here.
+        if name in self.disabled:
+            return False
+        if name in self.enabled:
+            return True
+        approval = McpProjectServerApproval.create(
+            project_root=project_root, name=name, server=server
+        )
+        if approval is None:
+            return False
+        return approval in self.approvals
 
 
 def _parse_csv_env(name: str) -> list[str] | None:
@@ -3470,6 +3755,60 @@ def _toml_str_list(
     return result, False
 
 
+def _toml_project_server_approvals(
+    value: object, *, config_path: Path
+) -> tuple[list[McpProjectServerApproval], int]:
+    """Parse `[mcp].enabled_project_server_approvals` entries.
+
+    Args:
+        value: Raw TOML value from the `[mcp]` table.
+        config_path: Config file the value came from, for log context.
+
+    Returns:
+        `(approvals, dropped)`: the well-formed project-scoped approvals and the
+            count of malformed rows ignored. Dropping is fail-closed for an
+            allowlist; the count lets callers surface the loss (a bare
+            `logger.warning` is invisible outside debug mode) so a corrupt saved
+            approval doesn't just silently re-prompt.
+    """
+    if value is None:
+        return [], 0
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].enabled_project_server_approvals in %s should be a list of "
+            "tables; ignoring it",
+            config_path,
+        )
+        # Count the whole-key type error as one dropped diagnostic so it is
+        # surfaced rather than only logged.
+        return [], 1
+
+    approvals: list[McpProjectServerApproval] = []
+    dropped = 0
+    for item in value:
+        if not isinstance(item, dict):
+            logger.warning(
+                "[mcp].enabled_project_server_approvals in %s ignored a "
+                "non-table entry",
+                config_path,
+            )
+            dropped += 1
+            continue
+        approval = McpProjectServerApproval.from_toml(
+            cast("Mapping[str, object]", item)
+        )
+        if approval is None:
+            logger.warning(
+                "[mcp].enabled_project_server_approvals in %s ignored an "
+                "entry missing project_root, name, or fingerprint",
+                config_path,
+            )
+            dropped += 1
+            continue
+        approvals.append(approval)
+    return approvals, dropped
+
+
 def load_mcp_server_trust_lists(
     config_path: Path | None = None,
 ) -> McpServerTrustLists:
@@ -3477,7 +3816,7 @@ def load_mcp_server_trust_lists(
 
     Security boundary: this reads the `[mcp]` table only from the user-level
     `config.toml` (`DEFAULT_CONFIG_PATH`, i.e. `~/.deepagents/config.toml`) and
-    the `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` /
+    the `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` /
     `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS` process env vars — never from
     a project's `.mcp.json` or any repo-committed file. There is no
     project-level `config.toml` discovery, so an attacker who commits a
@@ -3487,16 +3826,20 @@ def load_mcp_server_trust_lists(
 
     Source resolution differs by list, matching each one's security direction:
 
-    - `enabled` (permissive): the env var, when set, *replaces* the TOML list
+    - `enabled` (permissive): the env var is an explicit process-wide name
+        allowlist. When set, it *replaces* scoped TOML approvals
         (env-beats-config, as elsewhere). Clearing it via an empty env value is
         fail-closed — it only ever pre-approves fewer servers.
+    - `approvals` (permissive): TOML approvals are scoped to project root and a
+        server-definition fingerprint. Legacy flat TOML `enabled_project_servers`
+        entries are ignored because they cannot be safely scoped.
     - `disabled` (restrictive): the env var *unions* with the TOML list — denies
         accumulate and a lower-effort source can never silently empty a deny
         entry set in the other, which would be a fail-open. There is
         deliberately no way to *remove* a configured deny via env.
 
-    Rejection wins: a name appearing in both the enabled and disabled result is
-    reported only in `disabled`.
+    Rejection wins: a name appearing in approval and disabled data is reported
+    only in `disabled`.
 
     Args:
         config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
@@ -3514,8 +3857,10 @@ def load_mcp_server_trust_lists(
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    toml_enabled: list[str] = []
+    toml_approvals: list[McpProjectServerApproval] = []
+    malformed_approvals = 0
     toml_disabled: list[str] = []
+    legacy_ignored: list[str] = []
     read_error: str | None = None
     try:
         if config_path.exists():
@@ -3523,14 +3868,23 @@ def load_mcp_server_trust_lists(
                 data = tomllib.load(f)
             mcp_section = data.get("mcp", {})
             if isinstance(mcp_section, dict):
-                # A wrong-typed `enabled` value degrades to an empty allowlist:
-                # approving nothing extra is already fail-closed, so the
-                # `malformed` flag is intentionally ignored here.
-                toml_enabled, _ = _toml_str_list(
+                toml_approvals, malformed_approvals = _toml_project_server_approvals(
+                    mcp_section.get("enabled_project_server_approvals"),
+                    config_path=config_path,
+                )
+                legacy_enabled, _ = _toml_str_list(
                     mcp_section.get("enabled_project_servers"),
                     key="enabled_project_servers",
                     config_path=config_path,
                 )
+                if legacy_enabled:
+                    legacy_ignored = legacy_enabled
+                    logger.warning(
+                        "[mcp].enabled_project_servers in %s is ignored; run "
+                        "the project MCP approval prompt again to save "
+                        "project-scoped approvals",
+                        config_path,
+                    )
                 toml_disabled, disabled_malformed = _toml_str_list(
                     mcp_section.get("disabled_project_servers"),
                     key="disabled_project_servers",
@@ -3569,18 +3923,176 @@ def load_mcp_server_trust_lists(
             exc_info=True,
         )
 
-    env_enabled = _parse_csv_env(_env_vars.ENABLED_PROJECT_MCP_SERVERS)
+    env_enabled = _parse_csv_env(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS)
     env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
+    # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
+    # longer read; flag it set-but-ignored so callers can explain the rename
+    # instead of the names silently ceasing to pre-approve.
+    legacy_env_ignored = _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in os.environ
+    if legacy_env_ignored:
+        logger.warning(
+            "%s is no longer used; it was renamed to %s",
+            _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        )
 
-    # Enabled: env replaces TOML. Disabled: env unions with TOML (denies
-    # accumulate; env can add a deny but never clear a configured one).
-    enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
-    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
-    # Reject precedence (a name in both lists ends up only in `disabled`) is
-    # enforced by `McpServerTrustLists.__post_init__`, so no subtraction here.
-    return McpServerTrustLists(
-        enabled=enabled, disabled=disabled, read_error=read_error
+    # Enabled env remains an explicit process-wide name allowlist. TOML approvals
+    # are scoped to the project root and server fingerprint; a set env var
+    # replaces those TOML approvals to preserve env-beats-config semantics.
+    enabled = frozenset(env_enabled or ())
+    approvals = frozenset(
+        () if env_enabled is not None or read_error is not None else toml_approvals
     )
+    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
+    # Corner: when `read_error` is set because `config.toml` was unreadable,
+    # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*
+    # exported in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` would survive here —
+    # "reject wins" does not hold in that one corner. It requires a
+    # self-contradicting config plus the explicit `DANGEROUSLY_` opt-in, and the
+    # read error is surfaced to the user, so it stays an accepted footgun rather
+    # than a silent fail-open.
+    # Reject precedence is enforced by `McpServerTrustLists.__post_init__`, so no
+    # subtraction here.
+    return McpServerTrustLists(
+        enabled=enabled,
+        disabled=disabled,
+        approvals=approvals,
+        read_error=read_error,
+        legacy_ignored=frozenset(legacy_ignored),
+        legacy_env_ignored=legacy_env_ignored,
+        malformed_approvals=malformed_approvals,
+    )
+
+
+def add_enabled_project_mcp_servers(
+    names: Iterable[str],
+    config_path: Path | None = None,
+    *,
+    project_root: str | Path | None = None,
+    server_configs: Mapping[str, JSONValue] | None = None,
+) -> bool:
+    """Persist project-scoped MCP server approvals.
+
+    Backs the interactive approval prompt's "always allow" choice: the given
+    names are added to the user-level `config.toml` allowlist with the current
+    project root and each server definition's fingerprint, so a different repo
+    or a changed command/URL under the same name asks for approval again.
+
+    Defaults to the user-level config (`DEFAULT_CONFIG_PATH`), the sole source
+    `load_mcp_server_trust_lists` reads the allowlist from — so writing to the
+    user's home config is what preserves the read-side trust boundary (a
+    committed `.mcp.json` can never self-approve). Any name being persisted is
+    also pruned from the deprecated flat `[mcp].enabled_project_servers` key
+    (the key is removed once empty), migrating callers off the ignored legacy
+    list. The write is atomic (`tempfile.mkstemp` + `Path.replace`) and holds
+    `_config_write_lock` across the whole read-modify-write, matching
+    `suppress_warning`.
+
+    Args:
+        names: Server names to add to the allowlist. Blank/whitespace-only
+            names are ignored; a call with no usable names is a no-op success.
+        config_path: Config file to write. Defaults to `DEFAULT_CONFIG_PATH`
+            (`~/.deepagents/config.toml`). Callers should not point this at a
+            project path: the loader only ever reads the user-level config, so
+            an allowlist written elsewhere is never honored.
+        project_root: Project root whose MCP server definitions were approved.
+        server_configs: Current server definitions keyed by server name.
+
+    Returns:
+        `True` if the save succeeded (or there was nothing to add), `False` on
+            I/O, parse failure, an unknown server name, or missing
+            project/server context.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    clean_names = [name.strip() for name in names if name and name.strip()]
+    if not clean_names:
+        return True
+
+    normalized_root = normalize_mcp_project_root(project_root)
+    if normalized_root is None or server_configs is None:
+        logger.error(
+            "Cannot save enabled project MCP servers without project root and "
+            "server definitions"
+        )
+        return False
+
+    approvals_to_add: list[McpProjectServerApproval] = []
+    for name in clean_names:
+        if name not in server_configs:
+            logger.error("Cannot save unknown project MCP server %r", name)
+            return False
+        approval = McpProjectServerApproval.create(
+            project_root=normalized_root, name=name, server=server_configs[name]
+        )
+        if approval is None:
+            # normalized_root is already non-None here, so create cannot fail;
+            # guard anyway so a future change can't smuggle in a bad approval.
+            logger.error("Could not build approval for project MCP server %r", name)
+            return False
+        approvals_to_add.append(approval)
+
+    try:
+        # Hold the shared lock across read-through-replace: the atomic rename
+        # alone only prevents torn writes, not the lost update where a
+        # concurrent config.toml writer reads the same snapshot and its
+        # `replace()` lands last, silently dropping this approval. See the
+        # `_config_write_lock` contract; `suppress_warning` guards the same way.
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            mcp_section = data.get("mcp")
+            if not isinstance(mcp_section, dict):
+                mcp_section = {}
+            existing, _ = _toml_project_server_approvals(
+                mcp_section.get("enabled_project_server_approvals"),
+                config_path=config_path,
+            )
+            merged = set(existing) | set(approvals_to_add)
+            mcp_section["enabled_project_server_approvals"] = [
+                approval.as_toml() for approval in sorted(merged)
+            ]
+            legacy, legacy_malformed = _toml_str_list(
+                mcp_section.get("enabled_project_servers"),
+                key="enabled_project_servers",
+                config_path=config_path,
+            )
+            if legacy and not legacy_malformed:
+                migrated = set(clean_names)
+                remaining = [name for name in legacy if name not in migrated]
+                if remaining:
+                    mcp_section["enabled_project_servers"] = remaining
+                else:
+                    mcp_section.pop("enabled_project_servers", None)
+            data["mcp"] = mcp_section
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # Matches `suppress_warning`: `TypeError` covers `tomli_w.dump`
+        # rejecting a non-serializable payload; `ValueError` covers things like
+        # `os.fdopen` on a closed fd. Folding them in keeps the `bool` contract
+        # intact so the caller degrades to a "could not remember" warning
+        # instead of crashing with a raw traceback.
+        logger.exception(
+            "Could not save enabled project MCP servers to %s", config_path
+        )
+        return False
+    return True
 
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {

@@ -1,6 +1,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shard_matrix  # noqa: E402
 import unified_prep as up  # noqa: E402
@@ -22,18 +24,82 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
     assert up.provider_of("weirdvendor:x", known) == "other"
 
 
-def test_derive_pool_from_concurrency_and_rollouts():
-    # concurrency 4, rollouts 3 -> per_shard=3 -> 40//3=13 ; 80//13=6
-    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (13, 1)
-    # concurrency 1 -> per_shard=1 -> 40 ; 80//40=2
+def test_derive_pool_uses_full_concurrency_for_packed_shards():
+    # Packed shards can use all four slots: 40 // 4 = 10.
+    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (10, 1)
+    # Two sources for one model split that model's 10-shard budget equally.
+    assert up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=34, n_models=1, n_sources=2
+    ) == (5, 2)
+    # concurrency 1 -> 40 shard jobs; 80 // 40 = 2 models.
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_models=5) == (
         40,
         2,
     )
-    # rollouts < concurrency clamps per_shard to rollouts (the utilization win)
-    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_models=1)[0] == 20
-    # clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_models
+    # Lower rollouts do not reduce a packed shard's peak concurrency.
+    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_models=1)[0] == 10
+    # Clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_models.
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_models=1) == (8, 1)
+
+
+def test_allocate_shard_budgets_trims_overflow_from_largest_category():
+    budgets = up._allocate_shard_budgets(
+        {"big": 10_000, "s1": 1, "s2": 1}, cap=shard_matrix.MAX_SHARDS
+    )
+
+    assert sum(budgets.values()) <= shard_matrix.MAX_SHARDS
+    assert budgets == {"big": 198, "s1": 1, "s2": 1}
+
+
+def test_allocate_shard_budgets_breaks_largest_ties_by_category_order():
+    budgets = up._allocate_shard_budgets(
+        {"first": 1_000, "second": 1_000, "small-1": 1, "small-2": 1, "small-3": 1},
+        cap=shard_matrix.MAX_SHARDS,
+    )
+
+    assert sum(budgets.values()) <= shard_matrix.MAX_SHARDS
+    assert budgets == {
+        "first": 98,
+        "second": 99,
+        "small-1": 1,
+        "small-2": 1,
+        "small-3": 1,
+    }
+
+
+def test_main_rejects_empty_requested_category(tmp_path, monkeypatch):
+    import json as _j
+    import pytest
+
+    tasks_json = tmp_path / "tasks.json"
+    tasks_json.write_text(_j.dumps({"autonomous": []}))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    with pytest.raises(SystemExit, match=r"No tasks resolved for requested categor"):
+        up.main([])
+
+
+@pytest.mark.parametrize(
+    "tasks", [{"autonomous": "taskname"}, ["taskname"], {"autonomous": ["task", 1]}]
+)
+def test_main_rejects_invalid_full_task_json_shape(tmp_path, monkeypatch, tasks):
+    import json as _j
+    import pytest
+
+    tasks_json = tmp_path / "tasks.json"
+    tasks_json.write_text(_j.dumps(tasks))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    with pytest.raises(SystemExit, match=r"UNIFIED_TASKS_JSON must be a JSON object"):
+        up.main([])
 
 
 def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
@@ -42,8 +108,8 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
-    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "deepagent")
-    with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPLS entries must be in"):
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "deepagent")
+    with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPL must be one of"):
         up.main()
 
 
@@ -127,45 +193,82 @@ def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
     assert _j.loads(lines["categories"]) == ["autonomous", "context"]
 
 
-def test_build_flat_matrix_expands_code_categories_over_configs():
-    tasks = {"autonomous": ["a1", "a2"], "context": ["c1"]}
-    entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare", "dcode"]
+def test_total_job_guard_allows_within_budget():
+    up.total_job_guard(n_models=2, shards_per_model=142)  # 284 <= 400, no raise
+
+
+def test_total_job_guard_rejects_over_budget():
+    import pytest
+
+    with pytest.raises(SystemExit, match=r"worker pool"):
+        up.total_job_guard(n_models=3, shards_per_model=142)  # 426 > 400
+
+
+def test_main_full_multi_model_guard_counts_packed_shards(tmp_path, monkeypatch):
+    # The guard must count the packed flat-matrix entries, not the raw task
+    # count. 260 tasks pack (via ceil division) to 130 shards/model, so 3 models
+    # emit 3 x 130 = 390 jobs, within the 400 budget. Guarding on the raw count
+    # (3 x 260 = 780) -- or on the loose min(tasks, MAX_SHARDS)=200 bound
+    # (3 x 200 = 600) -- would wrongly reject this valid run.
+    import json as _j
+
+    n_tasks = 260
+    packed = len(
+        up.build_flat_matrix("x:y", ["autonomous"], {"autonomous": ["t"] * n_tasks})
     )
-    autos = [e for e in entries if e["category"] == "autonomous"]
-    impls = sorted({e["agent_impl"] for e in autos})
-    assert impls == ["bare", "dcode"]
-    # Each config gets the full task set for the category.
+    assert packed == 130  # pins the packing so the budget arithmetic below is real
     assert (
-        sum(len(e["include_tasks"].split()) for e in autos if e["agent_impl"] == "bare")
-        == 2
+        3 * packed <= up.TOTAL_JOB_BUDGET < 3 * min(n_tasks, up.shard_matrix.MAX_SHARDS)
     )
-    # The rest of the entry schema is untouched: existing keys keep the
-    # category's CATEGORY_MAP values and the fixed 1-task/shard fields.
-    cm = up.CATEGORY_MAP["autonomous"]
-    entry = autos[0]
-    assert entry["dataset"] == cm["dataset"]
-    assert entry["dataset_path"] == cm["dataset_path"]
-    assert entry["langsmith_dataset"] == ""
-    assert entry["n_shards"] == 1
-    assert entry["shard"] == 0
+
+    tasks_json = tmp_path / "tasks.json"
+    tasks_json.write_text(
+        _j.dumps({"autonomous": [f"harbor-index/t-{i}" for i in range(n_tasks)]})
+    )
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:a,anthropic:b,anthropic:c")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    assert up.main([]) == 0  # SystemExit if the guard over-counts (raw or loose bound)
+    lines = dict(
+        line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines()
+    )
+    entries = _j.loads(lines["eval_matrix"])["include"]
+    assert len(entries) == 3
+    for entry in entries:
+        assert len(_j.loads(entry["flat_matrix"])["include"]) == packed
 
 
-def test_build_flat_matrix_conversation_not_multiplied_by_configs():
-    tasks = {"autonomous": ["a1"], "conversation": ["t1", "t2"]}
+def test_build_flat_matrix_one_entry_per_task_across_categories():
+    tasks = {
+        "autonomous": ["harbor-index/a", "harbor-index/b"],
+        "context": ["cb-cloud-0"],
+    }
     entries = up.build_flat_matrix(
-        "openai:gpt",
-        ["autonomous", "conversation"],
-        tasks,
-        code_impls=["bare", "dcode"],
+        "openai:gpt", ["autonomous", "context"], tasks, code_impl="bare"
     )
-    conv = [e for e in entries if e["category"] == "conversation"]
-    assert {e["agent_impl"] for e in conv} == {"tau3"}
-    assert len(conv) == 2  # two tasks, one config, one task per shard
+    # 2 autonomous + 1 context = 3 single-task shards
+    assert len(entries) == 3
+    auto = [e for e in entries if e["category"] == "autonomous"]
+    assert {e["include_tasks"] for e in auto} == {"harbor-index/a", "harbor-index/b"}
+    assert all(e["n_shards"] == 1 and e["shard"] == 0 for e in entries)
+    assert all(e["agent_impl"] == "bare" for e in auto)  # code override applies
+    ctx = next(e for e in entries if e["category"] == "context")
+    assert ctx["dataset_path"] == "datasets/context-retrieval-evals"
+    assert ctx["agent_impl"] == "bare"
+    assert all(e["langsmith_dataset"] == "" for e in entries)
 
 
-def test_build_flat_matrix_defaults_to_bare_single_config():
-    tasks = {"autonomous": ["a1"], "conversation": ["t1"]}
+def test_build_flat_matrix_defaults_to_bare():
+    # No override: the code categories fall back to DEFAULT_AGENT_IMPL (bare),
+    # while conversation stays pinned to tau3.
+    assert up.DEFAULT_AGENT_IMPL == "bare"
+    tasks = {
+        "autonomous": ["harbor-index/a"],
+        "conversation": ["sierra-research/tau3-bench__x"],
+    }
     entries = up.build_flat_matrix("openai:gpt", ["autonomous", "conversation"], tasks)
     auto = next(e for e in entries if e["category"] == "autonomous")
     conv = next(e for e in entries if e["category"] == "conversation")
@@ -173,54 +276,77 @@ def test_build_flat_matrix_defaults_to_bare_single_config():
     assert conv["agent_impl"] == "tau3"
 
 
-def test_build_flat_matrix_emits_exactly_one_task_per_entry():
+def test_build_flat_matrix_conversation_stays_tau3():
+    tasks = {"conversation": ["sierra-research/tau3-bench__x"]}
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["conversation"], tasks, code_impl="bare"
+    )
+    assert entries[0]["agent_impl"] == "tau3"
+
+
+def test_build_flat_matrix_packs_above_cap():
     tasks = {
-        "autonomous": [f"a{i}" for i in range(60)],
-        "context": [f"c{i}" for i in range(60)],
+        "autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous"], tasks, code_impl="dcode"
+    )
+    assert len(entries) <= shard_matrix.MAX_SHARDS
+    # every task still present, split across include_tasks strings
+    seen = " ".join(e["include_tasks"] for e in entries).split()
+    assert seen == tasks["autonomous"]
+
+
+def test_build_flat_matrix_bounds_per_model_total_across_categories():
+    # 120 + 120 + 40 = 280 > MAX_SHARDS (200): the per-model TOTAL must be
+    # packed down to the cap via proportional per-category budgets, not just
+    # each category independently capped (which would allow up to 3x200).
+    tasks = {
+        "autonomous": [f"harbor-index/a{i}" for i in range(120)],
+        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(120)],
+        "context": [f"cb-cloud-{i}" for i in range(40)],
     }
     entries = up.build_flat_matrix(
         "openai:gpt",
-        ["autonomous", "context"],
+        ["autonomous", "conversation", "context"],
         tasks,
-        code_impls=["bare", "dcode"],
+        code_impl="dcode",
     )
-    assert len(entries) == 240
-    assert all(len(entry["include_tasks"].split()) == 1 for entry in entries)
-    for cat in ("autonomous", "context"):
-        for impl in ("bare", "dcode"):
-            seen = [
-                t
-                for e in entries
-                if e["category"] == cat and e["agent_impl"] == impl
-                for t in e["include_tasks"].split()
-            ]
-            assert seen == tasks[cat]
+    assert len(entries) <= shard_matrix.MAX_SHARDS
+    for cat, expected in tasks.items():
+        cat_entries = [e for e in entries if e["category"] == cat]
+        seen = " ".join(e["include_tasks"] for e in cat_entries).split()
+        assert seen == expected  # every task present exactly once, order preserved
 
 
-def test_build_flat_matrix_accepts_256_and_rejects_257_entries():
-    import pytest
+def test_derive_pool_budgets_packed_shards_at_full_concurrency():
+    tasks = {"autonomous": [f"harbor-index/a{i}" for i in range(260)]}
+    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks)
+    assert any(len(entry["include_tasks"].split()) > 1 for entry in entries)
 
-    tasks = {"autonomous": [f"task-{index}" for index in range(256)]}
+    max_parallel, _ = up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=len(entries), n_models=1
+    )
+    assert max_parallel == 10
+    assert max_parallel * 4 == up.MAX_TASKS_PER_MODEL
+
+
+def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
+    # Lite-like: total is well under MAX_SHARDS, so behavior is unchanged —
+    # one task per matrix entry, no packing.
+    tasks = {
+        "autonomous": [f"harbor-index/a{i}" for i in range(15)],
+        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
+        "context": [f"cb-cloud-{i}" for i in range(8)],
+    }
     entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous"], tasks, code_impls=["bare"]
+        "openai:gpt",
+        ["autonomous", "conversation", "context"],
+        tasks,
+        code_impl="dcode",
     )
-    assert len(entries) == shard_matrix.MAX_SHARDS == 256
-    tasks["autonomous"].append("task-256")
-    with pytest.raises(SystemExit, match="does not pack tasks"):
-        up.build_flat_matrix("openai:gpt", ["autonomous"], tasks, code_impls=["bare"])
-
-
-def test_build_flat_matrix_dedupes_duplicate_configs():
-    # A repeated config collapses to a single config: ["bare", "bare"] yields
-    # the same entries as ["bare"] (guards the cap invariant, see Fix 1).
-    tasks = {"autonomous": ["a1", "a2"], "context": ["c1"]}
-    once = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare"]
-    )
-    twice = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare", "bare"]
-    )
-    assert twice == once
+    assert len(entries) == 15 + 11 + 8
+    assert all(len(e["include_tasks"].split()) == 1 for e in entries)
 
 
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
@@ -235,8 +361,8 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert up.main([]) == 0
     lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
-    assert lines["max_parallel"] == "13"  # conc4,roll3 -> 40//3
-    assert lines["model_parallel"] == "2"  # 80//13=6 -> min(6, 2 models)
+    assert lines["max_parallel"] == "10"  # conc4 -> 40//4
+    assert lines["model_parallel"] == "2"  # 80//10=8 -> min(8, 2 models)
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
     assert len(eval_matrix) == 2  # one entry per model
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
@@ -265,113 +391,53 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "openai_matrix" not in lines
 
 
-def test_main_expands_identical_matrices_across_resolved_sources(tmp_path, monkeypatch):
+def test_main_preserves_immutable_sources_and_packed_post_source_job_guard(
+    tmp_path, monkeypatch
+):
     import json as _j
 
     sources = [
-        {"version_id": "v1", "branch": "branch-a", "sha": "a" * 40},
-        {"version_id": "v2", "branch": "branch-b", "sha": "b" * 40},
+        {"version_id": "v1", "branch": "baseline", "sha": "a" * 40},
+        {"version_id": "v2", "branch": "candidate", "sha": "b" * 40},
     ]
     monkeypatch.setenv("UNIFIED_SOURCES_JSON", _j.dumps(sources))
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
-    out = tmp_path / "out.txt"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    output = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
 
-    assert up.main() == 0
-    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert up.main([]) == 0
+    lines = dict(line.split("=", 1) for line in output.read_text().splitlines())
     matrix = _j.loads(lines["eval_matrix"])["include"]
-    assert [entry["version_id"] for entry in matrix] == ["v1", "v2"]
-    assert matrix[0]["flat_matrix"] == matrix[1]["flat_matrix"]
+    assert [(entry["version_id"], entry["branch"], entry["sha"]) for entry in matrix] == [
+        ("v1", "baseline", "a" * 40),
+        ("v2", "candidate", "b" * 40),
+    ]
+    assert all(entry["product_artifact"].startswith("unified-products-v") for entry in matrix)
     assert lines["comparison_mode"] == "true"
-    assert lines["version_model_parallel"] == "2"
-    assert int(lines["total_jobs"]) > 0
-    build = _j.loads(lines["build_matrix"])["include"]
-    assert [entry["packages"] for entry in build] == [
-        ["deepagents", "deepagents-code"],
-        ["deepagents", "deepagents-code"],
-    ]
+    # The post-pack job count includes the source dimension, not raw tasks.
+    assert int(lines["total_jobs"]) == 2 * len(
+        _j.loads(matrix[0]["flat_matrix"])["include"]
+    )
+    # Sources share one model's 40-trial budget rather than each getting 40.
+    assert lines["max_parallel"] == "5"
+    assert lines["model_parallel"] == "2"
 
 
-def test_parse_sources_rejects_duplicate_resolved_shas():
-    import json as _j
-    import pytest
-
-    sources = [
-        {"version_id": "v1", "branch": "branch-a", "sha": "a" * 40},
-        {"version_id": "v2", "branch": "branch-b", "sha": "a" * 40},
-    ]
-    with pytest.raises(SystemExit, match="distinct commit SHAs"):
-        up.parse_sources(_j.dumps(sources))
-
-
-def test_main_allows_more_than_400_jobs_across_sources(tmp_path, monkeypatch):
+def test_main_rejects_sources_exceeding_one_models_trial_budget(monkeypatch):
     import json as _j
 
     sources = [
-        {
-            "version_id": f"v{index}",
-            "branch": f"branch-{index}",
-            "sha": f"{index:040x}",
-        }
-        for index in range(1, 28)
+        {"version_id": f"v{i}", "branch": f"branch-{i}", "sha": f"{i:040x}"}
+        for i in range(1, 12)
     ]
     monkeypatch.setenv("UNIFIED_SOURCES_JSON", _j.dumps(sources))
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
-    out = tmp_path / "out.txt"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "4")
 
-    assert up.main() == 0
-    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
-    assert int(lines["total_jobs"]) > 400
-
-
-def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
-    import pytest
-
-    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
-    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
-    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,bogus")
-    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
-    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
-    with pytest.raises(SystemExit):
-        up.main()
-
-
-def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
-    import json as _j
-    from collections import Counter
-
-    import lite_tasks
-
-    # `autonomous` has >1 lite task, so build_flat_matrix emits one entry per
-    # task (many entries sharing the same (model, config, category) triple).
-    # main's `seen_leaves` set must collapse each config's many entries to a
-    # single leaf; this test fails if that dedup is removed.
-    assert len(lite_tasks.LITE_TASKS["autonomous"]) > 1
-    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
-    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
-    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
-    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
-    out = tmp_path / "out.txt"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    up.main()
-    text = out.read_text()
-    line = next(ln for ln in text.splitlines() if ln.startswith("expected_leaves="))
-    leaves = _j.loads(line.split("=", 1)[1])
-    configs = {leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"}
-    assert configs == {"bare", "dcode"}
-    # No duplicate (model, config, category) triples: dedup collapses the many
-    # per-task shard entries to exactly one leaf each.
-    triples = [(leaf["model"], leaf["config"], leaf["category"]) for leaf in leaves]
-    assert len(triples) == len(set(triples))
-    # Each config for the multi-task `autonomous` category appears exactly once
-    # (would be len(LITE_TASKS["autonomous"]) per config if dedup were removed).
-    autonomous_config_counts = Counter(
-        leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"
-    )
-    assert autonomous_config_counts == Counter({"bare": 1, "dcode": 1})
+    with pytest.raises(SystemExit, match="sources.*per-model concurrent-shard budget"):
+        up.main([])

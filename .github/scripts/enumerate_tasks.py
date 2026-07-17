@@ -2,6 +2,8 @@
 
 Reuses the exact task-name resolution the run step uses:
   - local (--path) datasets: subdir basenames with a task.toml (sorted, stable),
+  - synthetic datasets (e.g. "tau3-subset"): a committed task list, since the
+    name is not a registry package and would fail a registry lookup,
   - registry datasets: PackageDatasetClient manifest task_ids -> get_name().
 
 Registry lookups need harbor installed and network; the local path is pure
@@ -23,7 +25,9 @@ def local_task_names(local_dir: str) -> list[str]:
         if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "task.toml"))
     )
     if not names:
-        raise SystemExit(f"No local Harbor tasks (dirs with task.toml) under {local_dir}")
+        raise SystemExit(
+            f"No local Harbor tasks (dirs with task.toml) under {local_dir}"
+        )
     return names
 
 
@@ -44,10 +48,35 @@ def registry_task_names(dataset_ref: str) -> list[str]:
     return names
 
 
+def tau3_subset_task_names() -> list[str]:
+    # "tau3-subset" is a synthetic curated view, not a registry package, so it
+    # cannot be resolved via the registry client. Pull its committed 30-task
+    # list from the same module the harbor leaf uses (single source of truth).
+    from deepagents_evals.tau3_subset import INCLUDE_TASKS
+
+    names = INCLUDE_TASKS.split()
+    if not names:
+        raise SystemExit(
+            "tau3-subset resolved to 0 tasks; "
+            "deepagents_evals.tau3_subset.INCLUDE_TASKS is empty."
+        )
+    return names
+
+
+# Synthetic datasets resolve to a committed task list instead of a registry
+# lookup, because their names are not `org/name` registry packages.
+SYNTHETIC_DATASETS = {"tau3-subset": tau3_subset_task_names}
+
+
 def main() -> int:
     dataset_path = os.environ.get("ENUM_DATASET_PATH", "").strip()
     dataset = os.environ.get("ENUM_DATASET", "").strip()
-    names = local_task_names(dataset_path) if dataset_path else registry_task_names(dataset)
+    if dataset_path:
+        names = local_task_names(dataset_path)
+    elif dataset in SYNTHETIC_DATASETS:
+        names = SYNTHETIC_DATASETS[dataset]()
+    else:
+        names = registry_task_names(dataset)
     out = os.environ.get("ENUM_OUTPUT")
     text = "\n".join(names) + "\n"
     if out:

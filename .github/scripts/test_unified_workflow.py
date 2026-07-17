@@ -440,8 +440,15 @@ def test_download_retries_discard_partial_attempts(tmp_path: Path) -> None:
         assert loop.count("attempt_dir=$(mktemp -d)") == 1
         assert loop.index("attempt_dir=$(mktemp -d)") < loop.index("gh run download")
         assert '--dir "$attempt_dir"' in loop
-        assert loop.count('rm -rf "$attempt_dir"') == 2
-        assert f'mv "$attempt_dir" {destination_name}' in loop
+        # Every download path cleans a failed attempt and the successful attempt;
+        # the source-comparison extractor additionally cleans after unpacking.
+        assert loop.count('rm -rf "$attempt_dir"') in {2, 3}
+        # Ordinary runs promote the fresh download atomically; source comparisons
+        # unpack verified run archives into the destination instead.
+        assert (
+            f'mv "$attempt_dir" {destination_name}' in loop
+            or 'tar --zstd -xf "$archive" -C "$destination/$artifact"' in loop
+        )
         empty_match = re.search(
             r"if grep -Eqi '[^']+' dl\.log; then(?P<body>.*?)\n\s*fi",
             loop,
@@ -450,7 +457,10 @@ def test_download_retries_discard_partial_attempts(tmp_path: Path) -> None:
         assert empty_match is not None
         empty_body = empty_match.group("body")
         assert 'rm -rf "$attempt_dir"' in empty_body
-        assert f"mkdir -p {destination_name}" in empty_body
+        assert (
+            f"mkdir -p {destination_name}" in empty_body
+            or 'mkdir -p "$destination"' in empty_body
+        )
 
 
 def test_combined_diagnostics_upload_after_aggregation_failure() -> None:
@@ -489,6 +499,13 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
     assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
     assert '"${expected_shards_args[@]}"' in compute
+    # A flat matrix spans categories, so its global harbor result is not a
+    # category-local completeness signal. Expected shard coverage is authoritative.
+    assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in compute
+    assert "harbor_result_args=()" in compute
+    assert 'if [ -z "$FLAT_MATRIX" ]; then' in compute
+    assert 'harbor_result_args=(--harbor-result "$HARBOR_RESULT")' in compute
+    assert '"${harbor_result_args[@]}"' in compute
 
 
 def test_harbor_artifacts_are_archived_and_extracted_for_aggregation() -> None:
@@ -819,7 +836,8 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
 
     job_env = _indented_block(harbor_job, "    env:")
     assert (
-        "HARBOR_DATASET: ${{ matrix.dataset || inputs.dataset || 'terminal-bench/terminal-bench-2' }}"
+        "HARBOR_DATASET: ${{ matrix.dataset || inputs.dataset || "
+        "'terminal-bench/terminal-bench-2' }}"
         in job_env
     )
     assert (

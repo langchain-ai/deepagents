@@ -121,8 +121,10 @@ def test_memory_auto_save_toml_disables(monkeypatch) -> None:
 
 def test_is_memory_auto_save_enabled_reads_env(monkeypatch) -> None:
     """The `config.is_memory_auto_save_enabled` helper honors the env override."""
+    from deepagents_code import config_manifest
     from deepagents_code.config import is_memory_auto_save_enabled
 
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
     monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
     assert is_memory_auto_save_enabled() is True
 

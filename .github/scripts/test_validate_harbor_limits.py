@@ -91,12 +91,21 @@ def test_parse_positive_accepts_valid(mod: ModuleType) -> None:
 def test_derive_shard_parallel_saturates_pool_and_clamps_to_n_shards(
     mod: ModuleType,
 ) -> None:
-    # per_shard = min(4, 3) = 3; 40 // 3 = 13, well under n_shards=100.
-    assert mod.derive_shard_parallel(concurrency=4, rollouts=3, n_shards=100) == 13
+    # Packed shards can use all 4 slots; 40 // 4 = 10, under n_shards=100.
+    assert mod.derive_shard_parallel(concurrency=4, rollouts=3, n_shards=100) == 10
     # Same concurrency/rollouts, but n_shards=5 clamps the pool down to 5.
     assert mod.derive_shard_parallel(concurrency=4, rollouts=3, n_shards=5) == 5
-    # per_shard = min(1, 3) = 1; 40 // 1 = 40, the full budget.
+    # concurrency 1 allows 40 shard jobs, using the full budget.
     assert mod.derive_shard_parallel(concurrency=1, rollouts=3, n_shards=100) == 40
+
+
+def test_derive_shard_parallel_uses_concurrency_when_rollouts_are_lower(
+    mod: ModuleType,
+) -> None:
+    """Multiple tasks let a shard fill concurrency beyond one task's rollouts."""
+    pool = mod.derive_shard_parallel(concurrency=4, rollouts=2, n_shards=100)
+    assert pool == 10
+    assert pool * 4 == mod.MAX_TASKS_PER_MODEL
 
 
 def test_derive_shard_parallel_unchanged_at_todays_n_shards_10(mod: ModuleType) -> None:

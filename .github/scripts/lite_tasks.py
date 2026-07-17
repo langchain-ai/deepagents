@@ -20,11 +20,18 @@ LITE_TASKS: dict[str, list[str]] = {
     # Excludes the bix* bioinformatics tasks: their ~6 GB `chenzizhao/bixbench`
     # image exhausts the Docker-sandbox runner disk (and fails the LangSmith
     # builder). Re-add once lite runs on a sandbox that builds big images.
+    # `gpqadiamond-cope-rearrangement-products` and
+    # `swesmith-fix-oauth1-header-params` replaced
+    # `replicationbench-find-galactic-vz-peaks` and `usaco-assign-cows-to-barns`:
+    # both originals could run ~30-65 min (replicationbench's naive big-data script
+    # hits the 1h per-command timeout), defeating lite's low-cost goal. The swaps are
+    # <5 min and still frontier (partial-pass), re-picked on gpt-5.6-terra
+    # timing+signal.
     "autonomous": [
-        "harbor-index/replicationbench-find-galactic-vz-peaks",
+        "harbor-index/gpqadiamond-cope-rearrangement-products",
         "harbor-index/swebenchverified-fix-span-selector-axes-limits",
         "harbor-index/omnimath-find-perfect-square-functions",
-        "harbor-index/usaco-assign-cows-to-barns",
+        "harbor-index/swesmith-fix-oauth1-header-params",
         "harbor-index/featurebench-add-feature-mlflow-bedrock-autolog",
         "harbor-index/build-word2vec-pipeline",
         "harbor-index/tb-dna-insert",

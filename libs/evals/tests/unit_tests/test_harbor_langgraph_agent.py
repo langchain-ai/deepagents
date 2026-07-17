@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents_code.config import settings
-from langchain_core.messages import AIMessage, UsageMetadata
+from langchain.agents.middleware.types import ModelResponse
+from langchain_core.messages import AIMessage, ToolMessage, UsageMetadata
+from pydantic import ValidationError
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain.agents.middleware.types import ModelRequest, ToolCallRequest
     from langchain_core.tools import BaseTool
 
 _MODEL_IDENTITY_FIELDS = (
@@ -349,12 +353,175 @@ def test_make_structured_graph_exposes_minimal_background_tools(
     }
 
 
-def test_structured_turn_requires_explicit_completion_before_stopping() -> None:
+def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
     middleware = langgraph_agent._StructuredTurnMiddleware()
+    turn = langgraph_agent._Turn.model_validate(
+        {
+            "analysis": "The build needs monitoring.",
+            "plan": "Start the build and poll it.",
+            "actions": [
+                {"action": "execute", "command": "pwd", "timeout": 10},
+                {"action": "run_background", "command": "make all"},
+                {"action": "poll", "handle": "proc-1", "wait_seconds": 20},
+                {"action": "write_stdin", "handle": "proc-1", "text": "yes"},
+                {"action": "kill", "handle": "proc-1"},
+            ],
+        }
+    )
 
-    response = middleware._to_response(langgraph_agent._Turn())
+    response = middleware._to_response(turn)
 
-    assert response is None
+    assert response is not None
+    message = response.result[0]
+    assert isinstance(message, AIMessage)
+    assert [(call["name"], call["args"]) for call in message.tool_calls] == [
+        ("execute", {"command": "pwd", "timeout": 10}),
+        ("run_background", {"command": "make all"}),
+        ("poll", {"handle": "proc-1", "wait_seconds": 20}),
+        ("write_stdin", {"handle": "proc-1", "text": "yes"}),
+        ("kill", {"handle": "proc-1"}),
+    ]
+    action_metadata = message.response_metadata["structured_turn"]["actions"]
+    assert [action["tool_call_id"] for action in action_metadata] == [
+        call["id"] for call in message.tool_calls
+    ]
+    assert all(
+        isinstance(call["id"], str) and call["id"].startswith("structured_action_")
+        for call in message.tool_calls
+    )
+
+
+def test_structured_turn_finish_is_the_only_terminal_action() -> None:
+    middleware = langgraph_agent._StructuredTurnMiddleware()
+    response = middleware._to_response(
+        langgraph_agent._Turn.model_validate(
+            {
+                "analysis": "The verifier passed.",
+                "actions": [{"action": "finish", "summary": "Verifier passed."}],
+            }
+        )
+    )
+
+    assert response is not None
+    message = response.result[0]
+    assert isinstance(message, AIMessage)
+    assert not message.tool_calls
+    assert message.response_metadata["structured_turn"]["terminal"] is True
+    assert message.response_metadata["structured_turn"]["actions"] == [
+        {
+            "name": "finish",
+            "args": {"summary": "Verifier passed."},
+            "tool_call_id": None,
+        }
+    ]
+
+
+def test_structured_turn_rejects_finish_with_tool_actions() -> None:
+    with pytest.raises(ValidationError, match="finish"):
+        langgraph_agent._Turn.model_validate(
+            {
+                "actions": [
+                    {"action": "execute", "command": "pytest"},
+                    {"action": "finish", "summary": "done"},
+                ]
+            }
+        )
+
+
+def test_structured_turn_repairs_one_empty_turn_with_finish() -> None:
+    class _StructuredModel:
+        def __init__(self) -> None:
+            self.messages: list[list[object]] = []
+            self.results: list[dict[str, object]] = [
+                {
+                    "parsed": langgraph_agent._Turn(),
+                    "raw": AIMessage(
+                        content="",
+                        usage_metadata={
+                            "input_tokens": 10,
+                            "output_tokens": 2,
+                            "total_tokens": 12,
+                        },
+                    ),
+                },
+                {
+                    "parsed": langgraph_agent._Turn.model_validate(
+                        {"actions": [{"action": "finish", "summary": "verified"}]}
+                    ),
+                    "raw": AIMessage(
+                        content="",
+                        usage_metadata={
+                            "input_tokens": 5,
+                            "output_tokens": 3,
+                            "total_tokens": 8,
+                        },
+                    ),
+                },
+            ]
+
+        def with_structured_output(self, *_args: object, **_kwargs: object) -> _StructuredModel:
+            return self
+
+        def invoke(self, messages: list[object], **_kwargs: object) -> dict[str, object]:
+            self.messages.append(messages)
+            return self.results.pop(0)
+
+    model = _StructuredModel()
+    request = cast(
+        "ModelRequest[None]", SimpleNamespace(model=model, messages=[], system_message=None)
+    )
+    fallback_calls = 0
+
+    def fallback(_request: object) -> ModelResponse[object]:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return ModelResponse(result=[AIMessage(content="fallback")])
+
+    response = langgraph_agent._StructuredTurnMiddleware().wrap_model_call(request, fallback)
+
+    assert fallback_calls == 0
+    assert len(model.messages) == 2
+    repair_message = model.messages[1][-1]
+    assert isinstance(repair_message, langgraph_agent.HumanMessage)
+    assert "sole `finish` action" in repair_message.content
+    assert isinstance(response, ModelResponse)
+    message = response.result[0]
+    assert isinstance(message, AIMessage)
+    assert message.usage_metadata == {
+        "input_tokens": 15,
+        "output_tokens": 5,
+        "total_tokens": 20,
+    }
+    assert message.response_metadata["structured_turn"]["repair"] is True
+
+
+def test_structured_tool_result_records_its_matching_action() -> None:
+    request = cast(
+        "ToolCallRequest",
+        SimpleNamespace(
+            tool_call={
+                "name": "poll",
+                "args": {"handle": "proc-1", "wait_seconds": 20},
+                "id": "structured_action_123",
+                "type": "tool_call",
+            }
+        ),
+    )
+
+    result = langgraph_agent._StructuredTurnMiddleware().wrap_tool_call(
+        request,
+        lambda _request: ToolMessage(
+            content="[proc-1: still running]",
+            tool_call_id="structured_action_123",
+        ),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.response_metadata["structured_action"] == {
+        "name": "poll",
+        "args": {"handle": "proc-1", "wait_seconds": 20},
+        "tool_call_id": "structured_action_123",
+    }
 
 
 def test_structured_turn_preserves_raw_usage_metadata() -> None:
@@ -362,7 +529,9 @@ def test_structured_turn_preserves_raw_usage_metadata() -> None:
     usage: UsageMetadata = {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}
 
     response = middleware._to_response(
-        langgraph_agent._Turn(commands=["pwd"]),
+        langgraph_agent._Turn.model_validate(
+            {"actions": [{"action": "execute", "command": "pwd"}]}
+        ),
         usage_metadata=usage,
     )
 

@@ -9,7 +9,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -21,18 +21,19 @@ from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.agents.middleware.types import ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, UsageMetadata
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, UsageMetadata
 from langchain_core.messages.ai import add_usage
 from langchain_core.messages.utils import get_buffer_string
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
-    from langchain.agents.middleware.types import ModelCallResult, ModelRequest
+    from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ToolCallRequest
     from langchain_core.messages import AnyMessage
+    from langgraph.types import Command
 
 _DEFAULT_WORKDIR = Path("/app")
 
@@ -359,9 +360,10 @@ def make_structured_graph(config: dict[str, object] | None = None) -> object:
 
     Same tools/summarization/caching as ``make_minimal_graph``, but a
     ``_StructuredTurnMiddleware`` forces every turn into a structured
-    ``{analysis, plan, commands}`` object and executes only the ``commands`` (as
-    ``execute`` calls). Reasoning is separated from action so the model cannot run away
-    emitting a huge artifact as its action. Experimental A/B against
+    ``{analysis, plan, actions}`` object. Each action names one registered tool and
+    carries only that tool's validated arguments; a lone ``finish`` action is the
+    explicit terminal control. Reasoning is separated from action so the model cannot
+    run away emitting a huge artifact as its action. Experimental A/B against
     ``make_minimal_graph``; ``make_minimal_graph`` is left unchanged.
     """
     configurable = _configurable(config)
@@ -548,63 +550,202 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
         return self._augment(draft, questions, answers)
 
 
+_MAX_STRUCTURED_ACTIONS = 8
+_MAX_STRUCTURED_COMMAND_CHARS = 16_000
+_MAX_STRUCTURED_TEXT_CHARS = 12_000
+_MAX_STRUCTURED_REASONING_CHARS = 12_000
+_MAX_EXECUTE_TIMEOUT_SECONDS = 600
+
+
+class _CommandAction(BaseModel):
+    """A structured action that accepts one shell command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(
+        min_length=1,
+        max_length=_MAX_STRUCTURED_COMMAND_CHARS,
+        description="The shell command to run. Batch only a natural dependent sequence.",
+    )
+
+    @field_validator("command")
+    @classmethod
+    def _command_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            msg = "command must not be blank"
+            raise ValueError(msg)
+        return value
+
+
+class _ExecuteAction(_CommandAction):
+    """Run a bounded foreground command."""
+
+    action: Literal["execute"] = Field(description="Run a foreground shell command.")
+    timeout: int | None = Field(
+        default=None,
+        ge=1,
+        le=_MAX_EXECUTE_TIMEOUT_SECONDS,
+        description="Optional foreground timeout in seconds; use a background action for longer work.",
+    )
+
+
+class _RunBackgroundAction(_CommandAction):
+    """Start a command whose output will be consumed through a process handle."""
+
+    action: Literal["run_background"] = Field(
+        description="Start a long-running or interactive command and return a process handle."
+    )
+
+
+class _HandleAction(BaseModel):
+    """A structured action that operates on a background-process handle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    handle: str = Field(
+        min_length=1,
+        max_length=256,
+        description="The process handle returned by `run_background`.",
+    )
+
+    @field_validator("handle")
+    @classmethod
+    def _handle_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            msg = "handle must not be blank"
+            raise ValueError(msg)
+        return value
+
+
+class _PollAction(_HandleAction):
+    """Read incremental output from one background process."""
+
+    action: Literal["poll"] = Field(description="Wait for and read a background process's output.")
+    wait_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=60,
+        description="How long to wait before returning the process's latest output.",
+    )
+
+
+class _WriteStdinAction(_HandleAction):
+    """Send one line of input to an interactive background process."""
+
+    action: Literal["write_stdin"] = Field(
+        description="Send text to a background process's standard input."
+    )
+    text: str = Field(
+        max_length=_MAX_STRUCTURED_TEXT_CHARS,
+        description="Text to send; the process manager appends a newline when needed.",
+    )
+
+
+class _KillAction(_HandleAction):
+    """Stop one background process."""
+
+    action: Literal["kill"] = Field(description="Terminate a background process.")
+
+
+class _FinishAction(BaseModel):
+    """Explicitly end the task after the acceptance criteria have been verified."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["finish"] = Field(
+        description="End the task only after you have observed its tests or verifier pass."
+    )
+    summary: str = Field(
+        default="",
+        max_length=2_000,
+        description="Brief verification summary for the final trajectory record.",
+    )
+
+
+type _StructuredAction = Annotated[
+    _ExecuteAction
+    | _RunBackgroundAction
+    | _PollAction
+    | _WriteStdinAction
+    | _KillAction
+    | _FinishAction,
+    Field(discriminator="action"),
+]
+
+
 class _Turn(BaseModel):
-    """One structured agent turn: reasoning is separated from the executed action."""
+    """One structured agent turn with typed actions and explicit completion."""
+
+    model_config = ConfigDict(extra="forbid")
 
     analysis: str = Field(
-        default="", description="What the terminal state shows and what remains to do."
+        default="",
+        max_length=_MAX_STRUCTURED_REASONING_CHARS,
+        description="What the terminal state shows and what remains to do.",
     )
-    plan: str = Field(default="", description="What you will do next this turn and why.")
-    commands: list[str] = Field(
+    plan: str = Field(
+        default="",
+        max_length=_MAX_STRUCTURED_REASONING_CHARS,
+        description="What you will do next this turn and why.",
+    )
+    actions: list[_StructuredAction] = Field(
         default_factory=list,
+        max_length=_MAX_STRUCTURED_ACTIONS,
         description=(
-            "Shell commands to run this turn, in order. Chain a dependent sequence into one "
-            "string with && (e.g. 'gcc -o p p.c && ./p'). Do NOT put large file contents here; "
-            "write files with a heredoc or a generator script. Leave empty only when finishing."
+            "Actions to take this turn. Use `execute` for short foreground commands and the "
+            "background action set for long-running work. To end, use exactly one `finish` action."
         ),
     )
-    task_complete: bool = Field(
-        default=False,
-        description="Set true only after you have run the task's tests/verifier and observed them pass.",
-    )
+
+    @model_validator(mode="after")
+    def _finish_is_the_only_action(self) -> _Turn:
+        if (
+            any(isinstance(action, _FinishAction) for action in self.actions)
+            and len(self.actions) != 1
+        ):
+            msg = "finish must be the only action in a turn"
+            raise ValueError(msg)
+        return self
 
 
 class _StructuredTurnMiddleware(AgentMiddleware):
-    """Force each turn into a terminus-style ``{analysis, plan, commands}`` contract.
+    """Force each turn into a typed, traceable action contract.
 
     Instead of free-form tool calling, every turn the model produces a structured
-    ``_Turn`` via ``with_structured_output``: reasoning goes into ``analysis``/``plan``
-    (never executed) and only ``commands`` run, each converted to an ``execute`` tool
-    call. This separates thinking from action so the model cannot run away emitting a
-    huge artifact as its action, and keeps each turn bounded. On a parse failure (for
-    example a truncated over-long response) it degrades gracefully to a normal
-    free-form model call via ``handler``.
+    ``_Turn`` via ``with_structured_output``. Reasoning goes into ``analysis``/``plan``
+    (never executed); every non-terminal action is converted to the matching registered
+    tool call with a stable trace correlation ID. A single ``finish`` action ends the
+    graph explicitly. One no-action repair call is allowed before falling back to the
+    normal model path on malformed or persistently empty structured output.
     """
 
-    def __init__(self, *, tool_name: str = "execute") -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._tool_name = tool_name
 
-    def _messages(self, request: ModelRequest[None], *, retry: bool = False) -> list[AnyMessage]:
+    def _messages(self, request: ModelRequest[None], *, repair: bool = False) -> list[AnyMessage]:
         msgs = list(request.messages)
         if request.system_message is not None:
             msgs = [request.system_message, *msgs]
-        if retry:
+        if repair:
             msgs.append(
                 HumanMessage(
                     content=(
-                        "Your previous structured turn was incomplete. Return at least one shell command, "
-                        "or set `task_complete` to true only after you have verified the task passes."
+                        "Your previous structured turn had no actions. Return at least one action, or a "
+                        "sole `finish` action only after you have verified the task passes. Never leave "
+                        "`actions` empty."
                     )
                 )
             )
         return msgs
 
     def _to_response(
-        self, turn: _Turn, *, usage_metadata: UsageMetadata | None = None
+        self,
+        turn: _Turn,
+        *,
+        usage_metadata: UsageMetadata | None = None,
+        repair: bool = False,
     ) -> ModelResponse | None:
-        commands = [c for c in turn.commands if c and c.strip()]
-        if not commands and not turn.task_complete:
+        if not turn.actions:
             return None
 
         content = "\n".join(
@@ -615,21 +756,95 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             )
             if part
         )
-        message_kwargs: dict[str, Any] = {"content": content or "Task complete."}
+        terminal = isinstance(turn.actions[0], _FinishAction)
+        action_metadata: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        if terminal:
+            summary = turn.actions[0].summary
+            content = content or (f"Finished: {summary}" if summary else "Task complete.")
+            action_metadata.append(
+                {
+                    "name": "finish",
+                    "args": {"summary": summary},
+                    "tool_call_id": None,
+                }
+            )
+        else:
+            for action in turn.actions:
+                tool_call_id = f"structured_action_{uuid.uuid4().hex}"
+                args = action.model_dump(exclude={"action"}, exclude_none=True)
+                tool_calls.append(
+                    {
+                        "name": action.action,
+                        "args": args,
+                        "id": tool_call_id,
+                        "type": "tool_call",
+                    }
+                )
+                action_metadata.append(
+                    {
+                        "name": action.action,
+                        "args": args,
+                        "tool_call_id": tool_call_id,
+                    }
+                )
+
+        message_kwargs: dict[str, Any] = {
+            "content": content or "Executing structured actions.",
+            "response_metadata": {
+                "structured_turn": {
+                    "protocol": "structured-actions-v1",
+                    "analysis": turn.analysis,
+                    "plan": turn.plan,
+                    "actions": action_metadata,
+                    "terminal": terminal,
+                    "repair": repair,
+                }
+            },
+        }
         if usage_metadata is not None:
             message_kwargs["usage_metadata"] = usage_metadata
-        if commands:
-            tool_calls = [
-                {
-                    "name": self._tool_name,
-                    "args": {"command": c},
-                    "id": f"cmd_{uuid.uuid4().hex[:8]}",
-                    "type": "tool_call",
-                }
-                for c in commands
-            ]
+        if tool_calls:
             message_kwargs["tool_calls"] = tool_calls
         return ModelResponse(result=[AIMessage(**message_kwargs)], structured_response=None)
+
+    @staticmethod
+    def _add_action_result_metadata(
+        result: ToolMessage | Command[Any], tool_call: dict[str, Any]
+    ) -> ToolMessage | Command[Any]:
+        """Attach the originating structured action to its matching tool result."""
+        tool_call_id = tool_call.get("id")
+        if not (
+            isinstance(result, ToolMessage)
+            and isinstance(tool_call_id, str)
+            and tool_call_id.startswith("structured_action_")
+        ):
+            return result
+        metadata = {
+            **result.response_metadata,
+            "structured_action": {
+                "name": tool_call["name"],
+                "args": tool_call["args"],
+                "tool_call_id": tool_call_id,
+            },
+        }
+        return result.model_copy(update={"response_metadata": metadata})
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Preserve structured action/result correlation in synchronous traces."""
+        return self._add_action_result_metadata(handler(request), dict(request.tool_call))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Preserve structured action/result correlation in asynchronous traces."""
+        return self._add_action_result_metadata(await handler(request), dict(request.tool_call))
 
     @staticmethod
     def _result_parts(result: object) -> tuple[_Turn | None, UsageMetadata | None]:
@@ -664,14 +879,14 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         return ModelResponse(result=result, structured_response=response.structured_response)
 
     def _invoke_structured(
-        self, request: ModelRequest[None], *, retry: bool = False
+        self, request: ModelRequest[None], *, repair: bool = False
     ) -> tuple[_Turn | None, UsageMetadata | None]:
         try:
             result: object = request.model.with_structured_output(_Turn, include_raw=True).invoke(
-                self._messages(request, retry=retry),
+                self._messages(request, repair=repair),
                 config={
                     "metadata": {
-                        "lc_source": "structured-turn-retry" if retry else "structured-turn"
+                        "lc_source": "structured-turn-repair" if repair else "structured-turn"
                     }
                 },
             )
@@ -680,16 +895,16 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         return self._result_parts(result)
 
     async def _ainvoke_structured(
-        self, request: ModelRequest[None], *, retry: bool = False
+        self, request: ModelRequest[None], *, repair: bool = False
     ) -> tuple[_Turn | None, UsageMetadata | None]:
         try:
             result: object = await request.model.with_structured_output(
                 _Turn, include_raw=True
             ).ainvoke(
-                self._messages(request, retry=retry),
+                self._messages(request, repair=repair),
                 config={
                     "metadata": {
-                        "lc_source": "structured-turn-retry" if retry else "structured-turn"
+                        "lc_source": "structured-turn-repair" if repair else "structured-turn"
                     }
                 },
             )
@@ -711,16 +926,16 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         if response is not None:
             return response
 
-        retry_turn, retry_usage = self._invoke_structured(request, retry=True)
-        usage_metadata = add_usage(usage_metadata, retry_usage)
-        if not isinstance(retry_turn, _Turn):
+        repair_turn, repair_usage = self._invoke_structured(request, repair=True)
+        usage_metadata = add_usage(usage_metadata, repair_usage)
+        if not isinstance(repair_turn, _Turn):
             return self._add_fallback_metadata(
-                handler(request), usage_metadata, "incomplete_retry_failure"
+                handler(request), usage_metadata, "empty_turn_repair_failure"
             )
-        response = self._to_response(retry_turn, usage_metadata=usage_metadata)
+        response = self._to_response(repair_turn, usage_metadata=usage_metadata, repair=True)
         if response is not None:
             return response
-        return self._add_fallback_metadata(handler(request), usage_metadata, "incomplete_retry")
+        return self._add_fallback_metadata(handler(request), usage_metadata, "empty_turn_repair")
 
     async def awrap_model_call(
         self,
@@ -737,16 +952,18 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         if response is not None:
             return response
 
-        retry_turn, retry_usage = await self._ainvoke_structured(request, retry=True)
-        usage_metadata = add_usage(usage_metadata, retry_usage)
-        if not isinstance(retry_turn, _Turn):
+        repair_turn, repair_usage = await self._ainvoke_structured(request, repair=True)
+        usage_metadata = add_usage(usage_metadata, repair_usage)
+        if not isinstance(repair_turn, _Turn):
             response = await handler(request)
-            return self._add_fallback_metadata(response, usage_metadata, "incomplete_retry_failure")
-        response = self._to_response(retry_turn, usage_metadata=usage_metadata)
+            return self._add_fallback_metadata(
+                response, usage_metadata, "empty_turn_repair_failure"
+            )
+        response = self._to_response(repair_turn, usage_metadata=usage_metadata, repair=True)
         if response is not None:
             return response
         response = await handler(request)
-        return self._add_fallback_metadata(response, usage_metadata, "incomplete_retry")
+        return self._add_fallback_metadata(response, usage_metadata, "empty_turn_repair")
 
 
 class _ProcessManager:

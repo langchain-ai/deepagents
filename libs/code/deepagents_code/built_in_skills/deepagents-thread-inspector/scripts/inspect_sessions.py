@@ -117,14 +117,16 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
 
 def _resolve_thread_id(conn: sqlite3.Connection, value: str) -> str:
     exact = conn.execute(
-        "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1", (value,)
+        "SELECT 1 FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = '' LIMIT 1",
+        (value,),
     ).fetchone()
     if exact:
         return value
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     rows = conn.execute(
         "SELECT DISTINCT thread_id FROM checkpoints "
-        "WHERE thread_id LIKE ? ESCAPE '\\' ORDER BY thread_id LIMIT 11",
+        "WHERE checkpoint_ns = '' AND thread_id LIKE ? ESCAPE '\\' "
+        "ORDER BY thread_id LIMIT 11",
         (escaped + "%",),
     ).fetchall()
     matches = [str(row[0]) for row in rows]
@@ -159,17 +161,19 @@ def _thread_summary(
         "MIN(json_extract(metadata, '$.updated_at')) AS created_at, "
         "MAX(json_extract(metadata, '$.updated_at')) AS updated_at, "
         "MAX(checkpoint_id) AS latest_checkpoint_id "
-        "FROM checkpoints WHERE thread_id = ?",
+        "FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ''",
         (thread_id,),
     ).fetchone()
     latest = conn.execute(
-        "SELECT metadata FROM checkpoints WHERE thread_id = ? "
+        "SELECT metadata FROM checkpoints "
+        "WHERE thread_id = ? AND checkpoint_ns = '' "
         "ORDER BY checkpoint_id DESC LIMIT 1",
         (thread_id,),
     ).fetchone()
     metadata = _decode_metadata(latest[0] if latest else None)
     writes_count = conn.execute(
-        "SELECT COUNT(*) FROM writes WHERE thread_id = ?", (thread_id,)
+        "SELECT COUNT(*) FROM writes WHERE thread_id = ? AND checkpoint_ns = ''",
+        (thread_id,),
     ).fetchone()[0]
     summary: dict[str, object] = {
         "thread_id": thread_id,
@@ -199,7 +203,8 @@ def _list_threads(conn: sqlite3.Connection, limit: int) -> list[dict[str, object
         "MAX(json_extract(metadata, '$.git_branch')) AS git_branch, "
         "MAX(json_extract(metadata, '$.cwd')) AS cwd, "
         "COUNT(*) AS checkpoint_count "
-        "FROM checkpoints GROUP BY thread_id ORDER BY updated_at DESC LIMIT ?",
+        "FROM checkpoints WHERE checkpoint_ns = '' "
+        "GROUP BY thread_id ORDER BY updated_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]

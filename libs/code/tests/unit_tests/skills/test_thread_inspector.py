@@ -36,6 +36,7 @@ def _create_database(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE checkpoints (
             thread_id TEXT NOT NULL,
+            checkpoint_ns TEXT NOT NULL,
             checkpoint_id TEXT NOT NULL,
             metadata TEXT
         );
@@ -60,7 +61,7 @@ def test_connects_read_only_and_resolves_thread_prefix(
     db = tmp_path / "sessions.db"
     writable = _create_database(db)
     writable.executemany(
-        "INSERT INTO checkpoints VALUES (?, ?, ?)",
+        "INSERT INTO checkpoints VALUES (?, '', ?, ?)",
         [
             ("thread-123", "001", "{}"),
             ("thread-456", "002", "{}"),
@@ -76,11 +77,84 @@ def test_connects_read_only_and_resolves_thread_prefix(
             inspector._resolve_thread_id(conn, "thread-")
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             conn.execute(
-                "INSERT INTO checkpoints VALUES (?, ?, ?)",
+                "INSERT INTO checkpoints VALUES (?, '', ?, ?)",
                 ("new-thread", "003", "{}"),
             )
     finally:
         conn.close()
+
+
+def test_thread_queries_exclude_subagent_namespaces(
+    inspector: ModuleType, tmp_path: Path
+) -> None:
+    db = tmp_path / "sessions.db"
+    writable = _create_database(db)
+    root_metadata = json.dumps(
+        {
+            "updated_at": "2026-01-01T00:00:01Z",
+            "agent_name": "root-agent",
+            "git_branch": "root-branch",
+            "cwd": "/root",
+            "turn_number": 1,
+            "turn_id": "root-turn",
+        }
+    )
+    subagent_metadata = json.dumps(
+        {
+            "updated_at": "2026-01-01T00:00:02Z",
+            "agent_name": "subagent",
+            "git_branch": "subagent-branch",
+            "cwd": "/subagent",
+            "turn_number": 99,
+            "turn_id": "subagent-turn",
+        }
+    )
+    writable.executemany(
+        "INSERT INTO checkpoints VALUES (?, ?, ?, ?)",
+        [
+            ("thread-123", "", "001", root_metadata),
+            ("thread-123", "subagent:abc", "999", subagent_metadata),
+            ("subagent-only", "subagent:def", "999", subagent_metadata),
+        ],
+    )
+    writable.executemany(
+        "INSERT INTO writes VALUES (?, ?, ?, 'task', 0, 'messages', NULL, NULL)",
+        [
+            ("thread-123", "", "001"),
+            ("thread-123", "subagent:abc", "999"),
+        ],
+    )
+    writable.commit()
+    writable.close()
+
+    conn = inspector._connect_read_only(db)
+    try:
+        summary, metadata = inspector._thread_summary(conn, "thread-123")
+        threads = inspector._list_threads(conn, 10)
+        with pytest.raises(SystemExit, match="Thread not found"):
+            inspector._resolve_thread_id(conn, "subagent-only")
+    finally:
+        conn.close()
+
+    assert metadata["turn_number"] == 1
+    assert metadata["turn_id"] == "root-turn"
+    assert summary["agent_name"] == "root-agent"
+    assert summary["created_at"] == "2026-01-01T00:00:01Z"
+    assert summary["updated_at"] == "2026-01-01T00:00:01Z"
+    assert summary["latest_checkpoint_id"] == "001"
+    assert summary["checkpoint_count"] == 1
+    assert summary["writes_count"] == 1
+    assert threads == [
+        {
+            "thread_id": "thread-123",
+            "updated_at": "2026-01-01T00:00:01Z",
+            "created_at": "2026-01-01T00:00:01Z",
+            "agent_name": "root-agent",
+            "git_branch": "root-branch",
+            "cwd": "/root",
+            "checkpoint_count": 1,
+        }
+    ]
 
 
 def test_reconstructs_messages_and_latest_turn(
@@ -109,7 +183,7 @@ def test_reconstructs_messages_and_latest_turn(
             }
         )
         writable.execute(
-            "INSERT INTO checkpoints VALUES (?, ?, ?)",
+            "INSERT INTO checkpoints VALUES (?, '', ?, ?)",
             (thread_id, checkpoint_id, metadata),
         )
         type_name, value = serde.dumps_typed(messages)

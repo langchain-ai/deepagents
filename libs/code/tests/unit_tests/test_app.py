@@ -15369,6 +15369,253 @@ class TestExitGracefulWorkerHandoff:
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
 
+    async def test_exit_cancels_restart_before_stopping_server(self) -> None:
+        """Shutdown waits for detached restart cleanup before server stop."""
+        restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def respawn() -> None:
+            restart_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            app._restart_respawn_task = asyncio.create_task(respawn())
+            await restart_started.wait()
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await cleanup_started.wait()
+
+                server_proc.stop.assert_not_called()
+                release_cleanup.set()
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+    async def test_submission_is_rejected_during_graceful_exit(self) -> None:
+        """A responsive UI cannot start work after shutdown begins."""
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+        server_proc = MagicMock()
+        server_proc.stop = MagicMock(
+            side_effect=lambda: (
+                stop_started.set(),
+                release_stop.wait(timeout=2.0),
+            ),
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with (
+                patch.object(App, "exit") as super_exit,
+                patch.object(
+                    app,
+                    "_process_message",
+                    new_callable=AsyncMock,
+                ) as process,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                assert await asyncio.to_thread(stop_started.wait, 2.0)
+
+                app.post_message(ChatInput.Submitted("new work", "normal"))
+                await pilot.pause()
+                process.assert_not_awaited()
+
+                release_stop.set()
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            super_exit.assert_called_once()
+
+    async def test_server_stop_failure_does_not_abort_teardown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising `server_proc.stop` is logged and teardown still finishes.
+
+        `_stop_server` swallows its own error and `gather(..., return_exceptions
+        =True)` keeps it from cancelling the sibling drain, so the drain still
+        runs (it runs unconditionally on the deferred path, even with no pending
+        hooks) and `super().exit()` still fires exactly once.
+        """
+        server_proc = MagicMock()
+        server_proc.stop = MagicMock(side_effect=RuntimeError("boom"))
+        drain_ran = asyncio.Event()
+
+        async def fake_drain() -> None:  # noqa: RUF029
+            drain_ran.set()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=fake_drain),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            assert drain_ran.is_set()
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+        assert any(
+            "Server shutdown raised before app exit" in record.message
+            for record in caplog.records
+        )
+
+    async def test_agent_timeout_still_stops_server(self) -> None:
+        """A hung agent hits its bounded window; server shutdown still runs.
+
+        The whole point of the bounded agent wait is that a stuck agent cannot
+        block server shutdown forever: the wait times out and the `gather`
+        (which stops the server) runs regardless.
+        """
+        server_proc = MagicMock()
+        wait_future: asyncio.Future[None] = asyncio.Future()
+        wait_started = asyncio.Event()
+
+        async def hang_worker() -> None:
+            wait_started.set()
+            await wait_future
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=hang_worker)
+            app._agent_worker = worker
+            app._server_proc = server_proc
+
+            with (
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await wait_started.wait()
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+            # Release the shielded worker so it exits cleanly (mirrors the
+            # timeout-does-not-cancel-wait test's teardown).
+            wait_future.set_result(None)
+
+    async def test_agent_worker_failed_still_stops_server(self) -> None:
+        """A `WorkerFailed` during agent cleanup still lets server stop run."""
+        from textual.worker import WorkerFailed
+
+        server_proc = MagicMock()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=WorkerFailed(RuntimeError("boom")))
+            app._agent_worker = worker
+            app._server_proc = server_proc
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+    async def test_session_end_dispatch_failure_does_not_abort_teardown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising `session.end` dispatch is logged; teardown still finishes.
+
+        `_dispatch_session_end` swallows its own error, so awaiting the task in
+        the `finally` cannot re-raise into teardown and `super().exit()` still
+        fires once.
+        """
+        server_proc = MagicMock()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch(
+                    "deepagents_code.hooks._load_hooks",
+                    return_value=[{"command": ["x"]}],
+                ),
+                patch(
+                    "deepagents_code.hooks._dispatch_hook_sync",
+                    side_effect=RuntimeError("boom"),
+                ),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "session.end hook dispatch raised before app exit" in record.message
+            for record in caplog.records
+        )
+
+    async def test_hook_drain_failure_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-timeout drain error hits the `raised unexpectedly` branch."""
+        server_proc = MagicMock()
+
+        async def failing_drain() -> None:  # noqa: RUF029
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=failing_drain),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "Hook drain raised unexpectedly before app exit" in record.message
+            for record in caplog.records
+        )
+
     async def test_teardown_phase_timings_logged_at_debug(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -938,6 +938,52 @@ class TestServerProcess:
         assert stop_thread_id is not None
         assert stop_thread_id != loop_thread_id
 
+    async def test_restart_lifecycle_is_serialized_with_stop(
+        self, tmp_path: Path
+    ) -> None:
+        """Terminal stop cannot interleave between restart's stop and start."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        restart_stop_entered = threading.Event()
+        release_restart_stop = threading.Event()
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+        stop_calls = 0
+
+        def controlled_stop_process() -> None:
+            nonlocal stop_calls
+            stop_calls += 1
+            if stop_calls == 1:
+                restart_stop_entered.set()
+                release_restart_stop.wait(timeout=2.0)
+
+        async def controlled_start(*, timeout: float = 60) -> None:  # noqa: ARG001, ASYNC109
+            start_entered.set()
+            await release_start.wait()
+
+        with (
+            patch.object(server, "_stop_process", new=controlled_stop_process),
+            patch.object(server, "start", new=controlled_start),
+        ):
+            restart = asyncio.create_task(server.restart())
+            assert await asyncio.to_thread(restart_stop_entered.wait, 2.0)
+
+            terminal_stop = asyncio.create_task(asyncio.to_thread(server.stop))
+            release_restart_stop.set()
+            await asyncio.wait_for(start_entered.wait(), timeout=2.0)
+
+            assert stop_calls == 1
+            assert not terminal_stop.done()
+
+            release_start.set()
+            await asyncio.wait_for(restart, timeout=2.0)
+            await asyncio.wait_for(terminal_stop, timeout=2.0)
+
+        assert stop_calls == 2
+
     async def test_persistent_env_applies_to_later_restarts(
         self, tmp_path: Path
     ) -> None:

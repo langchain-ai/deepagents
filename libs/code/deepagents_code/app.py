@@ -3293,6 +3293,9 @@ class DeepAgentsApp(App):
         self._graceful_exit_task: asyncio.Task[None] | None = None
         """Fire-and-forget task for deferred exit after agent worker cancellation."""
 
+        self._exiting = False
+        """Whether shutdown has begun and new work must be rejected."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -7756,6 +7759,9 @@ class DeepAgentsApp(App):
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        if self._exiting:
+            return
+
         # These startup paths (`-m`, `--skill`, `--goal`) submit outside
         # `_submit_input`, so dismiss the startup tip here to match the
         # interactive submission behavior.
@@ -8320,6 +8326,9 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
+        if self._exiting:
+            return
+
         # Any submitted prompt (interactive or external) ends the startup
         # tip's lifetime, so dismiss it here at the shared entry point rather
         # than in a single handler.
@@ -8381,6 +8390,9 @@ class DeepAgentsApp(App):
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
+        if self._exiting:
+            return
+
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
@@ -13481,6 +13493,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or not self._pending_messages
             or self._exit
+            or self._exiting
             or self._connecting
         ):
             return
@@ -15365,9 +15378,10 @@ class DeepAgentsApp(App):
         # immediately rather than arming another bounded wait — the first call
         # already ran cleanup and cancelled the worker, so re-running it would
         # only make the force-quit wait out another window.
-        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+        if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
+        self._exiting = True
 
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
@@ -15409,7 +15423,7 @@ class DeepAgentsApp(App):
         # the Textual event loop via `asyncio.to_thread`) rather than
         # synchronously here, so a slow hook can neither block rendering nor
         # delay agent-cancellation cleanup from starting. Build the payload now,
-        # while `_lc_thread_id` is still readable, and hand it to the task.
+        # capturing `_lc_thread_id` at exit time, and hand it to the task.
         from deepagents_code.hooks import (
             _dispatch_hook_sync,
             _load_hooks,
@@ -15455,6 +15469,10 @@ class DeepAgentsApp(App):
             agent_worker is not None and not agent_worker.is_finished
         )
         should_drain_hooks = has_pending_hooks()
+        restart_task = self._restart_respawn_task
+        should_wait_for_restart = restart_task is not None and not restart_task.done()
+        if should_wait_for_restart:
+            restart_task.cancel()
         # Capture the current server so a concurrent respawn can't swap it out
         # from under the teardown task. Cleanup is still guaranteed by the outer
         # `finally` in `run_textual_app`; `ServerProcess.stop()` is idempotent
@@ -15463,6 +15481,7 @@ class DeepAgentsApp(App):
 
         if (
             should_wait_for_agent
+            or should_wait_for_restart
             or should_drain_hooks
             or server_proc is not None
             or session_end_payload is not None
@@ -15477,8 +15496,9 @@ class DeepAgentsApp(App):
                 # overlaps agent cleanup and server shutdown. It reuses the same
                 # blocking `_dispatch_hook_sync` (identical payload and per-hook
                 # timeouts as the old synchronous path), just on a worker thread,
-                # and is awaited before teardown to preserve exactly-once
-                # delivery.
+                # and is awaited in the `finally` below (before the event loop is
+                # stopped). It is dispatched once and never duplicated; delivery
+                # is at-most-once — a force-quit can still drop it.
                 session_end_task: asyncio.Task[None] | None = None
                 if session_end_payload is not None:
                     payload = session_end_payload
@@ -15558,6 +15578,25 @@ class DeepAgentsApp(App):
                             time.monotonic() - phase_start,
                         )
 
+                async def _finish_restart() -> None:
+                    if not should_wait_for_restart or restart_task is None:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        await restart_task
+                    except asyncio.CancelledError:
+                        logger.debug("Server restart cancelled cleanly before app exit")
+                    except Exception:
+                        logger.warning(
+                            "Server restart raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'server restart cleanup' took %.3fs",
+                            time.monotonic() - phase_start,
+                        )
+
                 try:
                     worker = agent_worker
                     if should_wait_for_agent and worker is not None:
@@ -15596,15 +15635,31 @@ class DeepAgentsApp(App):
                             )
 
                     # Agent cleanup has finished or hit its window; only now is
-                    # it safe to stop the server. Server shutdown and the
-                    # pending-hook drain are independent, so overlap them. Each
-                    # coroutine swallows its own errors, so gather never raises.
-                    await asyncio.gather(_stop_server(), _drain_hooks())
-
-                    # Await exactly-once `session.end` delivery before teardown.
-                    if session_end_task is not None:
-                        await session_end_task
+                    # it safe to finish cancellation of any detached restart,
+                    # then stop the server. Server shutdown and the pending-hook
+                    # drain are independent, so overlap them. Each coroutine
+                    # swallows its own `Exception`s, and `return_exceptions=True`
+                    # keeps a stray one from cancelling its sibling; a
+                    # `CancelledError` (force-quit) still propagates and is
+                    # handled by the `finally` below.
+                    await _finish_restart()
+                    await asyncio.gather(
+                        _stop_server(), _drain_hooks(), return_exceptions=True
+                    )
                 finally:
+                    # Await `session.end` here rather than in the `try` so a
+                    # force-quit cancellation still honors delivery (at-most-once)
+                    # instead of orphaning the task. Scoped guard so a failed or
+                    # cancelled dispatch can never keep `super().exit()` from
+                    # running below.
+                    if session_end_task is not None:
+                        try:
+                            await session_end_task
+                        except BaseException:
+                            logger.debug(
+                                "session.end not awaited to completion during teardown",
+                                exc_info=True,
+                            )
                     logger.debug(
                         "Teardown total took %.3fs",
                         time.monotonic() - teardown_start,

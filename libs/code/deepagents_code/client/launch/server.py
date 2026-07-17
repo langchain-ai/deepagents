@@ -585,7 +585,10 @@ class ServerProcess:
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
         self._persistent_env_overrides: dict[str, str] = {}
-        self._stop_lock = threading.Lock()
+        # Serialize the complete restart lifecycle with terminal shutdown.
+        # This is an RLock because a cancelled/failed `start()` calls `stop()`
+        # for cleanup while `restart()` still owns the lifecycle lock.
+        self._stop_lock = threading.RLock()
         self._stopped = False
 
     @property
@@ -636,8 +639,12 @@ class ServerProcess:
             return
 
         # A fresh process invalidates any prior terminal `stop()`, so re-arm
-        # the idempotency guard (covers a `stop()` followed by a reuse).
-        self._stopped = False
+        # the idempotency guard (covers a `stop()` followed by a reuse). Take
+        # the lock so the re-arm can't interleave with a concurrent `stop()` on
+        # another thread; the `RLock` is reentrant for the `restart()` path,
+        # which already holds it across `start()`.
+        with self._stop_lock:
+            self._stopped = False
 
         work_dir = self.config_dir
         if work_dir is None:
@@ -877,13 +884,15 @@ class ServerProcess:
     def stop(self) -> None:
         """Stop the server process and clean up all resources.
 
-        Idempotent and safe to call concurrently. A `threading.Lock` serializes
-        callers and a `_stopped` flag short-circuits repeat calls, so process
-        teardown and resource cleanup never run twice or interleave. This is
-        relied on at app shutdown, where the coordinated teardown task (which
+        Idempotent and safe to call concurrently. A `threading.RLock`
+        serializes callers and a `_stopped` flag short-circuits repeat calls, so
+        process teardown and resource cleanup never run twice or interleave. This
+        is relied on at app shutdown, where the coordinated teardown task (which
         offloads `stop()` to a worker thread) and the outer `finally` fallback
         may both invoke it: the second caller blocks on the lock until the
-        first finishes, then returns immediately because `_stopped` is set.
+        first finishes, then returns immediately because `_stopped` is set. The
+        lock is an `RLock` because `restart()` holds it across `start()`, whose
+        failure path calls `stop()` for cleanup on the same thread.
         """
         with self._stop_lock:
             if self._stopped:
@@ -905,7 +914,11 @@ class ServerProcess:
                 try:
                     shutil.rmtree(self.config_dir)
                 except OSError:
-                    logger.debug(
+                    # Warning, not debug: cleanup runs exactly once and is never
+                    # retried, and this is a process-owned dir that may hold
+                    # session state, so a persistent failure (a real leak) must
+                    # be visible to an operator.
+                    logger.warning(
                         "Failed to clean up config dir %s",
                         self.config_dir,
                         exc_info=True,
@@ -953,18 +966,30 @@ class ServerProcess:
 
         Args:
             timeout: Max seconds to wait for the server to become healthy.
+
+        Raises:
+            asyncio.CancelledError: If the restart is cancelled after its
+                blocking subprocess cleanup finishes.
         """
         logger.info("Restarting langgraph dev server")
-        # Offload the synchronous subprocess shutdown (it blocks up to
-        # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so the
-        # caller's event loop — the Textual reactor for `/restart` — keeps
-        # processing input instead of freezing the TUI.
-        await asyncio.to_thread(self._stop_process)
+        with self._stop_lock:
+            # Offload the synchronous subprocess shutdown (it blocks up to
+            # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so
+            # the caller's event loop — the Textual reactor for `/restart` —
+            # keeps processing input instead of freezing the TUI. Shield the
+            # thread and await it after cancellation so the lifecycle lock is
+            # never released while `_stop_process` is still mutating state.
+            stop_task = asyncio.create_task(asyncio.to_thread(self._stop_process))
+            try:
+                await asyncio.shield(stop_task)
+            except asyncio.CancelledError:
+                await stop_task
+                raise
 
-        with _scoped_env_overrides(self._env_overrides):
-            await self.start(timeout=timeout)
+            with _scoped_env_overrides(self._env_overrides):
+                await self.start(timeout=timeout)
 
-        self._env_overrides.clear()
+            self._env_overrides.clear()
 
     async def __aenter__(self) -> Self:
         """Async context manager entry.

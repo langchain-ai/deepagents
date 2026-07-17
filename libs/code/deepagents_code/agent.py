@@ -1875,18 +1875,13 @@ def create_cli_agent(
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
         try:
-            if is_env_truthy(EXPERIMENTAL):
-                from deepagents_code.plugins import discover_plugins
-                from deepagents_code.plugins.adapters.skills import (
-                    plugin_skill_sources,
-                )
+            from deepagents_code.plugins import discover_plugins
+            from deepagents_code.plugins.adapters.skills import plugin_skill_sources
 
-                plugin_result = discover_plugins()
-                if plugin_result.warnings:
-                    logger.warning(
-                        "Plugin discovery warnings: %s", plugin_result.warnings
-                    )
-                sources.extend(plugin_skill_sources(plugin_result.plugins))
+            plugin_result = discover_plugins()
+            if plugin_result.warnings:
+                logger.warning("Plugin discovery warnings: %s", plugin_result.warnings)
+            sources.extend(plugin_skill_sources(plugin_result.plugins))
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
         sources.extend(

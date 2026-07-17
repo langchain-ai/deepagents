@@ -202,13 +202,8 @@ def discover_plugin_mcp_configs(
         project_dir: Project directory for variable substitution.
 
     Returns:
-        Plugin MCP config layers, or an empty tuple when plugins are disabled or
-        discovery fails.
+        Plugin MCP config layers, or an empty tuple when discovery fails.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-    if not is_env_truthy(EXPERIMENTAL):
-        return ()
     try:
         from deepagents_code.plugins import discover_plugins
 

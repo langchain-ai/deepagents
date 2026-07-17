@@ -473,7 +473,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         if raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
             name,
             raw,
         )
@@ -540,7 +540,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
             label,
             raw,
         )
@@ -1321,7 +1321,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.mode",
         group="Startup",
-        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
         kind=OptionKind.STARTUP_MODE_DELEGATE,
         default="manual",
         toml_keys=("startup", "mode"),

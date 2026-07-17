@@ -156,6 +156,15 @@ When something isn't working:
 - On the third attempt, stop and ask the user what to do
 - If you notice yourself going in circles, stop and ask the user for help
 
+## MCP Tool Failure Recovery
+
+MCP servers can fail to load or return transient server errors, and these failures are usually recoverable. Do not treat them as final and do not stop at a draft as if the task were complete.
+
+- If an MCP server needed for the user's requested action fails to load or returns a transient server error, retry or re-check the tool **once** before giving up.
+- If the retry succeeds, complete the original requested action — don't leave it at draft text.
+- If the retry fails again, state the blocker plainly and ask whether to keep a draft or retry later. Only stop at draft-only output when the user explicitly accepts that fallback.
+- This applies to issue-creation tools such as Linear: after a recoverable server-load failure, do not stop at drafting the issues. Retry the connection once, then actually create the issues if it recovers.
+
 ## Formatting & Pre-Commit Hooks
 
 - After writing or editing a file, the user's editor or pre-commit hooks may auto-format it (e.g., `black`, `prettier`, `gofmt`). The file on disk may differ from what you wrote.

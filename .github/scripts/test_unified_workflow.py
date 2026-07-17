@@ -16,6 +16,10 @@ HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PREP_SCRIPT = ROOT / ".github/scripts/unified_prep.py"
+HARBOR_BRANCH_OVERRIDE = (
+    "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git"
+    "@ss/langgraph/managed-python-bootstrap"
+)
 
 
 def _indented_block(text: str, marker: str) -> str:
@@ -84,9 +88,10 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
 
     harbor_override = _indented_block(dispatch, "      harbor_package_override:")
     assert "type: string" in harbor_override
-    assert 'default: ""' in harbor_override
-    assert "Optional:" in harbor_override
-    assert "Leave empty to use the pinned Harbor" in harbor_override
+    assert f'default: "{HARBOR_BRANCH_OVERRIDE}"' in harbor_override
+    assert "default tracks the mutable head" in harbor_override
+    assert "nick-hollon-lc/harbor" in harbor_override
+    assert "ss/langgraph/managed-python-bootstrap" in harbor_override
 
     categories = _indented_block(dispatch, "      categories:")
     assert 'default: "autonomous,conversation,context"' in categories
@@ -708,6 +713,7 @@ def test_unified_collects_langsmith_usage_in_read_only_job() -> None:
     permissions = _indented_block(usage, "    permissions:")
 
     assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in collector
+    assert "    environment: evals" in usage
     script = _step_script(collector)
     assert "collect_langsmith_usage.py _usage_runs" in script
     assert "$LANGSMITH_API_KEY" not in script
@@ -737,9 +743,8 @@ def test_harbor_shards_record_authoritative_langsmith_experiment() -> None:
     assert syntax.returncode == 0, syntax.stderr
 
 
-def test_override_inputs_warn_against_mutable_or_credentialed_sources() -> None:
-    """Keep trusted-source guidance consistent on both dispatch surfaces."""
-    descriptions: list[str] = []
+def test_override_inputs_require_trusted_uncredentialed_sources() -> None:
+    """Keep package-source safety guidance on both dispatch surfaces."""
     for path in (UNIFIED_WORKFLOW, HARBOR_DISPATCH_WORKFLOW):
         workflow = path.read_text()
         override = _indented_block(workflow, "      harbor_package_override:")
@@ -751,15 +756,21 @@ def test_override_inputs_warn_against_mutable_or_credentialed_sources() -> None:
         assert description_match is not None
         description = description_match.group("description")
         assert "trusted package source" in description
-        assert "Prefer an immutable commit SHA" in description
         assert "never embed credentials" in description
         assert "installed without dependencies" in description
         assert "compatible with the locked environment" in description
-        assert 'default: ""' in override
         assert "type: string" in override
-        descriptions.append(description)
 
-    assert descriptions[0] == descriptions[1]
+    unified = _indented_block(
+        UNIFIED_WORKFLOW.read_text(), "      harbor_package_override:"
+    )
+    assert f'default: "{HARBOR_BRANCH_OVERRIDE}"' in unified
+
+    standalone = _indented_block(
+        HARBOR_DISPATCH_WORKFLOW.read_text(), "      harbor_package_override:"
+    )
+    assert "Prefer an immutable commit SHA" in standalone
+    assert 'default: ""' in standalone
 
 
 def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:

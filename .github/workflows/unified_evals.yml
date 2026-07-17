@@ -56,9 +56,9 @@ on:
         type: boolean
         default: false
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. The override is installed without dependencies and must be compatible with the locked environment. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        description: "Install Harbor from one PEP 508 package spec per line after syncing the locked environment. The default tracks the mutable head of nick-hollon-lc/harbor's `ss/langgraph/managed-python-bootstrap` branch so unified evals automatically use its latest fixes. Overrides are installed without dependencies and must be compatible with the locked environment. Use a trusted package source, and never embed credentials in a package spec."
         type: string
-        default: ""
+        default: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@ss/langgraph/managed-python-bootstrap"
 
 permissions:
   contents: read
@@ -441,6 +441,7 @@ jobs:
       - eval
     if: ${{ always() && needs.prep.outputs.comparison_mode == 'true' }}
     runs-on: ubuntu-latest
+    environment: evals
     permissions:
       contents: read
       actions: read

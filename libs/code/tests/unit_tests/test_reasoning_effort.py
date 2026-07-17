@@ -144,6 +144,10 @@ def test_default_effort_for_model_forwards_cli_override() -> None:
         ("anthropic:claude-opus-4-5", ("low", "medium", "high")),
         # Sonnet 4.5 predates reasoning effort: no profile entry for it.
         ("anthropic:claude-sonnet-4-5", ()),
+        ("google_genai:gemini-3-pro-preview", ("minimal", "low", "medium", "high")),
+        # Gemini 2.5 only supports the numeric `thinking_budget`, not named
+        # levels, so it's intentionally excluded from `reasoning_effort_levels`.
+        ("google_genai:gemini-2.5-pro", ()),
         # A model with no reasoning capability at all.
         ("openai:gpt-4o", ()),
         # An unrecognized spec.
@@ -163,6 +167,7 @@ def test_supported_efforts_for_model_real_profiles(
         ("openai:gpt-5.4", None),
         ("anthropic:claude-opus-4-8", "high"),
         ("anthropic:claude-sonnet-4-5", None),
+        ("google_genai:gemini-3-pro-preview", "high"),
     ],
 )
 def test_default_effort_for_model_real_profiles(

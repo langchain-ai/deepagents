@@ -203,6 +203,9 @@ langchain-openai = { git = "https://github.com/langchain-ai/langchain", branch =
 langchain-anthropic = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/anthropic" }
 langchain-fireworks = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/fireworks" }
 langchain-xai = { git = "https://github.com/langchain-ai/langchain", branch = "nm/reasoning-effort", subdirectory = "libs/partners/xai" }
+# Same as above, but for the reasoning_effort/thinking_level alias support on
+# https://github.com/langchain-ai/langchain-google/pull/1895 (separate repo).
+langchain-google-genai = { git = "https://github.com/langchain-ai/langchain-google", branch = "nm/reasoning-effort", subdirectory = "libs/genai" }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }

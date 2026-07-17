@@ -1309,8 +1309,8 @@ requires-dist = [
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fpartners%2Ffireworks&branch=nm%2Freasoning-effort" },
-    { name = "langchain-google-genai", specifier = ">=4.2.7,<5.0.0" },
-    { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.2.7,<5.0.0" },
+    { name = "langchain-google-genai", git = "https://github.com/langchain-ai/langchain-google?subdirectory=libs%2Fgenai&branch=nm%2Freasoning-effort" },
+    { name = "langchain-google-genai", marker = "extra == 'google-genai'", git = "https://github.com/langchain-ai/langchain-google?subdirectory=libs%2Fgenai&branch=nm%2Freasoning-effort" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
@@ -2840,16 +2840,12 @@ dependencies = [
 [[package]]
 name = "langchain-google-genai"
 version = "4.2.7"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain-google?subdirectory=libs%2Fgenai&branch=nm%2Freasoning-effort#a53f6d335d06d17903437fbcb9b532c4b918f08b" }
 dependencies = [
     { name = "filetype" },
     { name = "google-genai" },
     { name = "langchain-core" },
     { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/0c/bc60dabc362ca7c6ffe8c4bcc2f724c7e566b43eb230cee51419f88f784c/langchain_google_genai-4.2.7.tar.gz", hash = "sha256:03b1463ffe4d42435f43c7870467f2215f684bb46400d2543435d10157c80ac7", size = 281605, upload-time = "2026-07-06T13:51:58.724Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/f9/d73d1e712591723aaddb7a7b1e94978cd2320c29acfe0d26b6169a2f26f0/langchain_google_genai-4.2.7-py3-none-any.whl", hash = "sha256:0d9c388d0e6c629718fca6abb19c6fdca728a9a7873d0324c1ec821288b5b571", size = 70702, upload-time = "2026-07-06T13:51:57.499Z" },
 ]
 
 [[package]]

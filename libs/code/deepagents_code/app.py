@@ -15610,7 +15610,9 @@ class DeepAgentsApp(App):
 
         # Toggle whichever collapsible unit is most recent in DOM order so
         # content mounted after a tool group stays reachable.
-        # Grouped tool rows are folded into their summary, so skip them here.
+        # Skip grouped tool rows only while they are folded into their summary.
+        # Expanded groups retain the marker, but their visible rows should take
+        # precedence over the summary so Ctrl+O reaches their collapsible content.
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
@@ -15625,7 +15627,9 @@ class DeepAgentsApp(App):
             if isinstance(child, SkillMessage) and child._stripped_body.strip():
                 child.toggle_body()
                 return
-            if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
+            if isinstance(child, ToolCallMessage) and (
+                not child.has_class("-grouped") or child.display
+            ):
                 # Prefer the collapsible command/code block when the row has one,
                 # so Ctrl+O matches the "click or Ctrl+O to show command/code"
                 # hint rendered beside it. The output stays reachable by clicking

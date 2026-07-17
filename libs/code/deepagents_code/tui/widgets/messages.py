@@ -1131,8 +1131,9 @@ class ToolCallMessage(Vertical):
     _TASK_DESC_MAX_LENGTH = 120
     """Maximum `task` description length shown before it is truncated.
 
-    A longer description collapses to this many characters with a trailing
-    ellipsis and becomes expandable via click or Ctrl+O.
+    A longer description collapses to at most this many characters (trailing
+    whitespace trimmed) with a trailing ellipsis and becomes expandable via
+    click or Ctrl+O.
     """
 
     _RUNNING_TIMER_THRESHOLD_SECS = 10
@@ -2762,10 +2763,11 @@ class ToolCallMessage(Vertical):
         """Affordances to advertise in the output expand/collapse hint.
 
         Ctrl+O routes to the collapsible command/code block whenever this row
-        has one (see `action_toggle_tool_output`), so the output hint only
+        has one (see `action_toggle_tool_output`), and to a truncated `task`
+        description when the row is a `task` call, so the output hint only
         advertises Ctrl+O when Ctrl+O would actually toggle the *output*. When a
-        command/code block is present the output is reachable by clicking its
-        own region instead.
+        command/code block or expandable `task` description owns Ctrl+O the
+        output is reachable by clicking its own region instead.
 
         Returns:
             `"click"` when an expandable command/code block or `task`
@@ -2859,18 +2861,28 @@ class ToolCallMessage(Vertical):
         return len(self._task_description()) > self._TASK_DESC_MAX_LENGTH
 
     def _task_description(self) -> str:
-        """Return the `task` call's description string, or empty when absent."""
+        """Return the `task` call's description string, or empty when absent.
+
+        A non-string `description` (schema-typed as a string) is coerced to
+        `""` so downstream length/slice logic stays safe; the anomaly is logged.
+        """
         if self._tool_name != "task":
             return ""
         desc = self._args.get("description", "")
-        return desc if isinstance(desc, str) else ""
+        if isinstance(desc, str):
+            return desc
+        if desc is not None:
+            logger.debug("task description is not a string: %r", type(desc))
+        return ""
 
     def _task_desc_content(self) -> Content:
         """Render the `task` description, truncated unless expanded.
 
         Returns:
-            Dim `Content` holding the full description when expanded, else the
-            truncated preview with a trailing ellipsis.
+            Dim `Content`: the full description when expanded or when it already
+            fits within `_TASK_DESC_MAX_LENGTH`; otherwise the preview truncated
+            to that length (trailing whitespace trimmed) with a trailing
+            ellipsis.
         """
         desc = self._task_description()
         if self._task_desc_expanded or len(desc) <= self._TASK_DESC_MAX_LENGTH:
@@ -2883,6 +2895,11 @@ class ToolCallMessage(Vertical):
     def _update_task_desc_display(self) -> None:
         """Update the truncated/expanded `task` description and its hint."""
         if self._task_desc_widget is None or self._task_desc_hint_widget is None:
+            # Refs are legitimately None for non-`task` rows (never mounted). Log
+            # only when a `task` row that carries a description is missing them,
+            # so a regression that nulls them post-mount isn't a silent no-op.
+            if self._task_description():
+                logger.debug("_update_task_desc_display: task-desc refs not cached")
             return
         if not self._task_description():
             self._task_desc_widget.display = False

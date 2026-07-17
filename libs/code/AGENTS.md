@@ -90,6 +90,10 @@ The REPL has **many** text-entry surfaces, so "the input" / "the input box" is a
 
 Rule of thumb: say **chat input** for the main composer and name any other surface by its owner (`<owner> field` / `<owner> filter`). Reserve bare "input box" for the chat input only.
 
+## Run-loop contract
+
+**A fresh request must not end with empty output.** When a fresh (non-resume) request completes — the run loop terminates with no outstanding HITL interrupt — the developer must receive non-empty natural-language output, even when the model consumed tokens but produced nothing. The non-interactive run loop (`client/non_interactive.py`, `_run_agent_loop`) enforces this: if the loop ends with no accumulated response text, no pending interrupt, and no tool call in flight, it emits the deterministic `_EMPTY_FINAL_ANSWER_FALLBACK`. Trivial inputs (e.g. a bare greeting) must still yield a short acknowledgement. Empty output is only acceptable at a HITL resume boundary, where an interrupt is outstanding. Do not remove this guard without a replacement that preserves the invariant.
+
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.

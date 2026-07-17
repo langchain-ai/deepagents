@@ -24,6 +24,7 @@ from deepagents_code._tool_stream import (
     ToolCallBuffer,
 )
 from deepagents_code.client.non_interactive import (
+    _EMPTY_FINAL_ANSWER_FALLBACK,
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
     InFlightToolCall,
@@ -1589,6 +1590,81 @@ class TestMaxTurns:
             result = await run_non_interactive(message="task", max_turns=1)
 
         assert result == 124
+
+
+class TestEmptyFinalAnswerGuard:
+    """A fresh request must not end with empty output (`_run_agent_loop`)."""
+
+    @staticmethod
+    async def _run_loop_and_capture(stream_chunks: list) -> str:
+        """Run `_run_agent_loop` over `stream_chunks`, returning captured stdout."""
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+        stdout_buf = io.StringIO()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch.object(sys, "stdout", stdout_buf),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_settings.model_provider = ""
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                console,
+                file_op_tracker,
+                quiet=True,
+                stream=False,
+            )
+
+        return stdout_buf.getvalue()
+
+    async def test_greeting_input_yields_nonempty_output(self) -> None:
+        """A bare greeting must produce a short natural-language acknowledgement."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "Hi! How can I help?"}]
+        stdout = await self._run_loop_and_capture([("", "messages", (ai_msg, {}))])
+        assert stdout.strip() != ""
+        assert "Hi! How can I help?" in stdout
+
+    async def test_file_creation_task_yields_nonempty_output(self) -> None:
+        """A concrete task that returns no final text falls back to a message."""
+        tool_ai = MagicMock(spec=AIMessage)
+        tool_ai.content_blocks = [
+            {
+                "type": "tool_call",
+                "name": "write_file",
+                "id": "call_1",
+                "args": {"path": "/tmp/lorem.txt", "content": "lorem\nipsum"},
+            }
+        ]
+        tool_result = MagicMock(spec=ToolMessage)
+        tool_result.tool_call_id = "call_1"
+        tool_result.content = "wrote /tmp/lorem.txt"
+        final_ai = MagicMock(spec=AIMessage)
+        final_ai.content_blocks = []
+
+        stdout = await self._run_loop_and_capture(
+            [
+                ("", "messages", (tool_ai, {})),
+                ("", "messages", (tool_result, {})),
+                ("", "messages", (final_ai, {})),
+            ]
+        )
+        assert stdout.strip() != ""
+        assert _EMPTY_FINAL_ANSWER_FALLBACK in stdout
 
 
 class TestRunStartupCommand:

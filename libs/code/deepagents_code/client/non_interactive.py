@@ -108,6 +108,15 @@ _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
 
+_EMPTY_FINAL_ANSWER_FALLBACK = (
+    "The agent finished without producing a final answer. "
+    "Please rephrase or retry your request."
+)
+"""Deterministic message emitted when a fresh (non-resume) request ends with no
+natural-language output and no pending tool call, so the developer never sees a
+blank response. See the "a fresh request must not end with empty output"
+invariant in AGENTS.md."""
+
 
 def _write_text(text: str) -> None:
     """Write agent response text to stdout (without a trailing newline).
@@ -1187,6 +1196,22 @@ async def _run_agent_loop(
             )
 
     wall_time = time.monotonic() - start_time
+
+    # A fresh request must not end with empty output. When the loop terminates
+    # with no outstanding interrupt (so this is a completed turn, not a HITL
+    # resume boundary where an empty answer is expected) yet produced no
+    # natural-language content and left no tool call in flight, emit a
+    # deterministic fallback so the developer never receives a blank response.
+    if (
+        not state.full_response
+        and not state.interrupt_occurred
+        and not state.in_flight_tool_calls
+    ):
+        state.full_response.append(_EMPTY_FINAL_ANSWER_FALLBACK)
+        if state.stream:
+            if state.spinner:
+                state.spinner.stop()
+            _write_text(_EMPTY_FINAL_ANSWER_FALLBACK)
 
     if state.full_response:
         if not state.stream:

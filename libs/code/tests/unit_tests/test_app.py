@@ -8849,59 +8849,55 @@ class TestGoalCommand:
     async def test_forced_sync_create_double_fault_prompts_retry(self) -> None:
         """A create with no local pending state prompts the user to retry."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = None
-            app._pending_goal_rubric = None
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(force=True)
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = None
+        app._pending_goal_rubric = None
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(force=True)
 
-            mount.assert_awaited_once()
-            await_args = mount.await_args
-            assert await_args is not None
-            body = str(await_args.args[0]._content)
-            assert "could not be loaded" in body
+        mount.assert_awaited_once()
+        await_args = mount.await_args
+        assert await_args is not None
+        body = str(await_args.args[0]._content)
+        assert "could not be loaded" in body
 
     async def test_forced_sync_amend_double_fault_remounts_review(self) -> None:
         """An amend keeps its local pending proposal, so the review remounts."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = "ship login"
-            app._pending_goal_rubric = "- passkeys work"
-            app._pending_goal_request_id = "request-amend"
-            remount = AsyncMock()
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_remount_pending_goal_rubric_review", remount),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(
-                    force=True,
-                    proposal_request_id="request-amend",
-                )
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = "ship login"
+        app._pending_goal_rubric = "- passkeys work"
+        app._pending_goal_request_id = "request-amend"
+        remount = AsyncMock()
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_remount_pending_goal_rubric_review", remount),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(
+                force=True,
+                proposal_request_id="request-amend",
+            )
 
-            remount.assert_awaited_once()
-            mount.assert_not_awaited()
+        remount.assert_awaited_once()
+        mount.assert_not_awaited()
 
     async def test_fetch_thread_history_coerces_unknown_goal_status(self) -> None:
         """Loading a thread with an unknown status drops it to None."""

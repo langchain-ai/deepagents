@@ -176,7 +176,7 @@ def test_debug_log_level_validates_explicit_value(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(("debug", "expected"), [(None, "INFO"), ("1", "DEBUG")])
-def test_config_get_and_show_report_dynamic_log_level(
+def test_config_get_and_aggregate_report_dynamic_log_level(
     monkeypatch, capsys, debug: str | None, expected: str
 ) -> None:
     """Both config command paths report the runtime's effective default."""
@@ -197,11 +197,11 @@ def test_config_get_and_show_report_dynamic_log_level(
     get_payload = json.loads(capsys.readouterr().out)
     assert get_payload["data"]["value"] == expected
 
-    show_args = argparse.Namespace(config_command="show", output_format="json")
-    assert run_config_command(show_args) == 0
-    show_payload = json.loads(capsys.readouterr().out)
+    config_args = argparse.Namespace(config_command=None, output_format="json")
+    assert run_config_command(config_args) == 0
+    config_payload = json.loads(capsys.readouterr().out)
     row = next(
-        item for item in show_payload["data"] if item["key"] == "debug.log_level"
+        item for item in config_payload["data"] if item["key"] == "debug.log_level"
     )
     assert row["value"] == expected
 
@@ -500,14 +500,14 @@ def test_run_get_json_redacts_stored_secret_value(capsys):
 
 
 @pytest.mark.usefixtures("stored_auth_dir")
-def test_run_show_json_redacts_stored_secret_value(capsys):
-    """`config show --json` redacts a stored secret on the aggregate path too."""
+def test_run_config_json_redacts_stored_secret_value(capsys):
+    """`config --json` redacts a stored secret on the aggregate path too."""
     import json
 
     from deepagents_code import auth_store
 
     auth_store.set_stored_key("anthropic", "from-store")
-    args = argparse.Namespace(config_command="show", output_format="json")
+    args = argparse.Namespace(config_command=None, output_format="json")
     assert run_config_command(args) == 0
     raw = capsys.readouterr().out
     rows = json.loads(raw)["data"]
@@ -519,12 +519,12 @@ def test_run_show_json_redacts_stored_secret_value(capsys):
 
 
 @pytest.mark.usefixtures("stored_auth_dir")
-def test_run_show_text_reports_stored_source(capsys):
-    """`config show` (aggregate text path) shows a stored credential as configured."""
+def test_run_config_text_reports_stored_source(capsys):
+    """`config` (aggregate text path) shows a stored credential as configured."""
     from deepagents_code import auth_store
 
     auth_store.set_stored_key("anthropic", "from-store")
-    args = argparse.Namespace(config_command="show", output_format="text")
+    args = argparse.Namespace(config_command=None, output_format="text")
     assert run_config_command(args) == 0
     out = capsys.readouterr().out
     assert "configured" in out
@@ -628,13 +628,13 @@ def test_run_get_json_non_credential_omits_store_error(stored_auth_dir, capsys):
     assert "store_error" not in payload
 
 
-def test_run_show_json_flags_unreadable_store(stored_auth_dir, capsys):
-    """`config show --json` marks credential rows when the store is unreadable."""
+def test_run_config_json_flags_unreadable_store(stored_auth_dir, capsys):
+    """`config --json` marks credential rows when the store is unreadable."""
     import json
 
     stored_auth_dir.mkdir(parents=True, exist_ok=True)
     (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
-    args = argparse.Namespace(config_command="show", output_format="json")
+    args = argparse.Namespace(config_command=None, output_format="json")
     assert run_config_command(args) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
     cred_rows = [r for r in rows if r["group"] == "Credentials"]
@@ -643,8 +643,8 @@ def test_run_show_json_flags_unreadable_store(stored_auth_dir, capsys):
     assert all("store_error" not in r for r in rows if r["group"] != "Credentials")
 
 
-def test_run_show_text_warns_on_unreadable_store(stored_auth_dir, capsys):
-    """`config show` text output warns when the credential store is unreadable.
+def test_run_config_text_warns_on_unreadable_store(stored_auth_dir, capsys):
+    """`config` text output warns when the credential store is unreadable.
 
     Guards the `_print_store_warning` call in both text renderers: without it a
     corrupt store would look identical to an empty one in the interactive view —
@@ -654,7 +654,7 @@ def test_run_show_text_warns_on_unreadable_store(stored_auth_dir, capsys):
     (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
     for verbose in (False, True):
         args = argparse.Namespace(
-            config_command="show", output_format="text", verbose=verbose
+            config_command=None, output_format="text", verbose=verbose
         )
         assert run_config_command(args) == 0
         out = capsys.readouterr().out
@@ -673,8 +673,8 @@ def test_run_get_text_warns_on_unreadable_store(stored_auth_dir, capsys):
 
 
 @pytest.mark.usefixtures("stored_auth_dir")
-def test_run_show_reads_store_once(monkeypatch):
-    """`config show` parses the credential store once, not once per option."""
+def test_run_config_reads_store_once(monkeypatch):
+    """`config` parses the credential store once, not once per option."""
     from deepagents_code import auth_store
 
     calls = 0
@@ -686,7 +686,7 @@ def test_run_show_reads_store_once(monkeypatch):
         return real_load()
 
     monkeypatch.setattr(auth_store, "load_credentials", _counting_load)
-    args = argparse.Namespace(config_command="show", output_format="json")
+    args = argparse.Namespace(config_command=None, output_format="json")
     assert run_config_command(args) == 0
     # One read for the whole command, regardless of how many credential options
     # exist — guards the single-snapshot design against a per-option regression.
@@ -800,11 +800,11 @@ def test_resolve_prefers_prefixed_env(monkeypatch) -> None:
 
 
 def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> None:
-    """An empty (prefixed) env var is unset for `config show`, as the app sees it.
+    """An empty (prefixed) env var is unset for `config`, as the app sees it.
 
     The runtime `resolve_env_var` returns `None` for an empty prefixed var (and
     a prefixed empty suppresses the canonical). `resolve_scalar` must agree, or
-    `config show` would report a credential as "set" that the app treats as
+    `config` would report a credential as "set" that the app treats as
     unset — the exact drift this feature exists to prevent.
     """
     from deepagents_code.model_config import resolve_env_var
@@ -833,7 +833,7 @@ def test_langsmith_project_prefers_prefixed_env(monkeypatch) -> None:
 def test_langsmith_project_falls_back_to_bare_env(monkeypatch) -> None:
     """A bare `LANGSMITH_PROJECT` resolves when the prefixed var is unset.
 
-    Mirrors `get_langsmith_project_name`, so `config show`/`get` report the
+    Mirrors `get_langsmith_project_name`, so `config`/`config get` report the
     project agent traces actually route to.
     """
     opt = get_option("tracing.langsmith_project")
@@ -931,12 +931,12 @@ def test_fallback_env_vars_rejects_invalid(bad_fallback) -> None:
         )
 
 
-def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
-    """The `config show` aggregate (separate path from `get`) never leaks a secret."""
+def test_run_config_json_redacts_every_secret(monkeypatch, capsys) -> None:
+    """The `config` aggregate (separate path from `get`) never leaks a secret."""
     import json
 
     monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-secret")
-    args = argparse.Namespace(config_command="show", output_format="json")
+    args = argparse.Namespace(config_command=None, output_format="json")
     assert run_config_command(args) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
     assert any(r["key"] == "credentials.anthropic" and r["set"] for r in rows)
@@ -1202,15 +1202,18 @@ def test_get_option_unknown_returns_none() -> None:
 def test_run_get_unknown_key_returns_error_code(capsys) -> None:
     args = argparse.Namespace(config_command="get", key="nope", output_format="text")
     assert run_config_command(args) == 1
-    assert "Unknown config option" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "Unknown config option" in err
+    assert "config --verbose" in err
 
 
-def test_config_registered_in_help_specs() -> None:
-    """The `config` group must be wired for the startup fast-path help dispatch."""
+def test_config_registered_as_bare_action_group() -> None:
+    """Bare `config` must run its action instead of startup-fast-path help."""
     from deepagents_code import ui
-    from deepagents_code.main import _HELP_SPECS
+    from deepagents_code.main import _BARE_ACTION_GROUPS, _HELP_SPECS
 
-    assert _HELP_SPECS.get("config") == ("config_command", "show_config_help")
+    assert "config" in _BARE_ACTION_GROUPS
+    assert "config" not in _HELP_SPECS
     assert callable(ui.show_config_help)
 
 
@@ -1427,20 +1430,20 @@ def test_display_value_truncates_long_values() -> None:
     assert rendered.endswith("\N{HORIZONTAL ELLIPSIS}")
 
 
-def test_config_show_text_survives_markup_in_value(monkeypatch) -> None:
+def test_config_text_survives_markup_in_value(monkeypatch) -> None:
     """A value containing Rich close-tag markup must not crash text rendering."""
     monkeypatch.setenv(
         _env_vars.EXTERNAL_EVENT_SOCKET_PATH,
         "/tmp/sock[/]oops",
     )
-    args = argparse.Namespace(config_command="show", output_format="text")
+    args = argparse.Namespace(config_command=None, output_format="text")
     assert run_config_command(args) == 0
 
 
-def test_config_show_verbose_text_survives_markup_in_value(monkeypatch) -> None:
+def test_config_verbose_text_survives_markup_in_value(monkeypatch) -> None:
     """The verbose text path escapes markup in values so rendering can't break.
 
-    `_print_show_verbose` renders with markup enabled and relies on manual
+    `_print_config_verbose` renders with markup enabled and relies on manual
     `escape()`; the compact table path uses `Text` cells, so it needs its own
     guard.
     """
@@ -1448,27 +1451,21 @@ def test_config_show_verbose_text_survives_markup_in_value(monkeypatch) -> None:
         _env_vars.EXTERNAL_EVENT_SOCKET_PATH,
         "/tmp/sock[/]oops",
     )
-    args = argparse.Namespace(config_command="show", output_format="text", verbose=True)
+    args = argparse.Namespace(config_command=None, output_format="text", verbose=True)
     assert run_config_command(args) == 0
 
 
 # --- Command smoke (text paths) ---------------------------------------------
 
 
-def test_run_show_text_returns_zero() -> None:
-    """The default (text) `config show` rendering path runs without error."""
-    args = argparse.Namespace(config_command="show", output_format="text")
+def test_run_config_text_returns_zero() -> None:
+    """The default (text) `config` rendering path runs without error."""
+    args = argparse.Namespace(config_command=None, output_format="text")
     assert run_config_command(args) == 0
 
 
-def test_run_list_text_returns_zero() -> None:
-    """`config list` aliases the effective-value view and renders without error."""
-    args = argparse.Namespace(config_command="list", output_format="text")
-    assert run_config_command(args) == 0
-
-
-def test_run_show_verbose_text_shows_descriptions(capsys) -> None:
-    """`config show --verbose` folds in each option's description and how-to-set.
+def test_run_config_verbose_text_shows_descriptions(capsys) -> None:
+    """`config --verbose` folds in each option's description and how-to-set.
 
     A plain exit-code check would still pass if the verbose path silently
     regressed to the compact table, so assert the distinguishing content — an
@@ -1476,7 +1473,7 @@ def test_run_show_verbose_text_shows_descriptions(capsys) -> None:
     """
     opt = get_option("interpreter.memory_limit_mb")
     assert opt is not None
-    args = argparse.Namespace(config_command="show", output_format="text", verbose=True)
+    args = argparse.Namespace(config_command=None, output_format="text", verbose=True)
     assert run_config_command(args) == 0
     # Normalize whitespace so Rich soft-wrapping at the test console width can't
     # break the substring match.
@@ -1485,22 +1482,32 @@ def test_run_show_verbose_text_shows_descriptions(capsys) -> None:
     assert "set via" in rendered
 
 
-def test_config_parser_wires_aliases_and_verbose_flag(monkeypatch) -> None:
-    """Real argparse wiring: `config list --all --json` parses as verbose list JSON.
-
-    Every other command test builds a `Namespace` directly, so this is the only
-    guard that the `list`/`ls` aliases and the `-v`/`--verbose`/`--all` flag are
-    actually registered on the parser.
-    """
+def test_config_parser_wires_default_and_verbose_flag(monkeypatch) -> None:
+    """Real argparse wiring parses bare `config --all --json` as verbose JSON."""
     import sys
 
     from deepagents_code.main import parse_args
 
-    monkeypatch.setattr(sys, "argv", ["dcode", "config", "list", "--all", "--json"])
+    monkeypatch.setattr(sys, "argv", ["dcode", "config", "--all", "--json"])
     ns = parse_args()
-    assert ns.config_command == "list"
+    assert ns.config_command is None
     assert ns.verbose is True
     assert ns.output_format == "json"
+
+
+@pytest.mark.parametrize("removed_subcommand", ["show", "list", "ls"])
+def test_config_parser_rejects_removed_subcommands(
+    monkeypatch, removed_subcommand
+) -> None:
+    """Removed display subcommands are no longer registered on the parser."""
+    import sys
+
+    from deepagents_code.main import parse_args
+
+    monkeypatch.setattr(sys, "argv", ["dcode", "config", removed_subcommand])
+    with pytest.raises(SystemExit) as exc:
+        parse_args()
+    assert exc.value.code == 2
 
 
 def test_run_get_text_returns_zero() -> None:
@@ -1527,7 +1534,7 @@ def test_resolve_bool_unrecognized_env_falls_back_with_warning(
 
     `is_env_truthy` would silently return the default for `maybe`, but the
     resolver must not then credit the env var with that value: doing so would
-    make `config show` report `source=env` for a variable the runtime ignored.
+    make `config` report `source=env` for a variable the runtime ignored.
     """
     import logging
 
@@ -1785,14 +1792,14 @@ def test_run_path_json_reports_existence(monkeypatch, tmp_path, capsys) -> None:
     assert row["path"] == str(cfg)
 
 
-def test_run_show_json_reports_effective_values(capsys) -> None:
-    """`config show --json` reports effective values without catalog fields."""
+def test_run_config_json_reports_effective_values(capsys) -> None:
+    """`config --json` reports effective values without catalog fields."""
     import json
 
-    args = argparse.Namespace(config_command="show", output_format="json")
+    args = argparse.Namespace(config_command=None, output_format="json")
     assert run_config_command(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config show"
+    assert payload["command"] == "config"
     rows = payload["data"]
     assert all(
         {"key", "group", "source", "set", "redacted", "value"} <= set(r) for r in rows
@@ -1800,14 +1807,14 @@ def test_run_show_json_reports_effective_values(capsys) -> None:
     assert all("type" not in r for r in rows)
 
 
-def test_run_show_verbose_json_serializes_catalog(capsys) -> None:
-    """`config show --verbose --json` folds the catalog into each row."""
+def test_run_config_verbose_json_serializes_catalog(capsys) -> None:
+    """`config --verbose --json` folds the catalog into each row."""
     import json
 
-    args = argparse.Namespace(config_command="show", output_format="json", verbose=True)
+    args = argparse.Namespace(config_command=None, output_format="json", verbose=True)
     assert run_config_command(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config show"
+    assert payload["command"] == "config"
     rows = payload["data"]
     assert any(
         r["key"] == "interpreter.memory_limit_mb" and r["default"] == 64 for r in rows
@@ -1817,63 +1824,6 @@ def test_run_show_verbose_json_serializes_catalog(capsys) -> None:
         <= set(r)
         for r in rows
     )
-
-
-def test_run_list_json_preserves_catalog(capsys) -> None:
-    """`config list --json` keeps catalog fields for backward compatibility.
-
-    `list` was the machine-readable catalog endpoint, so its JSON must stay
-    additive: effective value/source plus the original catalog fields, even
-    without `--verbose`.
-    """
-    import json
-
-    args = argparse.Namespace(config_command="list", output_format="json")
-    assert run_config_command(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config list"
-    rows = payload["data"]
-    assert any(
-        r["key"] == "interpreter.memory_limit_mb" and r["default"] == 64 for r in rows
-    )
-    assert all(
-        {"key", "type", "default", "redacted", "env_var", "toml_path", "cli_flag"}
-        <= set(r)
-        for r in rows
-    )
-
-
-def test_run_ls_json_uses_list_label(capsys) -> None:
-    """The `ls` alias shares the `config list` JSON envelope label and catalog."""
-    import json
-
-    args = argparse.Namespace(config_command="ls", output_format="json")
-    assert run_config_command(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "config list"
-    assert all("type" in r for r in payload["data"])
-
-
-@pytest.mark.usefixtures("stored_auth_dir")
-def test_run_list_json_redacts_stored_secret_value(capsys) -> None:
-    """`config list --json` redacts a stored secret like `config show --json`.
-
-    `list` newly resolves effective values (it was a static catalog before), so
-    the redaction invariant must be proven on this path too.
-    """
-    import json
-
-    from deepagents_code import auth_store
-
-    auth_store.set_stored_key("anthropic", "from-store")
-    args = argparse.Namespace(config_command="list", output_format="json")
-    assert run_config_command(args) == 0
-    raw = capsys.readouterr().out
-    rows = json.loads(raw)["data"]
-    row = next(r for r in rows if r["key"] == "credentials.anthropic")
-    assert row["set"] is True
-    assert row["value"] is None
-    assert "from-store" not in raw
 
 
 # --- Provider/credential drift ----------------------------------------------
@@ -1914,7 +1864,7 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
 
     assert set(PROVIDER_API_KEY_ENV) <= set(_PROVIDER_DEPENDENCIES), (
         "_PROVIDER_DEPENDENCIES must include every provider credential so config "
-        "show's availability hints stay complete"
+        "availability hints stay complete"
     )
     assert {extra for _module, extra in _PROVIDER_DEPENDENCIES.values()} == set(
         MODEL_PROVIDER_EXTRAS

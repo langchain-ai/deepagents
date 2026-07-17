@@ -2089,6 +2089,7 @@ async def _load_tools_from_config(
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
+                format_login_failure,
             )
 
             status: MCPServerStatus
@@ -2116,31 +2117,36 @@ async def _load_tools_from_config(
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception only in debug logs
-                # so expected re-auth skips don't flood non-interactive output.
+                # re-login. This is an expected, already-classified outcome, so
+                # the actionable WARNING says everything useful; the full
+                # traceback adds no diagnostic value, so keep the DEBUG log to a
+                # concise, token-safe breadcrumb. Use `format_login_failure`
+                # rather than `exc.__class__.__name__`: these failures usually
+                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
+                # class name would just read "ExceptionGroup"; the helper walks
+                # the group/cause chain to name the nested culprit instead.
                 status = "unauthenticated"
-                detail = (
-                    "details redacted because config uses environment interpolation"
-                    if redact_failure_details
-                    else "the original error is in debug logs"
-                )
-                error = f"{reauth} (token refresh failed; {detail})"
+                error = f"{reauth} (token refresh failed)"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: tool discovery failed",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: token refresh failed (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
                 # (RFC 9728) that wasn't already handled as a token refresh —
                 # typically a server not opted into OAuth in config. Surface it
                 # as unauthenticated so the user can log in, rather than as an
-                # opaque connection error.
+                # opaque connection error. Like the reauth case, this is a
+                # recognized outcome: keep the DEBUG log to a concise,
+                # token-safe breadcrumb (via `format_login_failure`, which
+                # names the nested culprit inside the anyio `ExceptionGroup`)
+                # rather than dumping the full challenge traceback.
                 status = "unauthenticated"
                 error = (
                     f"MCP server {server_name!r} requires authentication; "
@@ -2151,10 +2157,10 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             else:
                 status = "error"

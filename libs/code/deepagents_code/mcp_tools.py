@@ -1533,7 +1533,12 @@ def _build_cached_mcp_tool(
         mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
     )
     wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {**base_meta, **wrapped_meta} or None
+    metadata = {
+        **base_meta,
+        **wrapped_meta,
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+    }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
         try:

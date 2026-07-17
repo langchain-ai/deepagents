@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 import uuid
@@ -228,6 +229,25 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
+def _is_auto_mode_classifier_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is internal Auto mode classifier output.
+
+    The Auto mode authorization classifier is invoked with
+    `config={"metadata": {"lc_source": "auto_mode_classifier"}}`
+    (see `AutoModeHITLMiddleware` in `deepagents_code.auto_mode`), which
+    LangChain's callback system merges into the stream metadata dict.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk should be hidden from the conversation transcript.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "auto_mode_classifier"
+
+
 class RubricEvaluationEnd(NamedTuple):
     """A validated `rubric_evaluation_end` event forwarded to the caller.
 
@@ -353,7 +373,9 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
-        on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
+        on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
+        | None = None,
+        on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         on_user_visible_output_started: Callable[[], None] | None = None,
@@ -368,6 +390,10 @@ class TextualUIAdapter:
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
         on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
+        on_auto_mode_event: (
+            Callable[[dict[str, Any]], Awaitable[None] | None] | None
+        ) = None,
+        on_approval_mode_fallback: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -380,12 +406,10 @@ class TextualUIAdapter:
         """Async callback that returns a Future for HITL approval."""
 
         self._on_auto_approve_enabled = on_auto_approve_enabled
-        """Callback invoked when auto-approve is enabled via the HITL approval
-        menu.
+        """Callback invoked before a Manual approval enables Auto."""
 
-        Fired when the user selects "Auto-approve all" from an approval dialog,
-        allowing the app to sync its status bar and session state.
-        """
+        self._on_switch_to_manual = on_switch_to_manual
+        """Callback that persists Manual before an Auto fallback resumes."""
 
         self._set_spinner = set_spinner
         """Callback to show/hide loading spinner."""
@@ -421,12 +445,13 @@ class TextualUIAdapter:
         """
 
         self._on_subagent_event = on_subagent_event
-        """Sync callback fired for each validated `subagent` custom-stream event.
+        """Sync callback fired for each validated `subagent` custom-stream event."""
 
-        Drives the live subagent fan-out panel. Events originate from the
-        QuickJS `task()` bridge during a `js_eval` call; payload strings are
-        LLM/JS-authored and treated as untrusted by the panel renderer.
-        """
+        self._on_auto_mode_event = on_auto_mode_event
+        """Callback for compact sanitized Auto denial and fallback events."""
+
+        self._on_approval_mode_fallback = on_approval_mode_fallback
+        """Callback that synchronizes a fail-closed startup fallback to Manual."""
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -641,6 +666,36 @@ def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  #
     return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
+def _require_approval_mode_key(value: str | None) -> str:
+    """Return a written Store key for fail-closed startup.
+
+    Raises:
+        RuntimeError: If the remote agent has no Store writer.
+    """
+    if value is None:
+        msg = "Approval-mode Store writer is unavailable"
+        raise RuntimeError(msg)
+    return value
+
+
+def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
+    """Return whether a custom event is a sanitized top-level Auto event."""
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return False
+    event = data.get("event")
+    reason = data.get("reason")
+    mode = data.get("mode")
+    return (
+        event in {"denial", "unavailable", "fallback", "warning"}
+        and (reason is None or isinstance(reason, str))
+        and (mode is None or (event == "fallback" and mode == "manual"))
+    )
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -669,15 +724,13 @@ async def execute_task_textual(
         user_input: The user's input message
         agent: The LangGraph agent to execute
         assistant_id: The agent identifier
-        session_state: Session state with auto_approve flag
-        adapter: The TextualUIAdapter for UI operations
-        backend: Optional backend for file operations
-        image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params. The
-            current approval mode (`session_state.auto_approve`) is written
-            into `context["auto_approve"]` on every stream iteration before it
-            is passed to the graph via `context=`, so the `interrupt_on` `when`
-            predicate can suppress interrupts at the source.
+        session_state: Session state with a typed approval mode.
+        adapter: The TextualUIAdapter for UI operations.
+        backend: Optional backend for file operations.
+        image_tracker: Optional tracker for images.
+        context: Optional `CLIContext` with model override and params. The current
+            mode is persisted and copied into runtime context before every stream
+            iteration.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message
@@ -707,6 +760,7 @@ async def execute_task_textual(
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
+        RuntimeError: If Manual cannot be persisted before graph execution.
     """
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -717,7 +771,8 @@ async def execute_task_textual(
     from langgraph.types import Command
     from pydantic import ValidationError
 
-    from deepagents_code.approval_mode import awrite_approval_mode
+    from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
+    from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
     from deepagents_code.config import settings
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
@@ -884,6 +939,16 @@ async def execute_task_textual(
         user_msg: dict[str, Any] = {"role": "user", "content": message_content}
         if message_kwargs:
             user_msg.update(message_kwargs)
+        additional_kwargs = user_msg.get("additional_kwargs")
+        trusted_kwargs = (
+            dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}
+        )
+        trusted_kwargs[USER_PROMPT_METADATA_KEY] = user_prompt_metadata(
+            user_input,
+            [str(path) for path in mentioned_files],
+            turn_id=turn_id,
+        )
+        user_msg["additional_kwargs"] = trusted_kwargs
         stream_input: dict | Command = {
             "messages": [user_msg],
             "goal_criteria_request": None,
@@ -906,13 +971,6 @@ async def execute_task_textual(
             pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
 
-            # Carry the current approval mode into run context so the
-            # `interrupt_on` `when` predicate can suppress interrupts at the
-            # source. Also write the live store item that the server-side
-            # predicate re-reads on each tool call, so toggling approval mode
-            # mid-stream (either direction) takes effect before the current
-            # stream returns. Turning auto-approve off is the safety-critical
-            # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
@@ -920,28 +978,63 @@ async def execute_task_textual(
                 context["blocked_goal_retry_context"] = blocked_goal_retry_context
             else:
                 context.pop("blocked_goal_retry_context", None)
-            auto_approve = bool(session_state.auto_approve)
-            context["auto_approve"] = auto_approve
+            raw_mode = getattr(session_state, "approval_mode", None)
+            if raw_mode is None:
+                raw_mode = (
+                    ApprovalMode.YOLO
+                    if getattr(session_state, "auto_approve", False)
+                    else ApprovalMode.MANUAL
+                )
             try:
-                live_key = await awrite_approval_mode(
-                    agent,
-                    thread_id,
-                    auto_approve=auto_approve,
+                selected_mode = ApprovalMode(raw_mode)
+            except (TypeError, ValueError):
+                selected_mode = ApprovalMode.MANUAL
+            context["approval_mode"] = selected_mode.value
+            context["auto_approve"] = selected_mode is not ApprovalMode.MANUAL
+            try:
+                live_key = _require_approval_mode_key(
+                    await awrite_approval_mode(
+                        agent,
+                        thread_id,
+                        mode=selected_mode,
+                    )
                 )
             except Exception:
                 logger.warning(
-                    "Failed to write live approval mode; interrupting for safety",
+                    "Failed to persist selected approval mode; forcing Manual",
                     exc_info=True,
                 )
-                context["auto_approve"] = False
-                context.pop("approval_mode_key", None)
-                session_state.approval_mode_key = None
-            else:
-                if live_key is None:
+                try:
+                    live_key = _require_approval_mode_key(
+                        await awrite_approval_mode(
+                            agent,
+                            thread_id,
+                            mode=ApprovalMode.MANUAL,
+                        )
+                    )
+                except Exception as exc:
+                    context["approval_mode"] = ApprovalMode.MANUAL.value
+                    context["auto_approve"] = False
                     context.pop("approval_mode_key", None)
-                else:
-                    context["approval_mode_key"] = live_key
-                session_state.approval_mode_key = live_key
+                    session_state.approval_mode = ApprovalMode.MANUAL
+                    session_state.approval_mode_key = None
+                    if adapter._on_approval_mode_fallback is not None:
+                        adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                    adapter._update_status("Approval mode fell back to Manual")
+                    msg = (
+                        "Manual approval mode could not be persisted; graph execution "
+                        "is blocked until the Store is available."
+                    )
+                    raise RuntimeError(msg) from exc
+                selected_mode = ApprovalMode.MANUAL
+                session_state.approval_mode = ApprovalMode.MANUAL
+                context["approval_mode"] = ApprovalMode.MANUAL.value
+                context["auto_approve"] = False
+                if adapter._on_approval_mode_fallback is not None:
+                    adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                adapter._update_status("Approval mode fell back to Manual")
+            context["approval_mode_key"] = live_key
+            session_state.approval_mode_key = live_key
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1046,8 +1139,19 @@ async def execute_task_textual(
                         try:
                             adapter._on_subagent_event(data)
                         except Exception:
-                            # Panel rendering must never crash the stream loop.
                             logger.exception("subagent panel event handler failed")
+                    if (
+                        adapter._on_auto_mode_event is not None
+                        and _is_renderable_auto_mode_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            callback_result = adapter._on_auto_mode_event(data)
+                            if callback_result is not None:
+                                await callback_result
+                        except Exception:
+                            logger.exception("Auto mode event handler failed")
                     continue
 
                 # Handle UPDATES stream - for interrupts and todos
@@ -1192,6 +1296,43 @@ async def execute_task_textual(
                             summarization_in_progress = True
                             if adapter._set_spinner:
                                 await adapter._set_spinner("Offloading")
+                        continue
+
+                    # Extract token usage before filtering hidden model output.
+                    # Usage may be attached to any message chunk, including the
+                    # internal Auto mode classifier response.
+                    if hasattr(message, "usage_metadata"):
+                        usage = message.usage_metadata
+                        if usage:
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
+                            total_toks = usage.get("total_tokens", 0)
+                            active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, total_toks
+                                )
+
+                    # The Auto mode authorization classifier is a nested model
+                    # call. Its structured JSON is internal policy machinery,
+                    # not assistant output for the conversation transcript.
+                    if _is_auto_mode_classifier_chunk(metadata):
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -1363,36 +1504,6 @@ async def execute_task_textual(
                                     exc_info=True,
                                 )
                         continue
-
-                    # Extract token usage (before content_blocks check
-                    # - usage may be on any chunk)
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
@@ -1854,7 +1965,10 @@ async def execute_task_textual(
                 ):
                     action_requests = hitl_request["action_requests"]
 
-                    if session_state.auto_approve:
+                    if (
+                        getattr(session_state, "approval_mode", None)
+                        is ApprovalMode.YOLO
+                    ):
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
@@ -1897,10 +2011,27 @@ async def execute_task_textual(
                         for tool_msg in suppressed_tool_msgs:
                             tool_msg.set_awaiting_approval()
                         try:
-                            future = await adapter._request_approval(
-                                action_requests, assistant_id
-                            )
-                            decision = await future
+                            while True:
+                                future = await adapter._request_approval(
+                                    action_requests, assistant_id
+                                )
+                                decision = await future
+                                if (
+                                    isinstance(decision, dict)
+                                    and decision.get("type") == "auto_approve_all"
+                                    and adapter._on_auto_approve_enabled is not None
+                                ):
+                                    callback_result = adapter._on_auto_approve_enabled()
+                                    enabled = (
+                                        await callback_result
+                                        if inspect.isawaitable(callback_result)
+                                        else callback_result
+                                    )
+                                    if enabled is None:
+                                        enabled = True
+                                    if enabled is False:
+                                        continue
+                                break
                         finally:
                             for tool_msg in suppressed_tool_msgs:
                                 try:
@@ -1916,17 +2047,6 @@ async def execute_task_textual(
                             decision_type = decision.get("type")
 
                             if decision_type == "auto_approve_all":
-                                session_state.auto_approve = True
-                                # The resuming stream re-reads
-                                # `session_state.auto_approve` into run context
-                                # at the top of the loop, so the `interrupt_on`
-                                # `when` predicate suppresses interrupts on the
-                                # remaining tool calls in this turn — keeping it
-                                # a single run instead of resuming after each.
-                                if adapter._on_auto_approve_enabled:
-                                    callback_result = adapter._on_auto_approve_enabled()
-                                    if callback_result is not None:
-                                        await callback_result
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -1951,6 +2071,24 @@ async def execute_task_textual(
                                             file_op_tracker.mark_hitl_approved(
                                                 tool_name, args
                                             )
+
+                            elif decision_type == "switch_manual":
+                                if adapter._on_switch_to_manual is None:
+                                    msg = "Manual mode callback is unavailable"
+                                    raise RuntimeError(msg)
+                                callback_result = adapter._on_switch_to_manual()
+                                switched = (
+                                    await callback_result
+                                    if inspect.isawaitable(callback_result)
+                                    else callback_result
+                                )
+                                if not switched:
+                                    msg = "Manual mode could not be persisted"
+                                    raise RuntimeError(msg)
+                                decisions = [
+                                    cast("HITLDecision", {"type": "switch_manual"})
+                                    for _ in action_requests
+                                ]
 
                             elif decision_type == "approve":
                                 decisions = [

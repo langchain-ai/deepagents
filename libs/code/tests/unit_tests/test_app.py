@@ -3691,6 +3691,48 @@ class TestMessageQueue:
             assert not app.query(StartupTip)
             assert app._pending_messages[0].text == "task"
 
+    @pytest.mark.parametrize(
+        ("attr", "value", "method", "expected_args"),
+        [
+            (
+                "_initial_prompt",
+                "hello world",
+                "_handle_user_message",
+                ("hello world",),
+            ),
+            ("_initial_skill", "review", "_invoke_skill", ("review", "")),
+            ("_initial_goal", "ship it", "_handle_goal_command", ("/goal ship it",)),
+        ],
+    )
+    async def test_startup_tip_removed_by_initial_submission(
+        self,
+        attr: str,
+        value: str,
+        method: str,
+        expected_args: tuple[str, ...],
+    ) -> None:
+        """Every startup path (`-m`/`--skill`/`--goal`) dismisses the tip.
+
+        The dismissal is a single shared call at the top of
+        `_submit_initial_submission`, so all three paths exercise it.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.query(StartupTip)) == 1
+            # Simulate the startup path without kicking off agent work:
+            # `_submit_initial_submission` should dismiss the tip when
+            # handling the prompt.
+            setattr(app, attr, value)
+            dispatch = AsyncMock()
+            setattr(app, method, dispatch)
+
+            await app._submit_initial_submission()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+            dispatch.assert_awaited_once_with(*expected_args)
+
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()
@@ -5288,6 +5330,27 @@ class TestTraceCommand:
             await app._handle_command("/connect")
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
+
+    async def test_plugins_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/plugins' should push the PluginManagerScreen modal without a gate.
+
+        Plugins are generally available, so dispatch must open the manager
+        directly rather than emitting an experimental hint.
+        """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
 
 
 class TestClearCommand:
@@ -21419,13 +21482,8 @@ class TestPrewarmAwait:
             f"prewarm must precede skill discovery thread; got {call_order}"
         )
 
-    def test_constructor_does_not_discover_plugins(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_constructor_does_not_discover_plugins(self) -> None:
         """Plugin filesystem discovery must stay off the pre-paint hot path."""
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         with patch("deepagents_code.plugins.discover_plugins") as discover_mock:
             app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 

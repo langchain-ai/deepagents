@@ -112,6 +112,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:google/gemini-3.5-flash": "Gemini 3.5 Flash",
     "openrouter:google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "openrouter:moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+    "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
     "openrouter:openai/gpt-5.4": "GPT-5.4",
     "openrouter:openai/gpt-5.4-mini": "GPT-5.4 mini",

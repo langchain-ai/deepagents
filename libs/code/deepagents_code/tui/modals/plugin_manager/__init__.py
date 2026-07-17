@@ -3,25 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
+from textual import work
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
+from deepagents_code.tui.widgets.loading import Spinner
+
 if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
+    from textual.timer import Timer
 
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.plugins.models import PluginMarketplace
     from deepagents_code.tui.modals.plugin_manager.models import (
         PluginManagerView,
-        PluginTab,
         _MarketplaceRow,
         _PluginRow,
     )
@@ -48,29 +53,47 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_details_content,
     _plugin_options,
 )
-from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
+from deepagents_code.tui.modals.plugin_manager.models import (
+    PluginTab,
+    _ManagerState,
+)
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
+from deepagents_code.tui.modals.plugin_manager.tabs import (
+    TAB_LABELS,
+    PluginTabLabel,
+    PluginTabSelected,
+)
+
+logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
 
-class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
+class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    Dismisses with `(label, needs_mcp_login)` after an MCP-bearing plugin
-    install so the app can offer reconnect + login guidance, otherwise
-    `None`.
+    When plugin state changed while the manager was open, a reload prompt is
+    shown after this screen closes offering to apply the changes via `/reload`;
+    an unchanged close shows nothing.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
-        Binding("left", "previous_tab", "Previous tab", show=False, priority=True),
-        Binding("right", "next_tab", "Next tab", show=False, priority=True),
+        # Separate from tab/shift+tab so check_action can release arrows to a
+        # non-empty Input for caret movement while keeping Tab as tab cycling.
+        Binding(
+            "left", "arrow_previous_tab", "Previous tab", show=False, priority=True
+        ),
+        Binding("right", "arrow_next_tab", "Next tab", show=False, priority=True),
         Binding("tab", "next_tab", "Next tab", show=False, priority=True),
         Binding("shift+tab", "previous_tab", "Previous tab", show=False, priority=True),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("/", "focus_search", "Search", show=False, priority=True),
     ]
 
     CSS_PATH = "plugin_manager.tcss"
+    # Prefer the option list over the search Input so Enter activates rows on
+    # open; `/` still focuses search explicitly.
+    AUTO_FOCUS = "#plugin-manager-options"
 
     # Divider width used before the options list has been laid out (e.g. in unit
     # tests that build options off-screen). At render time the divider is sized to
@@ -111,6 +134,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
+        self._adding_marketplace = False
+        self._marketplace_spinner = Spinner()
+        self._marketplace_spinner_timer: Timer | None = None
+        self._search_query = ""
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -122,7 +149,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             yield Static(
                 "Plugins", id="plugin-manager-title", classes="plugin-manager-title"
             )
-            yield Static(self._tabs_text(), id="plugin-manager-tabs")
+            with Horizontal(id="plugin-manager-tabs", classes="plugin-manager-tabs"):
+                for tab in self._tabs:
+                    yield PluginTabLabel(tab, TAB_LABELS[tab])
             yield Rule(
                 line_style="heavy" if not is_ascii_mode() else "ascii",
                 id="plugin-manager-divider",
@@ -139,6 +168,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 id="plugin-manager-error",
                 classes="plugin-manager-error",
                 markup=False,
+            )
+            yield Input(
+                placeholder="Search plugins...",
+                id="plugin-manager-search",
             )
             yield OptionList(id="plugin-manager-options")
             yield Input(
@@ -174,18 +207,57 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         ):
             self._refresh_view()
 
-    def _tabs_text(self) -> str:
-        labels = {
-            "discover": "Plugins",
-            "installed": "Installed",
-            "marketplaces": "Marketplaces",
-            "errors": "Errors",
-        }
-        parts = []
+    def _update_tab_labels(self) -> None:
+        """Refresh active styling on each clickable tab label."""
         for tab in self._tabs:
-            label = labels[tab]
-            parts.append(f"> {label} <" if tab == self._tab else f"  {label}  ")
-        return " ".join(parts)
+            self.query_one(f"#plugin-tab-{tab}", PluginTabLabel).set_active(
+                tab == self._tab
+            )
+
+    def _select_tab(self, tab: PluginTab) -> None:
+        """Activate `tab`, exiting details into list mode when needed.
+
+        Args:
+            tab: Tab to show.
+        """
+        if self._mode == "add_marketplace":
+            return
+        if self._details_mode_active():
+            self._mode = "list"
+            self._selected_plugin = None
+            self._selected_marketplace = None
+        if tab != self._tab:
+            # A query typed on one tab should not silently filter another.
+            self._search_query = ""
+        self._tab = tab
+        self._error = None
+        self._refresh_view()
+
+    def _search_available(self) -> bool:
+        """Whether the plugin filter should be shown and focusable.
+
+        Returns:
+            `True` when list mode has plugins that can be filtered.
+        """
+        if self._mode != "list":
+            return False
+        if self._tab == "discover":
+            return bool(self._state.marketplaces and self._state.available_plugins)
+        if self._tab == "installed":
+            return bool(self._state.installed_plugins)
+        return False
+
+    def _filtered_plugins(self, rows: Sequence[_PluginRow]) -> tuple[_PluginRow, ...]:
+        query = self._search_query.strip().casefold()
+        if not query:
+            return tuple(rows)
+        return tuple(
+            row
+            for row in rows
+            if query in row.plugin_id.casefold()
+            or query in row.label.casefold()
+            or query in row.description.casefold()
+        )
 
     def _current_options(self) -> list[Option]:
         glyphs = get_glyphs()
@@ -201,19 +273,25 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 ]
             if not self._state.available_plugins:
                 return [Option("All available plugins are installed.", id="empty")]
-            return _plugin_options(
-                self._state.available_plugins,
-                action="detail",
-                status=None,
-            )
+            rows = self._filtered_plugins(self._state.available_plugins)
+            if not rows:
+                return [
+                    Option("No plugins match your search.", id="empty", disabled=True)
+                ]
+            return _plugin_options(rows, action="detail", status=None)
         if self._tab == "installed":
             if not self._state.installed_plugins:
                 return [Option("No plugins installed.", id="empty")]
-            return _plugin_options(
-                self._state.installed_plugins,
-                action="installed",
-                status=None,
-            )
+            rows = self._filtered_plugins(self._state.installed_plugins)
+            if not rows:
+                return [
+                    Option(
+                        "No installed plugins match your search.",
+                        id="empty",
+                        disabled=True,
+                    )
+                ]
+            return _plugin_options(rows, action="installed", status=None)
         if self._tab == "marketplaces":
             options = [Option("+ Add marketplace", id="add-marketplace")]
             if self._state.marketplaces:
@@ -296,9 +374,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
     def _refresh_view(self) -> None:
         title = self.query_one("#plugin-manager-title", Static)
-        tabs = self.query_one("#plugin-manager-tabs", Static)
+        tabs = self.query_one("#plugin-manager-tabs", Horizontal)
         divider = self.query_one("#plugin-manager-divider", Rule)
-        tabs.update(self._tabs_text())
+        self._update_tab_labels()
         status_widget = self.query_one("#plugin-manager-status", Static)
         if self._mode == "plugin_details" and self._selected_plugin is not None:
             status_widget.update(_plugin_details_content(self._selected_plugin))
@@ -326,6 +404,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self.query_one("#plugin-manager-error", Static).update(error)
 
         options = self.query_one("#plugin-manager-options", OptionList)
+        search_input = self.query_one("#plugin-manager-search", Input)
         source_input = self.query_one("#plugin-marketplace-source", Input)
         help_text = self.query_one("#plugin-manager-help", Static)
         glyphs = get_glyphs()
@@ -345,6 +424,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                     f"  {glyphs.bullet} ./path/to/marketplace"
                 )
             options.display = False
+            search_input.display = False
             source_input.display = True
             source_input.focus()
             help_text.update(f"Enter to add {glyphs.bullet} Esc to cancel")
@@ -355,6 +435,7 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         divider.display = True
 
         if self._details_mode_active():
+            search_input.display = False
             source_input.display = False
             options.display = True
             options.clear_options()
@@ -372,6 +453,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
 
         source_input.display = False
         options.display = True
+        search_input.display = self._search_available()
+        if search_input.display and search_input.value != self._search_query:
+            search_input.value = self._search_query
         highlighted = options.highlighted
         options.clear_options()
         for option in self._current_options():
@@ -381,7 +465,8 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 0 if highlighted is None else min(highlighted, options.option_count - 1)
             )
             options.highlighted = self._nearest_enabled_index(options, candidate)
-        options.focus()
+        if not search_input.has_focus:
+            options.focus()
 
         if self._tab == "marketplaces":
             help_text.update(
@@ -396,9 +481,12 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
                 action = "add marketplace"
             else:
                 action = "install"
+            search_hint = (
+                f"/ search {glyphs.bullet} " if self._search_available() else ""
+            )
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
-                f"Enter {action} {glyphs.bullet} Left/Right tabs "
+                f"Enter {action} {glyphs.bullet} {search_hint}Left/Right tabs "
                 f"{glyphs.bullet} Esc close"
             )
         else:
@@ -422,6 +510,10 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         return [Option("Back to plugin list", id="details-back")]
 
     async def _refresh_state(self) -> None:
+        # A mutating action (install/toggle/uninstall/marketplace change) reloads
+        # state and shows a fresh list, so a leftover query would hide results.
+        # Details round-trips use `_refresh_view` instead and keep the query.
+        self._search_query = ""
         self._state = await asyncio.to_thread(
             _load_manager_state,
             self._mcp_server_info,
@@ -438,8 +530,61 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             )
         self._refresh_view()
 
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # required by Textual's DOMNode.check_action override signature
+    ) -> bool | None:
+        """Gate priority bindings that would otherwise steal Input keystrokes.
+
+        `/` is enabled only when the plugin filter is visible and not focused,
+        so it remains typeable in the filter and Add Marketplace source field,
+        and cannot steal focus while the filter is hidden.
+        Left/right release to a focused Input once it has at least one character,
+        so caret movement works while empty-field arrows keep switching tabs.
+
+        Args:
+            action: Textual action name being considered for dispatch.
+            parameters: Parameters associated with the action.
+
+        Returns:
+            `False` to step a binding aside so the focused widget receives the
+                key; `True` to allow the action.
+        """
+        if action in {"arrow_previous_tab", "arrow_next_tab"}:
+            focused = self.focused
+            return not (isinstance(focused, Input) and bool(focused.value))
+        if action == "focus_search":
+            if not self._search_available():
+                return False
+            try:
+                return not self.query_one("#plugin-manager-search", Input).has_focus
+            except NoMatches:
+                return True
+        return True
+
+    def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
+        """Switch tabs from a mouse click on a tab label.
+
+        Args:
+            event: Tab selection message from `PluginTabLabel`.
+        """
+        self._select_tab(event.tab)
+
     def action_cancel(self) -> None:
-        """Close or leave the add-marketplace / details prompt."""
+        """Clear a query, leave a prompt or details, or close the manager."""
+        if self._adding_marketplace:
+            return
+        search_input = self.query_one("#plugin-manager-search", Input)
+        if search_input.has_focus:
+            if self._search_query:
+                self._search_query = ""
+                search_input.value = ""
+                self._refresh_view()
+                search_input.focus()
+            else:
+                self.query_one("#plugin-manager-options", OptionList).focus()
+            return
         if self._mode == "add_marketplace":
             self._mode = "list"
             self._error = None
@@ -459,23 +604,57 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             return
         self.dismiss(None)
 
+    def action_focus_search(self) -> None:
+        """Focus the plugin filter when it is visible."""
+        if self._search_available():
+            self.query_one("#plugin-manager-search", Input).focus()
+
+    def _cycle_details_option(self, step: int) -> None:
+        options = self.query_one("#plugin-manager-options", OptionList)
+        enabled = [
+            index
+            for index in range(options.option_count)
+            if not options.get_option_at_index(index).disabled
+        ]
+        if not enabled:
+            return
+        current = options.highlighted
+        if current in enabled:
+            position = enabled.index(current)
+            options.highlighted = enabled[(position + step) % len(enabled)]
+        else:
+            # Nothing highlighted yet: step forward to the first option, back to
+            # the last.
+            options.highlighted = enabled[0] if step > 0 else enabled[-1]
+        options.focus()
+
+    def action_arrow_next_tab(self) -> None:
+        """Switch tabs via right arrow when the caret is not editing text."""
+        self.action_next_tab()
+
+    def action_arrow_previous_tab(self) -> None:
+        """Switch tabs via left arrow when the caret is not editing text."""
+        self.action_previous_tab()
+
     def action_next_tab(self) -> None:
-        """Switch to the next tab."""
+        """Switch tabs or focus the next details option."""
+        if self._details_mode_active():
+            self._cycle_details_option(1)
+            return
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)
-        self._tab = self._tabs[(index + 1) % len(self._tabs)]
-        self._error = None
-        self._refresh_view()
+        self._select_tab(self._tabs[(index + 1) % len(self._tabs)])
 
     def action_previous_tab(self) -> None:
-        """Switch to the previous tab."""
+        """Switch tabs or focus the previous details option."""
+        if self._details_mode_active():
+            self._cycle_details_option(-1)
+            return
         if self._mode != "list":
             return
         index = self._tabs.index(self._tab)
-        self._tab = self._tabs[(index - 1) % len(self._tabs)]
-        self._error = None
-        self._refresh_view()
+        self._select_tab(self._tabs[(index - 1) % len(self._tabs)])
 
     def action_cursor_down(self) -> None:
         """Move the option-list cursor down."""
@@ -605,8 +784,6 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if row is None:
             return
         try:
-            # install_plugin returns the loaded instance; Discover rows do not
-            # carry MCP metadata until install, so inspect the result here.
             instance = await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
@@ -616,20 +793,21 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
 
         label = row.label
-        entries = plugin_mcp_server_entries(instance)
-        has_mcp = bool(entries)
-        needs_login = any(needs for _label, _scoped, needs in entries)
+        needs_login = any(
+            needs_login
+            for _server_label, _scoped, needs_login in plugin_mcp_server_entries(
+                instance
+            )
+        )
         self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = f"Installed {label}."
+        self._status = f"Installed {label}. Run /reload to activate."
+        if needs_login:
+            self._status += f" After reload, sign in to {label} via /mcp."
         self._error = None
         await self._refresh_state()
-        if has_mcp:
-            # Close the manager so the reconnect prompt is not buried under it.
-            self.dismiss((label, needs_login))
-            return
 
     async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin
@@ -702,24 +880,89 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         self._error = None
         await self._refresh_state()
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Add a marketplace from the source input."""
-        if event.input.id != "plugin-marketplace-source":
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter the current plugin list as the search query changes."""
+        if event.input.id != "plugin-manager-search":
+            return
+        self._search_query = event.value
+        self._refresh_view()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Activate a search result or start adding a marketplace."""
+        if event.input.id == "plugin-manager-search":
+            event.stop()
+            options = self.query_one("#plugin-manager-options", OptionList)
+            highlighted = options.highlighted
+            if highlighted is None:
+                return
+            option_id = options.get_option_at_index(highlighted).id
+            if option_id is None or not option_id.startswith(("detail:", "installed:")):
+                return
+            options.focus()
+            options.action_select()
+            return
+        if event.input.id != "plugin-marketplace-source" or self._adding_marketplace:
             return
         source = event.value.strip()
         if not source:
             self._error = "Please enter a marketplace source."
             self._refresh_view()
             return
-        self._status = "Adding marketplace..."
+        self._adding_marketplace = True
+        event.input.disabled = True
         self._error = None
+        self._marketplace_spinner_timer = self.set_interval(
+            0.1, self._tick_marketplace_spinner
+        )
+        self._tick_marketplace_spinner()
+        self._add_marketplace(source)
+
+    def _tick_marketplace_spinner(self) -> None:
+        self._status = f"{self._marketplace_spinner.next_frame()} Adding marketplace..."
         self._refresh_view()
+
+    @work(thread=True, exclusive=True, exit_on_error=False)
+    def _add_marketplace(self, source: str) -> None:
         try:
-            marketplace = await asyncio.to_thread(add_marketplace_source, source)
+            marketplace = add_marketplace_source(source)
         except (MarketplaceError, OSError, RuntimeError) as exc:
+            self.app.call_from_thread(self._finish_marketplace_add, None, str(exc))
+            return
+        except Exception as exc:
+            # Any exception outside the expected set must still route through
+            # _finish_marketplace_add: with exit_on_error=False the worker
+            # crash is otherwise swallowed, leaving _adding_marketplace latched
+            # (spinner running, input disabled, Escape blocked by action_cancel)
+            # and the manager permanently unrecoverable.
+            logger.exception("Unexpected error adding marketplace source")
+            self.app.call_from_thread(
+                self._finish_marketplace_add, None, f"Unexpected error: {exc}"
+            )
+            return
+        self.app.call_from_thread(self._finish_marketplace_add, marketplace, None)
+
+    async def _finish_marketplace_add(
+        self, marketplace: PluginMarketplace | None, error: str | None
+    ) -> None:
+        if self._marketplace_spinner_timer is not None:
+            self._marketplace_spinner_timer.stop()
+            self._marketplace_spinner_timer = None
+        source_input = self.query_one("#plugin-marketplace-source", Input)
+
+        def release_guard() -> None:
+            """Re-enable the input and unblock Escape now the add has settled."""
+            self._adding_marketplace = False
+            source_input.disabled = False
+
+        if error is not None:
+            release_guard()
             self._status = None
-            self._error = f"Could not add marketplace: {exc}"
+            self._error = f"Could not add marketplace: {error}"
             self._refresh_view()
+            source_input.focus()
+            return
+        if marketplace is None:
+            release_guard()
             return
         self._mode = "list"
         self._tab = "discover"
@@ -728,4 +971,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             f"({len(marketplace.plugins)} plugin(s))."
         )
         self._error = None
-        await self._refresh_state()
+        # Keep the guard set until the refresh finishes so Escape stays blocked
+        # while _refresh_state() runs.
+        try:
+            await self._refresh_state()
+        finally:
+            release_guard()

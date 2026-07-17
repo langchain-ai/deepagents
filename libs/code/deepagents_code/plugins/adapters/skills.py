@@ -6,8 +6,6 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
-from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
 if TYPE_CHECKING:
     from deepagents_code.plugins.models import PluginInstance
 
@@ -99,23 +97,22 @@ def discover_plugin_skill_state() -> tuple[
     """Discover plugin skill sources, containment roots, and loaded ids.
 
     Returns:
-        Plugin skill sources, roots, and ids, or empty values when plugins are
-        disabled or discovery fails.
+        Plugin skill sources, roots, and ids, or empty values when discovery
+        fails.
     """
     plugin_sources: tuple[tuple[Path, str], ...] = ()
     plugin_roots: tuple[Path, ...] = ()
     plugin_ids: frozenset[str] = frozenset()
     try:
-        if is_env_truthy(EXPERIMENTAL):
-            from deepagents_code.plugins import discover_plugins
+        from deepagents_code.plugins import discover_plugins
 
-            plugins = discover_plugins().plugins
-            plugin_sources = tuple(
-                (Path(path), namespace)
-                for path, _label, namespace in plugin_skill_sources(plugins)
-            )
-            plugin_roots = tuple(plugin_skill_roots(plugins))
-            plugin_ids = frozenset(plugin.plugin_id for plugin in plugins)
+        plugins = discover_plugins().plugins
+        plugin_sources = tuple(
+            (Path(path), namespace)
+            for path, _label, namespace in plugin_skill_sources(plugins)
+        )
+        plugin_roots = tuple(plugin_skill_roots(plugins))
+        plugin_ids = frozenset(plugin.plugin_id for plugin in plugins)
     except (OSError, RuntimeError):
         logger.warning("Could not discover plugin skills", exc_info=True)
         return (), (), frozenset()
@@ -129,8 +126,7 @@ def discover_plugin_skill_sources_and_roots() -> tuple[
     """Discover plugin skill sources and containment roots.
 
     Returns:
-        Plugin skill sources and roots, or empty tuples when plugins are disabled
-        or discovery fails.
+        Plugin skill sources and roots, or empty tuples when discovery fails.
     """
     plugin_sources, plugin_roots, _plugin_ids = discover_plugin_skill_state()
 

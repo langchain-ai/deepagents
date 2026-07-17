@@ -231,8 +231,9 @@ def _token_file_lock(path: Path) -> LockType:
     loopback self-heal) take this lock, to serialize their overlapping updates
     to the shared envelope. Reads deliberately do **not**: `_write` publishes
     via an atomic `tmp.replace(path)`, so a reader always sees a whole old or
-    whole new file and has no modify step to lose. Guarding reads would only add
-    needless contention and re-introduce event-loop blocking risk.
+    whole new file and has no modify step to lose. The reads are already
+    offloaded via `asyncio.to_thread`, so guarding them would only add needless
+    worker-thread contention without preventing any lost update.
     """
     with _TOKEN_FILE_LOCKS_GUARD:
         lock = _TOKEN_FILE_LOCKS.get(path)
@@ -343,12 +344,32 @@ class FileTokenStorage(TokenStorage):
 
     def _get_tokens_sync(self) -> OAuthToken | None:
         data = self._read()
+        return self._tokens_from_data(data)
+
+    @staticmethod
+    def _tokens_from_data(data: dict[str, Any] | None) -> OAuthToken | None:
         if data is None:
             return None
         raw = data.get("tokens")
         if raw is None:
             return None
         return OAuthToken.model_validate(raw)
+
+    async def get_tokens_with_expiry(
+        self,
+    ) -> tuple[OAuthToken | None, float | None]:
+        """Return tokens and their absolute expiry from one file snapshot.
+
+        Reading both fields together prevents a concurrent token rotation from
+        pairing one token generation with another generation's expiry.
+        """
+        return await asyncio.to_thread(self._get_tokens_with_expiry_sync)
+
+    def _get_tokens_with_expiry_sync(
+        self,
+    ) -> tuple[OAuthToken | None, float | None]:
+        data = self._read()
+        return self._tokens_from_data(data), self._expires_at_from_data(data)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         """Persist `tokens` to disk, preserving any stored client info.
@@ -362,8 +383,11 @@ class FileTokenStorage(TokenStorage):
         terminal. If persistence fails while cancellation is pending, the
         persistence error takes precedence so it is not silently discarded.
         """
+        expires_at = (
+            time.time() + tokens.expires_in if tokens.expires_in is not None else None
+        )
         write_task = asyncio.create_task(
-            asyncio.to_thread(self._set_tokens_sync, tokens)
+            asyncio.to_thread(self._set_tokens_sync, tokens, expires_at)
         )
         cancellation = await _join_task_deferring_cancellation(write_task)
 
@@ -374,13 +398,13 @@ class FileTokenStorage(TokenStorage):
         if cancellation is not None:
             raise cancellation
 
-    def _set_tokens_sync(self, tokens: OAuthToken) -> None:
+    def _set_tokens_sync(self, tokens: OAuthToken, expires_at: float | None) -> None:
         with _token_file_lock(self.path):
             data = self._read() or {}
             data["version"] = _STORAGE_VERSION
             data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
-            if tokens.expires_in is not None:
-                data["expires_at"] = time.time() + tokens.expires_in
+            if expires_at is not None:
+                data["expires_at"] = expires_at
             else:
                 data.pop("expires_at", None)
             self._write(data)
@@ -447,14 +471,21 @@ class FileTokenStorage(TokenStorage):
         Prevents the state where one call succeeds and the other fails,
         leaving an orphan on disk.
         """
+        expires_at = (
+            time.time() + tokens.expires_in if tokens.expires_in is not None else None
+        )
         await asyncio.to_thread(
-            self._set_tokens_and_client_info_sync, tokens, client_info
+            self._set_tokens_and_client_info_sync,
+            tokens,
+            client_info,
+            expires_at,
         )
 
     def _set_tokens_and_client_info_sync(
         self,
         tokens: OAuthToken,
         client_info: OAuthClientInformationFull,
+        expires_at: float | None,
     ) -> None:
         with _token_file_lock(self.path):
             data = self._read() or {}
@@ -463,8 +494,8 @@ class FileTokenStorage(TokenStorage):
             data["client_info"] = json.loads(
                 client_info.model_dump_json(exclude_none=True)
             )
-            if tokens.expires_in is not None:
-                data["expires_at"] = time.time() + tokens.expires_in
+            if expires_at is not None:
+                data["expires_at"] = expires_at
             else:
                 data.pop("expires_at", None)
             self._write(data)
@@ -481,6 +512,9 @@ class FileTokenStorage(TokenStorage):
 
     def _get_expires_at_sync(self) -> float | None:
         data = self._read()
+        return self._expires_at_from_data(data)
+
+    def _expires_at_from_data(self, data: dict[str, Any] | None) -> float | None:
         if data is None:
             return None
         raw = data.get("expires_at")
@@ -1283,11 +1317,22 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             )
             if get_oauth_metadata is not None:
                 self.context.oauth_metadata = await get_oauth_metadata()
-        get_expires_at = getattr(self.context.storage, "get_expires_at", None)
-        if get_expires_at is None:
-            return
-        expires_at = await get_expires_at()
-        tokens = self.context.current_tokens
+        get_tokens_with_expiry = getattr(
+            self.context.storage,
+            "get_tokens_with_expiry",
+            None,
+        )
+        if get_tokens_with_expiry is not None:
+            tokens, expires_at = await get_tokens_with_expiry()
+            # Keep the token and expiry paired from the same file snapshot. A
+            # peer may rotate both while the upstream initializer is yielding.
+            self.context.current_tokens = tokens
+        else:
+            get_expires_at = getattr(self.context.storage, "get_expires_at", None)
+            if get_expires_at is None:
+                return
+            expires_at = await get_expires_at()
+            tokens = self.context.current_tokens
         if expires_at is None:
             # Use 1.0 (one second after the Unix epoch) rather than 0.0 so the
             # SDK's `not self.token_expiry_time` falsy-zero check doesn't treat
@@ -1424,10 +1469,23 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                 try:
                     release_task.result()
                 except Exception as exc:
-                    if pending_exception is None or isinstance(
-                        pending_exception, asyncio.CancelledError
-                    ):
+                    if pending_exception is None:
+                        # No guarded error to preserve, so the release failure
+                        # is the primary error to surface. It supersedes any
+                        # deferred cancellation; log that loss so it is not
+                        # silent.
+                        if cancellation is not None:
+                            logger.warning(
+                                "MCP token refresh lock release for %s failed; "
+                                "a deferred cancellation is superseded by the "
+                                "release error.",
+                                self.context.server_url,
+                            )
                         raise
+                    # Preserve the guarded operation's exception — including a
+                    # `CancelledError`, whose propagation structured
+                    # cancellation depends on — and record the release failure
+                    # as a note rather than masking the original with it.
                     pending_exception.add_note(
                         "MCP refresh lock release also failed with "
                         f"{type(exc).__name__}."

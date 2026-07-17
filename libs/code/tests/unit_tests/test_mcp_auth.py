@@ -360,6 +360,41 @@ class TestFileTokenStorage:
         assert got is not None
         assert before + 3600 <= got <= after + 3600 + 1.0
 
+    @pytest.mark.parametrize("include_client_info", [False, True])
+    async def test_expiry_is_captured_before_worker_delay(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        include_client_info: bool,
+    ) -> None:
+        """Executor delays do not extend the persisted token lifetime."""
+        storage = FileTokenStorage("notion")
+        clock = {"now": 1_000.0}
+        real_read = storage._read
+
+        def _delayed_read() -> dict[str, Any] | None:
+            # Model time spent waiting for an executor worker or the mutation
+            # lock before the worker begins its read-modify-write operation.
+            clock["now"] = 2_000.0
+            return real_read()
+
+        monkeypatch.setattr(time, "time", lambda: clock["now"])
+        monkeypatch.setattr(storage, "_read", _delayed_read)
+        tokens = OAuthToken(
+            access_token="at",
+            token_type="Bearer",
+            refresh_token="rt",
+            expires_in=60,
+        )
+
+        if include_client_info:
+            await storage.set_tokens_and_client_info(tokens, _make_client_info())
+        else:
+            await storage.set_tokens(tokens)
+
+        data = json.loads(storage.path.read_text())
+        assert data["expires_at"] == pytest.approx(1_060.0)
+
     async def test_get_expires_at_returns_none_for_legacy_file(
         self, fake_home: Path
     ) -> None:
@@ -589,9 +624,16 @@ class TestFileTokenStorage:
     async def test_reads_run_off_event_loop_thread(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Async reads must offload their blocking `_read` off the loop thread."""
+        """Every async read offloads its blocking `_read` off the loop thread.
+
+        `BlockBuster` under `langgraph dev` trips on any synchronous file read
+        left on the loop, so this pins all of the read accessors — not just
+        `get_tokens` — including `get_expires_at`, which sits on the hot
+        refresh-decision path.
+        """
         storage = FileTokenStorage("notion")
-        await storage.set_tokens(_make_tokens())
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
 
         loop_thread = threading.get_ident()
         read_threads: list[int] = []
@@ -604,8 +646,12 @@ class TestFileTokenStorage:
         monkeypatch.setattr(storage, "_read", _spy_read)
 
         assert await storage.get_tokens() is not None
+        assert await storage.get_client_info() is not None
+        assert await storage.get_oauth_metadata() is not None
+        assert await storage.get_expires_at() is not None
+        assert await storage.get_tokens_with_expiry() != (None, None)
 
-        assert read_threads, "_read should have run"
+        assert len(read_threads) == 5, "each read accessor should have run once"
         assert all(thread_id != loop_thread for thread_id in read_threads), (
             "token reads must run off the event-loop thread"
         )
@@ -615,9 +661,9 @@ class TestFileTokenStorage:
     ) -> None:
         """Every setter offloads its blocking `_write` off the loop thread.
 
-        `set_tokens`/`get_tokens` are covered above; this pins the remaining
-        setters — notably `set_tokens_and_client_info`, the atomic combined
-        write on the primary OAuth-completion path this PR targets.
+        `set_tokens` is covered above; this pins the remaining setters —
+        notably `set_tokens_and_client_info`, the atomic combined write on the
+        primary OAuth-completion path this PR targets.
         """
         storage = FileTokenStorage("notion")
         loop_thread = threading.get_ident()
@@ -631,9 +677,10 @@ class TestFileTokenStorage:
         monkeypatch.setattr(storage, "_write", _spy_write)
 
         await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        await storage.set_client_info(_make_client_info())
         await storage.set_oauth_metadata(_make_oauth_metadata())
 
-        assert len(write_threads) == 2, "both setters should have written once"
+        assert len(write_threads) == 3, "each setter should have written once"
         assert all(thread_id != loop_thread for thread_id in write_threads), (
             "token persistence must run off the event-loop thread"
         )
@@ -702,6 +749,46 @@ class TestExpiryAwareOAuthClientProvider:
         )
         assert provider.context.is_token_valid() is True
         assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_loads_token_and_expiry_from_same_snapshot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A concurrent rotation cannot pair an old token with a new expiry."""
+        from deepagents_code.mcp_auth import (
+            _REFRESH_SAFETY_MARGIN_SECONDS,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens("old"))
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+        original_get_tokens = storage.get_tokens
+
+        async def _get_old_tokens_then_rotate() -> OAuthToken | None:
+            tokens = await original_get_tokens()
+            await storage.set_tokens(_make_tokens("new"))
+            return tokens
+
+        monkeypatch.setattr(storage, "get_tokens", _get_old_tokens_then_rotate)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+
+        await provider._initialize()
+
+        expected_expires_at = await storage.get_expires_at()
+        assert expected_expires_at is not None
+        assert provider.context.current_tokens is not None
+        assert provider.context.current_tokens.access_token == "new"
+        assert provider.context.token_expiry_time == (
+            expected_expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+        )
 
     async def test_initialize_treats_expired_token_as_invalid(self) -> None:
         """A past `expires_at` makes the loaded token report as invalid."""
@@ -1526,6 +1613,75 @@ class TestRefreshTokenSerialization:
             if probe.is_locked:
                 probe.release()
 
+    async def test_refresh_lock_acquire_timeout_yields_to_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Cancellation deferred through an acquire wins over the acquire timeout.
+
+        When a cancel lands while the acquire worker is still waiting on a
+        peer-held lock that ultimately times out, the guard must surface the
+        `CancelledError` — not swallow it into the "skip refresh" (`False`)
+        path the timeout takes on its own.
+        """
+        from filelock import FileLock
+
+        from deepagents_code import mcp_auth
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        monkeypatch.setattr(mcp_auth, "_REFRESH_LOCK_TIMEOUT_SECONDS", 0.3)
+        acquire_started = asyncio.Event()
+        real_acquire = provider._acquire_refresh_lock
+
+        async def _tracked_acquire(lock: FileLock) -> bool:
+            acquire_started.set()
+            return await real_acquire(lock)
+
+        monkeypatch.setattr(provider, "_acquire_refresh_lock", _tracked_acquire)
+        # A peer holds the lock for the whole flow, so the provider's acquire
+        # can only ever time out.
+        peer = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer.acquire()
+
+        async def _enter_guard() -> None:
+            async with provider._refresh_lock_guard(storage.refresh_lock_path):
+                pass
+
+        task = asyncio.create_task(_enter_guard())
+        try:
+            caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+            await acquire_started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            # The timeout's "skip refresh" warning must not fire: cancellation
+            # took precedence over the timed-out acquire.
+            assert not any(
+                "skipping refresh to avoid refresh-token reuse" in record.getMessage()
+                for record in caplog.records
+            )
+        finally:
+            if peer.is_locked:
+                peer.release()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_refresh_lock_release_failure_preserves_body_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1571,9 +1727,69 @@ class TestRefreshTokenSerialization:
         ):
             await _raise_in_guard()
 
-        assert exc_info.value.__notes__ == [
-            "MCP refresh lock release also failed with OSError."
-        ]
+        assert any(
+            "release also failed with OSError" in note
+            for note in exc_info.value.__notes__
+        )
+        assert any(
+            "Failed to release the MCP token refresh lock" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_refresh_lock_release_failure_preserves_cancellation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A release failure must not mask a cancelled guarded body.
+
+        This is the counterpart to the ``ValueError`` body above: when the
+        guarded operation is cancelled and the lock release then fails, the
+        ``CancelledError`` must still propagate (structured cancellation
+        depends on it) with the release failure attached as a note.
+        """
+        from filelock import FileLock
+
+        from deepagents_code.mcp_auth import (
+            _ExpiryAwareOAuthClientProvider,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        assert isinstance(provider, _ExpiryAwareOAuthClientProvider)
+        real_release = FileLock.release
+
+        def _release_then_fail(lock: FileLock, *, force: bool = False) -> None:
+            real_release(lock, force=force)
+            if not force:
+                msg = "refresh lock release failed"
+                raise OSError(msg)
+
+        async def _cancel_in_guard() -> None:
+            async with provider._refresh_lock_guard(
+                storage.refresh_lock_path
+            ) as acquired:
+                assert acquired
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(FileLock, "release", _release_then_fail)
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_auth"),
+            pytest.raises(asyncio.CancelledError) as exc_info,
+        ):
+            await _cancel_in_guard()
+
+        assert any(
+            "release also failed with OSError" in note
+            for note in getattr(exc_info.value, "__notes__", [])
+        )
         assert any(
             "Failed to release the MCP token refresh lock" in record.getMessage()
             for record in caplog.records

@@ -457,8 +457,11 @@ class MCPSessionManager:
             try:
                 await exit_stack.aclose()
             except Exception:
-                # A cleanup failure must not mask the original error; the
-                # session is being discarded regardless.
+                # An ordinary cleanup failure must not mask the original error;
+                # the session is being discarded regardless. A `CancelledError`
+                # raised *by* `aclose()` is intentionally not caught here — it
+                # supersedes the original error, matching structured-cancellation
+                # semantics where an in-flight cancellation wins.
                 logger.warning(
                     "Failed to close a partially initialized MCP session for %r",
                     server_name,

@@ -43,6 +43,10 @@ on:
         description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         type: string
         default: ""
+      judge_models:
+        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -277,6 +281,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}
 
   combine:
     name: "📊 Combine cross-model results"

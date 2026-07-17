@@ -620,22 +620,24 @@ _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 Bounds command/worker handling against a modal that never resolves (compose
 crash, programmatic teardown that skips the dismiss callback). 10 minutes is
 well past any human latency but stops a genuinely broken modal from wedging
-the caller. Shared by the install-confirm, MCP-reconnect, restart-prompt, and
-plugin-reload watchdogs so they stay in lockstep.
+the caller. Shared by every modal watchdog so their timeouts stay in lockstep.
 """
 
 _PLUGIN_RELOAD_REMINDER = "Plugin changes are pending. Run /reload when ready."
 _PLUGIN_RELOAD_CHECK_FAILED = "Couldn't check plugin state. Run /reload to be safe."
 _MAX_PLUGIN_FINGERPRINT_ENTRIES = 10_000
+_UNREADABLE_PLUGIN_FINGERPRINT_STAT = -1
 _TRUNCATED_PLUGIN_FINGERPRINT_STAT = -2
 
 
 class _PathStat(NamedTuple):
     """Filesystem fingerprint entry for one component file.
 
-    `mtime_ns`/`size` are `-1` when a path cannot be inspected and `-2` when
-    the bounded scan is truncated. These sentinels keep incomplete scans from
-    being mistaken for complete, unchanged state.
+    `mtime_ns`/`size` are `_UNREADABLE_PLUGIN_FINGERPRINT_STAT` (-1) when a path
+    cannot be inspected and `_TRUNCATED_PLUGIN_FINGERPRINT_STAT` (-2) when the
+    bounded scan is truncated. These negative sentinels never collide with real
+    (non-negative) stat values and keep incomplete scans from being mistaken
+    for complete, unchanged state.
     """
 
     path: str
@@ -646,14 +648,20 @@ class _PathStat(NamedTuple):
 class _PluginFingerprint(NamedTuple):
     """Reload-comparison fingerprint for a single plugin.
 
-    Only ever compared with `==`/`!=` (never hashed), so `manifest` is held
-    directly — `PluginManifest` is a frozen dataclass that compares by value,
-    which avoids the key-order fragility of comparing `repr(manifest)`.
+    Only ever compared with `==`/`!=`, so `manifest` is held directly —
+    `PluginManifest` is a frozen dataclass that compares by value, which avoids
+    the key-order fragility of comparing `repr(manifest)`. `__hash__` is
+    disabled so hashing fails deterministically: without it a fingerprint is
+    only conditionally hashable (fine when `manifest is None`, `TypeError` via
+    the manifest's `dict` field otherwise), which would hide accidental
+    set/dict-key use behind whichever plugins happen to lack a manifest.
     """
 
     version: str | None
     manifest: PluginManifest | None
     components: tuple[_PathStat, ...]
+
+    __hash__ = None  # type: ignore[assignment]
 
 
 def _resolve_theme_name(value: object) -> str | None:
@@ -3333,12 +3341,13 @@ class DeepAgentsApp(App):
         self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
-        Captured when the plugin manager first opens (see
-        `_show_plugin_manager`) and preserved across manager reopens, then read
-        as the `old` baseline for the `/reload` change summary and refreshed
-        there. `None` until first captured. The manager-close check
-        (`_check_plugin_manager_changes`) compares a fresh read against its own
-        open-time snapshot, not this attribute.
+        First populated by whichever of `_show_plugin_manager` (on open) or
+        `/reload` runs first, and preserved across manager reopens. Read as the
+        `old` baseline for the `/reload` change summary, which always refreshes
+        it (so `/reload` before the manager is ever opened is the first writer,
+        with no summary since `old` is `None`). `None` until first captured. The
+        manager-close check (`_check_plugin_manager_changes`) compares a fresh
+        read against its own open-time snapshot, not this attribute.
         """
 
         self._skill_allowed_roots: list[Path] = []
@@ -17839,20 +17848,37 @@ class DeepAgentsApp(App):
         Every directory is rechecked against the plugin root immediately before
         traversal, and the scan stops after `_MAX_PLUGIN_FINGERPRINT_ENTRIES`.
 
+        Because symlinks are never followed, a symlink is fingerprinted by its
+        own `lstat` only: edits to the contents of a symlinked directory (or a
+        symlink's target file) do not change the fingerprint and so are not
+        surfaced as a plugin change. The fingerprint is also stat-based, so
+        mode-only changes (e.g. `chmod +x`) and edits that preserve both size
+        and mtime are likewise invisible. This is a deliberate trade-off for
+        root containment and cheap comparison, not authoritative change
+        detection.
+
         Args:
             plugin_root: Root that every traversed component must remain within.
             paths: Component files or directories to fingerprint.
 
         Returns:
-            Deterministic fingerprint entries. Inaccessible paths use `-1` stats;
-            a `-2` entry marks a scan truncated by the entry limit.
+            Deterministic fingerprint entries. Inaccessible or out-of-root paths
+            use `_UNREADABLE_PLUGIN_FINGERPRINT_STAT` (-1) stats; a
+            `_TRUNCATED_PLUGIN_FINGERPRINT_STAT` (-2) entry marks a scan
+            truncated by the entry limit.
         """
         entries: list[_PathStat] = []
         visited_entries = 0
 
-        def _record_unreadable(target: Path) -> None:
-            logger.warning("Unreadable component path %s", target)
-            entries.append(_PathStat(str(target), -1, -1))
+        def _record_unreadable(target: Path, exc: OSError) -> None:
+            logger.warning("Unreadable component path %s: %s", target, exc)
+            entries.append(
+                _PathStat(
+                    str(target),
+                    _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                    _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                )
+            )
 
         def _consume_entry(target: Path) -> bool:
             nonlocal visited_entries
@@ -17875,8 +17901,8 @@ class DeepAgentsApp(App):
 
         try:
             resolved_root = plugin_root.resolve(strict=True)
-        except OSError:
-            _record_unreadable(plugin_root)
+        except OSError as exc:
+            _record_unreadable(plugin_root, exc)
             return tuple(entries)
 
         def _scan_directory(directory: Path) -> bool:
@@ -17888,8 +17914,8 @@ class DeepAgentsApp(App):
                     resolved = current.resolve(strict=True)
                 except FileNotFoundError:
                     continue
-                except OSError:
-                    _record_unreadable(current)
+                except OSError as exc:
+                    _record_unreadable(current, exc)
                     continue
                 if stat_module.S_ISLNK(current_stat.st_mode):
                     entries.append(
@@ -17902,7 +17928,13 @@ class DeepAgentsApp(App):
                     logger.warning(
                         "Ignoring plugin component outside plugin root: %s", current
                     )
-                    entries.append(_PathStat(str(current), -1, -1))
+                    entries.append(
+                        _PathStat(
+                            str(current),
+                            _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                            _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                        )
+                    )
                     continue
 
                 children: list[tuple[str, Path, os.stat_result]] = []
@@ -17916,14 +17948,14 @@ class DeepAgentsApp(App):
                                 child_stat = child.stat(follow_symlinks=False)
                             except FileNotFoundError:
                                 continue
-                            except OSError:
-                                _record_unreadable(target)
+                            except OSError as exc:
+                                _record_unreadable(target, exc)
                                 continue
                             children.append((child.name, target, child_stat))
                 except FileNotFoundError:
                     continue
-                except OSError:
-                    _record_unreadable(current)
+                except OSError as exc:
+                    _record_unreadable(current, exc)
                     continue
 
                 directories: list[Path] = []
@@ -17948,21 +17980,27 @@ class DeepAgentsApp(App):
                 resolved = path.resolve(strict=True)
             except FileNotFoundError:
                 continue
-            except OSError:
-                _record_unreadable(path)
+            except OSError as exc:
+                _record_unreadable(path, exc)
                 continue
             if not resolved.is_relative_to(resolved_root):
                 logger.warning(
                     "Ignoring plugin component outside plugin root: %s", path
                 )
-                entries.append(_PathStat(str(path), -1, -1))
+                entries.append(
+                    _PathStat(
+                        str(path),
+                        _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                        _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                    )
+                )
                 continue
             try:
                 path_stat = path.lstat()
             except FileNotFoundError:
                 continue
-            except OSError:
-                _record_unreadable(path)
+            except OSError as exc:
+                _record_unreadable(path, exc)
                 continue
             if stat_module.S_ISDIR(path_stat.st_mode):
                 if not _scan_directory(path):
@@ -17977,7 +18015,12 @@ class DeepAgentsApp(App):
     def _plugin_fingerprint_changed(
         before: _PluginFingerprint, after: _PluginFingerprint
     ) -> bool:
-        """Return whether a plugin changed or either scan was truncated."""
+        """Return whether the plugin changed, or either fingerprint is incomplete.
+
+        A negative stat sentinel means a component was inaccessible/out-of-root
+        (-1) or the scan was truncated (-2); either forces "changed" so an
+        incomplete scan is never mistaken for an unchanged plugin.
+        """
         return (
             before != after
             or any(entry.mtime_ns < 0 for entry in before.components)
@@ -18120,7 +18163,8 @@ class DeepAgentsApp(App):
             baseline = await asyncio.to_thread(self._snapshot_plugin_state)
         except Exception:
             # Still open the manager if the pre-open snapshot fails. Without a
-            # baseline, its close handler leaves a manual reload reminder.
+            # baseline, its close handler surfaces the check-failed notice
+            # (_PLUGIN_RELOAD_CHECK_FAILED) rather than the pending reminder.
             logger.exception("Failed to snapshot plugin state before opening manager")
             baseline = None
         else:

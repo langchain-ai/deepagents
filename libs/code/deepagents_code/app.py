@@ -9483,23 +9483,6 @@ class DeepAgentsApp(App):
         def _as_nonblank_str(value: object) -> str | None:
             return value if isinstance(value, str) and value.strip() else None
 
-        pending_goal_request_id = _as_nonblank_str(
-            state_values.get("_pending_goal_request_id")
-        )
-        active_criteria_request = state_values.get("goal_criteria_request")
-        active_criteria_request_id = (
-            active_criteria_request.get("request_id")
-            if isinstance(active_criteria_request, dict)
-            else None
-        )
-        # A criteria-request marker supersedes a persisted proposal only when it
-        # belongs to a *different* request. A marker that still names the request
-        # that produced this proposal (e.g. its post-run clear failed to persist)
-        # must not discard the freshly generated proposal.
-        goal_criteria_request_active = (
-            active_criteria_request is not None
-            and active_criteria_request_id != pending_goal_request_id
-        )
         return _ThreadHistoryPayload(
             messages,
             context_tokens,
@@ -9524,8 +9507,12 @@ class DeepAgentsApp(App):
             pending_goal_kind=coerce_goal_proposal_kind(
                 state_values.get("_pending_goal_kind")
             ),
-            pending_goal_request_id=pending_goal_request_id,
-            goal_criteria_request_active=goal_criteria_request_active,
+            pending_goal_request_id=_as_nonblank_str(
+                state_values.get("_pending_goal_request_id")
+            ),
+            goal_criteria_request_active=(
+                state_values.get("goal_criteria_request") is not None
+            ),
         )
 
     def _restore_goal_rubric_state(
@@ -9850,6 +9837,19 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
+        criteria_request = state_values.get("goal_criteria_request")
+        completed_request_marker_is_stale = (
+            allow_pending_proposal
+            and proposal_request_id is not None
+            and payload.pending_goal_request_id == proposal_request_id
+            and isinstance(criteria_request, dict)
+            and criteria_request.get("request_id") == proposal_request_id
+        )
+        if completed_request_marker_is_stale:
+            # `_clear_submitted_goal_criteria_request` runs before this successful
+            # turn sync. Ignore its failed clear only here; restore and ordinary sync
+            # must keep matching markers active so failed partial drafts stay blocked.
+            payload = replace(payload, goal_criteria_request_active=False)
         discard_failed_proposal = (
             not allow_pending_proposal
             and payload.pending_goal_objective is not None

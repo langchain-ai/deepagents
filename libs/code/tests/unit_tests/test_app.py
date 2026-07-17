@@ -6327,18 +6327,21 @@ class TestGoalCommand:
     async def test_restored_proposal_with_active_request_is_not_auto_accepted(
         self,
     ) -> None:
-        """Resume should fail closed when a saved proposal was superseded."""
+        """Resume should fail closed when a failed draft still has its marker."""
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
-        payload = _ThreadHistoryPayload(
-            [],
-            0,
-            "",
-            pending_goal_objective="old objective",
-            pending_goal_rubric="- old criteria",
-            pending_goal_kind="create",
-            pending_goal_request_id="request-old",
-            goal_criteria_request_active=True,
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "goal_criteria_request": {"request_id": "request-failed"},
+                "_pending_goal_objective": "partial objective",
+                "_pending_goal_rubric": "- partial criteria",
+                "_pending_goal_kind": "create",
+                "_pending_goal_request_id": "request-failed",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
         )
+        assert payload.goal_criteria_request_active is True
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
@@ -6357,36 +6360,6 @@ class TestGoalCommand:
             assert app._pending_goal_rubric is None
             assert not any(app.query(GoalReviewMenu))
             handle.assert_not_awaited()
-
-    def test_criteria_marker_active_only_for_a_different_request(self) -> None:
-        """The marker supersedes a proposal only when it names another request."""
-        same_request = DeepAgentsApp._goal_rubric_payload_from_state(
-            {
-                "goal_criteria_request": {"request_id": "request-1"},
-                "_pending_goal_objective": "ship login",
-                "_pending_goal_rubric": "- tests pass",
-                "_pending_goal_kind": "create",
-                "_pending_goal_request_id": "request-1",
-            },
-            messages=[],
-            context_tokens=0,
-            model_spec="",
-        )
-        assert same_request.goal_criteria_request_active is False
-
-        newer_request = DeepAgentsApp._goal_rubric_payload_from_state(
-            {
-                "goal_criteria_request": {"request_id": "request-2"},
-                "_pending_goal_objective": "ship login",
-                "_pending_goal_rubric": "- tests pass",
-                "_pending_goal_kind": "create",
-                "_pending_goal_request_id": "request-1",
-            },
-            messages=[],
-            context_tokens=0,
-            model_spec="",
-        )
-        assert newer_request.goal_criteria_request_active is True
 
     async def test_enabling_yolo_on_mounted_review_accepts_once_and_cleans_up(
         self,

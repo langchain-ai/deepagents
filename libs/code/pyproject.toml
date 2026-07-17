@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.41"
+version = "0.1.42"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -58,7 +58,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
-    "langchain-quickjs>=0.3.2,<0.4.0",
+    "langchain-quickjs>=0.3.3,<0.4.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -82,10 +82,14 @@ dependencies = [
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
     # on the async server graph startup path.
     "filelock>=3.12,<3.30",
+    # `CancelScope` shields MCP token writes/lock ops from cancellation in
+    # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
+    # because we import it directly.
+    "anyio>=4.0.0,<5.0.0",
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",
-    "mcp>=1.9.2,<2.0.0",
+    "mcp>=1.28.1,<2.0.0",
 ]
 
 [project.optional-dependencies]

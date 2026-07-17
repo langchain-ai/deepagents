@@ -1209,6 +1209,21 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default", assistant_id=None)
         assert "dcode_experimental" not in config["metadata"]
 
+    def test_auto_approve_included_when_active(self) -> None:
+        """YOLO (auto-approve) runs should be identifiable in trace metadata."""
+        config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
+        assert config["metadata"]["dcode_auto_approve"] is True
+
+    def test_auto_approve_absent_when_inactive(self) -> None:
+        """Manual-approval runs should not carry the auto-approve label."""
+        config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
+        assert "dcode_auto_approve" not in config["metadata"]
+
+    def test_auto_approve_absent_by_default(self) -> None:
+        """The default (param omitted) is not labeled auto-approve."""
+        config = build_stream_config("t-default-approve", assistant_id=None)
+        assert "dcode_auto_approve" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -1715,8 +1730,43 @@ class TestExecuteTaskTextualTurnMarkers:
         assert first_meta["turn_id"]
         assert second_meta["turn_id"]
         assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session's auto-approve mode is labeled onto every turn's trace.
+        assert first_meta["dcode_auto_approve"] is True
+        assert second_meta["dcode_auto_approve"] is True
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
+
+    async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
+        """A manual-approval session must not label its trace as auto-approve.
+
+        Complements the positive case above: guards the TUI call site
+        (`bool(session_state.auto_approve)` -> `build_stream_config`) against
+        wiring that would stamp `dcode_auto_approve` regardless of the mode.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
 
 
 class TestExecuteTaskTextualAutoApproveInput:

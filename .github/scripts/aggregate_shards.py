@@ -10,7 +10,8 @@ of all shard artifacts), groups trials by task, and computes:
             push a task above 1) over the EXPECTED trial count (tasks * rollouts),
             so missing rollouts of a present task count as failures.
 
-The summary is flagged ``incomplete`` when a full run cannot be vouched for:
+The summary is flagged ``invalid`` when any trial errored, and ``incomplete``
+when invalid or when a full run cannot otherwise be vouched for:
 the matrix job did not fully succeed (``--harbor-result`` != "success"); a
 present task ran a number of trials other than K (missing OR duplicated
 rollouts); a ``result.json`` could not be read; a reward was present but
@@ -58,6 +59,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 PASS_THRESHOLD = 1.0
+LANGSMITH_MARKER = "langsmith-experiment.json"
 
 
 class Aggregation(NamedTuple):
@@ -113,6 +115,43 @@ def load_result(path: Path) -> dict | None:
         emit_annotation(f"::warning::ignoring non-object result.json at {path}")
         return None
     return data
+
+
+def langsmith_experiment(root: Path) -> str | None:
+    """Return the unique LangSmith experiment recorded by shard artifacts.
+
+    Missing markers are valid for local and legacy artifacts. Malformed or
+    conflicting markers are ignored with a warning so score aggregation remains
+    available while cost analysis is explicitly unavailable.
+    """
+    experiments: set[str] = set()
+    invalid = False
+    for path in sorted(root.rglob(LANGSMITH_MARKER)):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            emit_annotation(f"::warning::could not read {path}: {exc}")
+            invalid = True
+            continue
+        experiment = value.get("experiment") if isinstance(value, dict) else None
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != 1
+            or not isinstance(experiment, str)
+            or not experiment
+        ):
+            emit_annotation(f"::warning::invalid LangSmith experiment marker at {path}")
+            invalid = True
+            continue
+        experiments.add(experiment)
+    if invalid or len(experiments) > 1:
+        if len(experiments) > 1:
+            emit_annotation(
+                "::warning::conflicting LangSmith experiments in shard artifacts; "
+                "cost analysis will be unavailable"
+            )
+        return None
+    return next(iter(experiments), None)
 
 
 def raw_reward(result: dict) -> object:
@@ -280,15 +319,18 @@ def make_summary(
     dataset: str | None,
     model: str | None,
     category: str | None,
+    config: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
     skipped_files: int,
     harbor_result: str | None,
+    invalid: bool,
     incomplete: bool,
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    langsmith_experiment_name: str | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
     cannot drift in schema. The metric keys are dynamic (``pass@{K}`` /
@@ -298,11 +340,14 @@ def make_summary(
         "dataset": dataset,
         "model": model,
         "category": category,
+        "config": config,
+        "langsmith_experiment": langsmith_experiment_name,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
         "skipped_files": skipped_files,
         "harbor_result": harbor_result,
+        "invalid": invalid,
         "incomplete": incomplete,
         "totals": totals,
         f"pass@{rollouts}": pass_at_k,
@@ -337,7 +382,12 @@ def render_step_summary(summary: dict) -> str:
     )
     if summary.get("skipped_files"):
         lines.append(f"- ⚠️ Unreadable result files skipped: {summary['skipped_files']}")
-    if summary.get("incomplete"):
+    if summary.get("invalid"):
+        lines.append(
+            f"- ❌ **Invalid run** — {totals['errored']} trial(s) errored; "
+            "reported metrics are diagnostic only."
+        )
+    elif summary.get("incomplete"):
         lines.append(
             "- ⚠️ **Incomplete run** — some shards/rollouts are missing or unreadable; "
             "missing rollouts are counted as failures."
@@ -378,6 +428,7 @@ def _incomplete_reason(
     count_mismatch: bool,
     skipped_files: int,
     malformed_rewards: int,
+    errored_trials: int,
     totals: dict[str, int],
     shards_found: int,
     expected_shards: int | None,
@@ -397,6 +448,8 @@ def _incomplete_reason(
         reasons.append(f"{skipped_files} unreadable result file(s)")
     if malformed_rewards:
         reasons.append(f"{malformed_rewards} non-numeric reward(s)")
+    if errored_trials:
+        reasons.append(f"{errored_trials} errored trial(s)")
     return "; ".join(reasons) or "unknown"
 
 
@@ -432,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Eval category (autonomous|conversation|context), recorded in the summary.",
     )
     parser.add_argument(
+        "--config",
+        default=None,
+        help="Agent config (agent_impl) under test; recorded into summary.json.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -459,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out_dir or args.root
     agg = aggregate(args.root)
+    experiment = langsmith_experiment(args.root)
     shards_found = len(agg.job_ids) + len(agg.empty_shards)
     # A shard actually failed only if the matrix job did not fully succeed. Empty
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
@@ -476,11 +535,13 @@ def main(argv: list[str] | None = None) -> int:
             dataset=args.dataset,
             model=args.model,
             category=args.category,
+            config=args.config,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
             skipped_files=agg.skipped_files,
             harbor_result=args.harbor_result,
+            invalid=False,
             incomplete=incomplete,
             totals={
                 "tasks": 0,
@@ -491,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            langsmith_experiment_name=experiment,
         )
         write_outputs(summary, [], out_dir)
         if incomplete:
@@ -504,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
                     count_mismatch=False,
                     skipped_files=agg.skipped_files,
                     malformed_rewards=agg.malformed_rewards,
+                    errored_trials=0,
                     totals=summary["totals"],
                     shards_found=shards_found,
                     expected_shards=args.expected_shards,
@@ -527,20 +590,26 @@ def main(argv: list[str] | None = None) -> int:
     count_mismatch = any(
         stats["trials"] != args.rollouts for stats in agg.by_task.values()
     )
-    incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
+    invalid = parts.totals["errored"] > 0
+    incomplete = (
+        invalid or shard_failure or shard_shortfall or data_loss or count_mismatch
+    )
     summary = make_summary(
         dataset=args.dataset,
         model=args.model or (next(iter(agg.models)) if agg.models else None),
         category=args.category,
+        config=args.config,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,
         skipped_files=agg.skipped_files,
         harbor_result=args.harbor_result,
+        invalid=invalid,
         incomplete=incomplete,
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        langsmith_experiment_name=experiment,
     )
     if incomplete:
         emit_annotation(
@@ -551,11 +620,12 @@ def main(argv: list[str] | None = None) -> int:
                 count_mismatch=count_mismatch,
                 skipped_files=agg.skipped_files,
                 malformed_rewards=agg.malformed_rewards,
+                errored_trials=parts.totals["errored"],
                 totals=parts.totals,
                 shards_found=shards_found,
                 expected_shards=args.expected_shards,
             )
-            + "); missing rollouts counted as failures."
+            + "); errored or missing rollouts counted as failures."
         )
     write_outputs(summary, parts.per_task, out_dir)
     return 0

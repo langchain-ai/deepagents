@@ -90,6 +90,24 @@ def test_aggregate_and_summary(tmp_path: Path):
     }
 
 
+def test_langsmith_experiment_reads_unique_repeated_markers(tmp_path: Path):
+    for shard in ("a", "b"):
+        path = tmp_path / shard / agg.LANGSMITH_MARKER
+        path.parent.mkdir()
+        path.write_text(json.dumps({"schema_version": 1, "experiment": "experiment-a"}))
+
+    assert agg.langsmith_experiment(tmp_path) == "experiment-a"
+
+
+def test_langsmith_experiment_rejects_conflicting_markers(tmp_path: Path):
+    for shard, experiment in (("a", "experiment-a"), ("b", "experiment-b")):
+        path = tmp_path / shard / agg.LANGSMITH_MARKER
+        path.parent.mkdir()
+        path.write_text(json.dumps({"schema_version": 1, "experiment": experiment}))
+
+    assert agg.langsmith_experiment(tmp_path) is None
+
+
 def test_errored_and_missing_count_as_fail(tmp_path: Path):
     _write_trial(tmp_path / "t__0", "taskX", reward=1.0)
     _write_trial(
@@ -100,6 +118,21 @@ def test_errored_and_missing_count_as_fail(tmp_path: Path):
     )  # no verifier reward -> fail + errored
     by_task = agg.aggregate(tmp_path).by_task
     assert by_task["taskX"] == {"trials": 3, "passed": 1, "errored": 2}
+
+
+def test_errored_trials_mark_summary_invalid(tmp_path: Path):
+    _write_trial(tmp_path / "t__0", "taskX", errored=True)
+    _write_trial(tmp_path / "t__1", "taskX", errored=True)
+    out = tmp_path / "out"
+
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["totals"]["errored"] == 2
+    assert summary["invalid"] is True
+    assert summary["incomplete"] is True
+    assert "❌ **Invalid run**" in agg.render_step_summary(summary)
 
 
 def test_partial_reward_is_not_a_pass(tmp_path: Path):
@@ -483,3 +516,58 @@ def test_model_and_category_recorded_authoritatively(tmp_path: Path):
     summary = json.loads((out / "summary.json").read_text())
     assert summary["model"] == "openai:gpt-5.6-luna"
     assert summary["category"] == "autonomous"
+
+
+def test_make_summary_records_config():
+    summary = agg.make_summary(
+        dataset="d",
+        model="openai:gpt",
+        category="autonomous",
+        config="bare",
+        rollouts=3,
+        shards_found=1,
+        expected_shards=1,
+        skipped_files=0,
+        harbor_result="success",
+        invalid=False,
+        incomplete=False,
+        totals={
+            "tasks": 1,
+            "trials": 3,
+            "expected_trials": 3,
+            "passed": 1,
+            "errored": 0,
+        },
+        pass_at_k=1.0,
+        avg_at_k=1.0,
+    )
+    assert summary["config"] == "bare"
+    assert summary["model"] == "openai:gpt"
+
+
+def test_main_cli_records_config(tmp_path):
+    root = tmp_path / "shards"
+    root.mkdir()
+    (root / agg.LANGSMITH_MARKER).write_text(
+        json.dumps({"schema_version": 1, "experiment": "experiment-a"})
+    )
+    agg.main(
+        [
+            str(root),
+            "--rollouts",
+            "3",
+            "--config",
+            "bare",
+            "--model",
+            "openai:gpt",
+            "--category",
+            "autonomous",
+            "--dataset",
+            "d",
+            "--harbor-result",
+            "success",
+        ]
+    )
+    summary = json.loads((root / "summary.json").read_text())
+    assert summary["config"] == "bare"
+    assert summary["langsmith_experiment"] == "experiment-a"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import tomllib
 from pathlib import Path
 
@@ -9,6 +10,26 @@ from deepagents_evals.tau3_subset import DATASET, INCLUDE_TASKS, TASKS
 
 ROOT = Path(__file__).parents[4]
 EVALS = ROOT / "libs" / "evals"
+
+
+def test_dcode_import_is_lazy_for_sdk_only_harbor_graphs() -> None:
+    """Bare and tau3 environments must not require the dcode wheel at import."""
+    path = EVALS / "deepagents_harbor" / "langgraph_project" / "langgraph_agent.py"
+    module = ast.parse(path.read_text())
+    top_imports = [node for node in module.body if isinstance(node, ast.Import | ast.ImportFrom)]
+    assert not any(
+        isinstance(node, ast.ImportFrom) and node.module == "deepagents_code.agent"
+        for node in top_imports
+    )
+    make_graph = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "make_graph"
+    )
+    assert any(
+        isinstance(node, ast.ImportFrom) and node.module == "deepagents_code.agent"
+        for node in ast.walk(make_graph)
+    )
 
 
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
@@ -100,7 +121,9 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     # Results are written under a jobs dir the aggregate job later collects.
     assert "--jobs-dir harbor-jobs/" in run_step
     # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
-    assert "--plugin langsmith" in run_step
+    assert 'plugin="langsmith"' in run_step
+    assert '--plugin "$plugin"' in run_step
+    assert "UnifiedComparisonLangSmithPlugin" in run_step
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
 

@@ -23,6 +23,9 @@ dependencies = [
     "deepagents-code>=0.1.27",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
     "harbor[langsmith]>=0.16.1,<0.17.0",
+    # Harbor 0.16.1 creates independent async locks for concurrent image builds;
+    # filelock 3.29.7+ rejects that pattern as a cross-instance deadlock.
+    "filelock>=3.29.4,<3.29.7",
     # LangSmith for observability
     "langsmith>=0.9.3,<0.10.0",
     # Sandbox runtimes

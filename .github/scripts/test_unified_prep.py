@@ -27,6 +27,10 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
 def test_derive_pool_uses_full_concurrency_for_packed_shards():
     # Packed shards can use all four slots: 40 // 4 = 10.
     assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (10, 1)
+    # Two sources for one model split that model's 10-shard budget equally.
+    assert up.derive_pool(
+        concurrency=4, rollouts=3, n_shards=34, n_models=1, n_sources=2
+    ) == (5, 2)
     # concurrency 1 -> 40 shard jobs; 80 // 40 = 2 models.
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_models=5) == (
         40,
@@ -363,7 +367,15 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert len(eval_matrix) == 2  # one entry per model
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
     for entry in eval_matrix:
-        assert set(entry) == {"model", "slug", "flat_matrix"}
+        assert set(entry) == {
+            "version_id",
+            "branch",
+            "sha",
+            "product_artifact",
+            "model",
+            "slug",
+            "flat_matrix",
+        }
         flat = _j.loads(entry["flat_matrix"])["include"]
         # lite totals 15+11+8 = 34 single-task shards per model
         assert len(flat) == 34
@@ -377,3 +389,55 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "model_slugs" not in lines
     assert "model_0_matrix" not in lines
     assert "openai_matrix" not in lines
+
+
+def test_main_preserves_immutable_sources_and_packed_post_source_job_guard(
+    tmp_path, monkeypatch
+):
+    import json as _j
+
+    sources = [
+        {"version_id": "v1", "branch": "baseline", "sha": "a" * 40},
+        {"version_id": "v2", "branch": "candidate", "sha": "b" * 40},
+    ]
+    monkeypatch.setenv("UNIFIED_SOURCES_JSON", _j.dumps(sources))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    output = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert up.main([]) == 0
+    lines = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    matrix = _j.loads(lines["eval_matrix"])["include"]
+    assert [(entry["version_id"], entry["branch"], entry["sha"]) for entry in matrix] == [
+        ("v1", "baseline", "a" * 40),
+        ("v2", "candidate", "b" * 40),
+    ]
+    assert all(entry["product_artifact"].startswith("unified-products-v") for entry in matrix)
+    assert lines["comparison_mode"] == "true"
+    # The post-pack job count includes the source dimension, not raw tasks.
+    assert int(lines["total_jobs"]) == 2 * len(
+        _j.loads(matrix[0]["flat_matrix"])["include"]
+    )
+    # Sources share one model's 40-trial budget rather than each getting 40.
+    assert lines["max_parallel"] == "5"
+    assert lines["model_parallel"] == "2"
+
+
+def test_main_rejects_sources_exceeding_one_models_trial_budget(monkeypatch):
+    import json as _j
+
+    sources = [
+        {"version_id": f"v{i}", "branch": f"branch-{i}", "sha": f"{i:040x}"}
+        for i in range(1, 12)
+    ]
+    monkeypatch.setenv("UNIFIED_SOURCES_JSON", _j.dumps(sources))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "4")
+
+    with pytest.raises(SystemExit, match="sources.*per-model concurrent-shard budget"):
+        up.main([])

@@ -105,7 +105,7 @@ def validate_limits(
 
 
 def main() -> None:
-    """Entry point for the prep job: read env, validate, annotate + exit non-zero on failure."""
+    """Validate prep inputs and emit annotations."""
     try:
         models = json.loads(os.environ["MODEL_MATRIX"]).get("include", [])
         n_shards = parse_positive("n_shards", os.environ.get("N_SHARDS"))

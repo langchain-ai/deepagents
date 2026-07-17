@@ -1,34 +1,24 @@
-"""Prep step for the unified multi-model Harbor evals orchestrator.
+"""Prepare matrices for ordinary and multi-branch Unified Harbor evaluations.
 
-Parses a free-form comma-separated model CSV, validates it via models.py,
-maps each category to its Harbor dataset, and emits a per-model flat matrix
-(one entry per shard, spanning every category) to GITHUB_OUTPUT.
-
-Pool sizing is derived by `derive_pool`, not clamped after the fact: given
-`concurrency` (trials in flight per shard job), `max_parallel =
-MAX_TASKS_PER_MODEL // concurrency` saturates the per-model 40-trial budget.
-Using full concurrency is necessary because packed shards can contain multiple
-tasks. `model_parallel = MAX_RUNNERS // max_parallel` bounds how many models
-run at once so total runners stay within MAX_RUNNERS. Both invariants hold by
-construction:
-  per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
-  global:     model_parallel * max_parallel <= MAX_RUNNERS (80)
-`total_job_guard` separately caps the total job count (n_models * shards
-per model, post-pack) against a fixed budget so an oversized selection fails
-fast instead of launching a firehose.
+Every inner-matrix entry contains exactly one task. GitHub accepts at most 256
+entries in a matrix, so oversized selections fail explicitly instead of packing
+multiple tasks into one shard. A resolved source list expands the existing model
+axis to immutable source-version x model evaluation groups.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from typing import cast
+from typing import TypedDict, cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
-import models  # noqa: E402  (models.py in same dir)
-import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
+import eval_agent_configs as agent_configs  # noqa: E402
+import lite_tasks  # noqa: E402
+import models  # noqa: E402
+import shard_matrix  # noqa: E402
 
 MAX_TASKS_PER_MODEL = 40
 MAX_RUNNERS = 80
@@ -64,50 +54,26 @@ CATEGORY_MAP: dict[str, dict] = {
     },
 }
 
-# Harnesses selectable for the code categories (autonomous, context) via the
-# `agent_impl` input. Conversation is always tau3 and is never overridden.
-CODE_AGENT_IMPLS = {"dcode", "bare"}
+# Compatibility aliases used by existing tests and scripts.
+CODE_AGENT_IMPLS = set(agent_configs.CODE_CONFIGS)
+DEFAULT_AGENT_IMPL = agent_configs.DEFAULT_CODE_CONFIG
+KNOWN_AGENT_IMPLS = set(agent_configs.RUNTIME_CONFIGS)
+PROFILES = {"full", "lite"}
+TOTAL_JOB_BUDGET = 400
 
-# Harness used when the `agent_impl` input (UNIFIED_AGENT_IMPL) is unset or blank.
-DEFAULT_AGENT_IMPL = "bare"
-
-# Every harness a category may pin in CATEGORY_MAP (code harnesses plus tau3).
-KNOWN_AGENT_IMPLS = CODE_AGENT_IMPLS | {"tau3"}
-
-# A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
-# category ineligible for the override and route it to a nonexistent harness, so
-# validate at import. raise (not assert): asserts are stripped under `python -O`.
 if not all(cm["agent_impl"] in KNOWN_AGENT_IMPLS for cm in CATEGORY_MAP.values()):
     raise RuntimeError(
         f"every CATEGORY_MAP agent_impl must be one of {sorted(KNOWN_AGENT_IMPLS)}"
     )
-if DEFAULT_AGENT_IMPL not in CODE_AGENT_IMPLS:
-    raise RuntimeError(f"DEFAULT_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}")
-
-# Run profiles: "full" = every task in each category; "lite" = the frozen
-# high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
-PROFILES = {"full", "lite"}
-
-TOTAL_JOB_BUDGET = 400
 
 
-def total_job_guard(n_models: int, shards_per_model: int) -> None:
-    """Fail when the flat matrix would generate too many total jobs.
+class Source(TypedDict):
+    """Immutable product source used by one evaluation version."""
 
-    Each model emits `shards_per_model` shard jobs (already packed to at most
-    `shard_matrix.MAX_SHARDS`), so the run launches n_models * shards_per_model
-    jobs. GitHub-hosted Actions become unreliable well before that count needs
-    to be large, so cap it and point at the worker-pool escalation instead of
-    silently launching a firehose.
-    """
-    total = n_models * shards_per_model
-    if total > TOTAL_JOB_BUDGET:
-        raise SystemExit(
-            f"Flat matrix would generate ~{total} jobs "
-            f"({n_models} models x ~{shards_per_model} shards), over "
-            f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set or task "
-            "count, or move to a worker pool orchestrator (see the flat-pool spec)."
-        )
+    version_id: str
+    branch: str
+    sha: str
+    product_artifact: str
 
 
 def parse_int_input(
@@ -117,20 +83,7 @@ def parse_int_input(
     minimum: int,
     maximum: int | None = None,
 ) -> int:
-    """Parse an integer input constrained to an inclusive range.
-
-    Args:
-        name: Input name to include in validation errors.
-        raw: Raw input value.
-        minimum: Smallest accepted value.
-        maximum: Largest accepted value, or `None` for no upper bound.
-
-    Returns:
-        The parsed integer.
-
-    Raises:
-        SystemExit: If `raw` is not an integer in the accepted range.
-    """
+    """Parse an integer constrained to an inclusive range."""
     accepted_range = f"{minimum}..{maximum}" if maximum is not None else f">= {minimum}"
     try:
         value = int(raw.strip())
@@ -144,33 +97,68 @@ def parse_int_input(
 
 
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
+    """Return a known provider prefix or the fallback provider bucket."""
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
 
 
-def derive_pool(
-    concurrency: int, rollouts: int, n_shards: int, n_models: int
-) -> tuple[int, int]:
-    """Derive (max_parallel, model_parallel) from the requested run limits.
+def total_job_guard(n_models: int, shards_per_model: int) -> None:
+    """Fail before a packed matrix would create more than the safe job budget."""
+    total = n_models * shards_per_model
+    if total > TOTAL_JOB_BUDGET:
+        raise SystemExit(
+            f"Flat matrix would generate ~{total} jobs "
+            f"({n_models} models x ~{shards_per_model} shards), over "
+            f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set or task "
+            "count, or move to a worker pool orchestrator (see the flat-pool spec)."
+        )
 
-    A packed shard can run multiple tasks and therefore use its full
-    `concurrency` even when `rollouts` is lower. `max_parallel` saturates the
-    per-model 40-trial budget; `model_parallel` bounds how many models run at
-    once so total runners stay within `MAX_RUNNERS`. `rollouts` remains in the
-    signature for compatibility with callers that supply all run limits.
+
+def derive_pool(
+    concurrency: int,
+    rollouts: int,
+    n_shards: int,
+    n_models: int,
+    n_sources: int = 1,
+) -> tuple[int, int]:
+    """Derive bounded pools using full packed-shard concurrency.
+
+    Sources compared for the same model share its 40-trial budget. The outer
+    pool can still schedule source/model groups independently, bounded by the
+    global 80-runner budget.
     """
     del rollouts
-    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // max(1, concurrency), n_shards))
-    model_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
-    return max_parallel, model_parallel
+    per_model_shards = MAX_TASKS_PER_MODEL // max(1, concurrency)
+    max_parallel = max(1, min(per_model_shards // n_sources, n_shards))
+    group_count = n_models * n_sources
+    group_parallel = max(1, min(MAX_RUNNERS // max_parallel, group_count))
+    return max_parallel, group_parallel
+
+
+def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
+    """Proportionally allocate the matrix cap across non-empty evaluation groups."""
+    total = sum(counts.values())
+    budgets = {key: max(1, cap * count // total) for key, count in counts.items()}
+    excess = sum(budgets.values()) - cap
+    while excess > 0:
+        shrinkable = [key for key, budget in budgets.items() if budget > 1]
+        if not shrinkable:
+            break
+        largest = max(shrinkable, key=lambda key: budgets[key])
+        budgets[largest] -= 1
+        excess -= 1
+    return budgets
 
 
 def _load_tasks_json(path: str) -> dict[str, list[str]]:
-    """Load the full-profile task mapping from an enumerated JSON file."""
-    msg = "UNIFIED_TASKS_JSON must be a JSON object mapping category names to lists of task strings"
+    """Load the complete-profile task mapping with strict shape validation."""
+    msg = (
+        "UNIFIED_TASKS_JSON must be a JSON object mapping category names "
+        "to lists of task strings"
+    )
     try:
-        with open(path) as f:
-            raw: object = json.load(f)
+        with open(path) as handle:
+            raw: object = json.load(handle)
     except json.JSONDecodeError as exc:
         raise SystemExit(msg) from exc
     if not isinstance(raw, dict) or not all(
@@ -183,77 +171,61 @@ def _load_tasks_json(path: str) -> dict[str, list[str]]:
     return cast(dict[str, list[str]], raw)
 
 
-def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
-    """Split `cap` shards across categories proportional to `counts`.
-
-    Each category gets `max(1, cap * count // total)` shards. That floor
-    allocation can round up to more than `cap` in total when several small
-    categories each get bumped to the 1-shard floor, so any resulting excess is
-    trimmed one shard at a time from the currently-largest budget (ties broken
-    by category order) until the sum is exactly `<= cap`.
-    """
-    total = sum(counts.values())
-    budgets = {cat: max(1, (cap * n) // total) for cat, n in counts.items()}
-    excess = sum(budgets.values()) - cap
-    while excess > 0:
-        shrinkable = [cat for cat, b in budgets.items() if b > 1]
-        if not shrinkable:
-            break
-        largest = max(shrinkable, key=lambda cat: budgets[cat])
-        budgets[largest] -= 1
-        excess -= 1
-    return budgets
-
-
 def build_flat_matrix(
     model: str,
     categories: list[str],
     tasks_by_cat: dict[str, list[str]],
-    code_impl: str = DEFAULT_AGENT_IMPL,
+    code_impls: list[str] | None = None,
+    code_impl: str | None = None,
 ) -> list[dict]:
-    """One flat matrix of single-`harbor run` shards spanning all categories.
+    """Build a packed, category-local matrix for every selected harness config."""
+    if code_impls is not None and code_impl is not None:
+        raise ValueError("pass code_impls or code_impl, not both")
+    configs = list(dict.fromkeys(code_impls or [code_impl or DEFAULT_AGENT_IMPL]))
+    groups: list[tuple[str, str, list[str]]] = []
+    for category in categories:
+        tasks = tasks_by_cat.get(category, [])
+        if CATEGORY_MAP[category]["agent_impl"] in CODE_AGENT_IMPLS:
+            groups.extend(
+                (category, agent_configs.runtime_for_code_config(config), tasks)
+                for config in configs
+                if tasks
+            )
+        else:
+            runtimes = list(
+                dict.fromkeys(
+                    agent_configs.conversation_runtime_for(config)
+                    for config in configs
+                )
+            )
+            groups.extend(
+                (category, runtime, tasks) for runtime in runtimes if tasks
+            )
 
-    Each category's task list is packed into a per-category shard budget; each
-    group is one matrix entry carrying its own dataset and agent so the leaf's
-    max-parallel pool drains the mixed queue across category boundaries.
-    `provider` is retained only as an aggregation tag.
-
-    The per-model total entry count is bounded by `shard_matrix.MAX_SHARDS`:
-    when the categories' combined task count fits under the cap, each category
-    packs 1 task/shard as usual. Above the cap, `MAX_SHARDS` is allocated across
-    the active categories proportional to their task counts (via
-    `_allocate_shard_budgets`) and each category is packed into its own budget,
-    so the sum across categories never exceeds `MAX_SHARDS`.
-    """
-    prov = provider_of(model)
-    active_counts = {
-        cat: len(tasks_by_cat[cat]) for cat in categories if tasks_by_cat.get(cat)
+    counts = {
+        f"{category}\0{runtime}": len(tasks)
+        for category, runtime, tasks in groups
     }
-    total = sum(active_counts.values())
-    if total > shard_matrix.MAX_SHARDS:
-        budgets = _allocate_shard_budgets(active_counts, shard_matrix.MAX_SHARDS)
-    else:
-        budgets = dict.fromkeys(active_counts, shard_matrix.MAX_SHARDS)
-
+    budgets = (
+        _allocate_shard_budgets(counts, shard_matrix.MAX_SHARDS)
+        if sum(counts.values()) > shard_matrix.MAX_SHARDS
+        else {key: shard_matrix.MAX_SHARDS for key in counts}
+    )
+    provider = provider_of(model)
     entries: list[dict] = []
-    for cat in categories:
-        cm = CATEGORY_MAP[cat]
-        # The override selects the code harness (bare/dcode); a category pinned
-        # to a non-code harness (tau3) is never overridden.
-        agent_impl = (
-            code_impl if cm["agent_impl"] in CODE_AGENT_IMPLS else cm["agent_impl"]
-        )
-        cat_budget = budgets.get(cat, shard_matrix.MAX_SHARDS)
-        for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, []), cat_budget):
+    for category, runtime, tasks in groups:
+        category_config = CATEGORY_MAP[category]
+        key = f"{category}\0{runtime}"
+        for packed_tasks in shard_matrix.pack_tasks(tasks, budgets[key]):
             entries.append(
                 {
                     "model": model,
-                    "provider": prov,
-                    "category": cat,
-                    "dataset": cm["dataset"],
-                    "dataset_path": cm["dataset_path"],
-                    "agent_impl": agent_impl,
-                    "include_tasks": " ".join(group),
+                    "provider": provider,
+                    "category": category,
+                    "dataset": category_config["dataset"],
+                    "dataset_path": category_config["dataset_path"],
+                    "agent_impl": runtime,
+                    "include_tasks": " ".join(packed_tasks),
                     "langsmith_dataset": "",
                     "n_shards": 1,
                     "shard": 0,
@@ -262,29 +234,118 @@ def build_flat_matrix(
     return entries
 
 
+def parse_sources(raw: str) -> list[Source]:
+    """Parse ordered branch/SHA records resolved by the workflow."""
+    if not raw.strip():
+        sha = os.environ.get("GITHUB_SHA", "0" * 40)
+        branch = os.environ.get("GITHUB_REF_NAME", "controller")
+        return [
+            {
+                "version_id": "",
+                "branch": branch,
+                "sha": sha,
+                "product_artifact": f"unified-products-current-{sha[:12]}",
+            }
+        ]
+
+    msg = "UNIFIED_SOURCES_JSON must contain ordered branch/SHA source objects"
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(msg) from exc
+    if not isinstance(value, list) or not value:
+        raise SystemExit(msg)
+    comparison = len(value) > 1
+    sources: list[Source] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(msg)
+        expected_id = f"v{index}" if comparison else ""
+        version_id = item.get("version_id")
+        branch = item.get("branch")
+        sha = item.get("sha")
+        if (
+            version_id != expected_id
+            or not isinstance(branch, str)
+            or not branch
+            or not isinstance(sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+        ):
+            raise SystemExit(msg)
+        artifact_version = version_id or "current"
+        sources.append(
+            cast(
+                Source,
+                {
+                    "version_id": version_id,
+                    "branch": branch,
+                    "sha": sha,
+                    "product_artifact": (
+                        f"unified-products-{artifact_version}-{sha[:12]}"
+                    ),
+                },
+            )
+        )
+    if len({source["sha"] for source in sources}) != len(sources):
+        raise SystemExit("comparison branches must resolve to distinct commit SHAs")
+    return sources
+
+
+def filter_tasks(
+    tasks: dict[str, list[str]], categories: list[str], raw: str
+) -> dict[str, list[str]]:
+    """Apply one exact task selection to every evaluated source."""
+    selected = list(dict.fromkeys(raw.split()))
+    if not selected:
+        return tasks
+    available = {task for category in categories for task in tasks.get(category, [])}
+    unknown = [task for task in selected if task not in available]
+    if unknown:
+        raise SystemExit(f"UNIFIED_INCLUDE_TASKS contains unknown tasks: {unknown}")
+    filtered = {
+        category: [task for task in selected if task in tasks.get(category, [])]
+        for category in categories
+    }
+    empty = [category for category, names in filtered.items() if not names]
+    if empty:
+        raise SystemExit(
+            f"UNIFIED_INCLUDE_TASKS must select a task in every category: {empty}"
+        )
+    return filtered
+
+
 def _emit(github_output: str | None, outputs: dict[str, object]) -> None:
+    """Write compact outputs to GitHub or stdout."""
     if not github_output:
-        for k, v in outputs.items():
-            payload = v if isinstance(v, str) else json.dumps(v, separators=(",", ":"))
-            print(f"{k}={payload}")
+        for key, value in outputs.items():
+            payload = (
+                value
+                if isinstance(value, str)
+                else json.dumps(value, separators=(",", ":"))
+            )
+            print(f"{key}={payload}")
         return
-    with open(github_output, "a") as f:
-        for k, v in outputs.items():
-            payload = v if isinstance(v, str) else json.dumps(v, separators=(",", ":"))
-            f.write(f"{k}={payload}\n")
+    with open(github_output, "a") as handle:
+        for key, value in outputs.items():
+            payload = (
+                value
+                if isinstance(value, str)
+                else json.dumps(value, separators=(",", ":"))
+            )
+            handle.write(f"{key}={payload}\n")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Validate inputs and emit build/evaluation matrices."""
+    del argv
     selection = os.environ.get("UNIFIED_MODELS", "").strip()
-    # Order-preserving dedupe so a repeated category can't produce duplicate
-    # (model, category) entries with colliding artifact/dataset names.
     categories = list(
         dict.fromkeys(
-            c.strip()
-            for c in os.environ.get(
+            category.strip()
+            for category in os.environ.get(
                 "UNIFIED_CATEGORIES", "autonomous,conversation,context"
             ).split(",")
-            if c.strip()
+            if category.strip()
         )
     )
     concurrency = parse_int_input(
@@ -296,118 +357,164 @@ def main(argv: list[str] | None = None) -> int:
     rollouts = parse_int_input(
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
-
-    # Empty defaults to the bare create_deep_agent harness for the code categories.
-    code_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or DEFAULT_AGENT_IMPL
-    if code_impl not in CODE_AGENT_IMPLS:
+    agent_impls_raw = os.environ.get("UNIFIED_AGENT_IMPLS", "")
+    agent_impl_name = "UNIFIED_AGENT_IMPLS"
+    if not agent_impls_raw:
+        agent_impls_raw = os.environ.get("UNIFIED_AGENT_IMPL", "")
+        agent_impl_name = "UNIFIED_AGENT_IMPL"
+    try:
+        code_configs = agent_configs.parse_code_configs(agent_impls_raw)
+    except ValueError as exc:
+        if agent_impl_name == "UNIFIED_AGENT_IMPL":
+            raise SystemExit(
+                f"UNIFIED_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}: {exc}"
+            ) from exc
         raise SystemExit(
-            f"UNIFIED_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}, "
-            f"got {code_impl!r}"
-        )
+            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}: {exc}"
+        ) from exc
 
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
     if profile not in PROFILES:
         raise SystemExit(
             f"UNIFIED_PROFILE must be one of {sorted(PROFILES)}, got {profile!r}"
         )
-
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
-    unknown = [c for c in categories if c not in CATEGORY_MAP]
-    if unknown:
+    unknown_categories = [
+        category for category in categories if category not in CATEGORY_MAP
+    ]
+    if unknown_categories:
         raise SystemExit(
-            f"Unknown categor(y/ies): {unknown}. Valid: {sorted(CATEGORY_MAP)}"
+            f"Unknown categor(y/ies): {unknown_categories}. "
+            f"Valid: {sorted(CATEGORY_MAP)}"
         )
-    # Validate + dedupe the free-form CSV via the shared resolver.
     try:
-        model_specs = models._resolve_models("harbor", selection)
+        model_specs = models._resolve_models("harbor", selection)  # noqa: SLF001
     except ValueError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc
 
-    # Resolve the per-category task lists.
     if profile == "lite":
-        tasks_by_cat = {c: list(lite_tasks.LITE_TASKS.get(c, [])) for c in categories}
+        tasks_by_category = {
+            category: list(lite_tasks.LITE_TASKS.get(category, []))
+            for category in categories
+        }
     else:
-        tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
-        if not tasks_json:
+        tasks_path = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
+        if not tasks_path:
             raise SystemExit(
                 "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
             )
-        tasks_by_cat = _load_tasks_json(tasks_json)
-
+        tasks_by_category = _load_tasks_json(tasks_path)
+    tasks_by_category = filter_tasks(
+        tasks_by_category,
+        categories,
+        os.environ.get("UNIFIED_INCLUDE_TASKS", ""),
+    )
     empty_categories = [
-        category for category in categories if not tasks_by_cat.get(category)
+        category for category in categories if not tasks_by_category.get(category)
     ]
     if empty_categories:
         raise SystemExit(
             f"No tasks resolved for requested categor(y/ies): {empty_categories}"
         )
+    sources = parse_sources(os.environ.get("UNIFIED_SOURCES_JSON", ""))
 
-    n_models = len(model_specs)
-    est_tasks = sum(len(tasks_by_cat[category]) for category in categories)
-    # Jobs launched per model = the packed flat-matrix entry count, not the raw
-    # task count: build_flat_matrix groups tasks into at most MAX_SHARDS shards,
-    # and ceil-division packing usually yields fewer (e.g. 120+120+40 tasks pack
-    # to 140 entries, not 200). The count is model-independent, so measure it
-    # once on the first model and guard on the real emitted job total. Guarding
-    # on the raw task count would reject valid multi-model full runs whose packed
-    # total is within budget (e.g. 3 models x 260 tasks -> 3 x 130 = 390 <= 400).
-    first_matrix = build_flat_matrix(
-        model_specs[0], categories, tasks_by_cat, code_impl
-    )
-    missing_matrix_categories = [
-        category
-        for category in categories
-        if not any(entry["category"] == category for entry in first_matrix)
-    ]
-    if missing_matrix_categories:
-        raise SystemExit(
-            "No matrix entries resolved for requested categor(y/ies): "
-            f"{missing_matrix_categories}"
+    per_model_matrices = {
+        model: build_flat_matrix(
+            model, categories, tasks_by_category, code_impls=code_configs
         )
-    if not first_matrix:
+        for model in model_specs
+    }
+    if not all(per_model_matrices.values()):
         raise SystemExit("Unified eval matrix is empty.")
-    packed_per_model = len(first_matrix)
-    total_job_guard(n_models, packed_per_model)
-
-    # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
-    n_shards = est_tasks
-    max_parallel, model_parallel = derive_pool(
-        concurrency, rollouts, n_shards, n_models
+    # Guard on the real post-pack leaf count, including every immutable source.
+    total_job_guard(
+        len(sources) * len(model_specs),
+        max(len(entries) for entries in per_model_matrices.values()),
+    )
+    eval_group_count = len(sources) * len(model_specs)
+    if eval_group_count > shard_matrix.MAX_SHARDS:
+        raise SystemExit(
+            f"branch x model matrix has {eval_group_count} entries, over GitHub's "
+            f"{shard_matrix.MAX_SHARDS}-entry matrix limit"
+        )
+    largest_matrix = max(
+        (len(entries) for entries in per_model_matrices.values()), default=1
+    )
+    per_model_shards = MAX_TASKS_PER_MODEL // concurrency
+    if len(sources) > per_model_shards:
+        raise SystemExit(
+            f"{len(sources)} sources exceed the per-model concurrent-shard budget "
+            f"of {per_model_shards} at concurrency={concurrency}. Reduce sources "
+            "or lower concurrency."
+        )
+    max_parallel, version_model_parallel = derive_pool(
+        concurrency,
+        rollouts,
+        largest_matrix,
+        len(model_specs),
+        len(sources),
     )
 
+    expected_leaves: list[dict] = []
+    seen_leaves: set[tuple[str, str, str]] = set()
+    runtimes: list[str] = []
+    for model, entries in per_model_matrices.items():
+        for entry in entries:
+            runtime = entry["agent_impl"]
+            if runtime not in runtimes:
+                runtimes.append(runtime)
+            identity = (model, runtime, entry["category"])
+            if identity not in seen_leaves:
+                seen_leaves.add(identity)
+                expected_leaves.append(
+                    {"model": model, "config": runtime, "category": entry["category"]}
+                )
+
+    packages = agent_configs.required_packages(runtimes)
+    eval_matrix = {
+        "include": [
+            {
+                **source,
+                "model": model,
+                "slug": _slug(model),
+                "flat_matrix": json.dumps(
+                    {"include": per_model_matrices[model]}, separators=(",", ":")
+                ),
+            }
+            for source in sources
+            for model in model_specs
+        ]
+    }
     outputs: dict[str, object] = {
-        # The expected grid, so the combiner can flag missing/incomplete leaves
-        # instead of silently ranking a model on fewer categories.
         "models": model_specs,
         "categories": categories,
+        "configs": code_configs,
+        "sources": sources,
+        "comparison_mode": "true" if len(sources) > 1 else "false",
+        "conversation_sources": {
+            config: agent_configs.conversation_runtime_for(config)
+            for config in code_configs
+        },
+        "expected_leaves": expected_leaves,
         "max_parallel": str(max_parallel),
-        "model_parallel": str(model_parallel),
+        # Keep the old output name while callers transition to the clearer name.
+        "model_parallel": str(version_model_parallel),
+        "version_model_parallel": str(version_model_parallel),
+        "total_jobs": str(
+            len(sources) * sum(len(entries) for entries in per_model_matrices.values())
+        ),
+        "build_matrix": {
+            "include": [{**source, "packages": packages} for source in sources]
+        },
+        "eval_matrix": eval_matrix,
     }
-    # One eval_matrix entry per model, each carrying its own pre-serialized
-    # flat matrix. GitHub job outputs are statically declared, so a single
-    # matrixable output (rather than one `model_<idx>_matrix` output per
-    # model) is what lets the `eval` job's `strategy.matrix` scale to an
-    # arbitrary model count.
-    eval_include = [
-        {
-            "model": m,
-            "slug": _slug(m),
-            "flat_matrix": json.dumps(
-                {"include": build_flat_matrix(m, categories, tasks_by_cat, code_impl)},
-                separators=(",", ":"),
-            ),
-        }
-        for m in model_specs
-    ]
-    outputs["eval_matrix"] = {"include": eval_include}
     _emit(os.environ.get("GITHUB_OUTPUT"), outputs)
     return 0
 
 
 def _slug(model: str) -> str:
-    import re
-
+    """Return a GitHub-safe model identifier."""
     return re.sub(r"[^A-Za-z0-9._-]", "-", model.replace("/", "-").replace(":", "-"))
 
 

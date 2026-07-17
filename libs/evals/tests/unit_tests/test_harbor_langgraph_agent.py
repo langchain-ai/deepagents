@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
+from deepagents_code import agent as dcode_agent
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -33,6 +35,22 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
     assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 
+def test_langgraph_config_excludes_mcp_v2() -> None:
+    """MCP 2 removed a callback type imported by the MCP adapter at startup."""
+    config_path = Path("deepagents_harbor/langgraph_project/langgraph.json")
+
+    dependencies = json.loads(config_path.read_text())["dependencies"]
+
+    assert "mcp>=1.9.2,<2.0.0" in dependencies
+
+
+def test_evals_caps_filelock_before_cross_instance_deadlock_detection() -> None:
+    """Harbor 0.16.1 is incompatible with filelock's new async lock check."""
+    dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+
+    assert "filelock>=3.29.4,<3.29.7" in dependencies
+
+
 def test_make_graph_scrubs_credentials_from_shell_backend_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -44,7 +62,7 @@ def test_make_graph_scrubs_credentials_from_shell_backend_env(
         return graph, object()
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", fake_create_cli_agent)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     monkeypatch.setenv("LANGSMITH_API_KEY", "secret")
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
@@ -79,7 +97,7 @@ def test_make_graph_builds_headless_local_deepagent(
         return graph, object()
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", fake_create_cli_agent)
     monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
 
     result = langgraph_agent.make_graph(
@@ -119,7 +137,7 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        langgraph_agent,
+        dcode_agent,
         "create_cli_agent",
         lambda **kwargs: (captured_create.append(kwargs) or object(), object()),
     )
@@ -150,7 +168,7 @@ def test_make_graph_openai_defaults_to_responses_api(
         return "chat-model"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(dcode_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
 
     langgraph_agent.make_graph(
         {"configurable": {"model": "openai:gpt-5.6-luna", "cwd": str(tmp_path)}}

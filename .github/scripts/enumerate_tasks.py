@@ -25,7 +25,9 @@ def local_task_names(local_dir: str) -> list[str]:
         if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "task.toml"))
     )
     if not names:
-        raise SystemExit(f"No local Harbor tasks (dirs with task.toml) under {local_dir}")
+        raise SystemExit(
+            f"No local Harbor tasks (dirs with task.toml) under {local_dir}"
+        )
     return names
 
 

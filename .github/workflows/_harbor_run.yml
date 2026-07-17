@@ -56,6 +56,10 @@ on:
       n_retries:
         type: string
         default: "0"
+      retry_agent_timeouts:
+        description: "Allow retries for AgentTimeoutError; inert when n_retries is 0."
+        type: boolean
+        default: false
       n_tasks:
         type: string
         default: "0"
@@ -91,6 +95,30 @@ on:
         # not the model under test, to avoid self-grading bias.
         type: string
         default: "gpt-5.6-luna"
+      version_id:
+        description: "Optional comparison version (`v1`..`vN`); empty preserves ordinary behavior."
+        type: string
+        default: ""
+      source_branch:
+        description: "Human-readable branch paired with the immutable product SHA."
+        type: string
+        default: ""
+      source_sha:
+        description: "Immutable commit used to build the evaluated product wheels."
+        type: string
+        default: ""
+      product_artifact:
+        description: "Artifact containing branch-built product wheels and manifest."
+        type: string
+        default: ""
+      suite_configs:
+        description: "JSON list of selected code configs used for comparison bundles."
+        type: string
+        default: "[]"
+      conversation_sources:
+        description: "JSON mapping from code config to its conversation runtime."
+        type: string
+        default: "{}"
 
 permissions:
   contents: read
@@ -114,6 +142,8 @@ jobs:
       # distinct category present in flat_matrix. The `aggregate` job matrixes
       # over this.
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
+      bundle_matrix: ${{ steps.bundle-matrix.outputs.bundle_matrix }}
+      bundle_categories: ${{ steps.bundle-matrix.outputs.categories }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -176,6 +206,7 @@ jobs:
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
           SINGLE_CATEGORY: ${{ inputs.category }}
           SINGLE_DATASET: ${{ inputs.dataset }}
+          SINGLE_AGENT_IMPL: ${{ inputs.agent_impl }}
           SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
         run: |
           python - <<'PY'
@@ -192,32 +223,38 @@ jobs:
                   data = json.loads(flat_matrix)
               except json.JSONDecodeError as exc:
                   sys.exit(f"::error::Invalid flat_matrix JSON: {exc}")
-              by_category: dict[str, dict] = {}
+              by_key: dict[tuple[str, str], dict] = {}
               for entry in data.get("include", []):
                   category = entry.get("category")
+                  agent_impl = entry.get("agent_impl") or ""
                   if not category or not category_re.match(str(category)):
                       sys.exit(
                           f"::error::Invalid or missing category in flat_matrix entry: {category!r}"
                       )
-                  info = by_category.setdefault(category, {"count": 0, "dataset": None})
+                  key = (category, agent_impl)
+                  info = by_key.setdefault(
+                      key, {"count": 0, "dataset": None, "agent_impl": agent_impl}
+                  )
                   info["count"] += 1
                   if info["dataset"] is None:
                       info["dataset"] = entry.get("dataset") or entry.get("dataset_path") or ""
-              if not by_category:
+              if not by_key:
                   sys.exit("::error::flat_matrix produced no categories to aggregate")
               include = [
                   {
                       "category": category,
+                      "agent_impl": info["agent_impl"],
                       "dataset": info["dataset"] or "",
                       "expected_shards": info["count"],
                   }
-                  for category, info in sorted(by_category.items())
+                  for (category, _impl), info in sorted(by_key.items())
               ]
           else:
               raw_expected = os.environ.get("SINGLE_EXPECTED_SHARDS", "").strip()
               include = [
                   {
                       "category": os.environ.get("SINGLE_CATEGORY", ""),
+                      "agent_impl": os.environ.get("SINGLE_AGENT_IMPL", ""),
                       "dataset": os.environ.get("SINGLE_DATASET", ""),
                       "expected_shards": int(raw_expected) if raw_expected.isdigit() else "",
                   }
@@ -231,6 +268,46 @@ jobs:
                   fh.write(line + "\n")
           else:
               print(line)
+          PY
+
+      - name: "📦 Derive config bundle matrix"
+        id: bundle-matrix
+        env:
+          AGGREGATE_MATRIX: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
+          SUITE_CONFIGS: ${{ inputs.suite_configs }}
+          CONVERSATION_SOURCES: ${{ inputs.conversation_sources }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          configs = json.loads(os.environ.get("SUITE_CONFIGS") or "[]")
+          conversations = json.loads(os.environ.get("CONVERSATION_SOURCES") or "{}")
+          aggregate = json.loads(os.environ["AGGREGATE_MATRIX"])
+          if not isinstance(configs, list) or not all(
+              isinstance(config, str) and config for config in configs
+          ):
+              raise SystemExit("::error::suite_configs must be a JSON string list")
+          if not isinstance(conversations, dict):
+              raise SystemExit("::error::conversation_sources must be a JSON object")
+          categories = list(dict.fromkeys(
+              entry["category"] for entry in aggregate.get("include", [])
+          ))
+          include = []
+          for config in configs:
+              runtime = conversations.get(config)
+              if not isinstance(runtime, str) or not runtime:
+                  raise SystemExit(
+                      f"::error::No conversation runtime registered for {config!r}"
+                  )
+              include.append({"config": config, "conversation_runtime": runtime})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("bundle_matrix=" + json.dumps(
+                  {"include": include}, separators=(",", ":")
+              ) + "\n")
+              output.write("categories=" + json.dumps(
+                  categories, separators=(",", ":")
+              ) + "\n")
           PY
 
   harbor:
@@ -259,6 +336,7 @@ jobs:
       HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
+      HARBOR_RETRY_AGENT_TIMEOUTS: ${{ inputs.retry_agent_timeouts }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
@@ -348,6 +426,13 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: "⬇️ Download branch product wheels"
+        if: ${{ inputs.product_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.product_artifact }}
+          path: libs/evals/deepagents_harbor/langgraph_project/.branch_wheels
+
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
@@ -365,6 +450,10 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
+        # --no-deps preserves the dependency set installed from uv.lock; an
+        # override must remain compatible with the locked Harbor environment.
+        # Without it, installing a source override can silently upgrade unrelated
+        # transitive packages and make the comparison non-reproducible.
         run: |
           # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
           # so newline is the only safe delimiter. Collect into an array and pass
@@ -374,7 +463,46 @@ jobs:
           while IFS= read -r line; do
             [ -n "$line" ] && specs+=("$line")
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
-          uv pip install --reinstall --refresh "${specs[@]}"
+          uv pip install --no-deps --reinstall --refresh "${specs[@]}"
+          # `uv pip check` validates the entire monorepo environment and can
+          # fail on unrelated inconsistencies already present in the lockfile.
+          # Validate only each overridden distribution's active direct
+          # requirements so the override cannot introduce a new incompatibility.
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+          from importlib.metadata import PackageNotFoundError, distribution, version
+
+          from packaging.requirements import Requirement
+
+          failures = []
+          names = []
+          for spec in os.environ["HARBOR_PACKAGE_OVERRIDE"].splitlines():
+              if not spec:
+                  continue
+              name = Requirement(spec).name
+              names.append(name)
+              for declared in distribution(name).requires or []:
+                  requirement = Requirement(declared)
+                  if requirement.marker is not None and not requirement.marker.evaluate():
+                      continue
+                  try:
+                      installed = version(requirement.name)
+                  except PackageNotFoundError:
+                      failures.append(f"{name} requires missing package {requirement.name}")
+                      continue
+                  if requirement.specifier and installed not in requirement.specifier:
+                      failures.append(
+                          f"{name} requires {requirement}, but {installed} is installed"
+                      )
+
+          if failures:
+              print("Harbor override dependency check failed:", file=sys.stderr)
+              for failure in failures:
+                  print(f"- {failure}", file=sys.stderr)
+              raise SystemExit(1)
+          print("Verified Harbor override dependencies: " + ", ".join(names))
+          PY
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -447,25 +575,25 @@ jobs:
           fi
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
 
-      - name: "🐳 Wait for the Docker daemon"
-        # GH-hosted runners intermittently have the Docker daemon not-yet-ready at
-        # job start; harbor's docker sandbox then hard-fails with "Docker daemon is
-        # not running", losing an otherwise-good shard. Wait it out (docker-sandbox
-        # only). No sudo/start: the codebase disallows privilege escalation in
-        # workflows, and this targets the startup race, not a dead daemon (which
-        # still fails the shard, but the aggregator no longer voids the scorecard
-        # for a single missing shard).
+      - name: "🐳 Ensure Docker daemon"
         if: ${{ inputs.sandbox_env == 'docker' }}
         run: |
-          for i in $(seq 1 60); do
+          if docker info >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          echo "::warning::Docker daemon is unavailable; attempting one restart."
+          sudo systemctl restart docker
+          for attempt in 1 2 3 4 5; do
             if docker info >/dev/null 2>&1; then
-              echo "Docker daemon ready (after ${i} check(s))."
+              echo "Docker daemon became ready after restart."
               exit 0
             fi
-            sleep 2
+            sleep $((attempt * 2))
           done
-          echo "::error::Docker daemon not ready after ~120s."
-          docker info || true
+
+          echo "::error::Docker daemon did not become ready after restart."
+          sudo systemctl status docker --no-pager || true
           exit 1
 
       - name: "⚓ Run Harbor"
@@ -482,38 +610,46 @@ jobs:
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          PRODUCT_ARTIFACT: ${{ inputs.product_artifact }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION_ID: ${{ inputs.version_id }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
-          # Stage current checkout packages for LangGraph's sandbox install.
-          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          # partners/ must pre-exist: rsync only creates the final path component.
-          mkdir -p "$local_deps_dir/partners"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          dependency_override_args=()
+          if [ -n "$PRODUCT_ARTIFACT" ]; then
+            if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Branch product source_sha must be a full commit SHA"
+              exit 1
+            fi
+            if [ -n "$VERSION_ID" ] && ! [[ "$VERSION_ID" =~ ^v[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid comparison version: $VERSION_ID"
+              exit 1
+            fi
+            overrides=$(python3 "$GITHUB_WORKSPACE/.github/scripts/eval_product_packages.py" overrides \
+              --project-dir "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project" \
+              --manifest "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/.branch_wheels/package-manifest.json" \
+              --runtime "$HARBOR_AGENT_IMPL" \
+              --source-sha "$SOURCE_SHA")
+            dependency_override_args=(--agent-kwarg "dependency_overrides=$overrides")
+          else
+            # Preserve non-Unified callers: stage current checkout packages for
+            # Harbor's editable local-source installation path.
+            local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
+            mkdir -p "$local_deps_dir/partners"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../deepagents/ "$local_deps_dir/deepagents/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../code/ "$local_deps_dir/deepagents-code/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          fi
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -527,6 +663,10 @@ jobs:
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
+          case "$HARBOR_RETRY_AGENT_TIMEOUTS" in
+            true|false) ;;
+            *) echo "::error::Invalid retry_agent_timeouts (true|false): $HARBOR_RETRY_AGENT_TIMEOUTS"; exit 1 ;;
+          esac
           if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
             exit 1
@@ -556,6 +696,20 @@ jobs:
             false) ;;
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
+
+          retry_args=(--max-retries "$HARBOR_N_RETRIES")
+          if [ "$HARBOR_RETRY_AGENT_TIMEOUTS" = "true" ]; then
+            # Passing any --retry-exclude replaces Harbor's default set. Preserve
+            # every default exclusion except AgentTimeoutError, which makes agent
+            # timeouts eligible for the configured number of retries.
+            retry_args+=(
+              --retry-exclude VerifierTimeoutError
+              --retry-exclude RewardFileNotFoundError
+              --retry-exclude RewardFileEmptyError
+              --retry-exclude VerifierOutputParseError
+              --retry-exclude ApiUsageLimitError
+            )
+          fi
 
           # Allowlist the boolean; only literal true/false accepted.
           force_build_flag=()
@@ -709,29 +863,16 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
+          mapfile -t runtime_metadata < <(
+            python3 "$GITHUB_WORKSPACE/.github/scripts/eval_agent_configs.py" \
+              "$HARBOR_AGENT_IMPL"
+          )
+          if [ "${#runtime_metadata[@]}" -ne 2 ]; then
+            echo "::error::Could not resolve agent runtime: $HARBOR_AGENT_IMPL"
+            exit 1
+          fi
+          HARBOR_AGENT_GRAPH="${runtime_metadata[0]}"
+          HARBOR_AGENT_LABEL="${runtime_metadata[1]}"
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
@@ -747,7 +888,13 @@ jobs:
           # plugin reuses one session per category and converges them; the run id +
           # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
           # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -n "$VERSION_ID" ]; then
+            branch_slug=$(printf '%s' "$SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+            branch_slug="${branch_slug:0:48}-$(printf '%s' "$SOURCE_BRANCH" | sha256sum | cut -c1-8)"
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-compare-${VERSION_ID}-${branch_slug}-${experiment_model}-${experiment_agent}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          else
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -774,6 +921,21 @@ jobs:
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )
+          plugin="langsmith"
+          comparison_plugin_args=()
+          if [ -n "$VERSION_ID" ]; then
+            plugin="deepagents_harbor.unified_langsmith_plugin:UnifiedComparisonLangSmithPlugin"
+            comparison_plugin_args=(
+              --plugin-kwarg "version_id=$VERSION_ID"
+              --plugin-kwarg "source_branch=$SOURCE_BRANCH"
+              --plugin-kwarg "source_sha=$SOURCE_SHA"
+              --plugin-kwarg "agent_config=$HARBOR_AGENT_IMPL"
+              --plugin-kwarg "model=$HARBOR_MODEL"
+              --plugin-kwarg "category=$HARBOR_CATEGORY"
+              --plugin-kwarg "workflow_run_id=$GITHUB_RUN_ID"
+              --plugin-kwarg "workflow_run_attempt=$GITHUB_RUN_ATTEMPT"
+            )
+          fi
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
@@ -781,12 +943,11 @@ jobs:
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
+            # Harbor's managed installer already uses
+            # `--prerelease=if-necessary`. Do not set UV_PRERELEASE=allow here:
+            # it applies to every agent dependency and previously selected the
+            # incompatible MCP 2.0 beta through an unbounded transitive edge.
+            fireworks)    agent_env_args+=(--agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}') ;;
             ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
             groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
@@ -803,10 +964,11 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${dependency_override_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
-            --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_args[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
@@ -819,9 +981,10 @@ jobs:
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --plugin langsmith \
+            --plugin "$plugin" \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT" \
+            "${comparison_plugin_args[@]}"
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -890,7 +1053,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          raw=$(printf '%s|%s|%s' "${{ inputs.version_id }}" "$MODEL" "$CATEGORY")
           slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
           # Short hash keeps the name unique when two specs sanitize alike.
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
@@ -907,16 +1070,55 @@ jobs:
           category_safe="${category_safe}-$(printf '%s' "$HARBOR_CATEGORY" | sha256sum | cut -c1-8)"
           echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
 
+          # Agent-config-safe slug, computed exactly like HARBOR_CATEGORY_SAFE so
+          # the aggregate job's agent-slug step reproduces it byte-for-byte. It
+          # additionally scopes the artifact name by agent config, so two configs
+          # of the same model+category don't collide on one artifact name.
+          agent_safe=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$HARBOR_AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "HARBOR_AGENT_SAFE=$agent_safe" >> "$GITHUB_ENV"
+
+          version_safe="${{ inputs.version_id }}"
+          [ -z "$version_safe" ] && version_safe="current"
+          echo "HARBOR_VERSION_SAFE=$version_safe" >> "$GITHUB_ENV"
+
+      - name: "📦 Package Harbor artifacts"
+        if: always()
+        # Linux-valid task output may contain paths such as `memory:` that
+        # upload-artifact rejects. GitHub sees only this portable filename; the
+        # original tree remains byte-for-byte intact inside the archive.
+        run: |
+          mkdir -p harbor-jobs/terminal-bench
+          if [ -n "${HARBOR_LANGSMITH_EXPERIMENT:-}" ]; then
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          marker = {
+              "schema_version": 1,
+              "experiment": os.environ["HARBOR_LANGSMITH_EXPERIMENT"],
+          }
+          Path("harbor-jobs/terminal-bench/langsmith-experiment.json").write_text(
+              json.dumps(marker, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          fi
+          tar --zstd -cf harbor-shard.tar.zst -C harbor-jobs terminal-bench
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # Category- and slug-scoped so the aggregate job globs only this run's
-          # own shards, grouped per category.
-          name: shard-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
-          path: |
-            libs/evals/harbor-jobs/terminal-bench
-          if-no-files-found: warn
+          # Agent-, category- and slug-scoped so the aggregate job globs only
+          # this run's own shards, grouped per (agent config, category).
+          name: shard-${{ env.HARBOR_VERSION_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          path: libs/evals/harbor-shard.tar.zst
+          compression-level: 0
+          if-no-files-found: error
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
@@ -956,7 +1158,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          raw=$(printf '%s|%s|%s' "${{ inputs.version_id }}" "$MODEL" "$CATEGORY")
           slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
           # Short hash keeps the name unique when two specs sanitize alike.
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
@@ -983,13 +1185,28 @@ jobs:
           category_safe="${category_safe}-$(printf '%s' "$CATEGORY" | sha256sum | cut -c1-8)"
           echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
 
+      - name: "🔖 Compute agent slug"
+        id: agent-slug
+        # Sanitized aggregate_matrix agent_impl. Must match the harbor job's
+        # HARBOR_AGENT_SAFE byte-for-byte so the download/delete globs below hit
+        # exactly this agent config's shard artifacts.
+        env:
+          AGENT_IMPL: ${{ matrix.agent_impl }}
+        run: |
+          agent_safe=$(printf '%s' "$AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "slug=$agent_safe" >> "$GITHUB_OUTPUT"
+
       - name: "⬇️ Download shard results"
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: shard-${{ inputs.version_id || 'current' }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -1015,6 +1232,22 @@ jobs:
           echo "Contents of _shards:"
           ls -1 _shards || true
 
+      - name: "📦 Extract shard results"
+        # Keep the raw archives in _shards for the downloadable run bundle while
+        # scoring extracted copies with the existing aggregator.
+        run: |
+          mkdir -p _results
+          found=0
+          while IFS= read -r -d '' archive; do
+            found=1
+            shard=$(basename "$(dirname "$archive")")
+            mkdir -p "_results/$shard"
+            tar --zstd -xf "$archive" -C "_results/$shard"
+          done < <(find _shards -type f -name 'harbor-shard.tar.zst' -print0)
+          if [ "$found" -eq 0 ]; then
+            echo "::warning::No packaged shard results found; aggregating an empty set."
+          fi
+
       - name: "📊 Compute pass@k / avg@k"
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
         # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
@@ -1026,6 +1259,7 @@ jobs:
           ROLLOUTS: ${{ inputs.rollouts }}
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ matrix.category }}
+          AGENT_IMPL: ${{ matrix.agent_impl }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
@@ -1037,26 +1271,22 @@ jobs:
           if [ -n "$EXPECTED_SHARDS" ]; then
             expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
           fi
-          # needs.harbor.result is the single result of the whole harbor matrix.
-          # On a flat multi-category run that matrix spans every category, so one
-          # failed shard would mark *every* category's summary incomplete. There
-          # the per-category --expected-shards count is the category-local
-          # completeness authority (a category whose shards all uploaded is
-          # complete regardless of a sibling category's failure), so the global
-          # result is not passed. The single-dataset path (one category leg)
-          # keeps it: that result maps to its lone category.
+          # `needs.harbor.result` is global to a flat matrix that spans all
+          # categories. Per-category expected shard coverage is authoritative
+          # there; the global result remains valid for a single-dataset run.
           harbor_result_args=()
           if [ -z "$FLAT_MATRIX" ]; then
             harbor_result_args=(--harbor-result "$HARBOR_RESULT")
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
-          python3 .github/scripts/aggregate_shards.py _shards \
+          python3 .github/scripts/aggregate_shards.py _results \
             --rollouts "$ROLLOUTS" \
             "${expected_shards_args[@]}" \
             --dataset "$DATASET" \
             --model "$MODEL" \
             --category "$CATEGORY" \
+            --config "$AGENT_IMPL" \
             "${harbor_result_args[@]}" \
             --out-dir _shards
 
@@ -1069,7 +1299,7 @@ jobs:
         # ran earlier in this job; don't reorder past it.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug) }}
+          name: ${{ inputs.version_id != '' && format('harbor-combined-{0}-{1}-{2}-{3}', inputs.version_id, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) || (inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}', matrix.agent_impl, matrix.category, steps.slug.outputs.slug)) }}
           path: _shards
           if-no-files-found: warn
 
@@ -1082,7 +1312,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: shard-${{ inputs.version_id || 'current' }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")
@@ -1090,3 +1320,101 @@ jobs:
             gh api -X DELETE "repos/$REPO/actions/artifacts/$id" \
               && echo "deleted shard artifact $id" || echo "could not delete $id"
           done
+
+  bundle:
+    name: "📦 Bundle ${{ inputs.version_id || 'current' }} / ${{ matrix.config }}"
+    needs: [prep, aggregate]
+    if: ${{ always() && inputs.version_id != '' && inputs.product_artifact != '' && needs.aggregate.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.bundle_matrix) }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🔖 Compute bundle slug"
+        id: slug
+        env:
+          BRANCH: ${{ inputs.source_branch }}
+          CONFIG: ${{ matrix.config }}
+          MODEL: ${{ inputs.model }}
+          VERSION: ${{ inputs.version_id }}
+        run: |
+          slug() {
+            local value="$1"
+            local safe
+            safe=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+            printf '%s-%s' "${safe:0:48}" "$(printf '%s' "$value" | sha256sum | cut -c1-8)"
+          }
+          version="${VERSION:-current}"
+          artifact="unified-run-${version}-$(slug "$BRANCH")-$(slug "$MODEL")-$(slug "$CONFIG")"
+          leaf_raw=$(printf '%s|%s|' "$VERSION" "$MODEL")
+          leaf_safe=$(printf '%s' "$leaf_raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          leaf_safe="${leaf_safe}-$(printf '%s' "$leaf_raw" | sha256sum | cut -c1-8)"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "leaf_slug=$leaf_safe" >> "$GITHUB_OUTPUT"
+
+      - name: "⬇️ Download category summaries"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATTERN: harbor-combined-${{ inputs.version_id }}-*-${{ steps.slug.outputs.leaf_slug }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern "$PATTERN" --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No complete category artifacts matched $PATTERN; the bundle will record missing categories."
+              break
+            fi
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Category download failed after ${attempt} attempts."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+
+      - name: "⬇️ Download branch product manifest"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.product_artifact }}
+          path: _product
+
+      - name: "📦 Assemble self-contained run"
+        env:
+          CATEGORIES: ${{ needs.prep.outputs.bundle_categories }}
+          CONFIG: ${{ matrix.config }}
+          CONVERSATION_RUNTIME: ${{ matrix.conversation_runtime }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          python3 .github/scripts/bundle_unified_run.py \
+            --leaves-root _leaves \
+            --product-manifest _product/package-manifest.json \
+            --out-dir _bundle/run \
+            --model "$MODEL" \
+            --config "$CONFIG" \
+            --conversation-runtime "$CONVERSATION_RUNTIME" \
+            --categories-json "$CATEGORIES"
+          tar --zstd -cf _bundle/run.tar.zst -C _bundle run
+
+      - name: "📤 Upload self-contained run"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.slug.outputs.artifact }}
+          path: _bundle/run.tar.zst
+          compression-level: 0
+          if-no-files-found: error

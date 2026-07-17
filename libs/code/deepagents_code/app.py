@@ -2637,6 +2637,14 @@ class DeepAgentsApp(App):
         completion in the chat input.
         """
 
+        self._debug_console_cleared_upto = 0
+        """Absolute emission index the Debug Console was last cleared up to.
+
+        Persists a `Ctrl+L` clear across close/reopen of the console for the
+        process lifetime; each newly opened `DebugConsoleScreen` is seeded from
+        it and reports a fresh clear back through its `on_clear` callback.
+        """
+
         self._lc_thread_id = thread_id
         """LangChain thread identifier.
 
@@ -6104,20 +6112,35 @@ class DeepAgentsApp(App):
 
         available, latest = self._update_available
         if available and latest:
+            manual_hint = "Run /update or `dcode update` to install it."
+            hint = "Update it using the method that installed this copy of dcode."
+            upgrade_supported = False
             try:
-                from deepagents_code.update_check import upgrade_command
+                # Imported function-locally on purpose: tests patch these on the
+                # `update_check` module, which only takes effect because the names
+                # are resolved here at call time. Hoisting this to module scope
+                # would silently defeat those patches.
+                from deepagents_code.update_check import (
+                    detect_install_method,
+                    is_auto_update_enabled,
+                )
 
-                cmd = upgrade_command()
+                method = await asyncio.to_thread(detect_install_method)
+                upgrade_supported = method in {"uv", "brew"}
+                if upgrade_supported:
+                    if await asyncio.to_thread(is_auto_update_enabled):
+                        hint = "Quit and relaunch dcode to install it automatically."
+                    else:
+                        hint = manual_hint
             except Exception:
                 logger.warning(
-                    "Could not resolve upgrade command for /version; "
-                    "falling back to generic upgrade hint",
+                    "Could not resolve update preference for /version; "
+                    "falling back to a manual update hint",
                     exc_info=True,
                 )
-                from deepagents_code.update_check import FALLBACK_UPGRADE_COMMAND
-
-                cmd = FALLBACK_UPGRADE_COMMAND
-            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+                if upgrade_supported:
+                    hint = manual_hint
+            lines.extend(("", f"Update available: v{latest}. {hint}"))
 
         await self._mount_message(AppMessage("\n".join(lines)))
 
@@ -9845,8 +9868,19 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
-        active_request = state_values.get("goal_criteria_request")
-        pending_request_is_active = active_request is not None
+        criteria_request = state_values.get("goal_criteria_request")
+        completed_request_marker_is_stale = (
+            allow_pending_proposal
+            and proposal_request_id is not None
+            and payload.pending_goal_request_id == proposal_request_id
+            and isinstance(criteria_request, dict)
+            and criteria_request.get("request_id") == proposal_request_id
+        )
+        if completed_request_marker_is_stale:
+            # `_clear_submitted_goal_criteria_request` runs before this successful
+            # turn sync. Ignore its failed clear only here; restore and ordinary sync
+            # must keep matching markers active so failed partial drafts stay blocked.
+            payload = replace(payload, goal_criteria_request_active=False)
         discard_failed_proposal = (
             not allow_pending_proposal
             and payload.pending_goal_objective is not None
@@ -9861,7 +9895,7 @@ class DeepAgentsApp(App):
                 proposal_request_id is not None
                 and payload.pending_goal_request_id != proposal_request_id
             )
-            or pending_request_is_active
+            or payload.goal_criteria_request_active
             or not allow_pending_proposal
         ):
             payload = replace(
@@ -15618,7 +15652,9 @@ class DeepAgentsApp(App):
 
         # Toggle whichever collapsible unit is most recent in DOM order so
         # content mounted after a tool group stays reachable.
-        # Grouped tool rows are folded into their summary, so skip them here.
+        # Skip grouped tool rows only while they are folded into their summary.
+        # Expanded groups retain the marker, but their visible rows should take
+        # precedence over the summary so Ctrl+O reaches their collapsible content.
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
@@ -15633,12 +15669,19 @@ class DeepAgentsApp(App):
             if isinstance(child, SkillMessage) and child._stripped_body.strip():
                 child.toggle_body()
                 return
-            if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
+            if isinstance(child, ToolCallMessage) and (
+                not child.has_class("-grouped") or child.display
+            ):
                 # Prefer the collapsible command/code block when the row has one,
                 # so Ctrl+O matches the "click or Ctrl+O to show command/code"
                 # hint rendered beside it. The output stays reachable by clicking
                 # its own region (see `ToolCallMessage.on_click`); rows without an
                 # expandable command/code block fall through to the output.
+                # A `task` row's truncated description takes the same role,
+                # owning Ctrl+O while its output stays reachable by click.
+                if child.has_expandable_task_desc:
+                    child.toggle_task_desc()
+                    return
                 if child.has_expandable_args:
                     child.toggle_args()
                     return
@@ -17120,8 +17163,16 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        def persist_clear(cursor: int) -> None:
+            self._debug_console_cleared_upto = cursor
+
         self.push_screen(
-            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+            DebugConsoleScreen(
+                self._build_debug_snapshot(),
+                cleared_upto=self._debug_console_cleared_upto,
+                on_clear=persist_clear,
+            ),
+            handle_result,
         )
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:

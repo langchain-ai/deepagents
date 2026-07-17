@@ -870,6 +870,68 @@ class TestFastFollowLangsmithLink:
         mock_lookup.assert_not_called()
 
 
+class TestEmptyOutputCompletion:
+    """Tests for surfacing empty-output turns instead of reporting success."""
+
+    async def test_empty_turn_surfaces_retry_message(self) -> None:
+        """A turn with no response text and no tool use warns rather than succeeds."""
+        mock_console = MagicMock(spec=Console)
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "whats time travel",
+                config,
+                mock_console,
+                file_op_tracker,
+                quiet=False,
+            )
+
+        printed = [
+            str(call.args[0]) for call in mock_console.print.call_args_list if call.args
+        ]
+        assert any("produced no response" in line for line in printed)
+        assert not any("Task completed" in line for line in printed)
+
+    async def test_turn_with_response_reports_completion(self) -> None:
+        """A turn that emits response text still reports completion."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "an answer"}]
+        mock_console = MagicMock(spec=Console)
+        agent = MagicMock()
+        agent.astream = MagicMock(
+            return_value=_async_iter([("", "messages", (ai_msg, {}))])
+        )
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "whats time travel",
+                config,
+                mock_console,
+                file_op_tracker,
+                quiet=False,
+            )
+
+        printed = [
+            str(call.args[0]) for call in mock_console.print.call_args_list if call.args
+        ]
+        assert any("Task completed" in line for line in printed)
+        assert not any("produced no response" in line for line in printed)
+
+
 class TestStartLangsmithThreadUrlLookup:
     """Tests for _start_langsmith_thread_url_lookup."""
 

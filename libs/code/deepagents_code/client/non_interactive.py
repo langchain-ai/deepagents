@@ -1193,6 +1193,11 @@ async def _run_agent_loop(
             _write_text("".join(state.full_response))
         _write_newline()
 
+    # A turn that produced neither response text nor any tool activity yielded no
+    # answer to the user's request. Surface an explicit retry message instead of
+    # silently reporting success (or letting the run end as a bare empty error).
+    produced_no_output = not state.full_response and not state.emitted_tool_use_ids
+
     if not quiet:
         console.print()
         if (
@@ -1206,7 +1211,13 @@ async def _run_agent_loop(
                 style=Style(dim=True, link=thread_url_lookup.url),
             )
             console.print(link_text)
-        console.print("[green]✓ Task completed[/green]")
+        if produced_no_output:
+            console.print(
+                "[yellow]⚠ The agent produced no response for this request. "
+                "Please try again.[/yellow]"
+            )
+        else:
+            console.print("[green]✓ Task completed[/green]")
         print_usage_table(state.stats, wall_time, console)
 
     await dispatch_hook("task.complete", {"thread_id": thread_id})

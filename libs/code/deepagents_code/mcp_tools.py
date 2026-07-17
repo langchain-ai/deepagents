@@ -440,8 +440,33 @@ class MCPSessionManager:
         try:
             session = await exit_stack.enter_async_context(create_session(connection))
             await session.initialize()
-        except Exception:
-            await exit_stack.aclose()
+        except BaseException:
+            # Close the partially entered stack in *this* task before
+            # propagating. `create_session` enters an AnyIO task group whose
+            # cancel scope must be exited by the task that entered it; deferring
+            # teardown to async-generator finalization on another task raises
+            # "Attempted to exit cancel scope in a different task than it was
+            # entered in". Catch `BaseException` (not just `Exception`) so a
+            # `CancelledError` — e.g. from a crashed Streamable HTTP transport
+            # task group cancelling `session.initialize()` — also triggers the
+            # in-task teardown below instead of abandoning the session. The bare
+            # `raise` re-raises the original exception unchanged, so cancellation
+            # (and any other error) always propagates regardless; widening the
+            # catch only controls whether teardown runs, not whether the error
+            # propagates.
+            try:
+                await exit_stack.aclose()
+            except Exception:
+                # An ordinary cleanup failure must not mask the original error;
+                # the session is being discarded regardless. A `CancelledError`
+                # raised *by* `aclose()` is intentionally not caught here — it
+                # supersedes the original error, matching structured-cancellation
+                # semantics where an in-flight cancellation wins.
+                logger.warning(
+                    "Failed to close a partially initialized MCP session for %r",
+                    server_name,
+                    exc_info=True,
+                )
             raise
 
         return _MCPSessionEntry(session=session, exit_stack=exit_stack)

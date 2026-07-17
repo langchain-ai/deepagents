@@ -5331,6 +5331,27 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    async def test_plugins_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/plugins' should push the PluginManagerScreen modal without a gate.
+
+        Plugins are generally available, so dispatch must open the manager
+        directly rather than emitting an experimental hint.
+        """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+
 
 class TestClearCommand:
     """Test /clear slash command."""
@@ -21461,13 +21482,8 @@ class TestPrewarmAwait:
             f"prewarm must precede skill discovery thread; got {call_order}"
         )
 
-    def test_constructor_does_not_discover_plugins(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_constructor_does_not_discover_plugins(self) -> None:
         """Plugin filesystem discovery must stay off the pre-paint hot path."""
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         with patch("deepagents_code.plugins.discover_plugins") as discover_mock:
             app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 

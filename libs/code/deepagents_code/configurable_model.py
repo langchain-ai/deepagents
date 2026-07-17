@@ -426,7 +426,18 @@ def _build_overrides(
     # Param merge
     model_params = ctx.model_params
     if model_params:
-        overrides["model_settings"] = {**request.model_settings, **model_params}
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        provider_settings = {
+            key: value
+            for key, value in model_params.items()
+            if key != CLI_MAX_RETRIES_KEY
+        }
+        if provider_settings:
+            overrides["model_settings"] = {
+                **request.model_settings,
+                **provider_settings,
+            }
 
     # Inject the provider's prompt-cache routing hint from the active thread.
     # Only one provider path applies per call; both share the fetch/guard/log
@@ -516,6 +527,20 @@ def _build_overrides(
     return request.override(**overrides)
 
 
+def _model_creation_kwargs(ctx: CLIContextSchema) -> dict[str, dict[str, Any]]:
+    """Build constructor kwargs needed for a runtime model switch."""
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+    kwargs: dict[str, dict[str, Any]] = {}
+    if CLI_MAX_RETRIES_KEY in ctx.model_params:
+        kwargs["extra_kwargs"] = {
+            CLI_MAX_RETRIES_KEY: ctx.model_params[CLI_MAX_RETRIES_KEY]
+        }
+    if ctx.profile_overrides:
+        kwargs["profile_overrides"] = ctx.profile_overrides
+    return kwargs
+
+
 def _apply_overrides(
     request: ModelRequest, *, openai_prompt_cache_key: bool
 ) -> _ResolvedModelRequest:
@@ -547,11 +572,7 @@ def _apply_overrides(
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx)
         try:
             model_result = create_model(model, **model_kwargs)
         except ModelConfigError:
@@ -610,11 +631,7 @@ async def _apply_overrides_async(
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx)
         try:
             model_result = await asyncio.to_thread(
                 create_model,

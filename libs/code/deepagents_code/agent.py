@@ -2492,6 +2492,9 @@ def create_cli_agent(
         # activates only for the measured Fireworks GLM-5.2 endpoint.
         if not interactive:
             middleware.append(_GlmTerminalStallRecovery())
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
@@ -2588,11 +2591,12 @@ def create_cli_agent(
             agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
 
     # Model-node retry: wraps only the model call so transient connection
-    # failures are retried without replaying completed tool calls. `0` disables.
-    if model_retries > 0:
-        from deepagents_code.model_retry import CodeModelRetryMiddleware
+    # failures are retried without replaying completed tool calls. Keep it in
+    # the stack when the startup budget is zero because a runtime `/model`
+    # switch may select a provider with a non-zero request-time budget.
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-        agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

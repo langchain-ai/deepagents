@@ -48,7 +48,8 @@ def merge_skill(
         skill: Skill metadata to merge. Must expose `name`; `path`, when present,
             is included in the override log to identify the colliding files.
         source_label: Human-readable label for the source supplying `skill`,
-            when known. A missing label renders as `"unknown"` in the log.
+            when known. A missing or empty label renders as `"unknown"` in the
+            log.
     """
     name = str(skill["name"])
     previous = merged.get(name)

@@ -81,6 +81,13 @@ class TestMergeSkillHelper:
             "/b/shared/SKILL.md",
             "project",
         )
+        # Lock the human-facing rendered line: format string, placeholder order,
+        # and args must stay in sync (args-only assertions can't catch a
+        # reordered or reworded format string).
+        assert records[0].getMessage() == (
+            "Skill 'shared' override: /a/shared/SKILL.md (source: user) "
+            "replaced by /b/shared/SKILL.md (source: project)"
+        )
         assert _override_records(caplog, logging.WARNING) == []
         assert merged["shared"]["path"] == "/b/shared/SKILL.md"
         assert labels["shared"] == "project"
@@ -294,6 +301,26 @@ class TestMiddlewareCollisionLogging:
             system_prompt=None,
         )
 
+    @staticmethod
+    def _namespaced_middleware(dir_a: Path, dir_b: Path) -> PluginSkillsMiddleware:
+        """Build a middleware over two colliding plugin (namespaced) sources.
+
+        Both sources share the `myplugin` namespace and a `review` skill, so
+        both qualify to `myplugin:review` and drive the namespaced (`else`)
+        loop branch through `load_namespaced_skills` — the branch a plain-source
+        collision never reaches.
+        """
+        _create_skill(dir_a / "review", "review", "Plugin A review")
+        _create_skill(dir_b / "review", "review", "Plugin B review")
+        return PluginSkillsMiddleware(
+            backend=FilesystemBackend(virtual_mode=False),
+            sources=[
+                (str(dir_a), "Plugin A", "myplugin"),
+                (str(dir_b), "Plugin B", "myplugin"),
+            ],
+            system_prompt=None,
+        )
+
     def test_before_agent_collision_logs_override(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -340,3 +367,54 @@ class TestMiddlewareCollisionLogging:
         assert name == "review"
         assert prev_label == "User"
         assert new_label == "Project"
+
+    def test_before_agent_namespaced_collision_logs_override(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The namespaced (plugin) branch also merges through `merge_skill`."""
+        middleware = self._namespaced_middleware(
+            tmp_path / "plugin_a", tmp_path / "plugin_b"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_MERGE_LOGGER):
+            update = middleware.before_agent(
+                cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+            )
+
+        assert update is not None
+        # Names are namespace-qualified; the later plugin source wins.
+        metadata = update["skills_metadata"]
+        assert [skill["name"] for skill in metadata] == ["myplugin:review"]
+        assert metadata[0]["description"] == "Plugin B review"
+
+        records = _override_records(caplog)
+        assert len(records) == 1
+        name, _prev_path, prev_label, _new_path, new_label = _args(records[0])
+        assert name == "myplugin:review"
+        assert prev_label == "Plugin A"
+        assert new_label == "Plugin B"
+
+    async def test_abefore_agent_namespaced_collision_logs_override(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The async namespaced branch logs the override identically."""
+        middleware = self._namespaced_middleware(
+            tmp_path / "plugin_a", tmp_path / "plugin_b"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_MERGE_LOGGER):
+            update = await middleware.abefore_agent(
+                cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+            )
+
+        assert update is not None
+        metadata = update["skills_metadata"]
+        assert [skill["name"] for skill in metadata] == ["myplugin:review"]
+        assert metadata[0]["description"] == "Plugin B review"
+
+        records = _override_records(caplog)
+        assert len(records) == 1
+        name, _prev_path, prev_label, _new_path, new_label = _args(records[0])
+        assert name == "myplugin:review"
+        assert prev_label == "Plugin A"
+        assert new_label == "Plugin B"

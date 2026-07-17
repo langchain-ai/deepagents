@@ -301,9 +301,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         # `self.sources`, `self.source_labels`, and `self._namespaces` are all
         # built from the same source sequence at the same indices (see
-        # `__init__` and the SDK base), so this zip is aligned by construction;
-        # `strict=True` turns any future drift into a loud error rather than a
-        # silent mispairing.
+        # `__init__` and the SDK base), so this zip is aligned by construction.
+        # `strict=True` turns future *length* drift into a loud error; it does
+        # not catch a same-length reorder, which would still mispair silently.
         for source_path, source_label, namespace in zip(
             self.sources, self.source_labels, self._namespaces, strict=True
         ):
@@ -346,7 +346,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         errors: list[str] = []
 
         # See `before_agent`: the three sequences are index-aligned by
-        # construction, and `strict=True` guards against future drift.
+        # construction, and `strict=True` guards against future length drift.
         for source_path, source_label, namespace in zip(
             self.sources, self.source_labels, self._namespaces, strict=True
         ):

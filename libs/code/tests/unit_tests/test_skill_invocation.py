@@ -223,6 +223,53 @@ class TestBuildSkillCommands:
         """Verify the alias set only contains actual skill-backed commands."""
         assert {"remember", "skill-creator"} == _STATIC_SKILL_ALIASES
 
+    def test_plugin_skill_separates_machine_name_from_display(self) -> None:
+        """Plugin skills insert the namespaced name but show a short label."""
+        skills = [
+            {
+                "name": "my-plugin@market:foo:review",
+                "description": "Review code",
+                "path": "/plugin/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "plugin",
+            }
+        ]
+        result = build_skill_commands(skills)  # ty: ignore
+        assert len(result) == 1
+        entry = result[0]
+        # Machine name (matched + inserted) keeps the full namespace.
+        assert entry.name == "/skill:my-plugin@market:foo:review"
+        # Popup label is the short terminal segment.
+        assert entry.label() == "/skill:review"
+        # Description is tagged with the plugin id for source clarity.
+        assert entry.description == "(my-plugin@market) Review code"
+        # Both the full name and terminal segment are fuzzy-matchable.
+        assert "review" in entry.hidden_keywords
+        assert "my-plugin@market" in entry.hidden_keywords
+
+    def test_non_plugin_skill_label_equals_name(self) -> None:
+        """Non-plugin skills keep label == name (no display override)."""
+        skills = [
+            {
+                "name": "web-research",
+                "description": "Research topics",
+                "path": "/user/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "user",
+            }
+        ]
+        result = build_skill_commands(skills)  # ty: ignore
+        entry = result[0]
+        assert entry.name == "/skill:web-research"
+        assert entry.label() == "/skill:web-research"
+        assert entry.description == "Research topics"
+
 
 class TestSkillCommandParsing:
     """Test parse_skill_command() from command_registry."""

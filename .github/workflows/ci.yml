@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -449,7 +449,7 @@ jobs:
       # test_dcode_release_notes.py shells out to `node --test`; pin Node so the
       # helper-script tests don't rely on whatever the runner image preinstalls.
       - name: "🟢 Setup Node"
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
           node-version: "24"
       - name: "📦 Install Dependencies"

@@ -6,6 +6,7 @@ from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
 from pathlib import Path
+from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,12 +31,14 @@ from deepagents_code.client.non_interactive import (
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.tui.textual_adapter import (
+    RubricEvaluationEnd,
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
+    _interrupt_owned_tool_rows,
     _is_summarization_chunk,
     _read_mentioned_file,
     execute_task_textual,
@@ -484,6 +487,100 @@ class TestInterruptCleanup:
 
         agent.acancel_active_runs.assert_awaited_once_with(config)
         assert calls == ["cancel", "update"]
+
+    async def test_criteria_cancel_skips_conversation_interruption_recovery(
+        self,
+    ) -> None:
+        """Criteria cancellation cleans runtime UI without adding chat messages."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        tool_widget = MagicMock()
+        tool_widget.tool_name = "docs_search"
+        tool_widget.args = {"query": "login"}
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(),
+            aupdate_state=AsyncMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial criteria output"},
+            captured_input_tokens=10,
+            captured_output_tokens=5,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+            recover_interrupted_turn=False,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once()
+        agent.aupdate_state.assert_not_awaited()
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
+        assert not any(
+            isinstance(widget, AppMessage)
+            and "Interrupted by user" in str(widget._content)
+            for widget in mounted
+        )
+
+    async def test_chat_cancel_retains_conversation_interruption_recovery(
+        self,
+    ) -> None:
+        """Ordinary chat cancellation still records and displays interruption."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial answer"},
+            captured_input_tokens=10,
+            captured_output_tokens=5,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert any(
+            isinstance(widget, AppMessage)
+            and str(widget._content) == "Interrupted by user"
+            for widget in mounted
+        )
+        assert len(agent.aupdate_state.await_args_list) == 2
+        persisted = [
+            value
+            for call in agent.aupdate_state.await_args_list
+            for value in call.args[1]["messages"]
+        ]
+        assert any("partial answer" in str(message.content) for message in persisted)
+        assert any(
+            "Task interrupted by user" in str(message.content) for message in persisted
+        )
 
     async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
         """Interrupt cleanup remains best-effort when remote cancel fails."""
@@ -1114,6 +1211,21 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default", assistant_id=None)
         assert "dcode_experimental" not in config["metadata"]
 
+    def test_auto_approve_included_when_active(self) -> None:
+        """YOLO (auto-approve) runs should be identifiable in trace metadata."""
+        config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
+        assert config["metadata"]["dcode_auto_approve"] is True
+
+    def test_auto_approve_absent_when_inactive(self) -> None:
+        """Manual-approval runs should not carry the auto-approve label."""
+        config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
+        assert "dcode_auto_approve" not in config["metadata"]
+
+    def test_auto_approve_absent_by_default(self) -> None:
+        """The default (param omitted) is not labeled auto-approve."""
+        config = build_stream_config("t-default-approve", assistant_id=None)
+        assert "dcode_auto_approve" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -1620,8 +1732,43 @@ class TestExecuteTaskTextualTurnMarkers:
         assert first_meta["turn_id"]
         assert second_meta["turn_id"]
         assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session's auto-approve mode is labeled onto every turn's trace.
+        assert first_meta["dcode_auto_approve"] is True
+        assert second_meta["dcode_auto_approve"] is True
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
+
+    async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
+        """A manual-approval session must not label its trace as auto-approve.
+
+        Complements the positive case above: guards the TUI call site
+        (`bool(session_state.auto_approve)` -> `build_stream_config`) against
+        wiring that would stamp `dcode_auto_approve` regardless of the mode.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -1651,7 +1798,10 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
-        assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "goal_criteria_request": None,
+        }
         assert agent.contexts[0]["auto_approve"] is True
         assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
@@ -1683,6 +1833,7 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert stream_input == {
             "messages": [{"role": "user", "content": "hi"}],
             "rubric": "tests pass",
+            "goal_criteria_request": None,
         }
 
     async def test_blocked_goal_retry_context_is_not_user_input(
@@ -1711,7 +1862,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
         assert stream_input == {
-            "messages": [{"role": "user", "content": "continue now"}]
+            "messages": [{"role": "user", "content": "continue now"}],
+            "goal_criteria_request": None,
         }
         assert (
             agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
@@ -3474,6 +3626,627 @@ class TestExecuteTaskTextualHITLShellSuppression:
         assert tool_rows[0]._awaiting_approval is False
 
 
+class TestInterruptOwnedToolRows:
+    """`_interrupt_owned_tool_rows` scopes pause/resume to the right rows."""
+
+    def test_matches_row_by_name_and_args(self) -> None:
+        """An action request owns the tracked row with the same name and args."""
+        execute_row = ToolCallMessage("execute", {"command": "echo hi"})
+        task_row = ToolCallMessage("task", {"description": "research"})
+        current = {"exec-1": execute_row, "task-1": task_row}
+
+        owned = _interrupt_owned_tool_rows(
+            [{"name": "execute", "args": {"command": "echo hi"}}], current
+        )
+
+        assert owned == [execute_row]
+
+    def test_nested_child_request_owns_no_outer_task_row(self) -> None:
+        """A subagent child tool (untracked) matches no outer `task` row.
+
+        The child `fetch_url`/`execute` calls that interrupt live inside the
+        subagent and are never tracked in `_current_tool_messages`; only the
+        outer `task` rows are. So the child's action request must own nothing,
+        leaving both task timers untouched.
+        """
+        task_one = ToolCallMessage("task", {"description": "a"})
+        task_two = ToolCallMessage("task", {"description": "b"})
+        current = {"task-1": task_one, "task-2": task_two}
+
+        owned = _interrupt_owned_tool_rows(
+            [{"name": "fetch_url", "args": {"url": "http://example.com"}}], current
+        )
+
+        assert owned == []
+
+    def test_duplicate_calls_map_to_distinct_rows(self) -> None:
+        """Two identical calls claim two distinct rows, not the same one twice."""
+        first = ToolCallMessage("execute", {"command": "echo hi"})
+        second = ToolCallMessage("execute", {"command": "echo hi"})
+        current = {"exec-1": first, "exec-2": second}
+
+        owned = _interrupt_owned_tool_rows(
+            [
+                {"name": "execute", "args": {"command": "echo hi"}},
+                {"name": "execute", "args": {"command": "echo hi"}},
+            ],
+            current,
+        )
+
+        assert len(owned) == 2
+        assert {id(row) for row in owned} == {id(first), id(second)}
+
+    def test_mismatched_args_are_not_owned(self) -> None:
+        """A same-named call with different args does not own the row."""
+        execute_row = ToolCallMessage("execute", {"command": "echo hi"})
+        current = {"exec-1": execute_row}
+
+        owned = _interrupt_owned_tool_rows(
+            [{"name": "execute", "args": {"command": "echo bye"}}], current
+        )
+
+        assert owned == []
+
+
+class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
+    """A running `task` timer stays monotonic across nested subagent HITL.
+
+    Regression guard for the bug where any interrupt paused *every* tracked
+    tool row and each approval reset *every* row's start time — so an unrelated
+    nested child approval restarted the outer `task` elapsed timer from zero.
+    """
+
+    @staticmethod
+    def _task_chunk(tool_id: str, description: str) -> tuple[Any, ...]:
+        """A main-agent `task` tool call that mounts and starts running."""
+        return (
+            (),
+            "messages",
+            (
+                _tool_call_message(
+                    "task",
+                    {"description": description, "subagent_type": "general-purpose"},
+                    tool_id,
+                ),
+                {},
+            ),
+        )
+
+    @staticmethod
+    def _child_interrupt_chunk(
+        namespace: tuple[str, ...], tool_name: str, args: dict[str, Any]
+    ) -> tuple[Any, ...]:
+        """A HITL interrupt raised by a nested subagent's child tool call."""
+        interrupt = SimpleNamespace(
+            id=f"int-{tool_name}",
+            value={
+                "action_requests": [{"name": tool_name, "args": args}],
+                "review_configs": [
+                    {
+                        "action_name": tool_name,
+                        "allowed_decisions": ["approve", "reject"],
+                    }
+                ],
+            },
+        )
+        return (namespace, "updates", {"__interrupt__": [interrupt]})
+
+    async def test_outer_task_keeps_running_across_child_interrupt(self) -> None:
+        """The outer `task` row is not paused when its child interrupts.
+
+        The child `fetch_url` approval is unrelated to the `task` row, so at
+        approval time (after the pause step) the task must still be `running`
+        with an intact `_start_time`; before the fix the task was paused to
+        `pending` with `_start_time` cleared.
+        """
+        snapshot: dict[str, Any] = {}
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            task_row = adapter._current_tool_messages["task-1"]
+            snapshot["status"] = task_row._status
+            snapshot["start_time"] = task_row._start_time
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    self._task_chunk("task-1", "research the repo"),
+                    self._child_interrupt_chunk(
+                        ("task:task-1:0",),
+                        "fetch_url",
+                        {"url": "http://example.com"},
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot["status"] == "running"
+        assert snapshot["start_time"] is not None
+
+    async def test_only_interrupting_sibling_task_is_unaffected(self) -> None:
+        """Two concurrent tasks: a child interrupt leaves *both* timers running.
+
+        The interrupt belongs to `task-1`'s subagent, but its child tool call
+        is untracked, so neither the interrupting task nor the quiet sibling
+        `task-2` may be paused.
+        """
+        snapshot: dict[str, Any] = {}
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            snapshot["task-1"] = (
+                adapter._current_tool_messages["task-1"]._status,
+                adapter._current_tool_messages["task-1"]._start_time,
+            )
+            snapshot["task-2"] = (
+                adapter._current_tool_messages["task-2"]._status,
+                adapter._current_tool_messages["task-2"]._start_time,
+            )
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    self._task_chunk("task-1", "task one"),
+                    self._task_chunk("task-2", "task two"),
+                    self._child_interrupt_chunk(
+                        ("task:task-1:0",),
+                        "execute",
+                        {"command": "ls"},
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot["task-1"][0] == "running"
+        assert snapshot["task-1"][1] is not None
+        assert snapshot["task-2"][0] == "running"
+        assert snapshot["task-2"][1] is not None
+
+    async def test_tool_awaiting_own_approval_is_paused_then_resumed(self) -> None:
+        """A main-agent tool blocked on its own approval still pauses.
+
+        Requirement 4: a tool waiting for its *own* initial approval must not
+        misleadingly show "Running...". Its action request owns its row, so it
+        is paused to `pending` (start time cleared) during the await, then
+        resumed to `running` on approval.
+        """
+        snapshot: dict[str, Any] = {}
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            row = adapter._current_tool_messages["exec-1"]
+            snapshot["status"] = row._status
+            snapshot["start_time"] = row._start_time
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        execute_row_holder: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                execute_row_holder.append(widget)
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "exec-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        # Paused (not misleadingly "running") while awaiting its own approval.
+        assert snapshot["status"] == "pending"
+        assert snapshot["start_time"] is None
+        # Resumed to running on approval; the empty resume stream leaves it there.
+        assert execute_row_holder
+        assert execute_row_holder[0]._status == "running"
+        assert execute_row_holder[0]._start_time is not None
+
+    async def test_main_checkpoint_pauses_and_resumes_ungated_sibling(self) -> None:
+        """A main-agent checkpoint blocks every tool in its parallel batch."""
+        snapshot: dict[str, tuple[str, float | None]] = {}
+        rows: dict[str, ToolCallMessage] = {}
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                rows[widget.tool_name] = widget
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            for tool_id in ("exec-1", "read-1"):
+                row = adapter._current_tool_messages[tool_id]
+                snapshot[tool_id] = (row._status, row._start_time)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "exec-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "read_file", {"path": "notes.txt"}, "read-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot == {
+            "exec-1": ("pending", None),
+            "read-1": ("pending", None),
+        }
+        assert rows["execute"]._status == "running"
+        assert rows["read_file"]._status == "running"
+
+    async def test_main_reasoned_reject_resumes_ungated_sibling_task(self) -> None:
+        """A resumed rejection does not poison an ungated sibling task row."""
+        snapshot: dict[str, tuple[str, float | None]] = {}
+        rows: dict[str, ToolCallMessage] = {}
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                rows[widget.tool_name] = widget
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            for tool_id in ("exec-1", "task-1"):
+                row = adapter._current_tool_messages[tool_id]
+                snapshot[tool_id] = (row._status, row._start_time)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "exec-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    self._task_chunk("task-1", "research the repo"),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Tool approval rejected",
+                                name="execute",
+                                tool_call_id="exec-1",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="research complete",
+                                name="task",
+                                tool_call_id="task-1",
+                                status="success",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert snapshot == {
+            "exec-1": ("pending", None),
+            "task-1": ("pending", None),
+        }
+        assert rows["execute"]._status == "rejected"
+        assert rows["task"]._status == "success"
+        assert rows["task"]._duration is not None
+
+    async def test_completed_task_duration_spans_full_execution(self) -> None:
+        """A task's `Took …` covers full run time, not just post-approval.
+
+        The nested interrupt+approval must not reset the task's `_start_time`;
+        otherwise the completed duration would only measure the sliver since the
+        last approval. A far-past start time injected at approval time survives
+        to completion and yields a large duration — before the fix, the approval
+        reset it and the duration collapsed to ~0.
+        """
+        task_row_holder: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                task_row_holder.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            task_row = adapter._current_tool_messages["task-1"]
+            # The task must still be running (not paused) here; pin a far-past
+            # start so a preserved timer produces a large, checkable duration.
+            assert task_row._status == "running"
+            assert task_row._start_time is not None
+            task_row._start_time = time() - 100.0
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    self._task_chunk("task-1", "long research"),
+                    self._child_interrupt_chunk(
+                        ("task:task-1:0",),
+                        "fetch_url",
+                        {"url": "http://example.com"},
+                    ),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="subagent finished",
+                                name="task",
+                                tool_call_id="task-1",
+                                status="success",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert task_row_holder
+        task_row = task_row_holder[0]
+        assert task_row._status == "success"
+        assert task_row._duration is not None
+        # Full span (~100s), not the near-zero interval since the approval.
+        assert task_row._duration >= 99.0
+
+    async def test_child_reasoned_reject_leaves_outer_task_running(self) -> None:
+        """A reasoned reject of a nested child does not reject the outer task.
+
+        A reject *with a reason* resumes the run rather than aborting it (the
+        bare-reject abort path is the only one that marks every row rejected and
+        clears the turn). The rejected child tool is untracked, so the
+        still-running outer `task` row must stay `running` — before the reject
+        path was scoped it was marked `rejected` on the resuming turn and, since
+        `set_success` ignores an already-rejected row, stuck there permanently
+        even after the task later completed.
+        """
+        task_row_holder: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                task_row_holder.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "try a different url"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    self._task_chunk("task-1", "research the repo"),
+                    self._child_interrupt_chunk(
+                        ("task:task-1:0",),
+                        "fetch_url",
+                        {"url": "http://example.com"},
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert task_row_holder
+        task_row = task_row_holder[0]
+        assert task_row._status == "running"
+        assert task_row._start_time is not None
+
+
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
 
@@ -3806,6 +4579,78 @@ class TestExecuteTaskTextualAskUser:
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
         decisions = resume_payload["interrupt-1"]["decisions"]
         assert decisions == [{"type": "reject", "message": "use a safer command"}]
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert not any("Command rejected" in str(msg._content) for msg in app_messages)
+
+    async def test_server_operation_bare_rejection_resumes_agent(self) -> None:
+        """A criteria agent must receive a bare rejection and finish without context."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "reject"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {
+                                    "name": "fetch_url",
+                                    "args": {"url": "https://example.com"},
+                                }
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "fetch_url",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-1",
+                "kind": "create",
+                "objective": "ship it",
+            },
+        }
+
+        await execute_task_textual(
+            user_input="",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            graph_input=request,
+        )
+
+        assert len(agent.stream_inputs) == 2
+        assert agent.stream_inputs[0] == request
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["decisions"] == [{"type": "reject"}]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert not any("Command rejected" in str(msg._content) for msg in app_messages)
 
@@ -6768,11 +7613,12 @@ class TestTextualEndOfStreamDiagnostics:
             request_approval=_mock_approval,
         )
         chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
+        cleanup = AsyncMock()
         with (
             patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
             patch(
                 "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
-                new_callable=AsyncMock,
+                cleanup,
             ),
             caplog.at_level("INFO", logger="deepagents_code.tui.textual_adapter"),
         ):
@@ -6785,6 +7631,41 @@ class TestTextualEndOfStreamDiagnostics:
             )
 
         assert any("arguments never parsed" in r.message for r in caplog.records)
+        assert cleanup.await_args is not None
+        assert cleanup.await_args.kwargs["recover_interrupted_turn"] is True
+
+    async def test_criteria_cancel_disables_chat_interruption_recovery(self) -> None:
+        """Criteria graph input selects operation cleanup, not chat recovery."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        cleanup = AsyncMock()
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-cancel",
+                "kind": "create",
+                "objective": "ship it",
+            },
+        }
+
+        with patch(
+            "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
+            cleanup,
+        ):
+            await execute_task_textual(
+                user_input="",
+                agent=_RaisingAgent([], asyncio.CancelledError()),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                graph_input=request,
+            )
+
+        assert cleanup.await_args is not None
+        assert cleanup.await_args.kwargs["recover_interrupted_turn"] is False
 
 
 class TestTextualNonCleanExitTerminalHooks:
@@ -6885,8 +7766,9 @@ class TestExecuteTaskTextualRubricEvents:
     """Rubric custom-stream events surface only for the main agent."""
 
     async def test_main_agent_rubric_event_mounts_message(self) -> None:
-        """A main-agent rubric verdict is rendered in the transcript."""
+        """A main-agent rubric verdict is rendered and forwarded with its run ID."""
         mounted: list[object] = []
+        evaluations: list[tuple[str, str]] = []
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -6894,44 +7776,14 @@ class TestExecuteTaskTextualRubricEvents:
 
         # (namespace, stream_mode, data); empty namespace == main agent.
         chunks = [
-            ((), "custom", {"type": "rubric_evaluation_end", "result": "satisfied"}),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
-            adapter=adapter,
-        )
-
-        rubric_msgs = [
-            m
-            for m in mounted
-            if isinstance(m, AppMessage)
-            and "Acceptance criteria satisfied" in str(m._content)
-        ]
-        assert len(rubric_msgs) == 1
-
-    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
-        """A rubric event from a subagent namespace must not reach the transcript."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> None:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-
-        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
-        chunks = [
             (
-                ("subagent",),
+                (),
                 "custom",
-                {"type": "rubric_evaluation_end", "result": "satisfied"},
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "satisfied",
+                    "grading_run_id": "grade-current",
+                },
             ),
         ]
         adapter = TextualUIAdapter(
@@ -6946,10 +7798,155 @@ class TestExecuteTaskTextualRubricEvents:
             assistant_id="assistant",
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
             adapter=adapter,
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
+            ),
         )
 
+        rubric_msgs = [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
+        ]
+        assert len(rubric_msgs) == 1
+        assert evaluations == [("grade-current", "satisfied")]
+
+    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
+        """A rubric event from a subagent namespace must not reach the transcript."""
+        mounted: list[object] = []
+        evaluations: list[tuple[str, str]] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
+        chunks = [
+            (
+                ("subagent",),
+                "custom",
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "satisfied",
+                    "grading_run_id": "grade-subagent",
+                },
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=lambda event: evaluations.append(
+                (event.grading_run_id, event.result)
+            ),
+        )
+
+        assert evaluations == []
         assert not [
             m
             for m in mounted
             if isinstance(m, AppMessage) and "Rubric" in str(m._content)
         ]
+
+    async def test_rubric_event_without_run_id_is_not_forwarded(self) -> None:
+        """A verdict without correlation metadata cannot authorize completion."""
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {"type": "rubric_evaluation_end", "result": "satisfied"},
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_not_called()
+
+    async def test_rubric_event_with_blank_run_id_is_not_forwarded(self) -> None:
+        """A whitespace-only run ID is treated as missing correlation metadata."""
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "rubric_evaluation_end",
+                            "result": "satisfied",
+                            "grading_run_id": "   ",
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_not_called()
+
+    async def test_rubric_callback_failure_does_not_abort_stream(self) -> None:
+        """Completion bookkeeping cannot break an otherwise successful turn."""
+        callback = MagicMock(side_effect=RuntimeError("boom"))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "rubric_evaluation_end",
+                            "result": "satisfied",
+                            "grading_run_id": "grade-current",
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            on_rubric_evaluation_end=callback,
+        )
+
+        callback.assert_called_once_with(
+            RubricEvaluationEnd("grade-current", "satisfied")
+        )

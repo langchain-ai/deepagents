@@ -374,12 +374,16 @@ class _QuestionWidget(Vertical):
             self.focus()
 
     def get_answer(self) -> str:
-        """Return the current answer text for this question."""
+        """Return the current answer text for this question.
+
+        Collapsed-paste placeholders are expanded so the agent receives the
+        full pasted content, not the compact `[Pasted text #N]` token.
+        """
         if self._q_type == "text" or not self._choices:
-            return self._text_input.text if self._text_input else ""
+            return self._text_input.submitted_value if self._text_input else ""
 
         if self._is_other_selected and self._other_input:
-            return self._other_input.text
+            return self._other_input.submitted_value
 
         if self._choice_widgets and self._selected_choice < len(self._choices):
             return self._choices[self._selected_choice].get("value", "")

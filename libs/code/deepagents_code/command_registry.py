@@ -137,6 +137,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="[login <server> | reconnect]",
     ),
     SlashCommand(
+        name="/plugins",
+        description="Manage plugins",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="plugin marketplace skills mcp enable disable install",
+    ),
+    SlashCommand(
         name="/model",
         description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -159,6 +165,14 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Save useful context to memory or skills",
         bypass_tier=BypassTier.QUEUED,
         argument_hint="[context]",
+    ),
+    # Keep after `/remember` so equal-score prefix ties resolve as
+    # `re` → `/remember`, `rel` → `/reload`.
+    SlashCommand(
+        name="/reload",
+        description="Reload environment and config",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="refresh plugin plugins marketplace",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",
@@ -191,12 +205,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="mcp functions capabilities builtin built-in",
     ),
     SlashCommand(
-        name="/reload",
-        description="Reload environment and config",
-        bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="refresh",
-    ),
-    SlashCommand(
         name="/rubric",
         description="Set explicit acceptance criteria for rubric grading",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -208,7 +216,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/restart",
         description="Restart the agent server",
         bypass_tier=BypassTier.ALWAYS,
-        hidden_keywords="respawn server",
+        hidden_keywords="respawn server reconnect connect",
     ),
     SlashCommand(
         name="/theme",
@@ -361,7 +369,11 @@ class CommandEntry(NamedTuple):
     """A single autocomplete entry for the slash-command controller."""
 
     name: str
-    """Canonical command name (e.g. `/quit`)."""
+    """Canonical command name (e.g. `/quit`).
+
+    This is the machine name: it is matched against user input and inserted
+    into the prompt on completion.
+    """
 
     description: str
     """Short user-facing description."""
@@ -372,9 +384,30 @@ class CommandEntry(NamedTuple):
     argument_hint: str
     """Placeholder text shown when the command accepts arguments (e.g. `[context]`)."""
 
+    display_name: str = ""
+    """Label shown in the autocomplete popup instead of `name`, when set.
 
-SLASH_COMMANDS: list[CommandEntry] = [cmd.to_entry() for cmd in COMMANDS]
-"""Autocomplete entries derived from `COMMANDS` for `SlashCommandController`."""
+    Lets a command present a short, friendly label (e.g. `/skill:review`) while
+    still matching and inserting its full canonical `name`
+    (e.g. `/skill:my-plugin:review`). Falls back to `name` when empty.
+    """
+
+    def label(self) -> str:
+        """Return the popup label, preferring `display_name` over `name`.
+
+        Returns:
+            The user-facing label for the autocomplete popup.
+        """
+        return self.display_name or self.name
+
+
+def get_slash_commands() -> list[CommandEntry]:
+    """Return autocomplete entries for slash commands.
+
+    Returns:
+        Autocomplete entries derived from `COMMANDS`.
+    """
+    return [command.to_entry() for command in COMMANDS]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:
@@ -409,13 +442,49 @@ appear as `/skill:model`).
 """
 
 
+def _skill_command_entry(skill: ExtendedSkillMetadata) -> CommandEntry:
+    """Build a single autocomplete entry for a discovered skill.
+
+    Plugin skills carry a namespaced machine name (`plugin:sub:skill`). Their
+    popup label is shortened to the terminal skill segment and their
+    description is tagged with the plugin id, so the picker stays readable
+    while completion still inserts the full canonical `/skill:` name.
+
+    Returns:
+        The autocomplete entry for the skill.
+    """
+    machine_name = f"/skill:{skill['name']}"
+    is_plugin = skill.get("source") == "plugin"
+
+    if is_plugin:
+        terminal = skill["name"].rsplit(":", 1)[-1]
+        display_name = f"/skill:{terminal}"
+        plugin_id = skill["name"].split(":", 1)[0]
+        description = f"({plugin_id}) {skill['description']}"
+    else:
+        display_name = ""
+        description = skill["description"]
+
+    return CommandEntry(
+        name=machine_name,
+        description=description,
+        # Match on the full namespaced name and the terminal segment so both
+        # `myplugin:review` and `review` surface the plugin skill.
+        hidden_keywords=skill["name"].replace(":", " "),
+        argument_hint="",
+        display_name=display_name,
+    )
+
+
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
 ) -> list[CommandEntry]:
     """Build autocomplete entries for discovered skills.
 
     Each skill becomes a `/skill:<name>` entry with its description
-    and the skill name as a hidden keyword for fuzzy matching.
+    and the skill name as a hidden keyword for fuzzy matching. Plugin skills
+    keep their namespaced machine name for matching/insertion but present a
+    short, source-tagged label in the popup.
 
     Skills that already have a dedicated slash command in `COMMANDS`
     (e.g., `remember` → `/remember`) are excluded to avoid duplicate
@@ -428,12 +497,7 @@ def build_skill_commands(
         List of `CommandEntry` instances.
     """
     return [
-        CommandEntry(
-            name=f"/skill:{skill['name']}",
-            description=skill["description"],
-            hidden_keywords=skill["name"],
-            argument_hint="",
-        )
+        _skill_command_entry(skill)
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES
     ]

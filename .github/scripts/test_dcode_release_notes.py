@@ -64,12 +64,18 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     job = workflow["jobs"]["curated-release-notes"]
     assert "github.event_name == 'pull_request'" in job["name"]
     assert "curated release notes" in job["name"]
+    assert job["timeout-minutes"] == 15
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "main"
     assert checkout["with"]["persist-credentials"] is False
     assert "environment" not in job
     check_workflow = CHECK_WORKFLOW.read_text()
     assert "expectedHead: pr.head.sha" in check_workflow
+    assert "initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72" in check_workflow
+    # A cancelled/timed-out poll must not leave the refresh check spinning forever:
+    # an always() finalizer closes an interrupted in_progress check.
+    assert "if: always() && steps.validate.outputs.refresh_check_id != ''" in check_workflow
+    assert "github.rest.checks.get" in check_workflow
     assert "head_sha: pr.head.sha" in check_workflow
     assert "github.rest.checks.create" in check_workflow
     assert "github.rest.checks.update" in check_workflow

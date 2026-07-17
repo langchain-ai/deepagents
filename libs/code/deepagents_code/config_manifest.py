@@ -173,7 +173,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config`."""
 
     summary: str
     """One-line description of what the option controls."""
@@ -194,7 +194,7 @@ class ConfigOption:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
     mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
     `LANGSMITH_PROJECT`.
     """
@@ -209,7 +209,7 @@ class ConfigOption:
     """Representative CLI flag that sets the option, or `None`."""
 
     redacted: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value.
+    """Whether `config` reports only set/not-set, never the raw value.
 
     Named `redacted` rather than `secret` so the value (and the JSON field it
     populates) carries no credential-suggesting identifier — the flag is
@@ -238,7 +238,7 @@ class ConfigOption:
     Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
     where it is the key `/auth` stores the credential under and the name passed
     to `model_config.is_service`. Carrying it as a structured field lets
-    `config show`/`get` look up the stored credential without re-parsing it out
+    `config`/`config get` look up the stored credential without re-parsing it out
     of `key`. `None` for every other option.
     """
 
@@ -396,7 +396,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config show` reports the real source
+            # malformed scalar, so `config` reports the real source
             # (config.toml/default) instead of crediting the env var with a
             # value it did not actually supply.
             logger.warning("Ignoring %s=%r (expected bool)", name, raw)
@@ -1237,12 +1237,23 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # env overrides are named in the summaries instead of `env_var` because the
     # scalar resolver rejects env-backed STRUCTURED options by design.
     ConfigOption(
+        key="mcp.enabled_project_server_approvals",
+        group="MCP",
+        summary=(
+            "Project MCP server approvals saved by project root, server name, and "
+            "server fingerprint; edited commands/URLs require re-approval. Env-only "
+            "global override (bypasses project/fingerprint binding): "
+            "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_server_approvals"),
+    ),
+    ConfigOption(
         key="mcp.enabled_project_servers",
         group="MCP",
         summary=(
-            "Project MCP server names to pre-approve by name from an untrusted "
-            ".mcp.json; command/URL changes under the same name still match "
-            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+            "Deprecated legacy flat project MCP server-name allowlist; ignored in "
+            "config.toml. Use enabled_project_server_approvals instead."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),
@@ -1391,8 +1402,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
-        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Detection-only migration sentinel; the removed env var is not an option.
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

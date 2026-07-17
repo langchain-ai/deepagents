@@ -32,7 +32,7 @@ jobs:
     if: github.event_name != 'issue_comment' || github.event.issue.pull_request
     name: ${{ github.event_name == 'pull_request' && 'curated release notes' || 'Refresh curated release notes check' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Checkout trusted validator
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -42,6 +42,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate current curated release-note state
+        id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
@@ -76,6 +77,9 @@ jobs:
                 },
               });
               refreshCheck = check.id;
+              // Expose the id so the always() finalizer below can close this check
+              // if the job is cancelled or times out mid-poll before it completes.
+              core.setOutput('refresh_check_id', String(refreshCheck));
             }
             try {
               const result = await checkCuratedState({
@@ -86,6 +90,7 @@ jobs:
                 expectedHead: pr.head.sha,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
+                initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72,
               });
               core.info(`Curated release-note state: ${result.status}.`);
               if (refreshCheck !== null) {
@@ -102,8 +107,12 @@ jobs:
                   output: {
                     title: passing.has(result.status)
                       ? 'Curated release notes are valid'
-                      : 'Curated release notes need attention',
-                    summary: `Validation result: ${result.status}.`,
+                      : result.status === 'unapplied'
+                        ? 'Curated release notes are ready for review'
+                        : 'Curated release notes need attention',
+                    summary: result.status === 'unapplied'
+                      ? 'Review the bot-authored draft, then run `@dcode-release-bot apply`.'
+                      : `Validation result: ${result.status}.`,
                   },
                 });
               }
@@ -117,9 +126,43 @@ jobs:
                   conclusion: 'failure',
                   output: {
                     title: 'Curated release-note validation failed',
-                    summary: 'The validator encountered an unexpected workflow error.',
+                    summary: `The validator hit an error talking to GitHub: ${error instanceof Error ? error.message : String(error)}. This is often transient — re-run the check.`,
                   },
                 });
               }
               core.setFailed(error instanceof Error ? error.message : String(error));
+            }
+
+      # The validate step creates the refresh check as `in_progress` before it
+      # polls (up to ~12 min) for the automatic draft. A job timeout or cancellation
+      # kills that step before it can conclude the check, leaving a required check
+      # spinning forever. Close it here so an interrupted run reads as a re-runnable
+      # failure rather than a silent hang. No-ops on the happy path (already
+      # completed) and when no refresh check was created (pull_request runs).
+      - name: Close an interrupted refresh check
+        if: always() && steps.validate.outputs.refresh_check_id != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REFRESH_CHECK_ID: ${{ steps.validate.outputs.refresh_check_id }}
+        with:
+          script: |
+            const checkRunId = Number(process.env.REFRESH_CHECK_ID);
+            const { owner, repo } = context.repo;
+            try {
+              const { data: check } = await github.rest.checks.get({ owner, repo, check_run_id: checkRunId });
+              if (check.status === 'completed') return;
+              await github.rest.checks.update({
+                owner,
+                repo,
+                check_run_id: checkRunId,
+                status: 'completed',
+                conclusion: 'failure',
+                output: {
+                  title: 'Curated release-note validation was interrupted',
+                  summary: 'The validator did not finish — it was likely cancelled or timed out while waiting for the automatic draft. Re-run this check.',
+                },
+              });
+            } catch (error) {
+              // Never fail the finalizer itself; the required check stays red either way.
+              core.warning(`Could not finalize the interrupted refresh check: ${error instanceof Error ? error.message : String(error)}`);
             }

@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from deepagents_code import model_config
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
 
@@ -39,6 +41,7 @@ from deepagents_code.mcp_tools import (
     get_mcp_tools,
     load_mcp_config,
     load_mcp_config_lenient,
+    load_merged_mcp_configs_lenient,
     merge_mcp_configs,
     resolve_and_load_mcp_tools,
 )
@@ -664,6 +667,7 @@ class TestDiscoverMcpConfigs:
             "deepagents_code.project_utils.find_project_root",
             lambda: None,
         )
+        monkeypatch.chdir(tmp_path)
         assert discover_mcp_configs() == []
 
     def test_explicit_project_context_overrides_cwd(
@@ -709,6 +713,122 @@ class TestLoadMcpConfigLenient:
         """Legacy lenient API preserves the `None` return contract."""
         path = write_config({"mcpServers": {"fs": {"args": []}}})
         assert load_mcp_config_lenient(Path(path)) is None
+
+    def test_lenient_removes_disabled_server_before_validation(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """A disabled name is dropped before validation.
+
+        A bad disabled entry can neither block loading nor surface to the caller.
+        """
+        path = write_config(
+            {
+                "mcpServers": {
+                    "keep": {"command": "echo", "args": ["ok"]},
+                    # Invalid (no command/url): would fail validation if kept.
+                    "drop": {"args": []},
+                }
+            }
+        )
+        config = load_mcp_config_lenient(Path(path), disabled_servers={"drop"})
+        assert config == {"mcpServers": {"keep": {"command": "echo", "args": ["ok"]}}}
+
+    def test_merged_loader_validates_after_precedence_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """A repaired override cannot hide a valid lower-precedence sibling."""
+        lower = tmp_path / "lower.json"
+        lower.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "hidden": {"command": "echo", "args": ["lower"]},
+                        "repaired": {"args": []},
+                    }
+                }
+            )
+        )
+        higher = tmp_path / "higher.json"
+        higher.write_text(
+            json.dumps(
+                {"mcpServers": {"repaired": {"command": "echo", "args": ["higher"]}}}
+            )
+        )
+
+        config = load_merged_mcp_configs_lenient([lower, higher])
+
+        assert config == {
+            "mcpServers": {
+                "hidden": {"command": "echo", "args": ["lower"]},
+                "repaired": {"command": "echo", "args": ["higher"]},
+            }
+        }
+
+    def test_merged_loader_drops_only_malformed_winning_entry(
+        self, tmp_path: Path
+    ) -> None:
+        """One malformed project entry cannot hide a valid sibling file."""
+        lower = tmp_path / "lower.json"
+        lower.write_text(
+            json.dumps({"mcpServers": {"docs": {"type": "http", "url": "https://x"}}})
+        )
+        higher = tmp_path / "higher.json"
+        higher.write_text(json.dumps({"mcpServers": {"broken": {"args": []}}}))
+
+        config = load_merged_mcp_configs_lenient([lower, higher])
+
+        assert config == {"mcpServers": {"docs": {"type": "http", "url": "https://x"}}}
+
+    def test_saved_approval_rematches_through_runtime_merge_path(
+        self, tmp_path: Path
+    ) -> None:
+        """An approval saved from the prompt re-matches through the loader's merge.
+
+        The write side (prompt) fingerprints server_configs from
+        `load_merged_mcp_configs_lenient`; the runtime read side fingerprints from
+        `_merge_mcp_configs_with_sources`. They are different merge helpers, so
+        this pins that both pick the same winning definition — otherwise a saved
+        approval would silently re-prompt forever.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.mcp_tools import (
+            _load_mcp_config_top_level_with_error,
+            _merge_mcp_configs_with_sources,
+        )
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower = project_dir / ".mcp.json"
+        lower.write_text('{"mcpServers":{"fs":{"command":"node","args":["a.js"]}}}')
+        higher = project_root / ".mcp.json"
+        higher.write_text('{"mcpServers":{"fs":{"command":"node","args":["b.js"]}}}')
+        project_paths = [lower, higher]
+
+        # Write side: server_configs exactly as the prompt derives them.
+        write_merged = load_merged_mcp_configs_lenient(project_paths)
+        assert write_merged is not None
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["fs"],
+            user_config,
+            project_root=project_root,
+            server_configs=write_merged["mcpServers"],
+        )
+
+        # Read side: the runtime loader's own merge path.
+        loaded_projects = []
+        for path in project_paths:
+            cfg, _ = _load_mcp_config_top_level_with_error(path)
+            assert cfg is not None
+            loaded_projects.append((path, cfg))
+        read_config, _sources = _merge_mcp_configs_with_sources(loaded_projects)
+        read_server = read_config["mcpServers"]["fs"]
+
+        trust_lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert trust_lists.is_enabled(
+            "fs", project_root=project_root, server=read_server
+        )
 
 
 class TestMCPServerInfoInvariants:
@@ -914,6 +1034,198 @@ class TestMCPSessionManager:
         exit_mock.assert_not_awaited()
         await manager.cleanup()
 
+    async def test_cancelled_initialize_closes_session_in_creating_task(self) -> None:
+        """`CancelledError` during init closes the session in the creating task.
+
+        Regression for the MCP OAuth refresh failure: a blocking-IO
+        `BlockingError` in the auth flow crashed the Streamable HTTP transport
+        task group, cancelling the task awaiting `session.initialize()`. Because
+        `_create_entry` caught only `Exception`, the partially entered
+        `AsyncExitStack` was abandoned and later finalized by async-generator GC
+        on a different task, raising "Attempted to exit cancel scope in a
+        different task than it was entered in". The entered context must be
+        closed in the creating task before the cancellation propagates.
+        """
+        enter_task: list[Any] = []
+        exit_task: list[Any] = []
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=asyncio.CancelledError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            enter_task.append(asyncio.current_task())
+            try:
+                yield session
+            finally:
+                exit_task.append(asyncio.current_task())
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert enter_task, "the session context should have been entered"
+        assert exit_task, (
+            "the entered session context must be closed synchronously, not left "
+            "for async-generator garbage collection"
+        )
+        assert exit_task[0] is enter_task[0], (
+            "the session context must be closed in the creating task"
+        )
+        assert not manager._entries, "a cancelled session must not be cached"
+
+    async def test_base_exception_during_init_closes_session_in_creating_task(
+        self,
+    ) -> None:
+        """Any `BaseException` (not just `Exception`) triggers in-task teardown."""
+
+        class _Boom(BaseException):
+            pass
+
+        enter_task: list[Any] = []
+        exit_task: list[Any] = []
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=_Boom)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            enter_task.append(asyncio.current_task())
+            try:
+                yield session
+            finally:
+                exit_task.append(asyncio.current_task())
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(_Boom),
+        ):
+            await manager.get_session("filesystem")
+
+        assert exit_task
+        assert exit_task[0] is enter_task[0]
+        assert not manager._entries
+
+    async def test_cleanup_failure_does_not_mask_original_cancellation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A teardown error is logged and does not mask the original cancellation.
+
+        The swallowed cleanup failure must still be surfaced via a warning
+        rather than dropped silently.
+        """
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=asyncio.CancelledError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            try:
+                yield session
+            finally:
+                msg = "teardown boom"
+                raise RuntimeError(msg)
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert not manager._entries
+        cleanup_logs = [
+            record
+            for record in caplog.records
+            if "Failed to close a partially initialized MCP session"
+            in record.getMessage()
+        ]
+        assert cleanup_logs, "the swallowed cleanup failure must be logged"
+        assert "filesystem" in cleanup_logs[0].getMessage()
+        assert cleanup_logs[0].exc_info is not None, (
+            "the cleanup failure must be logged with its traceback"
+        )
+
+    async def test_cancelled_teardown_supersedes_original_init_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `CancelledError` from teardown supersedes an ordinary init error.
+
+        The inner `except Exception` around `aclose()` deliberately does not
+        catch a `CancelledError` raised *by* teardown: an in-flight cancellation
+        must win over the original error, matching structured-cancellation
+        semantics. So a plain init `Exception` is replaced by the teardown
+        `CancelledError`, and the swallowed-cleanup warning must not fire because
+        the cancellation was not swallowed.
+        """
+
+        class _InitError(Exception):
+            pass
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=_InitError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            try:
+                yield session
+            finally:
+                raise asyncio.CancelledError
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert not manager._entries
+        assert not any(
+            "Failed to close a partially initialized MCP session" in record.getMessage()
+            for record in caplog.records
+        ), "a teardown cancellation supersedes rather than being swallowed+logged"
+
 
 class TestTransientErrorDetection:
     """Tests for `_is_transient_session_error` classification."""
@@ -1020,6 +1332,7 @@ class TestGetMCPTools:
     async def test_discovery_failure_marks_server_error(
         self,
         write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Discovery failures are reported per-server instead of aborting load."""
         path = write_config(
@@ -1037,6 +1350,8 @@ class TestGetMCPTools:
             raise RuntimeError(msg)
             yield
 
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
@@ -1044,6 +1359,14 @@ class TestGetMCPTools:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "error"
         assert "boom" in (server_infos[0].error or "")
+        # Unlike the recognized auth-skip branches, a genuinely unknown
+        # discovery error keeps its full traceback so real anomalies stay
+        # debuggable — guard against a future change silently suppressing it.
+        assert any(
+            record.exc_info is not None
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+        )
         await manager.cleanup()
 
     async def test_stdio_health_check_failure_is_non_fatal(
@@ -1442,7 +1765,7 @@ class TestLoadToolsFromConfigOAuth:
             raise ExceptionGroup(msg, [MCPReauthRequiredError("notion")])
             yield
 
-        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
@@ -1459,16 +1782,44 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "re-authentication" in (server_infos[0].error or "")
-        warning_records = [
+        error = server_infos[0].error or ""
+        assert "re-authentication" in error
+        # The reauth error carries only the concise, classified suffix — no
+        # "debug logs" / "redacted" note, since the breadcrumb now holds the
+        # (token-safe) detail instead.
+        assert "(token refresh failed)" in error
+        assert "debug logs" not in error
+        assert "redacted" not in error
+        mcp_records = [
             record
             for record in caplog.records
             if record.name == "deepagents_code.mcp_tools"
-            and record.levelno == logging.WARNING
+        ]
+        warning_records = [
+            record for record in mcp_records if record.levelno == logging.WARNING
         ]
         assert warning_records
-        assert all(record.exc_info is None for record in warning_records)
+        # A recognized re-auth skip must not dump a traceback at any level —
+        # the actionable WARNING already says everything useful.
+        assert all(record.exc_info is None for record in mcp_records)
         assert "Exception Group Traceback" not in caplog.text
+        # The concise DEBUG breadcrumb must be emitted and must name the nested
+        # culprit (via `format_login_failure`), not the bare `ExceptionGroup`
+        # wrapper the failure arrives in — deleting the breadcrumb or reverting
+        # to `exc.__class__.__name__` should fail here.
+        debug_breadcrumbs = [
+            record
+            for record in mcp_records
+            if record.levelno == logging.DEBUG
+            and "token refresh failed" in record.getMessage()
+        ]
+        assert debug_breadcrumbs
+        assert all(
+            "ExceptionGroup" not in record.getMessage() for record in debug_breadcrumbs
+        )
+        assert any(
+            "re-authentication" in record.getMessage() for record in debug_breadcrumbs
+        )
         await manager.cleanup()
 
     async def test_stored_tokens_attach_provider_without_explicit_oauth(
@@ -1556,7 +1907,10 @@ class TestLoadToolsFromConfigOAuth:
         assert "auth" not in recorded[0]
         await manager.cleanup()
 
-    async def test_discovery_401_challenge_marks_unauthenticated(self) -> None:
+    async def test_discovery_401_challenge_marks_unauthenticated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         """A 401 OAuth challenge during discovery is surfaced as unauthenticated."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")
         response = httpx.Response(
@@ -1581,6 +1935,8 @@ class TestLoadToolsFromConfigOAuth:
             raise challenge
             yield
 
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
                 "mcpServers": {
@@ -1596,6 +1952,22 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
         assert "mcp login notion" in (server_infos[0].error or "")
+        # A recognized 401 challenge is expected: no branch should dump the full
+        # challenge traceback (at DEBUG or WARNING), only concise lines.
+        mcp_records = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+        ]
+        # The breadcrumb must be present AND carry its diagnostic payload — the
+        # classified exception's type name (via `format_login_failure`) — so
+        # dropping the `(%s)` argument would fail here, not just its absence.
+        assert any(
+            "401 OAuth challenge detected (HTTPStatusError)" in record.getMessage()
+            for record in mcp_records
+        )
+        assert all(record.exc_info is None for record in mcp_records)
+        assert "Traceback (most recent call last)" not in caplog.text
         await manager.cleanup()
 
     async def test_discovery_401_without_challenge_stays_error(self) -> None:
@@ -1885,7 +2257,10 @@ class TestResolveAndLoadMcpTools:
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "config.toml",
         )
-        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
         monkeypatch.delenv(
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
         )
@@ -1905,15 +2280,14 @@ class TestResolveAndLoadMcpTools:
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.classify_discovered_configs")
     @patch("deepagents_code.mcp_tools.discover_mcp_configs")
-    async def test_untrusted_project_remote_dropped_when_store_unknown(
+    async def test_untrusted_project_remote_dropped_without_trust_flag(
         self,
         mock_discover: MagicMock,
         mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Trust-store miss drops project remote entries (no preflight HEAD)."""
+        """No whole-config trust flag drops project remote entries (no HEAD)."""
         project_cfg = tmp_path / ".mcp.json"
         project_cfg.write_text(
             json.dumps(
@@ -1930,11 +2304,6 @@ class TestResolveAndLoadMcpTools:
         mock_discover.return_value = [project_cfg]
         mock_classify.return_value = ([], [project_cfg])
         mock_load.return_value = ([], None, [])
-
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted",
-            lambda *_args, **_kwargs: False,
-        )
 
         await resolve_and_load_mcp_tools(trust_project_mcp=None)
 
@@ -4033,6 +4402,35 @@ class TestSelectiveProjectMcpTrust:
     def _remote(url: str = "https://example.test/mcp") -> dict[str, Any]:
         return {"type": "sse", "url": url}
 
+    @staticmethod
+    def _write_user_approvals(
+        user_config: Path,
+        project_root: Path,
+        servers: dict[str, Any],
+        names: list[str],
+        *,
+        disabled: list[str] | None = None,
+    ) -> None:
+        from deepagents_code.model_config import fingerprint_mcp_server_config
+
+        entries = [
+            "{ "
+            f'project_root = "{project_root}", '
+            f'name = "{name}", '
+            f'fingerprint = "{fingerprint_mcp_server_config(servers[name])}"'
+            " }"
+            for name in names
+        ]
+        lines = ["[mcp]"]
+        if entries:
+            lines.append(
+                "enabled_project_server_approvals = [" + ", ".join(entries) + "]"
+            )
+        if disabled:
+            quoted = ", ".join(f'"{name}"' for name in disabled)
+            lines.append(f"disabled_project_servers = [{quoted}]")
+        user_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     async def _resolve_merged(
         self,
         project_root: Path,
@@ -4072,11 +4470,10 @@ class TestSelectiveProjectMcpTrust:
         """An allowlisted server loads while a non-listed sibling is dropped."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._stdio(), "other": self._stdio()}
-        )
+        servers = {"docs": self._stdio(), "other": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -4085,21 +4482,178 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
+    async def test_deepagents_subdir_server_loads_via_scoped_approval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server defined only in `<root>/.deepagents/.mcp.json` loads.
+
+        This exercises the two independent project-root derivations together:
+        the approval is keyed to `<root>` (write side), while the runtime
+        reconstructs the root from the `.deepagents` config path via
+        `project_root_for_mcp_config_path` (read side). If that `.deepagents`
+        unwrap drifted from the write-side root, the scoped approval would
+        silently stop matching for the entire subdir-config layout.
+        """
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        servers = {"docs": self._stdio()}
+        (nested / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_writer_persisted_approval_loads_through_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An approval saved via the real writer loads through the real loader.
+
+        Unlike the unit-level round-trip (which passes `project_root` straight
+        to `is_enabled`), this drives the actual write-side root normalization
+        in `add_enabled_project_mcp_servers` and the read-side derivation in
+        `resolve_and_load_mcp_tools` — the only place the two could diverge.
+        """
+        from deepagents_code import model_config
+
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        servers = {"docs": self._stdio()}
+        (nested / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+        user_config = tmp_path / "config.toml"
+
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=project,
+            server_configs=servers,
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_same_name_in_different_project_is_not_approved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scoped approval for one project does not approve another repo."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        approved_servers = {"docs": self._stdio("echo")}
+        attack_servers = {"docs": self._stdio("python")}
+        self._write_project_config(attack_project, attack_servers)
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(
+            user_config,
+            approved_project,
+            approved_servers,
+            ["docs"],
+        )
+
+        merged = await self._resolve_merged(
+            attack_project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_symlinked_config_uses_containing_project_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink to an approved config does not inherit target approvals."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        servers = {"docs": self._stdio("echo")}
+        self._write_project_config(approved_project, servers)
+        (attack_project / ".mcp.json").symlink_to(approved_project / ".mcp.json")
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, approved_project, servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            attack_project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_changed_same_name_server_is_not_approved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A command change under an approved name requires a new approval."""
+        project = tmp_path / "project"
+        project.mkdir()
+        approved_servers = {"docs": self._stdio("echo")}
+        changed_servers = {"docs": self._stdio("python")}
+        self._write_project_config(project, changed_servers)
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, approved_servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_changed_higher_precedence_server_hides_approved_definition(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rejecting an override cannot reveal an approved shadowed server."""
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        approved = self._stdio("echo")
+        changed = self._stdio("python")
+        (nested / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"docs": approved}})
+        )
+        (project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"docs": changed}})
+        )
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, {"docs": approved}, ["docs"])
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
     async def test_allowlisted_loads_with_invalid_unlisted_sibling(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An invalid unlisted server cannot block an allowlisted sibling."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project,
-            {
-                "docs": self._stdio(),
-                "broken": ["not", "a", "server"],
-            },
-        )
+        servers = {
+            "docs": self._stdio(),
+            "broken": ["not", "a", "server"],
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -4119,6 +4673,29 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_invalid_server_dropped_without_blocking_trusted_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whole-config trust retains valid servers beside a malformed entry."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project,
+            {
+                "docs": self._stdio(),
+                "broken": {"args": []},
+            },
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n")
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=True
@@ -4153,17 +4730,23 @@ class TestSelectiveProjectMcpTrust:
     async def test_repo_committed_allowlist_is_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An allowlist committed in the repo does not self-approve servers."""
+        """A committed approval for the live key does not self-approve servers.
+
+        Uses a well-formed, correctly project-scoped and fingerprinted
+        `enabled_project_server_approvals` entry (the current mechanism, not the
+        dead flat `enabled_project_servers` key) so the assertion still fails if
+        the loader ever started reading project-dir `config.toml`.
+        """
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(project, {"evil": self._stdio()})
-        # Attacker-committed project config that tries to approve its own server.
-        (project / "config.toml").write_text(
-            '[mcp]\nenabled_project_servers = ["evil"]\n'
-        )
+        servers = {"evil": self._stdio()}
+        self._write_project_config(project, servers)
+        # Attacker-committed project config with a valid self-approval: if the
+        # loader read project-dir config for approvals, "evil" would load.
+        self._write_user_approvals(project / "config.toml", project, servers, ["evil"])
         (project / ".deepagents").mkdir()
-        (project / ".deepagents" / "config.toml").write_text(
-            '[mcp]\nenabled_project_servers = ["evil"]\n'
+        self._write_user_approvals(
+            project / ".deepagents" / "config.toml", project, servers, ["evil"]
         )
         # User has no allowlist of their own.
         user_config = tmp_path / "config.toml"
@@ -4172,8 +4755,114 @@ class TestSelectiveProjectMcpTrust:
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
         )
 
-        # The repo allowlist is never read, so the server stays dropped.
+        # Approvals are read only from the user's home config, so the repo's
+        # self-approval is never consulted and the server stays dropped.
         assert merged is None
+
+    async def test_legacy_key_surfaces_migration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed flat allowlist surfaces a visible migration error.
+
+        The loader runs in non-interactive paths with no approval prompt, so a
+        user who relied on `[mcp].enabled_project_servers` must be told why the
+        server stopped loading instead of it vanishing silently.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any("no longer used" in msg and "docs" in msg for msg in errors)
+
+    async def test_legacy_env_var_surfaces_rename_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed env var, still set, surfaces a visible rename notice.
+
+        Mirrors the legacy TOML-key migration so a user who exported
+        `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` learns it was renamed
+        instead of the server silently ceasing to pre-approve.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n")
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in msg
+            and "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in msg
+            for msg in errors
+        )
+
+    async def test_malformed_saved_approval_surfaces_migration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt saved approval surfaces a visible notice, not silence.
+
+        A malformed `[mcp].enabled_project_server_approvals` row is dropped
+        fail-closed, but the loader runs in non-interactive paths with no
+        prompt, so the user must learn a saved approval could not be read
+        instead of the server just silently re-prompting.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        # A table missing `fingerprint` is malformed and dropped.
+        user_config.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = [\n"
+            f'  {{ project_root = "{project}", name = "docs" }},\n'
+            "]\n"
+        )
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any(
+            "enabled_project_server_approvals" in msg and "could not be read" in msg
+            for msg in errors
+        )
 
     async def test_name_in_both_lists_is_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4181,12 +4870,11 @@ class TestSelectiveProjectMcpTrust:
         """A server named in both lists is disabled (reject precedence)."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(project, {"both": self._stdio()})
+        servers = {"both": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = ["both"]\n'
-            'disabled_project_servers = ["both"]\n'
+        self._write_user_approvals(
+            user_config, project, servers, ["both"], disabled=["both"]
         )
 
         merged = await self._resolve_merged(
@@ -4227,7 +4915,10 @@ class TestSelectiveProjectMcpTrust:
             project, {"docs": self._stdio(), "other": self._stdio()}
         )
         user_config = tmp_path / "config.toml"  # no [mcp] table
-        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "docs",
+        )
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -4247,11 +4938,10 @@ class TestSelectiveProjectMcpTrust:
         """
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._remote(), "evil": self._remote()}
-        )
+        servers = {"docs": self._remote(), "evil": self._remote()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -4267,19 +4957,15 @@ class TestSelectiveProjectMcpTrust:
         """One untrusted config: allowed kept, denied and unlisted both dropped."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project,
-            {
-                "keep": self._stdio(),
-                "block": self._stdio(),
-                "other": self._stdio(),
-            },
-        )
+        servers = {
+            "keep": self._stdio(),
+            "block": self._stdio(),
+            "other": self._stdio(),
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = ["keep"]\n'
-            'disabled_project_servers = ["block"]\n'
+        self._write_user_approvals(
+            user_config, project, servers, ["keep"], disabled=["block"]
         )
 
         merged = await self._resolve_merged(
@@ -4289,10 +4975,10 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"keep"}
 
-    async def test_disabled_dropped_when_fingerprint_trusted(
+    async def test_disabled_dropped_when_config_trusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Deny wins over fingerprint trust, not just the explicit flag."""
+        """Deny wins even when the whole config is trusted via the flag."""
         project = tmp_path / "project"
         project.mkdir()
         self._write_project_config(
@@ -4300,33 +4986,27 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
-        # Fingerprint store reports the whole config as trusted.
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: True
-        )
 
+        # The whole config is trusted via the flag; the deny list must still win.
         merged = await self._resolve_merged(
-            project, monkeypatch, user_config=user_config, trust_project_mcp=None
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
         )
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
-    async def test_allowlisted_loads_when_fingerprint_untrusted(
+    async def test_allowlisted_loads_when_config_untrusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On the `None` path with untrusted fingerprint, allowlist still loads."""
+        """On the untrusted default path, an allowlisted server still loads."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._stdio(), "other": self._stdio()}
-        )
+        servers = {"docs": self._stdio(), "other": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: False
-        )
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
+        # No trust flag → the config is untrusted; only the allowlisted name loads.
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=None
         )
@@ -4347,19 +5027,17 @@ class TestSelectiveProjectMcpTrust:
         project.mkdir()
         # A dict (so it yields a summary and skips the empty-summaries fast path),
         # but setting both tool filters at once — a documented per-server error.
-        self._write_project_config(
-            project,
-            {
-                "docs": {
-                    "command": "echo",
-                    "args": [],
-                    "allowedTools": ["a"],
-                    "disabledTools": ["b"],
-                }
-            },
-        )
+        servers = {
+            "docs": {
+                "command": "echo",
+                "args": [],
+                "allowedTools": ["a"],
+                "disabledTools": ["b"],
+            }
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -4424,7 +5102,10 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text("[[not valid toml")
-        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "docs",
+        )
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=True
@@ -4432,3 +5113,129 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+
+class TestProjectRootForMcpConfigPath:
+    """Map a discovered config path back to its owning project root.
+
+    The loader derives its read-side project root from the config path via this
+    function, while the prompt persists the approval under the raw project root.
+    Both discovery layouts must yield the same root or a saved approval never
+    matches on reload (re-prompting forever).
+    """
+
+    def test_root_level_config(self, tmp_path: Path) -> None:
+        """`<root>/.mcp.json` resolves to `<root>`."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        root = tmp_path / "proj"
+        assert project_root_for_mcp_config_path(root / ".mcp.json") == root
+
+    def test_deepagents_subdir_config(self, tmp_path: Path) -> None:
+        """`<root>/.deepagents/.mcp.json` resolves to `<root>`, not the subdir."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        root = tmp_path / "proj"
+        nested = root / ".deepagents" / ".mcp.json"
+        assert project_root_for_mcp_config_path(nested) == root
+
+    def test_relative_path_uses_fallback_base(self, tmp_path: Path) -> None:
+        """A relative config path anchors to the fallback base."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        base = tmp_path / "proj"
+        assert (
+            project_root_for_mcp_config_path(Path(".mcp.json"), fallback=base) == base
+        )
+
+    def test_relative_deepagents_path_uses_fallback_base(self, tmp_path: Path) -> None:
+        """A relative `.deepagents/.mcp.json` anchors to the base, then unwraps."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        base = tmp_path / "proj"
+        rel = Path(".deepagents") / ".mcp.json"
+        assert project_root_for_mcp_config_path(rel, fallback=base) == base
+
+
+class TestFilterTrustedProjectServers:
+    """Direct contract for the shared per-server trust filter.
+
+    It is the single place the per-server rule lives (runtime loader + `mcp
+    login` resolver), so reject precedence and the config-trusted default are
+    pinned here rather than only transitively.
+    """
+
+    @staticmethod
+    def _server(command: str = "echo") -> dict[str, Any]:
+        return {"command": command, "args": []}
+
+    def test_disabled_wins_even_when_config_trusted(self, tmp_path: Path) -> None:
+        """An explicit deny drops a server even from a fully trusted config."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset({"blocked"})
+        )
+        servers = {"blocked": self._server(), "ok": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert set(kept) == {"ok"}
+
+    def test_all_kept_when_config_trusted(self, tmp_path: Path) -> None:
+        """A trusted config keeps every non-disabled server."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset()
+        )
+        servers = {"a": self._server(), "b": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert set(kept) == {"a", "b"}
+
+    def test_scoped_approval_kept_when_untrusted(self, tmp_path: Path) -> None:
+        """Without config trust, only a scoped-approved server survives."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        server = self._server()
+        approval = model_config.McpProjectServerApproval.create(
+            project_root=tmp_path, name="docs", server=server
+        )
+        assert approval is not None
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({approval}),
+        )
+        servers = {"docs": server, "unapproved": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=False
+        )
+
+        assert set(kept) == {"docs"}
+
+    def test_preserves_input_order(self, tmp_path: Path) -> None:
+        """Kept servers retain their input order."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset()
+        )
+        servers = {
+            "z": self._server(),
+            "a": self._server("run"),
+            "m": self._server("go"),
+        }
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert list(kept) == ["z", "a", "m"]

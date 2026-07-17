@@ -175,11 +175,16 @@ class TestAppMessageMarkupSafety:
         rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
-    def test_app_message_markdown_uses_muted_wrapper(self) -> None:
-        """`markdown=True` should route through `_MutedRichMarkdown`."""
+    def test_app_message_markdown_renders_selectable_content(self) -> None:
+        """`markdown=True` should render selectable `Content`, not a `RichVisual`.
+
+        Textual text-selection only works over `Content`/`Text` visuals, so
+        markdown must resolve to `Content` for its text to be copyable.
+        """
         msg = AppMessage("### heading", markdown=True)
-        rendered = msg._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
+        rendered = msg.render()
+        assert isinstance(rendered, Content)
+        assert "heading" in rendered.plain
 
     def test_app_message_markdown_requires_string(self) -> None:
         """`markdown=True` with non-string input should raise `TypeError`."""
@@ -1022,12 +1027,48 @@ class TestToolCallMessageTodos:
         )
         plain = result.content.plain
 
+        # Continuation lines hang-indent to the width of the status label, which
+        # starts flush at the gutter (the formatter emits no leading pad).
+        from deepagents_code.config import get_glyphs
+
+        indent = "\n" + " " * len(f"{get_glyphs().circle_filled} active ")
         assert "..." not in plain
         assert long.replace(" ", "") == plain.split("active ", 1)[1].replace(
-            "\n             ",
+            indent,
             "",
         ).replace(" ", "")
-        assert "\n             " in plain
+        assert indent in plain
+
+    def test_todo_rows_start_flush_at_gutter(self) -> None:
+        """No formatted todo line carries a hardcoded leading pad.
+
+        Covers the status rows (which begin with the status glyph) as well as
+        the stats header, which is emitted flush at the gutter too.
+        """
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr(
+                [
+                    {"content": "a", "status": "completed"},
+                    {"content": "b", "status": "in_progress"},
+                    {"content": "c", "status": "pending"},
+                ]
+            ),
+            is_preview=False,
+        )
+        lines = result.content.plain.split("\n")
+
+        assert lines
+        assert all(not line.startswith(" ") for line in lines)
+
+    def test_todo_empty_state_is_flush(self) -> None:
+        """The empty-list placeholder sits flush at the gutter, no leading pad."""
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(repr([]), is_preview=False)
+
+        assert result.content.plain == "No todos"
 
     def test_todo_expanded_continuation_aligns_content_column(self) -> None:
         """Wrapped continuation lines should align under the todo text."""
@@ -1043,8 +1084,15 @@ class TestToolCallMessageTodos:
             index for index, line in enumerate(lines) if "todo   " in line
         )
 
+        # Continuation aligns under the todo text, i.e. the status-label width.
+        # Assert the exact leading-whitespace width, not just a prefix, so a pad
+        # reintroduced only on wrapped lines (wider than the label) is caught.
+        from deepagents_code.config import get_glyphs
+
+        indent = " " * len(f"{get_glyphs().circle_empty} todo   ")
         assert len(lines) > todo_start + 1
-        assert lines[todo_start + 1].startswith("             ")
+        continuation = lines[todo_start + 1]
+        assert len(continuation) - len(continuation.lstrip(" ")) == len(indent)
 
 
 class _ToolMsgApp(App[None]):
@@ -1258,6 +1306,27 @@ class TestToolCallMessageSearchOutput:
 
         assert result.truncation is None
         assert result.content.plain.split("\n") == lines
+
+
+class TestToolCallMessageLsOutput:
+    """Tests for `ls` directory-listing formatting in `_format_ls_output`."""
+
+    def test_ls_output_has_no_hardcoded_indent(self) -> None:
+        """Ls entries sit flush under the output gutter, like grep/glob.
+
+        Alignment is owned by the output gutter layout; the formatter emits
+        bare names so results aren't double-indented under the output marker.
+        Directories keep their trailing slash. Every styled file-type branch
+        (python, config, dir, plain) is exercised so none reintroduces a pad.
+        """
+        msg = ToolCallMessage("ls", {"path": "/tmp"})
+        result = msg._format_ls_output(
+            "['/tmp/SKILL.md', '/tmp/scripts', '/tmp/init.py', '/tmp/config.json']",
+            is_preview=False,
+        )
+        lines = result.content.plain.split("\n")
+        assert lines == ["SKILL.md", "scripts/", "init.py", "config.json"]
+        assert all(not line.startswith(" ") for line in lines)
 
 
 class TestToolCallMessageEditFileOutput:
@@ -2091,6 +2160,155 @@ class TestToolCallMessageExpandableArgs:
             await pilot.pause()
             assert msg._expanded is True
             assert msg._args_expanded is False
+
+
+class TestToolCallMessageTaskDescription:
+    """Tests for the expandable, truncated `task` description line."""
+
+    def test_short_description_not_expandable(self) -> None:
+        """A description that fits is shown in full with no expand affordance."""
+        msg = ToolCallMessage("task", {"description": "investigate the bug"})
+        assert msg.has_expandable_task_desc is False
+
+    def test_long_description_is_expandable(self) -> None:
+        """A description longer than the limit becomes expandable."""
+        long_desc = "x" * (ToolCallMessage._TASK_DESC_MAX_LENGTH + 1)
+        msg = ToolCallMessage("task", {"description": long_desc})
+        assert msg.has_expandable_task_desc is True
+
+    def test_description_at_limit_not_expandable(self) -> None:
+        """The threshold is strict `>`: a description of exactly the limit fits.
+
+        Guards against a `>`-to-`>=` regression (or an off-by-one in the slice)
+        that every `MAX + 1` test would still pass.
+        """
+        for length in (
+            ToolCallMessage._TASK_DESC_MAX_LENGTH,
+            ToolCallMessage._TASK_DESC_MAX_LENGTH - 1,
+        ):
+            msg = ToolCallMessage("task", {"description": "x" * length})
+            assert msg.has_expandable_task_desc is False
+
+    def test_non_task_not_expandable(self) -> None:
+        """Only `task` rows expose an expandable description."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/x"})
+        assert msg.has_expandable_task_desc is False
+
+    def test_non_string_description_not_expandable(self) -> None:
+        """A non-string `description` is coerced to empty, never raising.
+
+        `has_expandable_task_desc` calls `len()` on the description, so dropping
+        the `isinstance` guard would raise `TypeError` on these inputs.
+        """
+        for bad in (123, None, {"nested": "dict"}, ["list"]):
+            msg = ToolCallMessage("task", {"description": bad})
+            assert msg.has_expandable_task_desc is False
+
+    def test_output_hint_drops_ctrl_o_when_description_expandable(self) -> None:
+        """The output hint advertises click-only once the description owns Ctrl+O."""
+        long_desc = "x" * (ToolCallMessage._TASK_DESC_MAX_LENGTH + 1)
+        msg = ToolCallMessage("task", {"description": long_desc})
+        assert msg.has_expandable_task_desc is True
+        assert msg._output_hint_keys() == "click"
+
+        short = ToolCallMessage("task", {"description": "short"})
+        assert short.has_expandable_task_desc is False
+        assert short._output_hint_keys() == "click or Ctrl+O"
+
+    async def test_short_description_shows_widget_hides_hint(self) -> None:
+        """A short but present description renders, with no expand hint."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._task_desc_widget is not None
+            assert msg._task_desc_hint_widget is not None
+            assert msg._task_desc_widget.display is True
+            assert msg._task_desc_hint_widget.display is False
+
+    async def test_toggle_task_desc_swaps_display_state(self) -> None:
+        """`toggle_task_desc` should reveal the full description then re-hide it."""
+        from deepagents_code.config import get_glyphs
+
+        long_desc = "word " * 60  # well over the truncation limit
+
+        app = _tool_msg_app("task", {"description": long_desc})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+
+            assert msg._task_desc_widget is not None
+            assert msg._task_desc_hint_widget is not None
+            # Collapsed: hint reads "expand", description truncated to the limit
+            # with a trailing ellipsis glyph.
+            assert msg._task_desc_hint_widget.display is True
+            hint = msg._task_desc_hint_widget._Static__content  # ty: ignore
+            assert hint.plain == "click or Ctrl+O to expand"
+            collapsed = msg._task_desc_widget._Static__content  # ty: ignore
+            ellipsis = get_glyphs().ellipsis
+            assert collapsed.plain.endswith(ellipsis)
+            body = collapsed.plain[: -len(ellipsis)]
+            assert len(body) <= ToolCallMessage._TASK_DESC_MAX_LENGTH
+            assert long_desc.startswith(body)
+
+            msg.toggle_task_desc()
+            await pilot.pause()
+            assert msg._task_desc_expanded is True
+            expanded = msg._task_desc_widget._Static__content  # ty: ignore
+            assert expanded.plain == long_desc
+            hint = msg._task_desc_hint_widget._Static__content  # ty: ignore
+            assert hint.plain == "click or Ctrl+O to collapse"
+
+            msg.toggle_task_desc()
+            await pilot.pause()
+            assert msg._task_desc_expanded is False
+
+    async def test_click_on_description_toggles_task_desc(self) -> None:
+        """Clicking a truncated `task` row should expand its description."""
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            event.widget = msg._task_desc_widget
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._task_desc_expanded is True
+
+    async def test_click_on_header_toggles_task_desc(self) -> None:
+        """Clicking the header of a truncated `task` row expands the description."""
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            event.widget = msg._header_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._task_desc_expanded is True
+
+    async def test_click_on_output_toggles_output_not_description(self) -> None:
+        """A click on the output region toggles output, leaving the desc alone.
+
+        The load-bearing precedence rule: even when the description is
+        expandable, a click that lands on the output routes to the output.
+        """
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_success("line\n" * 200)  # long, expandable output
+            await pilot.pause()
+            assert msg.has_expandable_task_desc is True
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._preview_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._expanded is True
+            assert msg._task_desc_expanded is False
 
 
 class TestToolCallMessageExecuteCommandExpand:
@@ -3620,6 +3838,153 @@ class TestUserMessageGetSelection:
             assert result[0] == "pwd"
 
 
+class _MarkdownAppMessageApp(App[None]):
+    """Mount a markdown `AppMessage` so selection has an active app + layout."""
+
+    _MARKDOWN = (
+        "### Core dependencies\n"
+        "\n"
+        "| Package | Version |\n"
+        "| --- | --- |\n"
+        "| langchain | 1.2.3 |\n"
+        "| langgraph | not installed |\n"
+    )
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage(self._MARKDOWN, markdown=True, id="md")
+
+
+class TestAppMessageMarkdownSelectable:
+    """Markdown `AppMessage` output must be selectable and copyable.
+
+    Regression guard: rendering markdown as a raw Rich renderable produces a
+    `RichVisual`, which Textual cannot select or copy. The text must resolve to
+    `Content` so `/version` tables and incognito shell output stay copyable.
+    """
+
+    async def test_markdown_renders_content_visual(self) -> None:
+        from textual.content import Content
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert isinstance(widget._render(), Content)
+
+    async def test_markdown_select_all_copies_table_text(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            selected = result[0]
+            assert "Core dependencies" in selected
+            assert "langchain" in selected
+            assert "not installed" in selected
+
+    async def test_markdown_selection_has_no_trailing_padding(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert not any(line != line.rstrip() for line in result[0].splitlines())
+
+    async def test_markdown_caches_content_at_same_width(self) -> None:
+        """A second render at an unchanged width reuses the cached `Content`."""
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            first = widget.render()
+            second = widget.render()
+            assert first is second
+
+    async def test_markdown_reflows_on_resize(self) -> None:
+        """Shrinking the terminal re-lays-out markdown to the new width.
+
+        Guards the width-keyed cache invalidation (`_markdown_cache[0] != width`):
+        a regression that dropped the width key would keep serving the stale,
+        wider `Content`.
+        """
+        markdown = "This is a fairly long paragraph of prose " * 6
+        app = _MarkdownAppMessageApp()
+        app._MARKDOWN = markdown
+        async with app.run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            wide = widget.render()
+            wide_cache = widget._markdown_cache
+            assert wide_cache is not None
+            wide_key = wide_cache[0]
+
+            await pilot.resize_terminal(40, 24)
+            await pilot.pause()
+            narrow = widget.render()
+            narrow_cache = widget._markdown_cache
+            assert narrow_cache is not None
+            narrow_key = narrow_cache[0]
+
+            assert narrow is not wide
+            assert narrow_key < wide_key
+            wide_max = max(len(line) for line in wide.plain.splitlines())
+            narrow_max = max(len(line) for line in narrow.plain.splitlines())
+            assert narrow_max < wide_max
+            assert narrow_max <= narrow_key
+
+    async def test_markdown_content_has_style_spans(self) -> None:
+        """Styled markdown keeps its spans so emphasis survives to selection."""
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert widget.render().spans
+
+
+class TestMarkdownToContent:
+    """Direct unit tests for `_markdown_to_content` edge cases."""
+
+    def test_empty_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("", 40).plain
+
+    def test_whitespace_only_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("   \n   \n", 40).plain
+
+    def test_trailing_blank_lines_are_trimmed(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        content = _markdown_to_content("# Title\n\n\n", 40)
+        assert "Title" in content.plain
+        # Block-level trim: no empty trailing lines left in the joined content.
+        assert content.plain == content.plain.rstrip("\n ")
+
+    def test_style_conversion_failure_keeps_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing style conversion drops the span but keeps text, warns once."""
+        import logging
+
+        from textual.style import Style
+
+        from deepagents_code.tui.widgets import messages as messages_module
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        def _boom(_style: object) -> Style:
+            msg = "unconvertible"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(Style, "from_rich_style", staticmethod(_boom))
+        monkeypatch.setattr(
+            messages_module, "_markdown_style_conversion_warned", [False]
+        )
+
+        with caplog.at_level(logging.WARNING, logger=messages_module.__name__):
+            content = _markdown_to_content("### heading", 40)
+
+        assert "heading" in content.plain
+        assert not content.spans
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
 class TestAppMessageAutoLinksDisabled:
     """Tests that `auto_links` is disabled to prevent hover flicker."""
 
@@ -4056,6 +4421,23 @@ class _LiveToolGroupApp(App[None]):
         yield t2
 
 
+class _LiveToolGroupSameCategoryApp(App[None]):
+    """Live group with two tools of the same category (both shell commands)."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("execute", {"command": "ls"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("execute", {"command": "pwd"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
 
@@ -4087,6 +4469,121 @@ class TestLiveToolGroupSummary:
             await pilot.pause()
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
+
+    async def test_live_line_counts_only_running_members(self) -> None:
+        """Finished tools drop out of the live line while others still run."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)  # execute
+            running = pilot.app.query_one("#t2", ToolCallMessage)  # read_file
+
+            summary.add_member(done)
+            summary.add_member(running)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+
+            # The shell command finishes but the read is still in flight: the
+            # live line must stop advertising the completed command.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Reading 1 file" in rendered.plain
+            assert "shell command" not in rendered.plain
+
+    async def test_live_line_decrements_same_category_count(self) -> None:
+        """One of two shell commands finishing drops the live count 2 -> 1."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupSameCategoryApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)
+            running = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(done)
+            summary.add_member(running)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 2 shell commands" in rendered.plain
+
+            # One command finishes; the surviving pending tuple shrinks from
+            # ("execute", "execute") to ("execute",), which must invalidate the
+            # cached line even though the category (and membership) is unchanged.
+            done.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command" in rendered.plain
+            assert "2 shell commands" not in rendered.plain
+
+    async def test_live_line_relayouts_only_when_summary_changes(self) -> None:
+        """A shorter pending summary recalculates height on the next tick."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            done = pilot.app.query_one("#t1", ToolCallMessage)
+            running = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(done)
+            summary.add_member(running)
+            summary._stop_timer()
+            done.set_success("done")
+
+            with patch.object(summary, "update", wraps=summary.update) as update:
+                summary._tick()
+                assert update.call_args.kwargs["layout"] is True
+
+                update.reset_mock()
+                summary._tick()
+                assert update.call_args.kwargs["layout"] is False
+
+    async def test_pending_member_is_revealed_for_approval(self) -> None:
+        """Only unfinished calls leave the collapsed group before approval."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("done")
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert completed.display is False
+            assert completed.has_class("-grouped")
+            assert pending.display is True
+            assert not pending.has_class("-grouped")
+            assert summary._tools == [completed]
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
+    async def test_suppressed_pending_member_stays_hidden(self) -> None:
+        """A command mirrored in the approval menu is detached without duplication."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            pending = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(pending)
+            pending.set_awaiting_approval()
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert pending.display is False
+            assert not pending.has_class("-grouped")
+            assert not summary.is_attached
+
+            pending.clear_awaiting_approval()
+            assert pending.display is True
 
     async def test_failed_member_is_evicted_on_close(self) -> None:
         from deepagents_code.tui.widgets.messages import ToolGroupSummary

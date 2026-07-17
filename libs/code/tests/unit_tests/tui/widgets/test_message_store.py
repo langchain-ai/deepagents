@@ -176,7 +176,7 @@ class TestMessageData:
         or `to_widget` would silently downgrade rehydrated `/version` extras
         tables to plain-text rendering.
         """
-        from deepagents_code.tui.widgets.messages import _MutedRichMarkdown
+        from textual.content import Content
 
         markdown_source = (
             "### Installed optional dependencies\n"
@@ -195,8 +195,11 @@ class TestMessageData:
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._is_markdown is True
-        rendered = restored._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
+        # Markdown renders to selectable `Content` (not a raw Rich renderable)
+        # so the rehydrated extras table stays copyable.
+        rendered = restored.render()
+        assert isinstance(rendered, Content)
+        assert "langchain-anthropic" in rendered.plain
 
     def test_diff_message_roundtrip(self):
         """Test DiffMessage serialization and deserialization."""
@@ -613,6 +616,58 @@ class TestMessageStore:
             scroll_position=bottom_spacer_top - 400,
             viewport_height=100,
             bottom_spacer_top=bottom_spacer_top,
+        )
+
+    def test_should_hydrate_below_at_bottom_edge(self):
+        """Reaching the scroll edge must hydrate even if the distance check misses.
+
+        Estimated spacer heights can drift from the real DOM layout, leaving the
+        viewport parked at `max_scroll` while the spacer-distance heuristic sits
+        exactly at (or just past) its threshold. Without the edge guarantee the
+        archived tail is stranded — the flaky-hydration failure this reproduces.
+        """
+        store = MessageStore()
+        for i in range(100):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 16
+        store._visible_end = 19
+
+        bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
+        # Geometry where distance_from_bottom_spacer == threshold, so the plain
+        # heuristic returns False forever.
+        scroll_position = 10.0
+        viewport_height = 3
+        assert not store.should_hydrate_below(
+            scroll_position=scroll_position,
+            viewport_height=viewport_height,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+        # Same geometry, but scrolled to the edge: hydration must run.
+        assert store.should_hydrate_below(
+            scroll_position=scroll_position,
+            viewport_height=viewport_height,
+            bottom_spacer_top=bottom_spacer_top,
+            max_scroll=scroll_position,
+        )
+
+    def test_should_hydrate_below_at_edge_with_no_messages_below(self):
+        """The bottom edge never hydrates when the window already ends the store."""
+        store = MessageStore()
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 0
+        store._visible_end = 10
+
+        assert not store.has_messages_below
+        assert not store.should_hydrate_below(
+            scroll_position=5.0,
+            viewport_height=3,
+            bottom_spacer_top=store.range_height(0, 10),
+            max_scroll=5.0,
         )
 
     def test_visible_range(self):

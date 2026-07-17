@@ -1,0 +1,19 @@
+.github/scripts/test_unified_workflow.py
+  s_8c6fdd805af4d8::t_1d3611b8aecbc0 497-503
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2e8b6b068b7ac7b14c164343640df81edf85bfb5",
+  "prompts": {},
+  "sessions": {
+    "s_8c6fdd805af4d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4c18d69-cf23-4969-87fe-0a818c296f34",
+        "model": "unknown"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

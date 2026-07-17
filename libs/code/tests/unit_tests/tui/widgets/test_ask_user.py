@@ -813,6 +813,94 @@ class TestAskUserMenu:
             # Focus only changes the border color, not its type (solid/ascii).
             assert focused_border != blurred_border
             assert focused_border[0] == blurred_border[0]
+            # And it brightens on focus, not the other way around.
+            assert blurred_border[1].brightness < focused_border[1].brightness
+
+    async def test_border_uses_ascii_variant_in_ascii_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In ASCII mode the border keeps the ascii type across both focus states.
+
+        The refactor moved the border into CSS so `:focus-within` can restyle it
+        even on terminals that cannot draw box characters. Only the color should
+        change on focus; the ascii border type must survive.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets._inline_prompt.is_ascii_mode",
+            lambda: True,
+        )
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert menu.has_class("-ascii")
+            assert menu.has_focus_within
+            focused_border = menu.styles.border_top
+
+            app.set_focus(None)
+            await pilot.pause()
+            blurred_border = menu.styles.border_top
+
+            assert focused_border[0] == "ascii"
+            assert blurred_border[0] == "ascii"
+            # Focus brightens the color but leaves the ascii type intact.
+            assert focused_border != blurred_border
+            assert blurred_border[1].brightness < focused_border[1].brightness
+
+    async def test_clicking_choice_restores_active_other_input(self) -> None:
+        """Clicking a non-focusable choice restores the active Other input.
+
+        With "Other" selected, the question's focus target is its free-text
+        input, but a click on a plain choice option (not itself focusable) lands
+        focus on the bare question container. `on_click` routes focus back to the
+        Other input so typing keeps landing there. This is the switch branch that
+        a click landing directly on a question's own focus target skips.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+
+            # Select "Other" (red -> blue -> Other), revealing its input.
+            await pilot.press("down", "down", "enter")
+            await pilot.pause()
+            other_input = qw0.query_one(".ask-user-other-input", AskUserTextArea)
+            assert other_input.has_focus
+
+            # Clicking a plain choice focuses the container; on_click restores it.
+            await pilot.click(qw0._choice_widgets[0])
+            await pilot.pause()
+            assert other_input.has_focus
+            assert menu._current_question == 0
+
+    async def test_clicking_chrome_with_focus_in_question_is_noop(self) -> None:
+        """Clicking chrome while a question holds focus leaves focus untouched."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            text_input = menu._question_widgets[0].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            assert text_input.has_focus
+
+            await pilot.click(".ask-user-title")
+            await pilot.pause()
+
+            # Focus was already inside a question, so the click did not move it.
+            assert text_input.has_focus
 
     async def test_click_highlight_preserves_confirmed_and_answers(self) -> None:
         """Following focus on click must not confirm or clear existing answers."""

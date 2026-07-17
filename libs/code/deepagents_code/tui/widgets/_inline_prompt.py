@@ -243,10 +243,11 @@ def apply_inline_prompt_border(widget: Widget) -> None:
     The border type and color live in CSS (`.inline-prompt`); adding the
     `-ascii` class lets the stylesheet swap to an ASCII-safe border on terminals
     that cannot render box-drawing characters. Keeping the border in CSS (rather
-    than an inline style) lets focus-driven rules like `:focus-within` restyle it.
+    than an inline style) lets focus-driven rules (e.g. the `:focus-within`
+    styling on `.ask-user-menu`) restyle it, which an inline border would outrank.
 
     Args:
-        widget: Mounted prompt shell receiving the border style.
+        widget: Mounted prompt shell receiving the ASCII border class.
     """
     if is_ascii_mode():
         widget.add_class("-ascii")

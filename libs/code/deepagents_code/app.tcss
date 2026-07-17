@@ -343,7 +343,11 @@ ToolCallMessage.-ascii:hover {
 /* Ask user widget */
 /* Dim the border while focus is elsewhere (e.g. the chat input) and brighten
    it while focus is within, so it is obvious when the menu's keyboard bindings
-   apply. */
+   apply. These rules must stay declared *after* `.inline-prompt` above: the
+   menu carries both classes, and the dim/bright resolution relies on source
+   order to win the equal-specificity ties (`.ask-user-menu` vs `.inline-prompt`,
+   `.ask-user-menu.-ascii` vs `.inline-prompt.-ascii`). Reordering flips the
+   blurred border back to bright. */
 .ask-user-menu {
     border: solid $success-darken-3;
 }

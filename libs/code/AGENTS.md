@@ -117,6 +117,10 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 - The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; that path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
 - Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records *per log level*), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
+## Final-answer output contract
+
+A completed turn on a fresh (non-resume) request must surface a natural-language AI message — never a tool call rendered as message content. Models occasionally mis-serialize a tool call into the AI message `content` field as literal JSON (`{"tool_calls":[...]}`, or `{"args":...,"name":...,"type":"tool_call"}`). The output/rendering path must never print such a blob as the assistant's final answer: `non_interactive._process_ai_message` detects it via `_looks_like_serialized_tool_call` and drops it from `full_response` rather than terminating the run on raw JSON.
+
 ## CLI help screen
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.

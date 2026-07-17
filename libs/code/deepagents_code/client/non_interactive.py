@@ -21,6 +21,7 @@ agent's response text.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import threading
@@ -127,6 +128,35 @@ def _write_newline() -> None:
     """Write a newline to stdout (and flush)."""
     sys.stdout.write("\n")
     sys.stdout.flush()
+
+
+def _looks_like_serialized_tool_call(text: str) -> bool:
+    """Return True when `text` is a tool_call/args object mis-serialized as content.
+
+    Some model/harness output-shape failures emit a tool call into the AI
+    message `content` field as literal JSON (e.g.
+    `{"tool_calls":[...]}` or `{"args":...,"name":...,"type":"tool_call"}`)
+    instead of as a structured tool call. Such text must never be surfaced to
+    the developer as the assistant's final natural-language answer.
+    """
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return False
+    candidates = parsed if isinstance(parsed, list) else [parsed]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if "tool_calls" in candidate:
+            return True
+        if candidate.get("type") == "tool_call" and "name" in candidate:
+            return True
+        if "name" in candidate and "args" in candidate:
+            return True
+    return False
 
 
 def _make_stdio_encoding_safe() -> None:
@@ -488,6 +518,16 @@ def _process_ai_message(
         if block_type == "text":
             text = block.get("text", "")
             if text:
+                # A tool call mis-serialized into the content field is not a
+                # natural-language answer; surfacing it would end the turn with a
+                # raw JSON blob as the developer-facing deliverable. Drop it from
+                # the rendered response so the run does not terminate on it.
+                if _looks_like_serialized_tool_call(text):
+                    logger.warning(
+                        "Dropping serialized tool_call rendered as AI message "
+                        "content; not surfacing raw JSON as the final answer"
+                    )
+                    continue
                 if state.stream:
                     if state.spinner:
                         state.spinner.stop()

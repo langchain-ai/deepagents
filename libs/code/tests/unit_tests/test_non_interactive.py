@@ -32,6 +32,7 @@ from deepagents_code.client.non_interactive import (
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _dispatch_orphaned_tool_result_hooks,
+    _looks_like_serialized_tool_call,
     _make_hitl_decision,
     _make_stdio_encoding_safe,
     _process_ai_message,
@@ -520,6 +521,52 @@ class TestQuietFileOpNotification:
 
     def test_non_quiet_emits_file_op_notification(self) -> None:
         assert "foo.py" in self._run(quiet=False)
+
+
+class TestSerializedToolCallContent:
+    """A serialized tool_call in AI content must never become the final answer.
+
+    Invariant: a completed turn on a fresh request must contain a
+    natural-language AI message, never a raw tool_call JSON blob.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"tool_calls":[{"function":{"arguments":"{}","name":"execute"}}]}',
+            '{"args": {"cmd": "ls"}, "name": "execute", "type": "tool_call"}',
+            '[{"name": "execute", "args": {"cmd": "ls"}}]',
+        ],
+    )
+    def test_detects_serialized_tool_call(self, text: str) -> None:
+        assert _looks_like_serialized_tool_call(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Here is your answer.",
+            "",
+            "   ",
+            '{"result": "done"}',
+            "The tool_calls field was empty.",
+        ],
+    )
+    def test_ignores_natural_language(self, text: str) -> None:
+        assert not _looks_like_serialized_tool_call(text)
+
+    def test_serialized_tool_call_not_rendered_as_final_answer(
+        self, console: Console
+    ) -> None:
+        """A text block that is a serialized tool_call is dropped from output."""
+        blob = '{"tool_calls":[{"function":{"arguments":"{}","name":"execute"}}]}'
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": blob}]
+        ai_msg.usage_metadata = None
+        state = StreamState(quiet=True, stream=True, spinner=None)
+
+        _process_ai_message(ai_msg, state, console)
+
+        assert state.full_response == []
 
 
 class TestNoStreamMode:

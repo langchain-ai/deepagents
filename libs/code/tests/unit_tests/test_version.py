@@ -255,13 +255,42 @@ async def test_version_slash_command_mentions_update_available() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         app._update_available = (True, "99.99.99")
-        await app._handle_command("/version")
+        with patch(
+            "deepagents_code.update_check.is_auto_update_enabled",
+            return_value=True,
+        ):
+            await app._handle_command("/version")
         await pilot.pause()
 
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Update available: v99.99.99" in content
-        assert "Run: " in content
+        assert "relaunch dcode to install it automatically" in content
+        assert "uv tool install" not in content
+
+
+async def test_version_slash_command_update_hint_when_auto_update_disabled() -> None:
+    """Verify `/version` points to `/update` when auto-update is disabled."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._update_available = (True, "99.99.99")
+        with patch(
+            "deepagents_code.update_check.is_auto_update_enabled",
+            return_value=False,
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available: v99.99.99" in content
+        assert "/update" in content
+        assert "dcode update" in content
+        assert "uv tool install" not in content
 
 
 async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None:

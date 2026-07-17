@@ -6096,20 +6096,13 @@ class DeepAgentsApp(App):
 
         available, latest = self._update_available
         if available and latest:
-            try:
-                from deepagents_code.update_check import upgrade_command
+            from deepagents_code.update_check import is_auto_update_enabled
 
-                cmd = upgrade_command()
-            except Exception:
-                logger.warning(
-                    "Could not resolve upgrade command for /version; "
-                    "falling back to generic upgrade hint",
-                    exc_info=True,
-                )
-                from deepagents_code.update_check import FALLBACK_UPGRADE_COMMAND
-
-                cmd = FALLBACK_UPGRADE_COMMAND
-            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+            if await asyncio.to_thread(is_auto_update_enabled):
+                hint = "Quit and relaunch dcode to install it automatically."
+            else:
+                hint = "Run /update or `dcode update` to install it."
+            lines.extend(("", f"Update available: v{latest}. {hint}"))
 
         await self._mount_message(AppMessage("\n".join(lines)))
 

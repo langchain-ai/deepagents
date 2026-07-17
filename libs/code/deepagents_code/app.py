@@ -2783,6 +2783,14 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._restart_respawn_task: asyncio.Task[None] | None = None
+        """Strong reference to the detached `/restart` respawn task.
+
+        `_handle_restart_command` runs the multi-second server respawn off the
+        Textual message pump via `asyncio.create_task` so the chat input stays
+        responsive; holding the reference keeps the task from being GC'd
+        mid-flight and lets tests await it deterministically."""
+
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
         restart. Cleared by the next reconnect or restart so multiple deferred
@@ -19458,6 +19466,23 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
 
+        # A duplicate `/restart` bypasses the normal input queue while the
+        # first detached respawn is still connecting. Reject it before the
+        # destructive setup below so prompts queued during that respawn are
+        # preserved for the pending `ServerReady` handler to drain.
+        if (
+            self._restart_respawn_task is not None
+            and self._connecting
+            and self._reconnecting
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "A server restart is already in progress. Queued prompts "
+                    "will be sent once it finishes.",
+                ),
+            )
+            return
+
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
         # fire against the freshly respawned agent silently. This restart *is*
@@ -19531,11 +19556,63 @@ class DeepAgentsApp(App):
                 )
             return
 
-        restarting = await self._mount_transient_app_message("Restarting server...")
+        # Run the respawn as a detached task, NOT awaited on the message pump.
+        # `_respawn_server`'s multi-second `server_proc.restart()` would
+        # otherwise stall the pump — key events stop being forwarded and the
+        # chat input freezes ("blocked") for the whole restart. Mirrors the
+        # MCP viewer/force-reconnect paths: `asyncio.create_task` keeps the
+        # pump free, so keystrokes stay live and any message the user submits
+        # while `_connecting` is queued and drained once `ServerReady` fires.
+        # `_run_restart_respawn` owns the transient status and completion
+        # banner; `_log_task_exception` surfaces anything unexpected. The
+        # pre-respawn guards above (remote/starting/failed/deferred) already
+        # ran synchronously, so the user got immediate feedback before this.
+        # Mark the app reconnecting before scheduling because `create_task`
+        # does not run the coroutine inline. Otherwise a submission or second
+        # `/restart` could enter before `_respawn_server` sets these fields.
+        self._connecting = True
+        self._reconnecting = True
+        self._agent = None
+        self._sync_status_connection()
+        task = asyncio.create_task(self._run_restart_respawn())
+        self._restart_respawn_task = task
+        task.add_done_callback(_log_task_exception)
+
+    async def _run_restart_respawn(self) -> None:
+        """Respawn the server for `/restart`, detached from the message pump.
+
+        Scheduled via `asyncio.create_task` from `_handle_restart_command` so
+        the multi-second `server_proc.restart()` runs off the Textual message
+        pump, keeping the chat input responsive. Shows a transient
+        "Restarting server..." status for the duration and removes it whether
+        the respawn succeeds, returns `False`, or raises. Mounts the completion
+        banner only on success; on any non-success outcome it clears the
+        `_connecting`/`_reconnecting` flags the caller pre-set (on success the
+        `ServerReady` handler clears them once the new server is live).
+
+        An *unexpected* raise — distinct from the handled `return False` path,
+        which posts `ServerStartFailed` so the recovery UI gives the user
+        feedback — is caught here and surfaced as an `ErrorMessage`, mirroring
+        `_reconnect_from_viewer_safe`, which detaches the same respawn. Without
+        this the exception would reach only `_log_task_exception` and log a
+        warning the interactive user never sees; `_log_task_exception` stays a
+        last-resort backstop for anything that escapes even this handler.
+        """
+        restarting = None
         restarted = False
         try:
+            restarting = await self._mount_transient_app_message("Restarting server...")
             restarted = await self._restart_server_manual()
+        except Exception as exc:
+            logger.exception("Manual /restart of server raised unexpectedly")
+            await self._mount_message(
+                ErrorMessage(f"Restart failed: {type(exc).__name__}: {exc}"),
+            )
         finally:
+            if not restarted:
+                self._connecting = False
+                self._reconnecting = False
+                self._sync_status_connection()
             if restarting is not None:
                 with suppress(NoMatches, ScreenStackError):
                     await restarting.remove()

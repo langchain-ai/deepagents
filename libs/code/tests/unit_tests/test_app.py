@@ -8965,59 +8965,55 @@ class TestGoalCommand:
     async def test_forced_sync_create_double_fault_prompts_retry(self) -> None:
         """A create with no local pending state prompts the user to retry."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = None
-            app._pending_goal_rubric = None
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(force=True)
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = None
+        app._pending_goal_rubric = None
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(force=True)
 
-            mount.assert_awaited_once()
-            await_args = mount.await_args
-            assert await_args is not None
-            body = str(await_args.args[0]._content)
-            assert "could not be loaded" in body
+        mount.assert_awaited_once()
+        await_args = mount.await_args
+        assert await_args is not None
+        body = str(await_args.args[0]._content)
+        assert "could not be loaded" in body
 
     async def test_forced_sync_amend_double_fault_remounts_review(self) -> None:
         """An amend keeps its local pending proposal, so the review remounts."""
         app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "thread-1"
-            app._pending_goal_objective = "ship login"
-            app._pending_goal_rubric = "- passkeys work"
-            app._pending_goal_request_id = "request-amend"
-            remount = AsyncMock()
-            mount = AsyncMock()
-            with (
-                patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
-                patch.object(
-                    app,
-                    "_get_thread_state_values",
-                    AsyncMock(side_effect=RuntimeError("down")),
-                ),
-                patch.object(app, "_remount_pending_goal_rubric_review", remount),
-                patch.object(app, "_mount_message", mount),
-                patch.object(app, "notify"),
-            ):
-                await app._sync_goal_rubric_state_from_thread(
-                    force=True,
-                    proposal_request_id="request-amend",
-                )
+        app._lc_thread_id = "thread-1"
+        app._pending_goal_objective = "ship login"
+        app._pending_goal_rubric = "- passkeys work"
+        app._pending_goal_request_id = "request-amend"
+        remount = AsyncMock()
+        mount = AsyncMock()
+        with (
+            patch("deepagents_code.app._GOAL_SYNC_READ_RETRY_SECONDS", 0),
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(side_effect=RuntimeError("down")),
+            ),
+            patch.object(app, "_remount_pending_goal_rubric_review", remount),
+            patch.object(app, "_mount_message", mount),
+            patch.object(app, "notify"),
+        ):
+            await app._sync_goal_rubric_state_from_thread(
+                force=True,
+                proposal_request_id="request-amend",
+            )
 
-            remount.assert_awaited_once()
-            mount.assert_not_awaited()
+        remount.assert_awaited_once()
+        mount.assert_not_awaited()
 
     async def test_fetch_thread_history_coerces_unknown_goal_status(self) -> None:
         """Loading a thread with an unknown status drops it to None."""
@@ -24318,6 +24314,10 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            # The respawn runs as a detached task so the message pump stays
+            # free; await it to observe the completion banner deterministically.
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert reload_called
@@ -24329,12 +24329,186 @@ class TestRestartCommand:
             assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
+    @pytest.mark.timeout(15)
+    async def test_restart_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` must not freeze the chat input while the server respawns.
+
+        Regression guard: `_handle_restart_command` used to await the
+        multi-second `_restart_server_manual()` (i.e. `server_proc.restart()`)
+        directly on the Textual message pump, so key events could not be
+        forwarded and the chat input was blocked until the restart finished.
+        Running the respawn as a detached task keeps the pump free, so typing
+        lands even while the restart is in-flight. Without the fix this test
+        times out (pump stalled on the gated coroutine).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            gate = asyncio.Event()
+
+            async def _blocked_restart() -> bool:
+                await gate.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _blocked_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+            # The respawn is now in-flight and gated open; the pump must still
+            # deliver keystrokes to the chat input.
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = app._chat_input.value
+            gate.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            await pilot.pause()
+            assert typed == "hi"
+
+    @pytest.mark.timeout(15)
+    async def test_marks_reconnecting_before_detached_respawn_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart state must be visible before the detached task's first await.
+
+        A duplicate `/restart` must also observe that state and return without
+        discarding prompts queued while the first restart is still in flight.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            status_started = asyncio.Event()
+            release_status = asyncio.Event()
+
+            async def _blocked_status(_content: str) -> None:
+                status_started.set()
+                await release_status.wait()
+
+            restart = AsyncMock(return_value=False)
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_mount_transient_app_message", _blocked_status)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_restart_command("/restart")
+            task = app._restart_respawn_task
+            assert task is not None
+            assert not status_started.is_set()
+            assert app._connecting is True
+            assert app._reconnecting is True
+            assert app._agent is None
+
+            try:
+                await status_started.wait()
+                await app._submit_input("queued during restart", mode="normal")
+                assert len(app._pending_messages) == 1
+                assert app._pending_messages[0].text == "queued during restart"
+
+                await app._handle_restart_command("/restart")
+                assert app._restart_respawn_task is task
+                restart.assert_not_awaited()
+                assert len(app._pending_messages) == 1
+                assert app._pending_messages[0].text == "queued during restart"
+            finally:
+                release_status.set()
+                await task
+
+            restart.assert_awaited_once()
+            assert app._connecting is False
+            assert app._reconnecting is False
+
+    @pytest.mark.timeout(15)
+    async def test_message_queued_during_restart_drains_after_server_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt queued mid-restart survives and drains once the server is up.
+
+        Completes the "queued and drained once `ServerReady` fires" guarantee.
+        The detached respawn pre-marks `_connecting`, so a normal submission
+        during it is queued rather than run against the dying server. A
+        successful restart must neither discard nor drain that queue — the
+        flags stay set until `ServerReady` — and the session-start sequence the
+        `ServerReady` handler runs must then drain it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            gate = asyncio.Event()
+
+            async def _gated_restart() -> bool:
+                await gate.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _gated_restart)
+
+            await app._handle_restart_command("/restart")
+            await pilot.pause()
+            # The detached respawn is in-flight with `_connecting` pre-marked,
+            # so a normal submission is queued, not run against the dying server.
+            await app._submit_input("queued during restart", mode="normal")
+            assert len(app._pending_messages) == 1
+
+            gate.set()
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+            await pilot.pause()
+
+            # A successful restart owns neither discarding nor draining the
+            # queue; the `ServerReady` handler drains, so the prompt is still
+            # pending here.
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "queued during restart"
+
+            # Drive the drain the `ServerReady` handler performs (a respawn
+            # reconnect takes the `_initial_session_started` branch) and confirm
+            # the queued prompt is dispatched.
+            app._initial_session_started = True
+            drain_deferred = AsyncMock()
+            process_next = AsyncMock()
+            app._maybe_drain_deferred = drain_deferred  # ty: ignore
+            app._process_next_from_queue = process_next  # ty: ignore
+            await app._run_session_start_sequence()
+            drain_deferred.assert_awaited_once()
+            process_next.assert_awaited_once()
+
     async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed restart removes "Restarting..." without showing completion.
 
-        Guards the conditional gate in `_handle_restart_command`: the success
+        Guards the conditional gate in `_run_restart_respawn`: the success
         banner is only mounted when `_restart_server_manual()` returns `True`.
         On failure the recovery UI (via `ServerStartFailed`) is the user's
         feedback, so stale transient progress and the misleading completion
@@ -24366,6 +24540,8 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert restart_called
@@ -24373,17 +24549,23 @@ class TestRestartCommand:
             assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
-    async def test_raising_restart_removes_transient_and_propagates(
+    async def test_raising_restart_surfaces_error_and_resets_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A raising `_restart_server_manual()` clears the transient, then raises.
+        """A raising `_restart_server_manual()` surfaces an error and un-wedges.
 
-        The transient "Restarting server..." status is mounted before
-        `_restart_server_manual()` is awaited, so the `try/finally` in
-        `_handle_restart_command` exists solely to remove it when the restart
-        raises (not merely returns `False`). On a raise the transient must be
-        gone, the misleading completion banner must never mount, and the
-        exception must propagate rather than be swallowed.
+        This is the *unexpected* raise path, distinct from the handled
+        `return False` path (which posts `ServerStartFailed` for recovery). The
+        transient "Restarting server..." status is mounted before
+        `_restart_server_manual()` is awaited, and `_run_restart_respawn` runs
+        detached from the message pump, so the exception cannot propagate up a
+        command handler where Textual would surface it. Instead the respawn
+        wrapper must catch it (mirroring `_reconnect_from_viewer_safe`): the
+        transient must be gone, the misleading completion banner must never
+        mount, an `ErrorMessage` must surface the failure to the user rather
+        than it being logged-and-lost, and the pre-marked `_connecting`/
+        `_reconnecting` flags must reset so input submission does not stay
+        wedged. The detached task itself completes without raising.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -24408,14 +24590,23 @@ class TestRestartCommand:
             )
             monkeypatch.setattr(app, "_restart_server_manual", _boom)
 
-            with pytest.raises(RuntimeError, match="respawn exploded"):
-                await app._handle_restart_command("/restart")
+            await app._handle_restart_command("/restart")
+            assert app._restart_respawn_task is not None
+            # The wrapper catches the raise, so awaiting the task does not
+            # re-raise — the failure surfaces as an `ErrorMessage` instead.
+            await app._restart_respawn_task
             await pilot.pause()
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("respawn exploded" in m for m in errors)
+            # The pre-marked reconnecting state must be cleared so a live input
+            # is not left permanently gated by `_connecting`.
+            assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_reload_failure_skips_restart(
         self, monkeypatch: pytest.MonkeyPatch

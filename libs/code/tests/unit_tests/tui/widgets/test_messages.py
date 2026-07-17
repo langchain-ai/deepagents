@@ -175,11 +175,16 @@ class TestAppMessageMarkupSafety:
         rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
-    def test_app_message_markdown_uses_muted_wrapper(self) -> None:
-        """`markdown=True` should route through `_MutedRichMarkdown`."""
+    def test_app_message_markdown_renders_selectable_content(self) -> None:
+        """`markdown=True` should render selectable `Content`, not a `RichVisual`.
+
+        Textual text-selection only works over `Content`/`Text` visuals, so
+        markdown must resolve to `Content` for its text to be copyable.
+        """
         msg = AppMessage("### heading", markdown=True)
-        rendered = msg._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
+        rendered = msg.render()
+        assert isinstance(rendered, Content)
+        assert "heading" in rendered.plain
 
     def test_app_message_markdown_requires_string(self) -> None:
         """`markdown=True` with non-string input should raise `TypeError`."""
@@ -3618,6 +3623,153 @@ class TestUserMessageGetSelection:
             result = widget.get_selection(pilot.app.screen.selections[widget])
             assert result is not None
             assert result[0] == "pwd"
+
+
+class _MarkdownAppMessageApp(App[None]):
+    """Mount a markdown `AppMessage` so selection has an active app + layout."""
+
+    _MARKDOWN = (
+        "### Core dependencies\n"
+        "\n"
+        "| Package | Version |\n"
+        "| --- | --- |\n"
+        "| langchain | 1.2.3 |\n"
+        "| langgraph | not installed |\n"
+    )
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage(self._MARKDOWN, markdown=True, id="md")
+
+
+class TestAppMessageMarkdownSelectable:
+    """Markdown `AppMessage` output must be selectable and copyable.
+
+    Regression guard: rendering markdown as a raw Rich renderable produces a
+    `RichVisual`, which Textual cannot select or copy. The text must resolve to
+    `Content` so `/version` tables and incognito shell output stay copyable.
+    """
+
+    async def test_markdown_renders_content_visual(self) -> None:
+        from textual.content import Content
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert isinstance(widget._render(), Content)
+
+    async def test_markdown_select_all_copies_table_text(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            selected = result[0]
+            assert "Core dependencies" in selected
+            assert "langchain" in selected
+            assert "not installed" in selected
+
+    async def test_markdown_selection_has_no_trailing_padding(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert not any(line != line.rstrip() for line in result[0].splitlines())
+
+    async def test_markdown_caches_content_at_same_width(self) -> None:
+        """A second render at an unchanged width reuses the cached `Content`."""
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            first = widget.render()
+            second = widget.render()
+            assert first is second
+
+    async def test_markdown_reflows_on_resize(self) -> None:
+        """Shrinking the terminal re-lays-out markdown to the new width.
+
+        Guards the width-keyed cache invalidation (`_markdown_cache[0] != width`):
+        a regression that dropped the width key would keep serving the stale,
+        wider `Content`.
+        """
+        markdown = "This is a fairly long paragraph of prose " * 6
+        app = _MarkdownAppMessageApp()
+        app._MARKDOWN = markdown
+        async with app.run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            wide = widget.render()
+            wide_cache = widget._markdown_cache
+            assert wide_cache is not None
+            wide_key = wide_cache[0]
+
+            await pilot.resize_terminal(40, 24)
+            await pilot.pause()
+            narrow = widget.render()
+            narrow_cache = widget._markdown_cache
+            assert narrow_cache is not None
+            narrow_key = narrow_cache[0]
+
+            assert narrow is not wide
+            assert narrow_key < wide_key
+            wide_max = max(len(line) for line in wide.plain.splitlines())
+            narrow_max = max(len(line) for line in narrow.plain.splitlines())
+            assert narrow_max < wide_max
+            assert narrow_max <= narrow_key
+
+    async def test_markdown_content_has_style_spans(self) -> None:
+        """Styled markdown keeps its spans so emphasis survives to selection."""
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            widget = pilot.app.query_one("#md", AppMessage)
+            assert widget.render().spans
+
+
+class TestMarkdownToContent:
+    """Direct unit tests for `_markdown_to_content` edge cases."""
+
+    def test_empty_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("", 40).plain
+
+    def test_whitespace_only_markdown_yields_empty_content(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        assert not _markdown_to_content("   \n   \n", 40).plain
+
+    def test_trailing_blank_lines_are_trimmed(self) -> None:
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        content = _markdown_to_content("# Title\n\n\n", 40)
+        assert "Title" in content.plain
+        # Block-level trim: no empty trailing lines left in the joined content.
+        assert content.plain == content.plain.rstrip("\n ")
+
+    def test_style_conversion_failure_keeps_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing style conversion drops the span but keeps text, warns once."""
+        import logging
+
+        from textual.style import Style
+
+        from deepagents_code.tui.widgets import messages as messages_module
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        def _boom(_style: object) -> Style:
+            msg = "unconvertible"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(Style, "from_rich_style", staticmethod(_boom))
+        monkeypatch.setattr(
+            messages_module, "_markdown_style_conversion_warned", [False]
+        )
+
+        with caplog.at_level(logging.WARNING, logger=messages_module.__name__):
+            content = _markdown_to_content("### heading", 40)
+
+        assert "heading" in content.plain
+        assert not content.spans
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
 class TestAppMessageAutoLinksDisabled:

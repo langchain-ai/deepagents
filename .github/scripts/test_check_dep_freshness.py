@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from email.message import Message
+from pathlib import Path
 from typing import TYPE_CHECKING, Self
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from urllib.request import Request
 from check_dep_freshness import (
     BYPASS_LABEL,
@@ -426,6 +426,20 @@ def test_check_dependency_freshness_warns_without_failing_on_transient_error(
     assert written.count("\ntrue\n") == 1
     assert COMMENT_MARKER not in written
     assert "transient PyPI query failure" in capsys.readouterr().out
+
+
+def test_comment_workflow_preserves_existing_report_on_partial_pypi_failure() -> None:
+    workflow = (
+        Path(__file__).parents[1] / "workflows/check_dep_freshness.yml"
+    ).read_text(encoding="utf-8")
+    preserve = "if (indeterminate && existing) {"
+    update = "await github.rest.issues.updateComment"
+
+    assert preserve in workflow
+    preserve_start = workflow.index(preserve)
+    update_start = workflow.index(update)
+    assert preserve_start < update_start
+    assert "return;" in workflow[preserve_start:update_start]
 
 
 def test_check_dependency_freshness_noops_without_changed_manifests(

@@ -101,6 +101,11 @@ jobs:
                   (c.body ?? '').startsWith(marker),
               );
 
+              if (indeterminate && existing) {
+                core.warning('Some PyPI queries were indeterminate; leaving the existing dependency freshness comment in place.');
+                return;
+              }
+
               if (stale) {
                 if (!body.trim()) {
                   core.warning('Dependency freshness check found stale bounds but produced no comment body; keeping any existing comment.');

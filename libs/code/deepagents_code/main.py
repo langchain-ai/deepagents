@@ -118,12 +118,25 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+        format_sdk_version_annotation,
+    )
 
-    sdk_version_value, status = resolve_sdk_version()
-    sdk_version = sdk_version_value if status == "resolved" else "unknown"
+    report = collect_version_report()
+    cli_annotation = format_cli_version_annotation(report.cli)
+    if report.sdk.status == "resolved":
+        sdk_version = report.sdk.primary_version
+        sdk_annotation = format_sdk_version_annotation(report)
+    else:
+        sdk_version = "unknown"
+        sdk_annotation = ""
 
-    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+    text = (
+        f"deepagents-code {__version__}{cli_annotation}\n"
+        f"deepagents (SDK) {sdk_version}{sdk_annotation}"
+    )
 
     editable = False
     try:
@@ -1223,7 +1236,6 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
-    "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
 }
@@ -1238,19 +1250,22 @@ Each value is `(subcommand_dest, ui_help_fn_name)`:
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
-When adding a new top-level command group with sub-subparsers, register it
-here and add a corresponding `show_<group>_help` to `ui.py`. The drift
-test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+Command groups whose bare invocation performs an action instead belong in
+`_BARE_ACTION_GROUPS`. The drift test in
+`tests/unit_tests/test_startup_fast_paths.py` requires every group to be in
+exactly one collection.
 """
+
+_BARE_ACTION_GROUPS = frozenset({"config"})
+"""Command groups that perform their primary action without a subcommand."""
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
-    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
-    commands when no subcommand was given.
+    invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
+    this path because their bare invocation has useful behavior.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1261,7 +1276,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
             when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    if not isinstance(command, str):
+    if not isinstance(command, str) or command in _BARE_ACTION_GROUPS:
         return False
     spec = _HELP_SPECS.get(command)
     if spec is None:
@@ -1419,25 +1434,13 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.plugins.commands_cli import setup_plugin_parser
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.plugins.commands_cli import setup_plugin_parser
-
-        setup_plugin_parser(
-            subparsers,
-            make_help_action=_make_help_action,
-            add_output_args=add_json_output_arg,
-        )
-    else:
-        plugin_parser = subparsers.add_parser(
-            "plugin",
-            aliases=["plugins"],
-            add_help=False,
-            help=argparse.SUPPRESS,
-        )
-        plugin_parser.add_argument("plugin_command", nargs="?")
-        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
+    setup_plugin_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     setup_config_parser(
         subparsers,
@@ -2154,6 +2157,7 @@ async def run_textual_cli_async(
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
         "model_params": model_params,
+        "profile_overrides": profile_override,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_snapshot_name": sandbox_snapshot_name,
@@ -4080,15 +4084,6 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command in {"plugin", "plugins"}:
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                print(EXPERIMENTAL_HINT)  # noqa: T201
-                sys.exit(2)
             from deepagents_code.plugins.commands_cli import execute_plugin_command
 
             execute_plugin_command(args)

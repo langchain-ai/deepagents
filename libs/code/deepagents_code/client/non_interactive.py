@@ -1090,7 +1090,10 @@ async def _run_agent_loop(
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    stream_input: dict[str, Any] | Command = {
+        "messages": [user_msg],
+        "goal_criteria_request": None,
+    }
     if rubric is not None:
         stream_input["rubric"] = rubric
 
@@ -1555,19 +1558,6 @@ async def run_non_interactive(
 
     thread_id = generate_thread_id()
 
-    # One user turn per process: fresh turn id, turn_number 1.
-    from uuid import uuid4
-
-    from deepagents_code.config import build_stream_config
-
-    config: RunnableConfig = build_stream_config(
-        thread_id,
-        assistant_id,
-        sandbox_type=sandbox_type,
-        turn_id=str(uuid4()),
-        turn_number=1,
-    )
-
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
@@ -1615,6 +1605,23 @@ async def run_non_interactive(
             else None
         )
 
+        # One user turn per process: fresh turn id, turn_number 1. Built here so
+        # the resolved `use_auto_approve` is stamped into the trace metadata
+        # (headless auto-approve means tools run without HITL because shell is
+        # unrestricted or disabled).
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        config: RunnableConfig = build_stream_config(
+            thread_id,
+            assistant_id,
+            sandbox_type=sandbox_type,
+            turn_id=str(uuid4()),
+            turn_number=1,
+            auto_approve=use_auto_approve,
+        )
+
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
@@ -1622,6 +1629,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,
             shell_allow_list=restrictive_allow_list,

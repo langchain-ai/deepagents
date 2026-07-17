@@ -34,6 +34,10 @@ def _widget_text(widget: Static) -> str:
     return str(widget.render())
 
 
+def _snapshot_dict(fields: list[SnapshotField]) -> dict[str, str]:
+    return {field.label: field.value for field in fields}
+
+
 def _log_record(
     message: str, *, level: str = "INFO", levelno: int = logging.INFO
 ) -> InMemoryLogRecord:
@@ -59,6 +63,12 @@ def _snapshot() -> list[SnapshotField]:
         SnapshotField("Model", "openai:gpt-test"),
         SnapshotField("CWD", "/tmp/[brackets]/work"),
     ]
+
+
+def test_snapshot_field_tuple_contract_includes_interaction_metadata() -> None:
+    field = SnapshotField("Thread", "thread-abc", copyable=True, thread_id="thread-abc")
+
+    assert tuple(field) == ("Thread", "thread-abc", True, "thread-abc")
 
 
 class TestDebugConsoleScreen:
@@ -443,6 +453,48 @@ class TestDebugConsoleScreen:
             assert log.line_count == 0
             assert screen._rendered_upto == buffer.total_emitted
 
+    async def test_clear_view_reports_cursor_via_on_clear(self) -> None:
+        logger.info("debug-console-on-clear-marker")
+        cleared: list[int] = []
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot(), on_clear=cleared.append)
+            app.push_screen(screen)
+            await pilot.pause()
+            buffer = get_log_buffer()
+            assert buffer is not None
+
+            # Capture the cursor at clear time; the shared process-wide buffer
+            # may accrue records between the clear and a later re-read.
+            expected = buffer.total_emitted
+            await pilot.press("ctrl+l")
+            await pilot.pause()
+            assert cleared == [expected]
+
+    async def test_cleared_upto_seeds_render_cursor(self) -> None:
+        logger.info("debug-console-pre-clear-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            buffer = get_log_buffer()
+            assert buffer is not None
+            # Simulate a prior clear by seeding past everything emitted so far.
+            screen = DebugConsoleScreen(_snapshot(), cleared_upto=buffer.total_emitted)
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert not any(
+                "debug-console-pre-clear-marker" in record.message
+                for record in log.records
+            )
+
+            logger.info("debug-console-post-clear-marker")
+            screen._poll_logs()
+            await pilot.pause()
+            assert any(
+                "debug-console-post-clear-marker" in record.message
+                for record in log.records
+            )
+
     async def test_copy_key_invokes_clipboard_with_retained_lines(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -745,6 +797,294 @@ class TestDebugConsoleScreen:
 
         assert "debug-console-click-copy-marker" in captured["text"]
 
+    async def test_thread_field_click_copies_thread_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._copy_snapshot_value("thread-abc")
+            await pilot.pause()
+
+        assert captured["text"] == "thread-abc"
+        latest = list(app._notifications)[-1]
+        assert latest.severity == "information"
+        assert latest.message == "Thread ID copied"
+
+    async def test_langsmith_link_renders_after_resolution(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            assert "(langsmith)" not in _widget_text(snapshot_widget)
+
+            screen._langsmith_urls["thread-abc"] = (
+                "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+            )
+            screen._refresh_snapshot()
+            await pilot.pause()
+
+            assert "(langsmith)" in _widget_text(snapshot_widget)
+
+    async def test_cached_langsmith_link_renders_on_first_frame_without_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        monkeypatch.setattr(
+            config_mod, "get_cached_langsmith_thread_url", lambda _thread_id: url
+        )
+        lookup = MagicMock()
+        monkeypatch.setattr(config_mod, "build_langsmith_thread_url", lookup)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            assert "(langsmith)" in _widget_text(snapshot_widget)
+
+        lookup.assert_not_called()
+
+    async def test_clicking_thread_value_copies_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            # Single "Thread" field: label (6 chars) + 2-space gutter puts the
+            # value at column 8, so an x offset of 10 lands inside the copyable
+            # span. (Holds only while "Thread" is the widest label in this test.)
+            await pilot.click(snapshot_widget, offset=(10, 0))
+            await pilot.pause()
+
+        assert captured["text"] == "thread-abc"
+
+    async def test_copyable_value_carries_copy_meta_span(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            content = screen._render_snapshot()
+            copy_spans = [
+                span
+                for span in content.spans
+                if isinstance(span.style, debug_console_mod.TStyle)
+                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
+                == "thread-abc"
+            ]
+            assert any(
+                content.plain[span.start : span.end] == "thread-abc"
+                for span in copy_spans
+            )
+
+    async def test_fetch_langsmith_link_stores_resolved_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        monkeypatch.setattr(
+            config_mod, "build_langsmith_thread_url", lambda _thread_id: url
+        )
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen._fetch_langsmith_link("thread-abc")
+            await pilot.pause()
+
+        assert screen._langsmith_urls["thread-abc"] == url
+
+    async def test_fetch_langsmith_link_io_error_logs_debug_and_degrades(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        def boom(_thread_id: str) -> str:
+            msg = "network unavailable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(config_mod, "build_langsmith_thread_url", boom)
+        caplog.set_level(logging.DEBUG, logger=debug_console_mod.__name__)
+        screen = DebugConsoleScreen(
+            [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+        )
+
+        await screen._fetch_langsmith_link("thread-abc")
+
+        assert screen._langsmith_urls == {}
+        records = [
+            record
+            for record in caplog.records
+            if record.name == debug_console_mod.__name__
+            and "timed out/failed" in record.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.DEBUG
+        assert records[0].exc_info is not None
+
+    async def test_fetch_langsmith_link_unexpected_error_logs_warning_and_degrades(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        def boom(_thread_id: str) -> str:
+            msg = "resolution bug"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(config_mod, "build_langsmith_thread_url", boom)
+        caplog.set_level(logging.WARNING, logger=debug_console_mod.__name__)
+        screen = DebugConsoleScreen(
+            [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+        )
+
+        await screen._fetch_langsmith_link("thread-abc")
+
+        assert screen._langsmith_urls == {}
+        records = [
+            record
+            for record in caplog.records
+            if record.name == debug_console_mod.__name__
+            and "errored unexpectedly" in record.getMessage()
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        assert records[0].exc_info is not None
+
+    async def test_fetch_langsmith_link_none_result_stores_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod, "build_langsmith_thread_url", lambda _thread_id: None
+        )
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            refreshed: list[bool] = []
+            monkeypatch.setattr(
+                screen, "_refresh_snapshot", lambda: refreshed.append(True)
+            )
+            await screen._fetch_langsmith_link("thread-abc")
+            await pilot.pause()
+
+        # An unconfigured LangSmith (the common case) resolves to None: nothing
+        # is stored and no needless re-render is triggered.
+        assert screen._langsmith_urls == {}
+        assert refreshed == []
+
+    async def test_refresh_snapshot_without_widget_is_noop(self) -> None:
+        app = _Harness()
+        async with app.run_test():
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            # Never pushed/composed, so the snapshot widget doesn't exist -- the
+            # same state as a worker resolving after the console was dismissed.
+            # The NoMatches guard must swallow this rather than raise.
+            screen._refresh_snapshot()
+
+    async def test_clicking_langsmith_link_opens_it_without_copying(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        opened: list[object] = []
+        monkeypatch.setattr(
+            debug_console_mod, "open_style_link", lambda event: opened.append(event)
+        )
+        copied: list[str] = []
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [
+                    SnapshotField(
+                        "Thread", "thread-abc", copyable=True, thread_id="thread-abc"
+                    )
+                ]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._langsmith_urls["thread-abc"] = url
+            screen._refresh_snapshot()
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            # Row renders "Thread  thread-abc  (langsmith)": label (6) + 2-space
+            # gutter = col 8, value (10 chars) spans 8-17, 2-space gap, then
+            # "(langsmith)" starts at col 20. An x offset of 22 is inside it.
+            await pilot.click(snapshot_widget, offset=(22, 0))
+            await pilot.pause()
+
+        # The link branch wins and returns early: the trace opens, no copy fires.
+        assert len(opened) == 1
+        assert copied == []
+
     async def test_copy_failure_notifies_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -888,6 +1228,48 @@ class TestDebugConsoleToggle:
             await pilot.pause()
             assert not isinstance(app.screen, DebugConsoleScreen)
 
+    async def test_clear_persists_across_reopen(self) -> None:
+        logger.info("debug-console-persist-marker")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            screen = cast("DebugConsoleScreen", app.screen)
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert any(
+                "debug-console-persist-marker" in record.message
+                for record in log.records
+            )
+
+            buffer = get_log_buffer()
+            assert buffer is not None
+            expected = buffer.total_emitted
+            await pilot.press("ctrl+l")
+            await pilot.pause()
+            assert app._debug_console_cleared_upto == expected
+
+            # A record emitted after the clear must survive the reopen; only the
+            # pre-clear tail is suppressed.
+            logger.info("debug-console-post-clear-marker")
+
+            # Close and reopen: the cleared records must not come back, but the
+            # post-clear record must appear.
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            reopened = cast("DebugConsoleScreen", app.screen)
+            reopened_log = reopened.query_one("#debug-log", _DebugLogView)
+            assert not any(
+                "debug-console-persist-marker" in record.message
+                for record in reopened_log.records
+            )
+            assert any(
+                "debug-console-post-clear-marker" in record.message
+                for record in reopened_log.records
+            )
+
     async def test_debug_command_opens_console(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
@@ -919,12 +1301,50 @@ class TestDebugConsoleToggle:
     async def test_build_snapshot_contains_core_fields(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz", cwd="/tmp/work")
         async with app.run_test():
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Thread"] == "thread-xyz"
             assert snapshot["CWD"] == "/tmp/work"
             assert "Version" in snapshot
             assert "Auto-approve" in snapshot
             assert snapshot["MCP servers"] == "none"
+
+    async def test_build_snapshot_thread_field_is_copyable_and_linkable(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz")
+        async with app.run_test():
+            thread_field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Thread"
+            )
+            assert thread_field.value == "thread-xyz"
+            assert thread_field.copyable is True
+            assert thread_field.thread_id == "thread-xyz"
+
+    async def test_build_snapshot_thread_field_degrades_when_lookup_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+
+            def boom(_self: object) -> str:
+                msg = "bad thread"
+                raise RuntimeError(msg)
+
+            # A class-level data descriptor shadows the instance attribute, so
+            # reading `self._lc_thread_id` inside `_thread_field` raises.
+            # (`raising=False`: it's normally only an instance attribute.)
+            monkeypatch.setattr(
+                type(app), "_lc_thread_id", property(boom), raising=False
+            )
+            thread_field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Thread"
+            )
+            # The Thread row degrades to a safe, non-interactive placeholder.
+            assert thread_field.value.startswith("(unavailable:")
+            assert thread_field.copyable is False
+            assert thread_field.thread_id is None
 
     async def test_build_snapshot_formats_mcp_servers(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -934,7 +1354,7 @@ class TestDebugConsoleToggle:
                 SimpleNamespace(name="web", status="error"),
             ]
             app._mcp_server_info = servers  # ty: ignore[invalid-assignment]  # stub servers expose .name/.status
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["MCP servers"] == "fs (connected), web (error)"
 
     async def test_build_snapshot_degrades_on_field_error(
@@ -948,7 +1368,7 @@ class TestDebugConsoleToggle:
                 raise RuntimeError(msg)
 
             monkeypatch.setattr(app, "_effective_model_spec", boom)
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             # The failing field degrades; the rest of the snapshot still builds.
             assert snapshot["Model"].startswith("(unavailable")
             assert "Version" in snapshot

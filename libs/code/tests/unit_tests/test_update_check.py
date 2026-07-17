@@ -4840,6 +4840,19 @@ class TestIsAutoUpdateEnabled:
             assert is_auto_update_enabled() is False
         assert "disabling auto-update" in caplog.text
 
+    def test_malformed_update_section_fails_closed(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A non-table `update` value disables auto-update without raising."""
+        config_path.write_text("update = false\n", encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is False
+        assert "disabling auto-update" in caplog.text
+
 
 class TestAutoUpdateDefaultMigration:
     @pytest.fixture

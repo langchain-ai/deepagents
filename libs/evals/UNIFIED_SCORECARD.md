@@ -61,3 +61,71 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | **micro** | **0.353** | **0.216** |  |
 
 Run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/29509109809) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~50m
+
+---
+
+**6-model lite stress run — 2026-07-17, run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741).** Two Baseten models are excluded from the tables below: `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B` did not serve (per-trial `reward` null with pervasive 5xx / 401 / 404 / 429 / timeout signatures across trials), and `thinkingmachines/inkling` is dropped with it. The **context** column is anomalously low across all four models (0.000–0.125) versus the 2026-07-16 terra/luna lite (0.625 / 0.500); whether that is a context-harness regression or genuine is unconfirmed, so treat the context column as provisional. Judge `gpt-5.6-luna` is independent for all four (not in the set).
+
+## openai:gpt-5.6-sol
+
+### Lite
+
+Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
+
+| Category | pass@k | avg@k | tasks |
+| --- | --- | --- | --- |
+| autonomous (harbor-index) | 0.400 | 0.267 | 15 |
+| conversation (tau3-subset) | 0.727 | 0.485 | 11 |
+| context (context-retrieval) | 0.000 | 0.000 | 8 |
+| **macro** | **0.376** | **0.251** |  |
+| **micro** | **0.412** | **0.275** |  |
+
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context provisional (see run note).
+
+## anthropic:claude-opus-4-8
+
+### Lite
+
+Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
+
+| Category | pass@k | avg@k | tasks |
+| --- | --- | --- | --- |
+| autonomous (harbor-index) | 0.467 | 0.289 | 15 |
+| conversation (tau3-subset) | 0.364 | 0.242 | 11 |
+| context (context-retrieval) | 0.125 | 0.042 | 8 |
+| **macro** | **0.318** | **0.191** |  |
+| **micro** | **0.353** | **0.216** |  |
+
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context provisional (see run note).
+
+## anthropic:claude-sonnet-5
+
+### Lite
+
+Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
+
+| Category | pass@k | avg@k | tasks |
+| --- | --- | --- | --- |
+| autonomous (harbor-index) | 0.267 | 0.133 | 15 |
+| conversation (tau3-subset) | 0.182 | 0.091 | 11 |
+| context (context-retrieval) | 0.000 | 0.000 | 8 |
+| **macro** | **0.149** | **0.075** |  |
+| **micro** | **0.176** | **0.088** |  |
+
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context provisional (see run note).
+
+## fireworks:accounts/fireworks/models/glm-5p2
+
+### Lite
+
+Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
+
+| Category | pass@k | avg@k | tasks |
+| --- | --- | --- | --- |
+| autonomous (harbor-index) | 0.133 | 0.067 | 15 |
+| conversation (tau3-subset) | 0.000 | 0.000 | 11 |
+| context (context-retrieval) | 0.125 | 0.042 | 8 |
+| **macro** | **0.086** | **0.036** |  |
+| **micro** | **0.088** | **0.039** |  |
+
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context provisional (see run note).

@@ -1034,6 +1034,198 @@ class TestMCPSessionManager:
         exit_mock.assert_not_awaited()
         await manager.cleanup()
 
+    async def test_cancelled_initialize_closes_session_in_creating_task(self) -> None:
+        """`CancelledError` during init closes the session in the creating task.
+
+        Regression for the MCP OAuth refresh failure: a blocking-IO
+        `BlockingError` in the auth flow crashed the Streamable HTTP transport
+        task group, cancelling the task awaiting `session.initialize()`. Because
+        `_create_entry` caught only `Exception`, the partially entered
+        `AsyncExitStack` was abandoned and later finalized by async-generator GC
+        on a different task, raising "Attempted to exit cancel scope in a
+        different task than it was entered in". The entered context must be
+        closed in the creating task before the cancellation propagates.
+        """
+        enter_task: list[Any] = []
+        exit_task: list[Any] = []
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=asyncio.CancelledError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            enter_task.append(asyncio.current_task())
+            try:
+                yield session
+            finally:
+                exit_task.append(asyncio.current_task())
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert enter_task, "the session context should have been entered"
+        assert exit_task, (
+            "the entered session context must be closed synchronously, not left "
+            "for async-generator garbage collection"
+        )
+        assert exit_task[0] is enter_task[0], (
+            "the session context must be closed in the creating task"
+        )
+        assert not manager._entries, "a cancelled session must not be cached"
+
+    async def test_base_exception_during_init_closes_session_in_creating_task(
+        self,
+    ) -> None:
+        """Any `BaseException` (not just `Exception`) triggers in-task teardown."""
+
+        class _Boom(BaseException):
+            pass
+
+        enter_task: list[Any] = []
+        exit_task: list[Any] = []
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=_Boom)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            enter_task.append(asyncio.current_task())
+            try:
+                yield session
+            finally:
+                exit_task.append(asyncio.current_task())
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(_Boom),
+        ):
+            await manager.get_session("filesystem")
+
+        assert exit_task
+        assert exit_task[0] is enter_task[0]
+        assert not manager._entries
+
+    async def test_cleanup_failure_does_not_mask_original_cancellation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A teardown error is logged and does not mask the original cancellation.
+
+        The swallowed cleanup failure must still be surfaced via a warning
+        rather than dropped silently.
+        """
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=asyncio.CancelledError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            try:
+                yield session
+            finally:
+                msg = "teardown boom"
+                raise RuntimeError(msg)
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert not manager._entries
+        cleanup_logs = [
+            record
+            for record in caplog.records
+            if "Failed to close a partially initialized MCP session"
+            in record.getMessage()
+        ]
+        assert cleanup_logs, "the swallowed cleanup failure must be logged"
+        assert "filesystem" in cleanup_logs[0].getMessage()
+        assert cleanup_logs[0].exc_info is not None, (
+            "the cleanup failure must be logged with its traceback"
+        )
+
+    async def test_cancelled_teardown_supersedes_original_init_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `CancelledError` from teardown supersedes an ordinary init error.
+
+        The inner `except Exception` around `aclose()` deliberately does not
+        catch a `CancelledError` raised *by* teardown: an in-flight cancellation
+        must win over the original error, matching structured-cancellation
+        semantics. So a plain init `Exception` is replaced by the teardown
+        `CancelledError`, and the swallowed-cleanup warning must not fire because
+        the cancellation was not swallowed.
+        """
+
+        class _InitError(Exception):
+            pass
+
+        session = AsyncMock()
+        session.initialize = AsyncMock(side_effect=_InitError)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            try:
+                yield session
+            finally:
+                raise asyncio.CancelledError
+
+        manager = MCPSessionManager(
+            connections={
+                "filesystem": {"transport": "stdio", "command": "x", "args": []}
+            }
+        )
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.get_session("filesystem")
+
+        assert not manager._entries
+        assert not any(
+            "Failed to close a partially initialized MCP session" in record.getMessage()
+            for record in caplog.records
+        ), "a teardown cancellation supersedes rather than being swallowed+logged"
+
 
 class TestTransientErrorDetection:
     """Tests for `_is_transient_session_error` classification."""

@@ -64,12 +64,11 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 )
 
 
-class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
+class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    Dismisses with `(label, needs_mcp_login)` after an MCP-bearing plugin
-    install so the app can offer reconnect + login guidance, otherwise
-    `None`.
+    A reload prompt shown after this screen closes offers to apply plugin
+    changes via `/reload`.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -616,8 +615,13 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if not enabled:
             return
         current = options.highlighted
-        position = enabled.index(current) if current in enabled else 0
-        options.highlighted = enabled[(position + step) % len(enabled)]
+        if current in enabled:
+            position = enabled.index(current)
+            options.highlighted = enabled[(position + step) % len(enabled)]
+        else:
+            # Nothing highlighted yet: step forward to the first option, back to
+            # the last.
+            options.highlighted = enabled[0] if step > 0 else enabled[-1]
         options.focus()
 
     def action_arrow_next_tab(self) -> None:
@@ -776,8 +780,6 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if row is None:
             return
         try:
-            # install_plugin returns the loaded instance; Discover rows do not
-            # carry MCP metadata until install, so inspect the result here.
             instance = await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
@@ -787,20 +789,21 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
 
         label = row.label
-        entries = plugin_mcp_server_entries(instance)
-        has_mcp = bool(entries)
-        needs_login = any(needs for _label, _scoped, needs in entries)
+        needs_login = any(
+            needs_login
+            for _server_label, _scoped, needs_login in plugin_mcp_server_entries(
+                instance
+            )
+        )
         self.notify(f"Installed {label}", timeout=5, markup=False)
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = f"Installed {label}."
+        self._status = f"Installed {label}. Run /reload to activate."
+        if needs_login:
+            self._status += f" After reload, sign in to {label} via /mcp."
         self._error = None
         await self._refresh_state()
-        if has_mcp:
-            # Close the manager so the reconnect prompt is not buried under it.
-            self.dismiss((label, needs_login))
-            return
 
     async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin

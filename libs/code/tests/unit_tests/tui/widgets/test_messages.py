@@ -2162,6 +2162,155 @@ class TestToolCallMessageExpandableArgs:
             assert msg._args_expanded is False
 
 
+class TestToolCallMessageTaskDescription:
+    """Tests for the expandable, truncated `task` description line."""
+
+    def test_short_description_not_expandable(self) -> None:
+        """A description that fits is shown in full with no expand affordance."""
+        msg = ToolCallMessage("task", {"description": "investigate the bug"})
+        assert msg.has_expandable_task_desc is False
+
+    def test_long_description_is_expandable(self) -> None:
+        """A description longer than the limit becomes expandable."""
+        long_desc = "x" * (ToolCallMessage._TASK_DESC_MAX_LENGTH + 1)
+        msg = ToolCallMessage("task", {"description": long_desc})
+        assert msg.has_expandable_task_desc is True
+
+    def test_description_at_limit_not_expandable(self) -> None:
+        """The threshold is strict `>`: a description of exactly the limit fits.
+
+        Guards against a `>`-to-`>=` regression (or an off-by-one in the slice)
+        that every `MAX + 1` test would still pass.
+        """
+        for length in (
+            ToolCallMessage._TASK_DESC_MAX_LENGTH,
+            ToolCallMessage._TASK_DESC_MAX_LENGTH - 1,
+        ):
+            msg = ToolCallMessage("task", {"description": "x" * length})
+            assert msg.has_expandable_task_desc is False
+
+    def test_non_task_not_expandable(self) -> None:
+        """Only `task` rows expose an expandable description."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/x"})
+        assert msg.has_expandable_task_desc is False
+
+    def test_non_string_description_not_expandable(self) -> None:
+        """A non-string `description` is coerced to empty, never raising.
+
+        `has_expandable_task_desc` calls `len()` on the description, so dropping
+        the `isinstance` guard would raise `TypeError` on these inputs.
+        """
+        for bad in (123, None, {"nested": "dict"}, ["list"]):
+            msg = ToolCallMessage("task", {"description": bad})
+            assert msg.has_expandable_task_desc is False
+
+    def test_output_hint_drops_ctrl_o_when_description_expandable(self) -> None:
+        """The output hint advertises click-only once the description owns Ctrl+O."""
+        long_desc = "x" * (ToolCallMessage._TASK_DESC_MAX_LENGTH + 1)
+        msg = ToolCallMessage("task", {"description": long_desc})
+        assert msg.has_expandable_task_desc is True
+        assert msg._output_hint_keys() == "click"
+
+        short = ToolCallMessage("task", {"description": "short"})
+        assert short.has_expandable_task_desc is False
+        assert short._output_hint_keys() == "click or Ctrl+O"
+
+    async def test_short_description_shows_widget_hides_hint(self) -> None:
+        """A short but present description renders, with no expand hint."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._task_desc_widget is not None
+            assert msg._task_desc_hint_widget is not None
+            assert msg._task_desc_widget.display is True
+            assert msg._task_desc_hint_widget.display is False
+
+    async def test_toggle_task_desc_swaps_display_state(self) -> None:
+        """`toggle_task_desc` should reveal the full description then re-hide it."""
+        from deepagents_code.config import get_glyphs
+
+        long_desc = "word " * 60  # well over the truncation limit
+
+        app = _tool_msg_app("task", {"description": long_desc})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+
+            assert msg._task_desc_widget is not None
+            assert msg._task_desc_hint_widget is not None
+            # Collapsed: hint reads "expand", description truncated to the limit
+            # with a trailing ellipsis glyph.
+            assert msg._task_desc_hint_widget.display is True
+            hint = msg._task_desc_hint_widget._Static__content  # ty: ignore
+            assert hint.plain == "click or Ctrl+O to expand"
+            collapsed = msg._task_desc_widget._Static__content  # ty: ignore
+            ellipsis = get_glyphs().ellipsis
+            assert collapsed.plain.endswith(ellipsis)
+            body = collapsed.plain[: -len(ellipsis)]
+            assert len(body) <= ToolCallMessage._TASK_DESC_MAX_LENGTH
+            assert long_desc.startswith(body)
+
+            msg.toggle_task_desc()
+            await pilot.pause()
+            assert msg._task_desc_expanded is True
+            expanded = msg._task_desc_widget._Static__content  # ty: ignore
+            assert expanded.plain == long_desc
+            hint = msg._task_desc_hint_widget._Static__content  # ty: ignore
+            assert hint.plain == "click or Ctrl+O to collapse"
+
+            msg.toggle_task_desc()
+            await pilot.pause()
+            assert msg._task_desc_expanded is False
+
+    async def test_click_on_description_toggles_task_desc(self) -> None:
+        """Clicking a truncated `task` row should expand its description."""
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            event.widget = msg._task_desc_widget
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._task_desc_expanded is True
+
+    async def test_click_on_header_toggles_task_desc(self) -> None:
+        """Clicking the header of a truncated `task` row expands the description."""
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            event.widget = msg._header_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._task_desc_expanded is True
+
+    async def test_click_on_output_toggles_output_not_description(self) -> None:
+        """A click on the output region toggles output, leaving the desc alone.
+
+        The load-bearing precedence rule: even when the description is
+        expandable, a click that lands on the output routes to the output.
+        """
+        app = _tool_msg_app("task", {"description": "word " * 60})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_success("line\n" * 200)  # long, expandable output
+            await pilot.pause()
+            assert msg.has_expandable_task_desc is True
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._preview_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._expanded is True
+            assert msg._task_desc_expanded is False
+
+
 class TestToolCallMessageExecuteCommandExpand:
     """Tests for the collapsible full-command block on `execute` tool calls."""
 

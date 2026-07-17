@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import Click
 from textual.geometry import Offset
 from textual.message import Message
@@ -1127,6 +1128,14 @@ class ToolCallMessage(Vertical):
     Inline rendering uses `result: value` rather than a standalone labeled block.
     """
 
+    _TASK_DESC_MAX_LENGTH = 120
+    """Maximum `task` description length shown before it is truncated.
+
+    A longer description collapses to at most this many characters (trailing
+    whitespace trimmed) with a trailing ellipsis and becomes expandable via
+    click or Ctrl+O.
+    """
+
     _RUNNING_TIMER_THRESHOLD_SECS = 10
     """Seconds a tool must run before the elapsed-time counter appears.
 
@@ -1155,11 +1164,14 @@ class ToolCallMessage(Vertical):
         self._output: str = ""
         self._expanded: bool = False
         self._args_expanded: bool = False
+        self._task_desc_expanded: bool = False
         # User-provided reason attached to a HITL reject decision (if any).
         self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
         self._header_widget: Static | None = None
+        self._task_desc_widget: Static | None = None
+        self._task_desc_hint_widget: Static | None = None
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
@@ -1191,17 +1203,16 @@ class ToolCallMessage(Vertical):
         """
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(tool_label, markup=False, classes="tool-header", id="tool-header")
-        # Task: dedicated description line (dim, truncated)
+        # Task: dedicated description line (dim, truncated). A long description
+        # collapses to a truncated preview that expands on click or Ctrl+O.
         if self._tool_name == "task":
-            desc = self._args.get("description", "")
-            if desc:
-                max_len = 120
-                suffix = "..." if len(desc) > max_len else ""
-                truncated = desc[:max_len].rstrip() + suffix
+            if self._task_description():
                 yield Static(
-                    Content.styled(truncated, "dim"),
+                    self._task_desc_content(),
                     classes="tool-task-desc",
+                    id="task-desc",
                 )
+                yield Static("", classes="tool-output-hint", id="task-desc-hint")
         # Only show args for tools where header doesn't capture the key info
         elif self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
@@ -1248,6 +1259,13 @@ class ToolCallMessage(Vertical):
 
         self._status_widget = self.query_one("#status", Static)
         self._header_widget = self.query_one("#tool-header", Static)
+        try:
+            self._task_desc_widget = self.query_one("#task-desc", Static)
+            self._task_desc_hint_widget = self.query_one("#task-desc-hint", Static)
+        except NoMatches:
+            # Only mounted for `task` calls that carry a description.
+            self._task_desc_widget = None
+            self._task_desc_hint_widget = None
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -1265,6 +1283,7 @@ class ToolCallMessage(Vertical):
         self._full_row.display = False
         self._reject_reason_widget.display = False
         self._update_args_display()
+        self._update_task_desc_display()
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
@@ -1595,25 +1614,40 @@ class ToolCallMessage(Vertical):
         self._args_expanded = not self._args_expanded
         self._update_args_display()
 
+    def toggle_task_desc(self) -> None:
+        """Toggle between the truncated and full `task` description."""
+        if not self.has_expandable_task_desc:
+            return
+        self._task_desc_expanded = not self._task_desc_expanded
+        self._update_task_desc_display()
+
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion.
+        """Toggle output/argument/description expansion.
 
         A click on the header/args region (the truncated command or code line
         and its hint) toggles the collapsible args/code block directly, so an
         `execute` command or `js_eval` program can be expanded even when the
-        output below it is *also* expandable. Otherwise prefer toggling output,
-        falling through to the args/code block only when the output can't
-        expand — `js_eval` commonly has a short, unexpandable result sitting
-        below a multi-line, collapsible code block, and the old
-        "output wins whenever it exists" rule left that code block stuck.
+        output below it is *also* expandable. A `task` row routes clicks on its
+        description region to the description toggle for the same reason.
+        Otherwise prefer toggling output, falling through to the args/code block
+        only when the output can't expand — `js_eval` commonly has a short,
+        unexpandable result sitting below a multi-line, collapsible code block,
+        and the old "output wins whenever it exists" rule left that code block
+        stuck.
         """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self.has_expandable_args and self._click_targets_args_region(event.widget):
+        if self.has_expandable_task_desc and self._click_targets_task_desc_region(
+            event.widget
+        ):
+            self.toggle_task_desc()
+        elif self.has_expandable_args and self._click_targets_args_region(event.widget):
             self.toggle_args()
         elif self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
+        elif self.has_expandable_task_desc:
+            self.toggle_task_desc()
 
     def _click_targets_args_region(self, widget: object) -> bool:
         """Whether a click landed on the header/args block (not the output).
@@ -1647,6 +1681,37 @@ class ToolCallMessage(Vertical):
         # rendered text reports a descendant, so the real match depth is 0-1).
         # 8 is generous headroom that also bounds the walk for a detached or mock
         # node, whose `.parent` chain never reaches `self`.
+        node = widget
+        for _ in range(8):
+            if node is None or node is self:
+                return False
+            if any(node is target for target in targets):
+                return True
+            node = getattr(node, "parent", None)
+        return False
+
+    def _click_targets_task_desc_region(self, widget: object) -> bool:
+        """Whether a click landed on the `task` header/description block.
+
+        Mirrors `_click_targets_args_region` but matches the cached header,
+        description, and description-hint widgets so a `task` row expands its
+        description when clicked, even when its output below is also expandable.
+
+        Returns:
+            `True` if the click landed on the header/description region.
+        """
+        targets = tuple(
+            target
+            for target in (
+                self._header_widget,
+                self._task_desc_widget,
+                self._task_desc_hint_widget,
+            )
+            if target is not None
+        )
+        if not targets:
+            logger.debug("_click_targets_task_desc_region: header/desc refs not cached")
+            return False
         node = widget
         for _ in range(8):
             if node is None or node is self:
@@ -2698,16 +2763,19 @@ class ToolCallMessage(Vertical):
         """Affordances to advertise in the output expand/collapse hint.
 
         Ctrl+O routes to the collapsible command/code block whenever this row
-        has one (see `action_toggle_tool_output`), so the output hint only
+        has one (see `action_toggle_tool_output`), and to a truncated `task`
+        description when the row is a `task` call, so the output hint only
         advertises Ctrl+O when Ctrl+O would actually toggle the *output*. When a
-        command/code block is present the output is reachable by clicking its
-        own region instead.
+        command/code block or expandable `task` description owns Ctrl+O the
+        output is reachable by clicking its own region instead.
 
         Returns:
-            `"click"` when an expandable command/code block owns Ctrl+O,
-                otherwise `"click or Ctrl+O"`.
+            `"click"` when an expandable command/code block or `task`
+                description owns Ctrl+O, otherwise `"click or Ctrl+O"`.
         """
-        return "click" if self.has_expandable_args else "click or Ctrl+O"
+        if self.has_expandable_args or self.has_expandable_task_desc:
+            return "click"
+        return "click or Ctrl+O"
 
     @property
     def has_output(self) -> bool:
@@ -2781,6 +2849,72 @@ class ToolCallMessage(Vertical):
             if isinstance(command, str) and command.strip():
                 return len(command.strip()) > EXECUTE_HEADER_MAX_LENGTH
         return False
+
+    @property
+    def has_expandable_task_desc(self) -> bool:
+        """Whether the `task` description is long enough to be truncated.
+
+        A `task` row renders its description on a dedicated dim line, truncated
+        at `_TASK_DESC_MAX_LENGTH`. When the full description exceeds that, the
+        truncated preview becomes expandable via click or Ctrl+O.
+        """
+        return len(self._task_description()) > self._TASK_DESC_MAX_LENGTH
+
+    def _task_description(self) -> str:
+        """Return the `task` call's description string, or empty when absent.
+
+        A non-string `description` (schema-typed as a string) is coerced to
+        `""` so downstream length/slice logic stays safe; the anomaly is logged.
+        """
+        if self._tool_name != "task":
+            return ""
+        desc = self._args.get("description", "")
+        if isinstance(desc, str):
+            return desc
+        if desc is not None:
+            logger.debug("task description is not a string: %r", type(desc))
+        return ""
+
+    def _task_desc_content(self) -> Content:
+        """Render the `task` description, truncated unless expanded.
+
+        Returns:
+            Dim `Content`: the full description when expanded or when it already
+            fits within `_TASK_DESC_MAX_LENGTH`; otherwise the preview truncated
+            to that length (trailing whitespace trimmed) with a trailing
+            ellipsis.
+        """
+        desc = self._task_description()
+        if self._task_desc_expanded or len(desc) <= self._TASK_DESC_MAX_LENGTH:
+            text = desc
+        else:
+            ellipsis = get_glyphs().ellipsis
+            text = desc[: self._TASK_DESC_MAX_LENGTH].rstrip() + ellipsis
+        return Content.styled(text, "dim")
+
+    def _update_task_desc_display(self) -> None:
+        """Update the truncated/expanded `task` description and its hint."""
+        if self._task_desc_widget is None or self._task_desc_hint_widget is None:
+            # Refs are legitimately None for non-`task` rows (never mounted). Log
+            # only when a `task` row that carries a description is missing them,
+            # so a regression that nulls them post-mount isn't a silent no-op.
+            if self._task_description():
+                logger.debug("_update_task_desc_display: task-desc refs not cached")
+            return
+        if not self._task_description():
+            self._task_desc_widget.display = False
+            self._task_desc_hint_widget.display = False
+            return
+        self._task_desc_widget.update(self._task_desc_content())
+        self._task_desc_widget.display = True
+        if not self.has_expandable_task_desc:
+            self._task_desc_hint_widget.display = False
+            return
+        verb = "collapse" if self._task_desc_expanded else "expand"
+        self._task_desc_hint_widget.update(
+            Content.styled(f"click or Ctrl+O to {verb}", "dim italic")
+        )
+        self._task_desc_hint_widget.display = True
 
     def _format_code_detail(self) -> Content:
         """Render the `js_eval` program for the collapsible code block.

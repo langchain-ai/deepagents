@@ -4471,6 +4471,7 @@ class TestAskUserLifecycle:
         tool = MagicMock(spec=ToolCallMessage)
         tool.has_class.return_value = False
         tool.has_output = False
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True
         container = MagicMock()
         container.children = [tool]
@@ -4496,6 +4497,7 @@ class TestAskUserLifecycle:
         tool.has_class.return_value = False
         tool.has_output = True
         tool.has_expandable_output = False  # short result, nothing to expand
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True  # multi-line code block
         container = MagicMock()
         container.children = [tool]
@@ -4520,6 +4522,7 @@ class TestAskUserLifecycle:
         tool.has_class.return_value = False
         tool.has_output = True
         tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_task_desc = False
         tool.has_expandable_args = True  # long command, expandable
         container = MagicMock()
         container.children = [tool]
@@ -4539,10 +4542,12 @@ class TestAskUserLifecycle:
         older = MagicMock(spec=ToolCallMessage)
         older.has_class.return_value = False
         older.has_output = True
+        older.has_expandable_task_desc = False
         older.has_expandable_args = False
         newer = MagicMock(spec=ToolCallMessage)
         newer.has_class.return_value = False
         newer.has_output = False
+        newer.has_expandable_task_desc = False
         newer.has_expandable_args = True
         container = MagicMock()
         container.children = [older, newer]
@@ -4553,6 +4558,31 @@ class TestAskUserLifecycle:
         # Walks children in reverse, so the newer row is hit first.
         newer.toggle_args.assert_called_once_with()
         older.toggle_output.assert_not_called()
+
+    def test_ctrl_o_prefers_task_description_when_truncated(self) -> None:
+        """Ctrl+O toggles a truncated `task` description before its output.
+
+        The description owns Ctrl+O (like a command/code block); the output
+        stays reachable by clicking its own row.
+        """
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # expandable output present
+        tool.has_expandable_task_desc = True  # long description
+        tool.has_expandable_args = False
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_task_desc.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
 
     def test_ctrl_o_targets_content_mounted_after_a_group(self) -> None:
         """Content mounted after a tool group stays reachable from Ctrl+O.
@@ -4592,6 +4622,7 @@ class TestAskUserLifecycle:
         group = MagicMock(spec=ToolGroupSummary)
         folded = MagicMock(spec=ToolCallMessage)
         folded.has_class.return_value = True  # folded into the group
+        folded.display = False
         # DOM: older skill, then the group summary followed by its folded row.
         container = MagicMock()
         container.children = [skill, group, folded]
@@ -4602,6 +4633,33 @@ class TestAskUserLifecycle:
         group.toggle.assert_called_once_with()
         folded.toggle_output.assert_not_called()
         skill.toggle_body.assert_not_called()
+
+    def test_ctrl_o_targets_visible_grouped_task_description(self) -> None:
+        """An expanded group's visible task description takes Ctrl+O priority."""
+        from deepagents_code.tui.widgets.messages import (
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        group = MagicMock(spec=ToolGroupSummary)
+        task = MagicMock(spec=ToolCallMessage)
+        task.has_class.return_value = True  # marker remains after group expansion
+        task.display = True
+        task.has_expandable_task_desc = True
+        task.has_expandable_args = False
+        task.has_output = True
+        task.has_expandable_output = True
+        container = MagicMock()
+        container.children = [group, task]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        task.toggle_task_desc.assert_called_once_with()
+        task.toggle_output.assert_not_called()
+        group.toggle.assert_not_called()
 
     def test_ctrl_o_prefers_recent_rubric_over_tool_group(self) -> None:
         """A newer rubric result should win Ctrl+O over an older tool group."""

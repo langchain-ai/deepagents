@@ -15193,6 +15193,212 @@ class TestExitGracefulWorkerHandoff:
                 assert app._graceful_exit_task is pending
             pending.cancel()
 
+    @staticmethod
+    def _shutdown_toast() -> str:
+        """Return the shutdown toast for the active terminal charset."""
+        from deepagents_code.config import get_glyphs
+
+        return f"Finishing pending work before exit{get_glyphs().ellipsis}"
+
+    async def test_cleanup_starts_only_after_toast_refresh(self) -> None:
+        """Deferred cleanup waits until Textual has rendered the queued toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify"),
+                patch.object(app, "call_after_refresh") as after_refresh,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+
+                # Let the task reach the render barrier. Fast cleanup must not
+                # start until Textual invokes the after-refresh callback.
+                await asyncio.sleep(0)
+                worker.wait.assert_not_awaited()
+                super_exit.assert_not_called()
+
+                refresh_callback = after_refresh.call_args.args[0]
+                refresh_callback()
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_toast_shown_when_agent_worker_unfinished(self) -> None:
+        """A deferred exit for an unfinished worker shows the shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_shown_when_hooks_pending(self) -> None:
+        """A deferred exit that only drains hooks still shows the toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_shown_once_when_worker_and_hooks_pending(self) -> None:
+        """Both wait conditions being true still yields a single toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+    async def test_toast_uses_ascii_ellipsis_in_ascii_mode(self) -> None:
+        """The shutdown toast honors the configured ASCII glyph set."""
+        from deepagents_code.config import ASCII_GLYPHS
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "deepagents_code.config.get_glyphs",
+                    return_value=ASCII_GLYPHS,
+                ),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            notify.assert_called_once_with(
+                "Finishing pending work before exit...",
+                markup=False,
+            )
+
+    async def test_no_toast_for_immediate_idle_exit(self) -> None:
+        """An idle, synchronous exit shows no shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = False
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                super_exit.assert_called_once()
+
+            assert app._graceful_exit_task is None
+            notify.assert_not_called()
+
+    async def test_no_toast_when_worker_present_but_finished(self) -> None:
+        """A present-but-finished worker with no hooks defers nothing."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = True
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit") as super_exit,
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                super_exit.assert_called_once()
+
+            assert app._graceful_exit_task is None
+            notify.assert_not_called()
+
+    async def test_no_duplicate_toast_on_repeated_exit(self) -> None:
+        """A forced second exit does not emit a second shutdown toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=False),
+                patch.object(App, "exit"),
+                patch.object(app, "notify") as notify,
+            ):
+                app.exit()
+                pending = app._graceful_exit_task
+                assert pending is not None
+
+                # Second press before the deferred task runs force-quits and
+                # must not arm another toast.
+                app.exit()
+                notify.assert_called_once_with(self._shutdown_toast(), markup=False)
+
+                await pending
+
 
 class TestSlashCommandBypass:
     """Test that certain slash commands bypass the queue gate."""

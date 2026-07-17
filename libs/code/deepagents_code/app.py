@@ -15449,11 +15449,30 @@ class DeepAgentsApp(App):
         should_drain_hooks = has_pending_hooks()
 
         if should_wait_for_agent or should_drain_hooks:
+            from deepagents_code.config import get_glyphs
+
+            # Surface a single toast so the user knows shutdown is intentionally
+            # waiting rather than hung. Gate `_graceful_exit` on an explicit
+            # refresh so even an already-finished worker or hook drain can't tear
+            # down Textual before the queued notification has been rendered.
+            # Immediate/idle exits skip this branch and stay toast-free, and a
+            # repeated exit while shutdown is still pending hits the force-quit
+            # guard above before reaching here, so it stays toast-free too.
+            self.notify(
+                f"Finishing pending work before exit{get_glyphs().ellipsis}",
+                markup=False,
+            )
+            refreshed = asyncio.Event()
+            if not self.call_after_refresh(refreshed.set):
+                # A closing message pump can't render the toast, but it must not
+                # strand shutdown waiting on a refresh that will never happen.
+                refreshed.set()
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
+                    await refreshed.wait()
                     worker = agent_worker
                     if should_wait_for_agent and worker is not None:
                         try:

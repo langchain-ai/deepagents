@@ -9,6 +9,7 @@ import logging
 import os
 import shlex
 import signal
+import stat as stat_module
 import sys
 import threading
 import time
@@ -18,7 +19,16 @@ from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    NamedTuple,
+    TypeVar,
+    assert_never,
+    cast,
+)
 
 from textual import on
 from textual.app import App, ScreenStackError
@@ -559,6 +569,11 @@ if TYPE_CHECKING:
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
+    from deepagents_code.plugins.models import (
+        PluginDiscoveryResult,
+        PluginInstance,
+        PluginManifest,
+    )
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
@@ -568,7 +583,11 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.debug_console import SnapshotField
-    from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+    from deepagents_code.tui.widgets.goal_review import (
+        GoalReviewMenu,
+        GoalReviewResult,
+        GoalReviewTextArea,
+    )
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
@@ -601,9 +620,48 @@ _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 Bounds command/worker handling against a modal that never resolves (compose
 crash, programmatic teardown that skips the dismiss callback). 10 minutes is
 well past any human latency but stops a genuinely broken modal from wedging
-the caller. Shared by the install-confirm, MCP-reconnect, and restart-prompt
-watchdogs so the three stay in lockstep.
+the caller. Shared by every modal watchdog so their timeouts stay in lockstep.
 """
+
+_PLUGIN_RELOAD_REMINDER = "Plugin changes are pending. Run /reload when ready."
+_PLUGIN_RELOAD_CHECK_FAILED = "Couldn't check plugin state. Run /reload to be safe."
+_MAX_PLUGIN_FINGERPRINT_ENTRIES = 10_000
+_UNREADABLE_PLUGIN_FINGERPRINT_STAT = -1
+_TRUNCATED_PLUGIN_FINGERPRINT_STAT = -2
+
+
+class _PathStat(NamedTuple):
+    """Filesystem fingerprint entry for one component file.
+
+    `mtime_ns`/`size` are `_UNREADABLE_PLUGIN_FINGERPRINT_STAT` (-1) when a path
+    cannot be inspected and `_TRUNCATED_PLUGIN_FINGERPRINT_STAT` (-2) when the
+    bounded scan is truncated. These negative sentinels never collide with real
+    (non-negative) stat values and keep incomplete scans from being mistaken
+    for complete, unchanged state.
+    """
+
+    path: str
+    mtime_ns: int
+    size: int
+
+
+class _PluginFingerprint(NamedTuple):
+    """Reload-comparison fingerprint for a single plugin.
+
+    Only ever compared with `==`/`!=`, so `manifest` is held directly —
+    `PluginManifest` is a frozen dataclass that compares by value, which avoids
+    the key-order fragility of comparing `repr(manifest)`. `__hash__` is
+    disabled so hashing fails deterministically: without it a fingerprint is
+    only conditionally hashable (fine when `manifest is None`, `TypeError` via
+    the manifest's `dict` field otherwise), which would hide accidental
+    set/dict-key use behind whichever plugins happen to lack a manifest.
+    """
+
+    version: str | None
+    manifest: PluginManifest | None
+    components: tuple[_PathStat, ...]
+
+    __hash__ = None  # type: ignore[assignment]
 
 
 def _resolve_theme_name(value: object) -> str | None:
@@ -1643,13 +1701,22 @@ class _ThreadHistoryPayload:
     """Persisted accepted goal criteria, if any."""
 
     goal_status_note: str | None = None
-    """Persisted evidence or blocker note, if any."""
+    """Persisted completion evidence or blocker note for the goal, if any."""
 
     pending_goal_completion_note: str | None = None
-    """Persisted completion evidence awaiting rubric/user approval."""
+    """Persisted agent-provided completion evidence awaiting final grading."""
 
     rubric_status: str | None = None
     """Latest rubric grading status from `RubricMiddleware`, if any."""
+
+    rubric_grading_run_id: str | None = None
+    """Persisted `_current_grading_run_id` for the latest rubric grade, if any.
+
+    Correlation only, never authority: the resolve path compares it against the
+    *current* turn's observed grading run so that only a grade produced this turn
+    can complete the goal. It is intentionally not consumed on restore (see
+    `_restore_goal_rubric_state`), where a persisted status is display data.
+    """
 
     pending_goal_objective: str | None = None
     """Persisted pending goal objective, if any."""
@@ -1663,6 +1730,19 @@ class _ThreadHistoryPayload:
     pending_goal_request_id: str | None = None
     """Request that produced the pending proposal."""
 
+    goal_criteria_request_active: bool = False
+    """Whether a newer or unfinished criteria request remains in the checkpoint."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingGoalProposal:
+    """Complete pending proposal captured for review or automatic acceptance."""
+
+    objective: str
+    rubric: str
+    kind: GoalProposalKind
+    request_id: str | None
+
 
 @dataclass(frozen=True, slots=True)
 class _GoalApplication:
@@ -1671,6 +1751,7 @@ class _GoalApplication:
     objective: str
     rubric: str
     kind: GoalProposalKind
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         """Reject empty objective or rubric at construction.
@@ -2237,6 +2318,25 @@ class _MainScreen(Screen[None]):
 _GOAL_SYNC_READ_ATTEMPTS = 3
 _GOAL_SYNC_READ_RETRY_SECONDS = 0.4
 
+# Recorded as the completion note when a goal auto-completes on a satisfied
+# grade without the agent having staged any `update_goal(complete)` evidence.
+_DEFAULT_GOAL_COMPLETION_NOTE = "Acceptance criteria satisfied."
+
+
+@dataclass(frozen=True)
+class _GoalGradeObservation:
+    """A goal-backed grading run observed on a work turn that completed.
+
+    Threaded (as `| None`) from the turn to `_resolve_pending_goal_completion`,
+    where its `grading_run_id` is compared against the persisted
+    `rubric_grading_run_id`. Its *presence* encodes the whole precondition — a
+    goal-backed grade was observed on a turn that did not abort — so callers no
+    longer juggle a bare run-id plus a separate "did the turn finish" flag.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for the observed grade."""
+
 
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
@@ -2619,6 +2719,12 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._session_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids loaded into the current session (startup or last `/reload`)."""
+
+        self._discovered_plugin_ids: frozenset[str] = frozenset()
+        """Plugin ids found by the latest background skill discovery."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -2826,10 +2932,10 @@ class DeepAgentsApp(App):
         `complete`)."""
 
         self._goal_status_note: str | None = None
-        """Evidence or blocker note recorded by the model's goal tool."""
+        """Persisted completion evidence or blocker note for the goal."""
 
         self._pending_goal_completion_note: str | None = None
-        """Agent-requested completion awaiting rubric and user approval."""
+        """Optional agent-provided completion evidence awaiting final grading."""
 
         self._pending_goal_objective: str | None = None
         """Goal objective awaiting user acceptance of proposed criteria."""
@@ -2842,6 +2948,9 @@ class DeepAgentsApp(App):
 
         self._pending_goal_request_id: str | None = None
         """Request that produced the pending proposal."""
+
+        self._discarded_goal_proposal_request_ids: set[str] = set()
+        """Rejected or cancelled proposals blocked from later local restoration."""
 
         self._queued_goal_application: _GoalApplication | None = None
         """Accepted proposal deferred until the active graph run is quiescent."""
@@ -2891,11 +3000,17 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget: GoalReviewMenu | None = None
         """Currently-mounted goal criteria review prompt awaiting a decision."""
 
+        self._pending_goal_review_future: asyncio.Future[GoalReviewResult] | None = None
+        """Decision future owned by the currently mounted goal review prompt."""
+
         self._goal_proposal_worker: Worker[None] | None = None
         """Active worker drafting or mounting a goal criteria proposal."""
 
         self._goal_review_task: asyncio.Task[None] | None = None
         """Active task awaiting a mounted goal criteria review decision."""
+
+        self._goal_review_resolution_lock = asyncio.Lock()
+        """Serializes review mounting and live auto-acceptance transitions."""
 
         # Agent & shell run state
         self._agent_worker: Worker[None] | None = None
@@ -3221,6 +3336,18 @@ class DeepAgentsApp(App):
 
         Used by `_invoke_skill` to skip re-walking all skill directories on
         every invocation.
+        """
+
+        self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
+        """Rolling plugin-fingerprint baseline keyed by plugin id.
+
+        First populated by whichever of `_show_plugin_manager` (on open) or
+        `/reload` runs first, and preserved across manager reopens. Read as the
+        `old` baseline for the `/reload` change summary, which always refreshes
+        it (so `/reload` before the manager is ever opened is the first writer,
+        with no summary since `old` is `None`). `None` until first captured. The
+        manager-close check (`_check_plugin_manager_changes`) compares a fresh
+        read against its own open-time snapshot, not this attribute.
         """
 
         self._skill_allowed_roots: list[Path] = []
@@ -3740,7 +3867,7 @@ class DeepAgentsApp(App):
         # Discover skills first so /skill: autocomplete is ready as early
         # as possible. The heavy filesystem scan runs in a thread.
         self.run_worker(
-            self._discover_skills(),
+            self._discover_startup_skills(),
             exclusive=True,
             group="startup-skill-discovery",
         )
@@ -3840,6 +3967,8 @@ class DeepAgentsApp(App):
                 severity="error",
                 timeout=10,
             )
+            return
+        await self._auto_accept_pending_goal_rubric()
 
     async def _ensure_managed_ripgrep(self) -> bool:
         """Install the managed `rg` and prepend it to `PATH`, exactly once.
@@ -4088,6 +4217,17 @@ class DeepAgentsApp(App):
                 )
         return True
 
+    async def _discover_startup_skills(self) -> bool:
+        """Discover skills and record plugins loaded by initial startup.
+
+        Returns:
+            Whether skill and plugin discovery succeeded.
+        """
+        discovered = await self._discover_skills()
+        if discovered:
+            self._session_plugin_ids = self._discovered_plugin_ids
+        return discovered
+
     def _discover_skills_and_roots(
         self,
     ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
@@ -4100,14 +4240,12 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_code.plugins.adapters.skills import (
-            discover_plugin_skill_sources_and_roots,
-        )
+        from deepagents_code.plugins.adapters.skills import discover_plugin_skill_state
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots = (
-            discover_plugin_skill_sources_and_roots()
+        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
+            discover_plugin_skill_state()
         )
         return discover_skills_and_roots(
             assistant_id,
@@ -6997,6 +7135,7 @@ class DeepAgentsApp(App):
                     "Auto-approve could not sync to the running agent; "
                     "approval prompts may continue."
                 )
+        await self._auto_accept_pending_goal_rubric()
 
     async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
@@ -7145,12 +7284,18 @@ class DeepAgentsApp(App):
         """Handle ask_user menu cancellation - remove widget and refocus input."""
         await self._finish_ask_user_prompt(context="cancelled")
 
-    def _cancel_goal_review_task(self) -> None:
-        """Cancel any pending goal review continuation task."""
+    def _cancel_goal_review_task(self) -> asyncio.Task[None] | None:
+        """Cancel any pending goal review continuation task.
+
+        Returns:
+            The task whose cancellation should be awaited, if one was active.
+        """
         task = self._goal_review_task
         self._goal_review_task = None
         if task is not None and not task.done():
             task.cancel()
+            return task
+        return None
 
     def _cancel_goal_proposal_worker(self) -> None:
         """Cancel any pending goal proposal worker."""
@@ -7161,11 +7306,19 @@ class DeepAgentsApp(App):
 
     async def _cancel_pending_goal_review(self, *, context: str) -> None:
         """Cancel and remove any mounted pending goal review prompt."""
-        self._cancel_goal_review_task()
+        task = self._cancel_goal_review_task()
         widget = self._pending_goal_review_widget
+        future = self._pending_goal_review_future
         self._pending_goal_review_widget = None
+        self._pending_goal_review_future = None
         if widget is not None:
             widget.action_cancel()
+        if future is not None and not future.done():
+            future.cancel()
+        if task is not None and task is not asyncio.current_task():
+            with suppress(asyncio.CancelledError):
+                await task
+        if widget is not None:
             await self._remove_inline_prompt_widget(
                 widget,
                 prompt_name="goal review",
@@ -7236,6 +7389,7 @@ class DeepAgentsApp(App):
         )
         menu.set_future(result_future)
         self._pending_goal_review_widget = menu
+        self._pending_goal_review_future = result_future
 
         try:
             await self._mount_inline_prompt(menu, focus=menu.focus_active)
@@ -7245,6 +7399,8 @@ class DeepAgentsApp(App):
                 unique_id,
             )
             self._pending_goal_review_widget = None
+            if self._pending_goal_review_future is result_future:
+                self._pending_goal_review_future = None
             if not result_future.done():
                 result_future.set_exception(e)
 
@@ -7405,7 +7561,7 @@ class DeepAgentsApp(App):
                 or not self._has_initial_submission()
             )
             if should_load_history:
-                await self._load_thread_history()
+                await self._load_thread_history(resolve_pending_goal=False)
             elif self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
@@ -7430,6 +7586,9 @@ class DeepAgentsApp(App):
                 # One-shot: clear to avoid re-running on any subsequent server swap.
                 self._startup_cmd = None
                 await self._run_startup_command(cmd)
+
+            if should_load_history:
+                await self._remount_pending_goal_rubric_review()
 
             if self._has_initial_submission():
                 await self._submit_initial_submission()
@@ -7553,6 +7712,10 @@ class DeepAgentsApp(App):
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        # These startup paths (`-m`, `--skill`, `--goal`) submit outside
+        # `_submit_input`, so dismiss the startup tip here to match the
+        # interactive submission behavior.
+        await self._dismiss_startup_tip()
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(
@@ -8196,9 +8359,12 @@ class DeepAgentsApp(App):
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 
-        Called from `_submit_input`, so every submission path (interactive
-        and external) dismisses the tip. Subsequent calls are no-ops: the
-        widget is already gone and `query_one` raises `NoMatches`.
+        Called from both submission entry points: `_submit_input` (the shared
+        interactive/external path) and `_submit_initial_submission` (the
+        `-m`/`--skill`/`--goal` startup path, which submits without going
+        through `_submit_input`). Every submission path therefore dismisses
+        the tip. Subsequent calls are no-ops: the widget is already gone and
+        `query_one` raises `NoMatches`.
         """
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()
@@ -9212,6 +9378,59 @@ class DeepAgentsApp(App):
         self._pending_goal_kind = None
         self._pending_goal_request_id = None
 
+    def _live_goal_auto_approve_enabled(self) -> bool:
+        """Return whether the authoritative live mode is literal `True`."""
+        return (
+            self._session_state is not None
+            and getattr(self._session_state, "auto_approve", None) is True
+        )
+
+    def _pending_goal_proposal(self) -> _PendingGoalProposal | None:
+        """Return a complete, well-formed pending proposal if one exists."""
+        objective = self._pending_goal_objective
+        rubric = self._pending_goal_rubric
+        if (
+            not isinstance(objective, str)
+            or not objective.strip()
+            or not isinstance(rubric, str)
+            or not rubric.strip()
+        ):
+            return None
+
+        kind = self._pending_goal_kind
+        if kind in {None, "create"}:
+            normalized_kind: GoalProposalKind = "create"
+        elif kind == "amend":
+            normalized_kind = "amend"
+        else:
+            return None
+
+        request_id = self._pending_goal_request_id
+        if request_id is not None and (
+            not isinstance(request_id, str) or not request_id.strip()
+        ):
+            return None
+        if request_id in self._discarded_goal_proposal_request_ids:
+            return None
+        return _PendingGoalProposal(
+            objective,
+            rubric,
+            normalized_kind,
+            request_id,
+        )
+
+    @staticmethod
+    def _goal_application_matches_proposal(
+        application: _GoalApplication,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Return whether an application already accepted this proposal request."""
+        return (
+            application.objective == proposal.objective
+            and application.kind == proposal.kind
+            and application.request_id == proposal.request_id
+        )
+
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
@@ -9280,6 +9499,9 @@ class DeepAgentsApp(App):
                 state_values.get("_pending_goal_completion_note")
             ),
             rubric_status=_as_str(state_values.get("_rubric_status")),
+            rubric_grading_run_id=_as_nonblank_str(
+                state_values.get("_current_grading_run_id")
+            ),
             pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
             pending_goal_kind=coerce_goal_proposal_kind(
@@ -9287,6 +9509,9 @@ class DeepAgentsApp(App):
             ),
             pending_goal_request_id=_as_nonblank_str(
                 state_values.get("_pending_goal_request_id")
+            ),
+            goal_criteria_request_active=(
+                state_values.get("goal_criteria_request") is not None
             ),
         )
 
@@ -9303,6 +9528,12 @@ class DeepAgentsApp(App):
             preserve_queued_application: Keep an accepted in-flight goal update
                 that must be applied after turn-end reconciliation.
         """
+        # `payload.rubric_status`/`rubric_grading_run_id` are intentionally NOT
+        # consumed here. Restore treats a persisted grade as display data, never
+        # as authority to complete a goal: completion is resolved only for the
+        # *current* turn's grading run in `_resolve_pending_goal_completion`.
+        # Wiring a persisted "satisfied" status into restore would reintroduce
+        # stale auto-completion on resume/thread-switch.
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -9313,10 +9544,17 @@ class DeepAgentsApp(App):
             self._active_rubric = payload.sticky_rubric
         else:
             self._active_rubric = payload.rubric
-        self._pending_goal_objective = payload.pending_goal_objective
-        self._pending_goal_rubric = payload.pending_goal_rubric
-        self._pending_goal_kind = payload.pending_goal_kind
-        self._pending_goal_request_id = payload.pending_goal_request_id
+        if (
+            payload.goal_criteria_request_active
+            or payload.pending_goal_request_id
+            in self._discarded_goal_proposal_request_ids
+        ):
+            self._clear_pending_goal_rubric()
+        else:
+            self._pending_goal_objective = payload.pending_goal_objective
+            self._pending_goal_rubric = payload.pending_goal_rubric
+            self._pending_goal_kind = payload.pending_goal_kind
+            self._pending_goal_request_id = payload.pending_goal_request_id
         if not preserve_queued_application:
             self._queued_goal_application = None
         if self._pending_goal_objective and self._pending_goal_kind is None:
@@ -9358,56 +9596,45 @@ class DeepAgentsApp(App):
         *,
         previous_status: str | None,
     ) -> bool:
-        """Clear a rubric-approved goal after its completion is saved.
+        """Persist a completed goal without discarding its objective or criteria.
 
         Returns:
-            `True` when the cleared state was persisted, or `False` when the active
-                goal was restored for retry.
+            `True` when the completed state was persisted, or `False` when the
+                active state was restored for retry.
         """
-        active_goal = self._active_goal
         goal_status = self._goal_status
         goal_status_note = self._goal_status_note
-        active_rubric = self._active_rubric
         pending_goal_completion_note = self._pending_goal_completion_note
         pending_goal_objective = self._pending_goal_objective
         pending_goal_rubric = self._pending_goal_rubric
         pending_goal_kind = self._pending_goal_kind
         pending_goal_request_id = self._pending_goal_request_id
-        next_rubric = self._next_rubric
-        last_consumed_next_rubric = self._last_consumed_next_rubric
-        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
 
-        self._clear_all_goal_rubric_state()
+        self._goal_status = "complete"
+        self._goal_status_note = note
+        self._pending_goal_completion_note = None
+        self._clear_pending_goal_rubric()
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
         if persisted:
             if previous_status != "complete":
-                text = "Goal marked complete by the agent."
-                if note:
-                    text = f"{text}\n\n{note}"
-                await self._mount_message(AppMessage(text))
+                await self._mount_message(
+                    AppMessage(f"Goal marked complete.\n\n{note}")
+                )
             return True
 
-        # The checkpoint still contains the active goal and pending completion
-        # request. Restore that exact local state so the UI and next grading
-        # turn cannot diverge from it, and so a later sync can safely retry.
-        self._active_goal = active_goal
         self._goal_status = goal_status
         self._goal_status_note = goal_status_note
-        self._active_rubric = active_rubric
-        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_completion_note = pending_goal_completion_note
         self._pending_goal_objective = pending_goal_objective
         self._pending_goal_rubric = pending_goal_rubric
         self._pending_goal_kind = pending_goal_kind
         self._pending_goal_request_id = pending_goal_request_id
-        self._next_rubric = next_rubric
-        self._last_consumed_next_rubric = last_consumed_next_rubric
-        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
         self._sync_status_rubric()
         await self._mount_message(
             ErrorMessage(
                 "Goal completion could not be saved, so the goal remains active "
-                "and its completion request is still pending for retry."
+                "and can be retried after another satisfied grading turn."
             )
         )
         return False
@@ -9422,100 +9649,80 @@ class DeepAgentsApp(App):
         self,
         *,
         rubric_status: str | None,
+        rubric_grading_run_id: str | None,
+        goal_grade: _GoalGradeObservation | None,
         previous_status: str | None,
     ) -> bool:
-        """Resolve a staged completion request after rubric grading.
+        """Resolve completion from a correlated goal-backed grading turn.
+
+        Args:
+            rubric_status: Persisted verdict read from the checkpoint.
+            rubric_grading_run_id: Persisted grading-run ID for that verdict.
+            goal_grade: Grade observed live on the current goal-backed turn, or
+                `None` when this cleanup is not that turn. Completion requires it
+                to correlate with `rubric_grading_run_id`.
+            previous_status: Goal status before this resolution, for messaging.
 
         Returns:
-            `True` when the request committed the goal as complete.
+            `True` when the current grading turn completed the goal.
         """
-        note = self._pending_goal_completion_note
-        if not self._active_goal or not note or self._goal_status == "complete":
+        if (
+            goal_grade is None
+            or rubric_grading_run_id != goal_grade.grading_run_id
+            or not self._active_goal
+            or self._goal_status != "active"
+            or self._queued_goal_application is not None
+        ):
             return False
 
+        note = self._pending_goal_completion_note
         if rubric_status == "grader_error":
-            await self._mount_message(
-                ErrorMessage(
-                    "Acceptance-criteria grading failed because of a grader or "
-                    "infrastructure error. The goal remains active, and its completion "
-                    "request is still pending; it will be re-graded on your next turn."
+            if note:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Acceptance-criteria grading failed because of a grader or "
+                        "infrastructure error. The goal remains active, and its "
+                        "completion request is still pending; it will be re-graded on "
+                        "your next turn."
+                    )
                 )
-            )
             return False
         if rubric_status == "max_iterations_reached":
-            await self._clear_pending_goal_completion(
-                "Goal completion was not recorded: the iteration limit was reached "
-                "with unmet criteria. The goal remains active for resume, amendment, "
-                "retry, or clearing."
-            )
+            if note:
+                await self._clear_pending_goal_completion(
+                    "Goal completion was not recorded: the iteration limit was reached "
+                    "with unmet criteria. The goal remains active for resume, "
+                    "amendment, retry, or clearing."
+                )
             return False
         if rubric_status == "failed":
-            await self._clear_pending_goal_completion(
-                "Goal completion was not recorded because the grader could not "
-                "evaluate the rubric. The goal remains active."
-            )
+            if note:
+                await self._clear_pending_goal_completion(
+                    "Goal completion was not recorded because the grader could not "
+                    "evaluate the rubric. The goal remains active."
+                )
             return False
         if rubric_status != "satisfied":
-            await self._clear_pending_goal_completion(
-                "Goal completion was not recorded because the rubric was not satisfied."
-            )
+            if note:
+                await self._clear_pending_goal_completion(
+                    "Goal completion was not recorded because the rubric was not "
+                    "satisfied."
+                )
             return False
 
-        if self._session_state is not None and self._session_state.auto_approve:
-            return await self._commit_pending_goal_completion(
-                note,
-                previous_status=previous_status,
-            )
-
-        action_requests = [
-            {
-                "name": "update_goal",
-                "args": {"status": "complete", "note": note},
-                "description": (
-                    "The agent believes the current goal is complete. "
-                    "Approve to mark it complete."
-                ),
-            }
-        ]
-        try:
-            future = await self._request_approval(action_requests, self._assistant_id)
-            decision = await future
-        except Exception:
-            logger.warning("Failed to request goal completion approval", exc_info=True)
-            self.notify(
-                "Could not request approval to mark the goal complete.",
-                severity="warning",
-                markup=False,
-            )
-            return False
-
-        decision_type = decision.get("type") if isinstance(decision, dict) else None
-        if decision_type == "auto_approve_all":
-            await self._on_auto_approve_enabled()
-            return await self._commit_pending_goal_completion(
-                note,
-                previous_status=previous_status,
-            )
-        if decision_type == "approve":
-            return await self._commit_pending_goal_completion(
-                note,
-                previous_status=previous_status,
-            )
-
-        reject_message = decision.get("message") if isinstance(decision, dict) else None
-        if isinstance(reject_message, str) and reject_message.strip():
-            message = f"Goal completion rejected: {reject_message.strip()}"
-        else:
-            message = "Goal completion rejected."
-        await self._clear_pending_goal_completion(message)
-        return False
+        return await self._commit_pending_goal_completion(
+            note or _DEFAULT_GOAL_COMPLETION_NOTE,
+            previous_status=previous_status,
+        )
 
     async def _sync_goal_rubric_state_from_thread(
         self,
         *,
         force: bool = False,
         proposal_request_id: str | None = None,
-    ) -> None:
+        goal_grade: _GoalGradeObservation | None = None,
+        allow_pending_proposal: bool = True,
+    ) -> bool:
         """Refresh goal/rubric metadata from the active checkpoint.
 
         Args:
@@ -9523,18 +9730,26 @@ class DeepAgentsApp(App):
             proposal_request_id: When set, restore a pending proposal only if it
                 originated from this criteria request. Resume callers omit it so
                 persisted proposals remain reviewable across clients.
+            goal_grade: Grade observed during the current goal-backed work turn.
+                Omit outside that exact turn; only a correlated grade completes
+                the goal.
+            allow_pending_proposal: Whether a proposal from this turn may be
+                restored. Failed and cancelled criteria turns set this to `False`.
+
+        Returns:
+            Whether failed/cancelled proposal state was safely reconciled.
         """
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
-            return
-        # The fetched checkpoint is only needed to reflect the agent's
-        # `update_goal` tool, which can only run while a goal is active. When no
-        # goal/rubric state is engaged locally (and no one-shot rubric reconcile
-        # is pending), nothing server-side could have changed these channels, so
-        # skip the per-turn `aget_state` round-trip (and full message-history
-        # deserialization). Resume populates these locals before any turn runs,
-        # so a thread with persisted state never reaches this fast path empty.
+            return True
+        # The fetched checkpoint reflects agent-side goal updates, generated
+        # proposals, and the current turn's rubric result. When no goal/rubric state
+        # is engaged locally (and no one-shot rubric reconcile is pending), none of
+        # those channels can affect the TUI, so skip the per-turn `aget_state`
+        # round-trip and full message-history deserialization. Resume populates
+        # these locals before any turn runs, so a thread with persisted state never
+        # reaches this fast path empty.
         if not force and not (
             self._active_goal
             or self._active_rubric
@@ -9547,7 +9762,7 @@ class DeepAgentsApp(App):
             or self._last_consumed_next_rubric is not None
             or self._last_consumed_next_previous_rubric is not None
         ):
-            return
+            return True
         # A forced sync follows a criteria turn whose proposal lives only in the
         # checkpoint, so retry a transient read failure before giving up rather
         # than stranding a freshly generated proposal. Normal (unforced) syncs
@@ -9564,12 +9779,11 @@ class DeepAgentsApp(App):
                 if attempt + 1 < attempts:
                     await asyncio.sleep(_GOAL_SYNC_READ_RETRY_SECONDS)
         if state_values is None:
-            # This refresh is the only path that reflects the agent's
-            # `update_goal` completion/block into the transcript and status bar,
-            # so a swallowed failure would silently lose that signal. Surface it
-            # (once) rather than dropping to DEBUG. Leave the consumed one-shot
-            # rubric bookkeeping intact so a later successful sync can still
-            # reconcile it.
+            # This refresh is the only path that reflects agent-side goal updates
+            # and the current grading result into the TUI, so a swallowed failure
+            # could silently miss a completion or blocker. Surface it once rather
+            # than dropping to DEBUG. Leave consumed one-shot bookkeeping intact so
+            # a later successful sync can still reconcile it.
             logger.warning("Failed to refresh goal/rubric state", exc_info=read_error)
             if not self._goal_rubric_sync_warned:
                 self._goal_rubric_sync_warned = True
@@ -9579,21 +9793,30 @@ class DeepAgentsApp(App):
                     severity="warning",
                 )
             if force:
+                pending_matches = (
+                    proposal_request_id is None
+                    or self._pending_goal_request_id == proposal_request_id
+                )
+                if not allow_pending_proposal:
+                    if pending_matches:
+                        self._clear_pending_goal_rubric()
+                    return False
                 # On an amend/regeneration the prior proposal is still in local
                 # pending state, so remounting the review restores an actionable
                 # widget. On a first create there is no local pending state, so a
                 # remount is a no-op — tell the user the proposal was generated
                 # but could not be loaded, and how to recover.
-                pending_matches = (
-                    proposal_request_id is None
-                    or self._pending_goal_request_id == proposal_request_id
-                )
                 if (
                     pending_matches
                     and self._pending_goal_objective
                     and self._pending_goal_rubric
                 ):
-                    await self._remount_pending_goal_rubric_review()
+                    if proposal_request_id is None:
+                        await self._remount_pending_goal_rubric_review()
+                    else:
+                        await self._remount_pending_goal_rubric_review(
+                            expected_request_id=proposal_request_id,
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(
@@ -9601,7 +9824,7 @@ class DeepAgentsApp(App):
                             "loaded from the thread. Run `/goal` again to retry."
                         )
                     )
-            return
+            return False
         self._goal_rubric_sync_warned = False
         if _warn_discarded_goal_channels(state_values):
             self.notify(
@@ -9614,9 +9837,24 @@ class DeepAgentsApp(App):
             context_tokens=0,
             model_spec="",
         )
+        active_request = state_values.get("goal_criteria_request")
+        pending_request_is_active = active_request is not None
+        discard_failed_proposal = (
+            not allow_pending_proposal
+            and payload.pending_goal_objective is not None
+            and (
+                proposal_request_id is None
+                or payload.pending_goal_request_id == proposal_request_id
+            )
+        )
+        proposal_cleanup_succeeded = True
         if (
-            proposal_request_id is not None
-            and payload.pending_goal_request_id != proposal_request_id
+            (
+                proposal_request_id is not None
+                and payload.pending_goal_request_id != proposal_request_id
+            )
+            or pending_request_is_active
+            or not allow_pending_proposal
         ):
             payload = replace(
                 payload,
@@ -9626,6 +9864,8 @@ class DeepAgentsApp(App):
                 pending_goal_request_id=None,
             )
             self._clear_pending_goal_rubric()
+            if discard_failed_proposal:
+                proposal_cleanup_succeeded = await self._persist_goal_rubric_state()
         if not any(
             (
                 payload.rubric,
@@ -9643,7 +9883,7 @@ class DeepAgentsApp(App):
         ):
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
-            return
+            return proposal_cleanup_succeeded
         one_shot_rubric_consumed = (
             self._last_consumed_next_rubric is not None
             and payload.rubric == self._last_consumed_next_rubric
@@ -9660,15 +9900,23 @@ class DeepAgentsApp(App):
         )
         completion_committed = await self._resolve_pending_goal_completion(
             rubric_status=payload.rubric_status,
+            rubric_grading_run_id=payload.rubric_grading_run_id,
+            goal_grade=goal_grade,
             previous_status=previous_status,
         )
         if not completion_committed:
             await self._announce_goal_status_transition(previous_status)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
-        await self._remount_pending_goal_rubric_review()
+        if proposal_request_id is None:
+            await self._remount_pending_goal_rubric_review()
+        else:
+            await self._remount_pending_goal_rubric_review(
+                expected_request_id=proposal_request_id,
+            )
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
+        return proposal_cleanup_succeeded
 
     @staticmethod
     def _is_grader_alias_arg(arg: str) -> bool:
@@ -10015,50 +10263,183 @@ class DeepAgentsApp(App):
             request["previous_criteria"] = previous_criteria
         await self._run_goal_criteria_request(request)
 
-    async def _start_pending_goal_rubric_review(self) -> None:
-        """Mount the pending goal review prompt and schedule its continuation."""
-        objective = self._pending_goal_objective
-        rubric = self._pending_goal_rubric
-        if not objective or not rubric:
-            return
-
-        self._cancel_goal_review_task()
-        if self._pending_goal_kind == "amend":
+    async def _mount_goal_rubric_review(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> None:
+        """Mount one proposal's manual review prompt."""
+        if proposal.kind == "amend":
             result_future = await self._request_goal_review(
-                objective,
-                rubric,
+                proposal.objective,
+                proposal.rubric,
                 amendment=True,
             )
         else:
-            result_future = await self._request_goal_review(objective, rubric)
-        self.call_after_refresh(self._schedule_goal_review_task, result_future)
+            result_future = await self._request_goal_review(
+                proposal.objective,
+                proposal.rubric,
+            )
+        self._pending_goal_review_future = result_future
+        self.call_after_refresh(
+            self._schedule_goal_review_task,
+            result_future,
+            proposal,
+        )
 
-    async def _remount_pending_goal_rubric_review(self) -> None:
-        """Restore an actionable review prompt for a persisted pending goal."""
-        if not self._pending_goal_objective or not self._pending_goal_rubric:
-            return
-        task = self._goal_review_task
-        if self._pending_goal_review_widget is not None:
-            return
-        if task is not None and not task.done():
-            return
-        if task is not None:
-            self._goal_review_task = None
-        await self._start_pending_goal_rubric_review()
+    def _settle_decided_goal_review(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Keep a submitted review decision ahead of a live YOLO toggle.
+
+        Returns:
+            Whether a terminal review decision was already waiting.
+        """
+        future = self._pending_goal_review_future
+        if future is None or not future.done():
+            return False
+        if self._goal_review_task is None and not future.cancelled():
+            self._schedule_goal_review_task(future, proposal)
+        return True
+
+    async def _auto_accept_pending_goal_rubric_locked(
+        self,
+        proposal: _PendingGoalProposal,
+    ) -> bool:
+        """Accept a current proposal while the review-resolution lock is held.
+
+        Returns:
+            Whether this proposal was already or is now accepted.
+        """
+        if self._settle_decided_goal_review(proposal):
+            return False
+        application = self._queued_goal_application
+        if application is not None and self._goal_application_matches_proposal(
+            application,
+            proposal,
+        ):
+            await self._cancel_pending_goal_review(
+                context="automatic goal acceptance cleanup"
+            )
+            self._focus_chat_input_after_refresh()
+            return True
+
+        await self._cancel_pending_goal_review(
+            context="automatic goal acceptance cleanup"
+        )
+        if self._pending_goal_proposal() != proposal:
+            return False
+        if not self._live_goal_auto_approve_enabled():
+            await self._mount_goal_rubric_review(proposal)
+            return False
+
+        accepted = await self._accept_goal_rubric(
+            proposal.rubric,
+            expected_proposal=proposal,
+            automatic=True,
+        )
+        if accepted:
+            self._focus_chat_input_after_refresh()
+        return accepted
+
+    async def _auto_accept_pending_goal_rubric(
+        self,
+        *,
+        expected_request_id: str | None = None,
+    ) -> bool:
+        """Accept the complete pending proposal when live YOLO mode allows it.
+
+        Args:
+            expected_request_id: Correlation ID required for a freshly generated
+                proposal. Restored legacy proposals may omit it.
+
+        Returns:
+            Whether this proposal was already or is now accepted.
+        """
+        if self._startup_sequence_running:
+            return False
+        async with self._goal_review_resolution_lock:
+            if not self._live_goal_auto_approve_enabled():
+                return False
+            proposal = self._pending_goal_proposal()
+            if proposal is None:
+                return False
+            if (
+                expected_request_id is not None
+                and proposal.request_id != expected_request_id
+            ):
+                return False
+            return await self._auto_accept_pending_goal_rubric_locked(proposal)
+
+    async def _resolve_pending_goal_rubric_review(
+        self,
+        *,
+        replace_existing: bool,
+        expected_request_id: str | None = None,
+    ) -> None:
+        """Auto-accept or mount manual review for the current proposal."""
+        async with self._goal_review_resolution_lock:
+            proposal = self._pending_goal_proposal()
+            if proposal is None:
+                return
+            if (
+                expected_request_id is not None
+                and proposal.request_id != expected_request_id
+            ):
+                return
+            if self._live_goal_auto_approve_enabled():
+                await self._auto_accept_pending_goal_rubric_locked(proposal)
+                return
+
+            task = self._goal_review_task
+            if not replace_existing and (
+                self._pending_goal_review_widget is not None
+                or self._pending_goal_review_future is not None
+                or (task is not None and not task.done())
+            ):
+                return
+            if task is not None and task.done():
+                self._goal_review_task = None
+            await self._mount_goal_rubric_review(proposal)
+
+    async def _start_pending_goal_rubric_review(self) -> None:
+        """Resolve a newly generated pending goal proposal."""
+        await self._resolve_pending_goal_rubric_review(replace_existing=True)
+
+    async def _remount_pending_goal_rubric_review(
+        self,
+        *,
+        expected_request_id: str | None = None,
+    ) -> None:
+        """Restore or auto-accept a persisted pending goal proposal."""
+        await self._resolve_pending_goal_rubric_review(
+            replace_existing=False,
+            expected_request_id=expected_request_id,
+        )
 
     def _schedule_goal_review_task(
         self,
         result_future: asyncio.Future[GoalReviewResult],
+        proposal: _PendingGoalProposal,
     ) -> None:
         """Start the task that handles a mounted goal review decision."""
+        if self._pending_goal_review_future is not result_future:
+            if not result_future.done():
+                result_future.cancel()
+            return
         self._cancel_goal_review_task()
         self._goal_review_task = asyncio.create_task(
-            self._finish_pending_goal_rubric_review(result_future)
+            self._finish_pending_goal_rubric_review(
+                result_future,
+                expected_proposal=proposal,
+            )
         )
 
     async def _finish_pending_goal_rubric_review(
         self,
         result_future: asyncio.Future[GoalReviewResult],
+        *,
+        expected_proposal: _PendingGoalProposal | None = None,
     ) -> None:
         """Apply the user's pending goal review decision.
 
@@ -10068,20 +10449,36 @@ class DeepAgentsApp(App):
         task = asyncio.current_task()
         try:
             result = await result_future
+            if (
+                expected_proposal is not None
+                and self._pending_goal_proposal() != expected_proposal
+            ):
+                return
             if result["type"] == "accepted":
-                await self._accept_goal_rubric(self._pending_goal_rubric or "")
+                await self._accept_goal_rubric(
+                    self._pending_goal_rubric or "",
+                    expected_proposal=expected_proposal,
+                )
                 return
             if result["type"] == "edited":
-                await self._accept_goal_rubric(result["criteria"])
+                await self._accept_goal_rubric(
+                    result["criteria"],
+                    expected_proposal=expected_proposal,
+                )
                 return
             if result["type"] == "rejected":
                 if self._pending_goal_kind == "amend":
-                    self._regenerate_goal_amendment_from_feedback(result["message"])
+                    await self._regenerate_goal_amendment_from_feedback(
+                        result["message"]
+                    )
                 else:
-                    self._regenerate_goal_rubric_from_feedback(result["message"])
+                    await self._regenerate_goal_rubric_from_feedback(result["message"])
                 return
             if result["type"] == "cancelled":
                 was_amendment = self._pending_goal_kind == "amend"
+                request_id = self._pending_goal_request_id
+                if request_id is not None:
+                    self._discarded_goal_proposal_request_ids.add(request_id)
                 async with self._goal_state_mutation_boundary():
                     self._clear_pending_goal_rubric()
                     await self._persist_goal_rubric_state()
@@ -10107,6 +10504,8 @@ class DeepAgentsApp(App):
         finally:
             if self._goal_review_task is task:
                 self._goal_review_task = None
+            if self._pending_goal_review_future is result_future:
+                self._pending_goal_review_future = None
 
     async def _review_pending_goal_rubric(self) -> None:
         """Mount the goal-review widget for the pending proposal (test entry point).
@@ -10117,7 +10516,29 @@ class DeepAgentsApp(App):
         """
         await self._start_pending_goal_rubric_review()
 
-    def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
+    async def _clear_rejected_goal_proposal(self) -> bool:
+        """Persist rejection before starting replacement criteria generation.
+
+        Returns:
+            Whether the rejected proposal was cleared from the thread.
+        """
+        request_id = self._pending_goal_request_id
+        if request_id is not None:
+            self._discarded_goal_proposal_request_ids.add(request_id)
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            persisted = await self._persist_goal_rubric_state()
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "The rejected goal proposal could not be cleared from the "
+                    "thread, so regeneration was not started. Run `/goal` again "
+                    "after the connection recovers."
+                )
+            )
+        return persisted
+
+    async def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
         """Start a new goal criteria proposal from rejection feedback."""
         objective = self._pending_goal_objective
         previous_criteria = self._pending_goal_rubric
@@ -10125,6 +10546,8 @@ class DeepAgentsApp(App):
         if not objective or not previous_criteria or not feedback:
             return
         self._cancel_goal_proposal_worker()
+        if not await self._clear_rejected_goal_proposal():
+            return
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_rubric(
                 objective,
@@ -10134,7 +10557,7 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
+    async def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
         """Revise a pending amendment from review feedback."""
         objective = self._pending_goal_objective
         criteria = self._pending_goal_rubric
@@ -10142,6 +10565,8 @@ class DeepAgentsApp(App):
         if not objective or not criteria or not feedback:
             return
         self._cancel_goal_proposal_worker()
+        if not await self._clear_rejected_goal_proposal():
+            return
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_amendment(
                 feedback,
@@ -10151,16 +10576,31 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _accept_goal_rubric(self, rubric: str) -> None:
-        """Apply accepted criteria immediately or at the next safe boundary."""
+    async def _accept_goal_rubric(
+        self,
+        rubric: str,
+        *,
+        expected_proposal: _PendingGoalProposal | None = None,
+        automatic: bool = False,
+    ) -> bool:
+        """Apply accepted criteria immediately or at the next safe boundary.
+
+        Returns:
+            Whether the pending proposal was accepted or was already queued.
+        """
+        if (
+            expected_proposal is not None
+            and self._pending_goal_proposal() != expected_proposal
+        ):
+            return False
         objective = self._pending_goal_objective
         if not objective:
             await self._mount_message(AppMessage("No pending goal to accept."))
-            return
+            return False
         rubric = rubric.strip()
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
-            return
+            return False
         kind = self._pending_goal_kind or "create"
         if kind == "amend" and (
             not self._active_goal or self._goal_status == "complete"
@@ -10171,17 +10611,32 @@ class DeepAgentsApp(App):
                     "`/goal <objective>`."
                 )
             )
-            return
-        application = _GoalApplication(objective, rubric, kind)
-        if self._agent_running or self._agent_reconciling:
-            self._queued_goal_application = application
+            return False
+        application = _GoalApplication(
+            objective,
+            rubric,
+            kind,
+            self._pending_goal_request_id,
+        )
+        if self._queued_goal_application == application:
+            return True
+        if automatic:
             await self._mount_message(
                 AppMessage(
-                    "Goal update accepted; it will apply after the current turn."
+                    "Goal criteria automatically accepted because YOLO mode is enabled."
                 )
             )
-            return
+        if self._agent_running or self._agent_reconciling:
+            self._queued_goal_application = application
+            if not automatic:
+                await self._mount_message(
+                    AppMessage(
+                        "Goal update accepted; it will apply after the current turn."
+                    )
+                )
+            return True
         await self._apply_goal_application(application)
+        return True
 
     async def _write_goal_application(
         self,
@@ -10224,6 +10679,15 @@ class DeepAgentsApp(App):
             Continuation kind when the accepted goal should keep running,
             otherwise `None`.
         """
+        if (
+            application.request_id is not None
+            and self._pending_goal_request_id != application.request_id
+        ):
+            logger.info(
+                "Discarding superseded accepted goal proposal %s",
+                application.request_id,
+            )
+            return None
         is_amendment = application.kind == "amend"
         if is_amendment and (not self._active_goal or self._goal_status == "complete"):
             self._clear_pending_goal_rubric()
@@ -11145,15 +11609,6 @@ class DeepAgentsApp(App):
             await self._handle_mcp_subcommand(args)
         elif cmd == "/plugins":
             await self._mount_message(UserMessage(command))
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
-                return
             await self._show_plugin_manager()
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
@@ -11310,15 +11765,26 @@ class DeepAgentsApp(App):
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
 
-            # Experimental plugins: rediscover and restart the owned server so
-            # plugin MCP config is picked up without a separate slash command.
-            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+            # Rediscover plugins and restart the owned server so plugin MCP config
+            # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
-            if is_env_truthy(EXPERIMENTAL):
-                from deepagents_code.plugins import discover_plugins
-                from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-                plugin_result = discover_plugins()
+            try:
+                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                    self._discover_plugins_with_fingerprints
+                )
+            except Exception:
+                # Discovery reads marketplace/plugin config from disk; if it
+                # fails, keep the rest of the reload intact and point the
+                # user at a manual retry rather than aborting the report.
+                logger.exception("Failed to discover plugins during /reload")
+                report += "\nCouldn't read plugin state; run /reload to be safe."
+            else:
+                old_plugin_fingerprints = self._plugin_fingerprints
+                self._plugin_fingerprints = new_plugin_fingerprints
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugin_result.plugins
+                )
                 plugin_count = len(plugin_result.plugins)
                 mcp_configs = plugin_mcp_configs(plugin_result.plugins)
                 mcp_count = sum(
@@ -11335,6 +11801,40 @@ class DeepAgentsApp(App):
                     f"{mcp_count} plugin MCP server"
                     f"{'s' if mcp_count != 1 else ''}"
                 )
+                if old_plugin_fingerprints is not None:
+                    old_ids = set(old_plugin_fingerprints)
+                    new_ids = set(new_plugin_fingerprints)
+                    added_count = len(new_ids - old_ids)
+                    removed_count = len(old_ids - new_ids)
+                    changed_count = sum(
+                        self._plugin_fingerprint_changed(
+                            old_plugin_fingerprints[plugin_id],
+                            new_plugin_fingerprints[plugin_id],
+                        )
+                        for plugin_id in old_ids & new_ids
+                    )
+                    change_parts = []
+                    for count, label in (
+                        (added_count, "added"),
+                        (removed_count, "removed"),
+                        (changed_count, "changed"),
+                    ):
+                        if count:
+                            noun = "plugin" if count == 1 else "plugins"
+                            change_parts.append(f"{count} {noun} {label}")
+                    if change_parts:
+                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
+                    else:
+                        report += "\nPlugin changes: no changes detected."
+                    # Reads each added plugin's MCP config from disk; keep it
+                    # off the UI thread like the discovery scan above.
+                    login_labels = await asyncio.to_thread(
+                        self._plugin_login_labels,
+                        plugin_result.plugins,
+                        new_ids - old_ids,
+                    )
+                    for label in login_labels:
+                        report += f"\nSign in to {label} via `/mcp`."
                 if plugin_result.warnings:
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
@@ -11350,6 +11850,7 @@ class DeepAgentsApp(App):
                         self._discard_queue()
                     restarted = await self._restart_server_manual()
                     if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                     else:
                         report += (
@@ -12703,7 +13204,11 @@ class DeepAgentsApp(App):
         if self._ui_adapter is None:
             return
         from deepagents_code.config import settings
-        from deepagents_code.tui.textual_adapter import execute_task_textual
+        from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
+        from deepagents_code.tui.textual_adapter import (
+            RubricEvaluationEnd,
+            execute_task_textual,
+        )
 
         criteria_request_id: str | None = None
         if graph_input is not None:
@@ -12731,14 +13236,19 @@ class DeepAgentsApp(App):
 
         # A paused or completed goal withholds its rubric so the grader does not
         # run this turn (mirrors the persisted-state suppression in
-        # `_goal_state_update`). A one-shot `_next_rubric` still applies.
+        # `_goal_state_update`). A one-shot `_next_rubric` still applies, but is
+        # deliberately not treated as a goal-backed grade even when its text matches.
         rubric = None
+        goal_backed_grading = False
         if graph_input is None:
             rubric = self._next_rubric
             if rubric is None and not (
                 self._active_goal and self._goal_status in {"paused", "complete"}
             ):
                 rubric = self._active_rubric
+                goal_backed_grading = bool(
+                    rubric and self._active_goal and self._goal_status == "active"
+                )
             if self._next_rubric is not None:
                 self._last_consumed_next_rubric = self._next_rubric
                 self._last_consumed_next_previous_rubric = self._active_rubric
@@ -12746,6 +13256,25 @@ class DeepAgentsApp(App):
                 self._next_rubric = None
                 self._sync_status_rubric()
 
+        latest_goal_grade: RubricEvaluationEnd | None = None
+        turn_completed = False
+
+        def _record_goal_grading_run(event: RubricEvaluationEnd) -> None:
+            nonlocal latest_goal_grade
+            if event.result in RUBRIC_RESULT_VALUES:
+                latest_goal_grade = event
+            else:
+                # A verdict outside the SDK's `RubricResult` vocabulary means the
+                # grader contract drifted. Auto-completion keys on `satisfied`, so
+                # a renamed/added verdict would silently disable it — make it loud
+                # rather than mute.
+                logger.warning(
+                    "Unrecognized rubric result %r; goal auto-completion skipped "
+                    "for this grade",
+                    event.result,
+                )
+
+        task_succeeded = False
         try:
             await execute_task_textual(
                 user_input=message,
@@ -12759,8 +13288,11 @@ class DeepAgentsApp(App):
                 message_kwargs=message_kwargs,
                 graph_input=graph_input,
                 rubric=rubric,
-                goal_active=bool(self._active_goal) and graph_input is None,
+                goal_active=goal_backed_grading,
                 blocked_goal_retry_context=blocked_goal_retry_context,
+                on_rubric_evaluation_end=(
+                    _record_goal_grading_run if goal_backed_grading else None
+                ),
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
                 # the top of every stream iteration, so seeding it would be dead.
@@ -12772,6 +13304,7 @@ class DeepAgentsApp(App):
                 ),
                 turn_stats=turn_stats,
             )
+            turn_completed = True
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,
             # so a failure here must not abort the turn — but log it, since
@@ -12782,6 +13315,7 @@ class DeepAgentsApp(App):
                 await self._regroup_completed_tools()
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
+            task_succeeded = True
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
@@ -12823,6 +13357,27 @@ class DeepAgentsApp(App):
                     "Could not mount error message (app closing?)",
                     exc_info=True,
                 )
+            # A satisfied grade may have arrived just before the turn aborted.
+            # That completion is deliberately dropped (the checkpoint write may
+            # be incomplete, so `turn_completed` gates it off below), but the
+            # rendered "satisfied" verdict and a still-active goal would then
+            # diverge with nothing to reconcile them — say so explicitly.
+            if latest_goal_grade is not None and latest_goal_grade.result == (
+                "satisfied"
+            ):
+                try:
+                    await self._mount_message(
+                        AppMessage(
+                            "The turn ended before the goal could be marked "
+                            "complete. The goal remains active and will be "
+                            "re-checked on your next turn."
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not mount goal reconciliation message",
+                        exc_info=True,
+                    )
         finally:
             # Merge turn stats before cleanup — _cleanup_agent_task may raise
             # during teardown (widget removal on a torn-down DOM), and stats
@@ -12842,9 +13397,19 @@ class DeepAgentsApp(App):
             # Collapse the open tool group so an interrupted turn doesn't leave a
             # summary spinning "Running…" forever (synchronous, cancel-safe).
             self._close_active_tool_group()
+            # Only a turn that finished streaming can authorize completion: an
+            # abort may have left the checkpoint's grade write incomplete, so a
+            # grade observed on such a turn is dropped by yielding `None` here.
+            goal_grade = (
+                _GoalGradeObservation(latest_goal_grade.grading_run_id)
+                if turn_completed and latest_goal_grade is not None
+                else None
+            )
             await self._cleanup_agent_task(
                 force_goal_sync=graph_input is not None,
                 goal_criteria_request_id=criteria_request_id,
+                goal_grade=goal_grade,
+                goal_criteria_succeeded=(criteria_request_id is None or task_succeeded),
             )
 
     async def _process_next_from_queue(self) -> None:
@@ -12901,6 +13466,8 @@ class DeepAgentsApp(App):
         *,
         force_goal_sync: bool = False,
         goal_criteria_request_id: str | None = None,
+        goal_grade: _GoalGradeObservation | None = None,
+        goal_criteria_succeeded: bool = True,
     ) -> None:
         """Tear down after a turn completes or is cancelled.
 
@@ -12915,6 +13482,10 @@ class DeepAgentsApp(App):
             force_goal_sync: Read goal state even when no local goal fields are set.
             goal_criteria_request_id: Terminal criteria request to clear and use
                 when correlating a newly generated proposal.
+            goal_grade: Grade observed during the completed goal-backed work
+                turn, or `None` for every other cleanup path.
+            goal_criteria_succeeded: Whether criteria generation completed without
+                failure or cancellation.
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
@@ -12931,14 +13502,29 @@ class DeepAgentsApp(App):
                     self._chat_input.set_cursor_active(active=True)
                 self._show_tokens(approximate=self._tokens_approximate)
                 self._schedule_git_branch_refresh()
-                if goal_criteria_request_id is not None:
-                    await self._clear_submitted_goal_criteria_request(
-                        goal_criteria_request_id
+                if goal_criteria_request_id is not None and not goal_criteria_succeeded:
+                    proposal_was_cleared = (
+                        await self._sync_goal_rubric_state_from_thread(
+                            force=force_goal_sync,
+                            proposal_request_id=goal_criteria_request_id,
+                            goal_grade=goal_grade,
+                            allow_pending_proposal=False,
+                        )
                     )
-                await self._sync_goal_rubric_state_from_thread(
-                    force=force_goal_sync,
-                    proposal_request_id=goal_criteria_request_id,
-                )
+                    if proposal_was_cleared:
+                        await self._clear_submitted_goal_criteria_request(
+                            goal_criteria_request_id
+                        )
+                else:
+                    if goal_criteria_request_id is not None:
+                        await self._clear_submitted_goal_criteria_request(
+                            goal_criteria_request_id
+                        )
+                    await self._sync_goal_rubric_state_from_thread(
+                        force=force_goal_sync,
+                        proposal_request_id=goal_criteria_request_id,
+                        goal_grade=goal_grade,
+                    )
 
                 try:
                     await self._maybe_drain_deferred()
@@ -13321,6 +13907,7 @@ class DeepAgentsApp(App):
         *,
         thread_id: str | None = None,
         preloaded_payload: _ThreadHistoryPayload | None = None,
+        resolve_pending_goal: bool = True,
     ) -> None:
         """Load and render message history when resuming a thread.
 
@@ -13337,6 +13924,8 @@ class DeepAgentsApp(App):
                 Defaults to current.
             preloaded_payload: Optional pre-fetched history payload for the
                 thread.
+            resolve_pending_goal: Whether to review or auto-accept a restored
+                proposal before returning.
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
@@ -13370,7 +13959,6 @@ class DeepAgentsApp(App):
                 model_spec=payload.model_spec,
                 model_params=payload.model_params,
             )
-            await self._remount_pending_goal_rubric_review()
 
             if not payload.messages:
                 return
@@ -13501,6 +14089,12 @@ class DeepAgentsApp(App):
                 history_thread_id,
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
+        finally:
+            if resolve_pending_goal:
+                try:
+                    await self._remount_pending_goal_rubric_review()
+                except Exception:
+                    logger.exception("Failed to restore pending goal review")
 
     @staticmethod
     def _build_message_timestamp_footer(
@@ -14998,6 +15592,9 @@ class DeepAgentsApp(App):
                         "start a new run before continuing."
                     )
 
+        if self._live_goal_auto_approve_enabled():
+            await self._auto_accept_pending_goal_rubric()
+
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""
         # Pending ask_user takes precedence so Ctrl+O toggles the question card.
@@ -15099,20 +15696,61 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
-    async def action_open_editor(self) -> None:
-        """Open the current prompt text in an external editor ($VISUAL/$EDITOR)."""
+    def _focused_goal_review_editor(self) -> GoalReviewTextArea | None:
+        """Return the active focused goal-review editor, if any."""
+        menu = self._pending_goal_review_widget
+        if (
+            menu is None
+            or menu._input_mode is None
+            or not menu.is_attached
+            or not menu.display
+            or not menu.visible
+        ):
+            return None
+
+        from deepagents_code.tui.widgets.goal_review import GoalReviewTextArea
+
+        focused = self.focused
+        if (
+            not isinstance(focused, GoalReviewTextArea)
+            or focused is not menu._edit_input
+            or not focused.is_attached
+            or not focused.display
+            or not focused.visible
+        ):
+            return None
+        return focused
+
+    async def _open_text_area_in_editor(
+        self,
+        text_area: TextArea,
+        current_text: str,
+        *,
+        allow_empty: bool,
+        raise_editor_errors: bool,
+        restore_focus: Callable[[], object],
+        reset_after_edit: Callable[[], None] | None = None,
+    ) -> None:
+        """Edit text externally, then restore the originating field's focus.
+
+        Args:
+            text_area: Field to replace when the editor returns a result.
+            current_text: Complete value to pre-populate in the editor.
+            allow_empty: Whether a blank edited result should replace the field.
+            raise_editor_errors: Whether launch and file errors should reach the
+                notification handler instead of looking like cancellation.
+            restore_focus: Callback that restores the originating editable surface.
+            reset_after_edit: Optional state reset after replacing the field text.
+        """
         from deepagents_code.editor import open_in_editor
 
-        chat_input = self._chat_input
-        if not chat_input or not chat_input._text_area:
-            return
-
-        current_text = chat_input._text_area.text or ""
-
-        edited: str | None = None
         try:
             with self.suspend():
-                edited = open_in_editor(current_text)
+                edited = open_in_editor(
+                    current_text,
+                    allow_empty=allow_empty,
+                    raise_on_error=raise_editor_errors,
+                )
         except Exception:
             logger.warning("External editor failed", exc_info=True)
             self.notify(
@@ -15120,14 +15758,41 @@ class DeepAgentsApp(App):
                 severity="error",
                 timeout=5,
             )
-            chat_input.focus_input()
+        else:
+            if edited is not None:
+                text_area.text = edited
+                if reset_after_edit is not None:
+                    reset_after_edit()
+                lines = edited.split("\n")
+                text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        finally:
+            restore_focus()
+
+    async def action_open_editor(self) -> None:
+        """Open the focused editable surface in $VISUAL/$EDITOR."""
+        goal_editor = self._focused_goal_review_editor()
+        if goal_editor is not None:
+            await self._open_text_area_in_editor(
+                goal_editor,
+                goal_editor.submitted_value,
+                allow_empty=True,
+                raise_editor_errors=True,
+                restore_focus=goal_editor.focus,
+                reset_after_edit=goal_editor.reset_paste_state,
+            )
             return
 
-        if edited is not None:
-            chat_input._text_area.text = edited
-            lines = edited.split("\n")
-            chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
-        chat_input.focus_input()
+        chat_input = self._chat_input
+        if not chat_input or not chat_input._text_area:
+            return
+
+        await self._open_text_area_in_editor(
+            chat_input._text_area,
+            chat_input._text_area.text or "",
+            allow_empty=False,
+            raise_editor_errors=False,
+            restore_focus=chat_input.focus_input,
+        )
 
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""
@@ -16459,7 +17124,7 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` fields for the console header.
+            Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -16491,6 +17156,24 @@ class DeepAgentsApp(App):
                 f"/ {stats.request_count} req"
             )
 
+        def _thread_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable/link metadata can
+            # ride along with the value; still degrades defensively because a
+            # diagnostic overlay must open even when a subsystem misbehaves.
+            try:
+                thread_id = self._lc_thread_id
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Thread' failed", exc_info=True)
+                return SnapshotField(
+                    label="Thread", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Thread",
+                value=thread_id or "(none)",
+                copyable=bool(thread_id),
+                thread_id=thread_id,
+            )
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -16506,7 +17189,7 @@ class DeepAgentsApp(App):
         return [
             _safe("Version", lambda: __version__),
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
-            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _thread_field(),
             _safe("CWD", lambda: self._cwd),
             _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
@@ -17134,15 +17817,391 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    @staticmethod
+    def _fingerprint_component_paths(
+        plugin_root: Path,
+        paths: tuple[Path, ...],
+    ) -> tuple[_PathStat, ...]:
+        """Collect bounded path/mtime/size entries under plugin component paths.
+
+        Directory components are scanned recursively without following symlinks.
+        Every directory is rechecked against the plugin root immediately before
+        traversal, and the scan stops after `_MAX_PLUGIN_FINGERPRINT_ENTRIES`.
+
+        Because symlinks are never followed, a symlink is fingerprinted by its
+        own `lstat` only: edits to the contents of a symlinked directory (or a
+        symlink's target file) do not change the fingerprint and so are not
+        surfaced as a plugin change. The fingerprint is also stat-based, so
+        mode-only changes (e.g. `chmod +x`) and edits that preserve both size
+        and mtime are likewise invisible. This is a deliberate trade-off for
+        root containment and cheap comparison, not authoritative change
+        detection.
+
+        Args:
+            plugin_root: Root that every traversed component must remain within.
+            paths: Component files or directories to fingerprint.
+
+        Returns:
+            Deterministic fingerprint entries. Inaccessible or out-of-root paths
+            use `_UNREADABLE_PLUGIN_FINGERPRINT_STAT` (-1) stats; a
+            `_TRUNCATED_PLUGIN_FINGERPRINT_STAT` (-2) entry marks a scan
+            truncated by the entry limit.
+        """
+        entries: list[_PathStat] = []
+        visited_entries = 0
+
+        def _record_unreadable(target: Path, exc: OSError) -> None:
+            logger.warning("Unreadable component path %s: %s", target, exc)
+            entries.append(
+                _PathStat(
+                    str(target),
+                    _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                    _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                )
+            )
+
+        def _consume_entry(target: Path) -> bool:
+            nonlocal visited_entries
+            if visited_entries >= _MAX_PLUGIN_FINGERPRINT_ENTRIES:
+                logger.warning(
+                    "Plugin component fingerprint exceeded %d entries at %s",
+                    _MAX_PLUGIN_FINGERPRINT_ENTRIES,
+                    target,
+                )
+                entries.append(
+                    _PathStat(
+                        str(target),
+                        _TRUNCATED_PLUGIN_FINGERPRINT_STAT,
+                        _TRUNCATED_PLUGIN_FINGERPRINT_STAT,
+                    )
+                )
+                return False
+            visited_entries += 1
+            return True
+
+        try:
+            resolved_root = plugin_root.resolve(strict=True)
+        except OSError as exc:
+            _record_unreadable(plugin_root, exc)
+            return tuple(entries)
+
+        def _scan_directory(directory: Path) -> bool:
+            stack = [directory]
+            while stack:
+                current = stack.pop()
+                try:
+                    current_stat = current.lstat()
+                    resolved = current.resolve(strict=True)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    _record_unreadable(current, exc)
+                    continue
+                if stat_module.S_ISLNK(current_stat.st_mode):
+                    entries.append(
+                        _PathStat(
+                            str(current), current_stat.st_mtime_ns, current_stat.st_size
+                        )
+                    )
+                    continue
+                if not resolved.is_relative_to(resolved_root):
+                    logger.warning(
+                        "Ignoring plugin component outside plugin root: %s", current
+                    )
+                    entries.append(
+                        _PathStat(
+                            str(current),
+                            _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                            _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                        )
+                    )
+                    continue
+
+                children: list[tuple[str, Path, os.stat_result]] = []
+                try:
+                    with os.scandir(current) as iterator:
+                        for child in iterator:
+                            target = Path(child.path)
+                            if not _consume_entry(target):
+                                return False
+                            try:
+                                child_stat = child.stat(follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            except OSError as exc:
+                                _record_unreadable(target, exc)
+                                continue
+                            children.append((child.name, target, child_stat))
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    _record_unreadable(current, exc)
+                    continue
+
+                directories: list[Path] = []
+                for _name, target, child_stat in sorted(children):
+                    if stat_module.S_ISDIR(child_stat.st_mode):
+                        directories.append(target)
+                    else:
+                        entries.append(
+                            _PathStat(
+                                str(target),
+                                child_stat.st_mtime_ns,
+                                child_stat.st_size,
+                            )
+                        )
+                stack.extend(reversed(directories))
+            return True
+
+        for path in paths:
+            if not _consume_entry(path):
+                break
+            try:
+                resolved = path.resolve(strict=True)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                _record_unreadable(path, exc)
+                continue
+            if not resolved.is_relative_to(resolved_root):
+                logger.warning(
+                    "Ignoring plugin component outside plugin root: %s", path
+                )
+                entries.append(
+                    _PathStat(
+                        str(path),
+                        _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                        _UNREADABLE_PLUGIN_FINGERPRINT_STAT,
+                    )
+                )
+                continue
+            try:
+                path_stat = path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                _record_unreadable(path, exc)
+                continue
+            if stat_module.S_ISDIR(path_stat.st_mode):
+                if not _scan_directory(path):
+                    break
+            else:
+                entries.append(
+                    _PathStat(str(path), path_stat.st_mtime_ns, path_stat.st_size)
+                )
+        return tuple(entries)
+
+    @staticmethod
+    def _plugin_fingerprint_changed(
+        before: _PluginFingerprint, after: _PluginFingerprint
+    ) -> bool:
+        """Return whether the plugin changed, or either fingerprint is incomplete.
+
+        A negative stat sentinel means a component was inaccessible/out-of-root
+        (-1) or the scan was truncated (-2); either forces "changed" so an
+        incomplete scan is never mistaken for an unchanged plugin.
+        """
+        return (
+            before != after
+            or any(entry.mtime_ns < 0 for entry in before.components)
+            or any(entry.mtime_ns < 0 for entry in after.components)
+        )
+
+    @staticmethod
+    def _plugin_fingerprints_changed(
+        before: dict[str, _PluginFingerprint],
+        after: dict[str, _PluginFingerprint],
+    ) -> bool:
+        """Return whether plugin identities or any fingerprint changed."""
+        return before.keys() != after.keys() or any(
+            DeepAgentsApp._plugin_fingerprint_changed(
+                before[plugin_id], after[plugin_id]
+            )
+            for plugin_id in before.keys() & after.keys()
+        )
+
+    @staticmethod
+    def _fingerprint_plugins(
+        plugins: tuple[PluginInstance, ...],
+    ) -> dict[str, _PluginFingerprint]:
+        """Build reload-comparison fingerprints for discovered plugins.
+
+        Returns:
+            Plugin fingerprints keyed by plugin id.
+        """
+        fingerprints: dict[str, _PluginFingerprint] = {}
+        for plugin in plugins:
+            paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
+            fingerprints[plugin.plugin_id] = _PluginFingerprint(
+                version=plugin.version,
+                manifest=plugin.manifest,
+                components=DeepAgentsApp._fingerprint_component_paths(
+                    plugin.root, paths
+                ),
+            )
+        return fingerprints
+
+    def _discover_plugins_with_fingerprints(
+        self,
+    ) -> tuple[PluginDiscoveryResult, dict[str, _PluginFingerprint]]:
+        """Discover plugins and fingerprint their reload-relevant files.
+
+        This performs recursive filesystem scans and must be called off the UI
+        thread.
+
+        Returns:
+            Plugin discovery output and fingerprints keyed by plugin id.
+        """
+        from deepagents_code.plugins import discover_plugins
+
+        result = discover_plugins()
+        return result, self._fingerprint_plugins(result.plugins)
+
+    @staticmethod
+    def _plugin_login_labels(
+        plugins: tuple[PluginInstance, ...], plugin_ids: set[str]
+    ) -> tuple[str, ...]:
+        """List newly added plugins whose MCP servers require sign-in.
+
+        Args:
+            plugins: Plugins discovered by `/reload`.
+            plugin_ids: Newly added plugin ids to inspect.
+
+        Returns:
+            Deduplicated display labels in plugin discovery order.
+        """
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
+
+        labels: list[str] = []
+        for plugin in plugins:
+            if plugin.plugin_id not in plugin_ids:
+                continue
+            entries = plugin_mcp_server_entries(plugin)
+            if not any(needs_login for _label, _scoped, needs_login in entries):
+                continue
+            manifest = plugin.manifest
+            labels.append(
+                manifest.display_name
+                if manifest is not None and manifest.display_name
+                else plugin.name
+            )
+        return tuple(dict.fromkeys(labels))
+
+    def _snapshot_plugin_state(
+        self,
+    ) -> tuple[frozenset[str], dict[str, _PluginFingerprint]]:
+        """Read enabled plugin ids and filesystem fingerprints.
+
+        This performs recursive filesystem scans and must be called off the UI
+        thread.
+
+        Returns:
+            Enabled plugin ids and fingerprints for all discovered plugins.
+        """
+        from deepagents_code.plugins.store import load_enabled_plugin_ids
+
+        enabled_plugin_ids = load_enabled_plugin_ids()
+        _, fingerprints = self._discover_plugins_with_fingerprints()
+        return enabled_plugin_ids, fingerprints
+
+    async def _check_plugin_manager_changes(
+        self,
+        enabled_plugin_ids: frozenset[str],
+        plugin_fingerprints: dict[str, _PluginFingerprint],
+    ) -> None:
+        """Offer a reload when plugin state changed while the manager was open.
+
+        Args:
+            enabled_plugin_ids: Enabled plugin ids from before the manager opened.
+            plugin_fingerprints: Plugin fingerprints from before the manager opened.
+        """
+        try:
+            current_enabled_ids, current_fingerprints = await asyncio.to_thread(
+                self._snapshot_plugin_state
+            )
+        except Exception:
+            # Preserve a manual reload path if state discovery fails after the
+            # modal has closed. Pending state is unknown here, so point the user
+            # at /reload without asserting that changes are pending.
+            logger.exception("Failed to check plugin state after manager close")
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+            return
+
+        if (
+            current_enabled_ids != enabled_plugin_ids
+            or self._plugin_fingerprints_changed(
+                plugin_fingerprints, current_fingerprints
+            )
+        ):
+            await self._offer_plugin_reload()
+
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
+        try:
+            baseline = await asyncio.to_thread(self._snapshot_plugin_state)
+        except Exception:
+            # Still open the manager if the pre-open snapshot fails. Without a
+            # baseline, its close handler surfaces the check-failed notice
+            # (_PLUGIN_RELOAD_CHECK_FAILED) rather than the pending reminder.
+            logger.exception("Failed to snapshot plugin state before opening manager")
+            baseline = None
+        else:
+            if self._plugin_fingerprints is None:
+                self._plugin_fingerprints = baseline[1]
+
+        async def check_changes() -> None:
+            if baseline is None:
+                await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+                return
+            enabled_plugin_ids, plugin_fingerprints = baseline
+            await self._check_plugin_manager_changes(
+                enabled_plugin_ids, plugin_fingerprints
+            )
+
+        def on_close(_result: None) -> None:
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    check_changes(),
+                    exclusive=True,
+                    group="plugin-reload-prompt",
+                )
+            )
+
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
-            )
+                loaded_plugin_ids=self._session_plugin_ids,
+            ),
+            on_close,
         )
+
+    async def _offer_plugin_reload(self) -> None:
+        """Offer to apply plugin changes after the manager closes."""
+        from deepagents_code.tui.widgets.plugin_reload import (
+            PluginReloadPromptScreen,
+        )
+
+        try:
+            choice = await asyncio.wait_for(
+                self._push_screen_wait(PluginReloadPromptScreen()),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Plugin reload prompt timed out")
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
+            return
+        except Exception:
+            # Modal could not be mounted; fall back to a pending reload reminder.
+            logger.exception("Failed to mount plugin reload prompt")
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
+            return
+
+        if choice == "reload":
+            await self._submit_input("/reload", "command")
+        else:
+            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

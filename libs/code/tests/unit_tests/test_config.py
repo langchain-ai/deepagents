@@ -42,6 +42,7 @@ from deepagents_code.config import (
     detect_provider,
     fetch_langsmith_project_url,
     fetch_langsmith_project_url_or_raise,
+    get_cached_langsmith_thread_url,
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
@@ -3443,6 +3444,43 @@ class TestBuildLangsmithThreadUrl:
             result
             == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123?utm_source=deepagents-code"
         )
+
+    def test_cached_url_is_available_without_another_lookup(self) -> None:
+        """A resolved project URL can build later thread links synchronously."""
+
+        class FakeProject:
+            url = "https://smith.langchain.com/o/org/projects/p/proj"
+
+        with (
+            patch(
+                "deepagents_code.config.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            build_langsmith_thread_url("thread-123")
+            result = get_cached_langsmith_thread_url("thread-456")
+
+        assert (
+            result
+            == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-456?utm_source=deepagents-code"
+        )
+        mock_client_cls.return_value.read_project.assert_called_once()
+
+    def test_cached_url_does_not_trigger_initial_lookup(self) -> None:
+        """A cache miss remains synchronous and never contacts LangSmith."""
+        with (
+            patch(
+                "deepagents_code.config.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            result = get_cached_langsmith_thread_url("thread-123")
+
+        assert result is None
+        mock_client_cls.assert_not_called()
 
     def test_strips_trailing_slash(self) -> None:
         """Should not produce double slashes when project URL has trailing slash."""

@@ -401,6 +401,3 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
         return default
     classified = classify_env_bool(raw)
     return default if classified is None else classified
-
-
-EXPERIMENTAL_HINT = f"This feature is experimental. Set {EXPERIMENTAL}=1 to enable."

@@ -15449,6 +15449,14 @@ class DeepAgentsApp(App):
         should_drain_hooks = has_pending_hooks()
 
         if should_wait_for_agent or should_drain_hooks:
+            # Surface a single toast so the user knows shutdown is intentionally
+            # waiting rather than hung. Scheduling `_graceful_exit` below defers
+            # `super().exit()` behind at least one `await`, so returning here
+            # lets Textual's message pump render this toast before teardown.
+            # Immediate/idle exits skip this branch and stay toast-free, and a
+            # repeated exit hits the force-quit guard above before reaching here,
+            # so the toast is never duplicated.
+            self.notify("Finishing pending work before exit…", markup=False)
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed

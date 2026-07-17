@@ -556,6 +556,11 @@ _MAX_STRUCTURED_TEXT_CHARS = 12_000
 _MAX_STRUCTURED_REASONING_CHARS = 12_000
 _MAX_EXECUTE_TIMEOUT_SECONDS = 600
 
+_STRUCTURED_ACTION_INSTRUCTION = """Choose actions by expected runtime:
+- Use `execute` only for short filesystem inspection, searching, reading, editing, or quick checks.
+- For a compile, build, test suite, package-manager operation, renderer, server, REPL, or any command that may run longer than a few seconds, use `run_background` first and then `poll` the returned handle for 20-60 seconds. Do not block these operations with `execute`.
+- Use `finish` only after a prior tool result proves the task's acceptance check passed."""
+
 
 class _CommandAction(BaseModel):
     """A structured action that accepts one shell command."""
@@ -580,7 +585,9 @@ class _CommandAction(BaseModel):
 class _ExecuteAction(_CommandAction):
     """Run a bounded foreground command."""
 
-    action: Literal["execute"] = Field(description="Run a foreground shell command.")
+    action: Literal["execute"] = Field(
+        description="Run only a short inspection, edit, or quick check; never a compile, build, or test suite."
+    )
     timeout: int | None = Field(
         default=None,
         ge=1,
@@ -593,7 +600,7 @@ class _RunBackgroundAction(_CommandAction):
     """Start a command whose output will be consumed through a process handle."""
 
     action: Literal["run_background"] = Field(
-        description="Start a long-running or interactive command and return a process handle."
+        description="Required for compiles, builds, test suites, package operations, renderers, and interactive commands; return a process handle for `poll`."
     )
 
 
@@ -724,6 +731,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         msgs = list(request.messages)
         if request.system_message is not None:
             msgs = [request.system_message, *msgs]
+        msgs.append(HumanMessage(content=_STRUCTURED_ACTION_INSTRUCTION))
         if repair:
             msgs.append(
                 HumanMessage(

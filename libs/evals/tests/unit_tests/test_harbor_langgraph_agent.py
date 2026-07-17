@@ -391,6 +391,16 @@ def test_structured_turn_routes_typed_actions_to_matching_tools() -> None:
     )
 
 
+def test_structured_action_instruction_prefers_background_processes() -> None:
+    instruction = langgraph_agent._STRUCTURED_ACTION_INSTRUCTION
+
+    assert "run_background" in instruction
+    assert "poll" in instruction
+    assert "compile" in instruction
+    assert "test suite" in instruction
+    assert "execute" in instruction
+
+
 def test_structured_turn_finish_requires_prior_action_evidence() -> None:
     middleware = langgraph_agent._StructuredTurnMiddleware()
     turn = langgraph_agent._Turn.model_validate(

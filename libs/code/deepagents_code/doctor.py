@@ -160,19 +160,20 @@ def _collect_diagnostics() -> DiagnosticSection:
         _get_editable_install_path,
         _is_editable_install,
     )
-    from deepagents_code.extras_info import collect_version_report
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+    )
     from deepagents_code.update_check import detect_install_method
 
     report = collect_version_report()
     sdk_version, sdk_ok = _sdk_diagnostic(report)
 
     # Source/metadata drift is informational (normal while editing source), so
-    # it annotates the value without flagging the CLI item unhealthy.
-    cli = report.cli
-    if cli.has_drift and cli.metadata_version is not None:
-        cli_value = f"{__version__} (installed metadata: {cli.metadata_version})"
-    else:
-        cli_value = __version__
+    # it annotates the value without flagging the CLI item unhealthy. Reuse the
+    # shared annotation helper so the phrasing stays in lockstep with
+    # `--version`/`/version` (editable status is shown via `Install method`).
+    cli_value = f"{__version__}{format_cli_version_annotation(report.cli)}"
 
     editable = _is_editable_install()
     if editable:

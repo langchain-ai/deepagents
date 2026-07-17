@@ -3,7 +3,7 @@
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from packaging.requirements import Requirement
@@ -14,8 +14,8 @@ from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
+    DistributionMetadataStatus,
     DistributionVersion,
-    SdkVersionStatus,
     VersionReport,
     _editable_sdk_source_root,
     _requirement_satisfied,
@@ -627,7 +627,7 @@ def _distribution_version(
     metadata_version: str | None = None,
     editable: bool = False,
     source_path: str | None = None,
-    status: SdkVersionStatus = "resolved",
+    status: DistributionMetadataStatus = "resolved",
 ) -> DistributionVersion:
     """Build a `DistributionVersion` with sensible defaults for tests."""
     return DistributionVersion(
@@ -638,6 +638,44 @@ def _distribution_version(
         source_path=source_path,
         status=status,
     )
+
+
+class TestContractHome:
+    """Tests for `~`-contraction of displayed editable source paths."""
+
+    def test_contracts_home_prefix(self) -> None:
+        """A path under the home directory is shown with a `~` prefix."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/home/dev/src/proj")) == "~/src/proj"
+
+    def test_exact_home_becomes_tilde(self) -> None:
+        """The home directory itself contracts to a bare `~`."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/home/dev")) == "~"
+
+    def test_non_home_path_is_unchanged(self) -> None:
+        """A path outside the home directory is returned verbatim."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/opt/other")) == "/opt/other"
+
+    def test_unresolvable_home_returns_raw_path(self) -> None:
+        """When the home directory cannot be determined, the raw path is kept."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch("deepagents_code.extras_info.Path.home", side_effect=RuntimeError):
+            assert _contract_home(Path("/home/dev/x")) == "/home/dev/x"
 
 
 class TestDistributionVersion:
@@ -710,28 +748,30 @@ class TestVersionAnnotations:
         )
         assert format_cli_version_annotation(info) == ""
 
-    def test_cli_annotation_marks_editable(self) -> None:
-        """An editable install with agreeing versions is marked editable only."""
+    def test_cli_annotation_omits_editable_when_versions_agree(self) -> None:
+        """Editable status is shown separately, so an in-sync editable CLI is bare.
+
+        The CLI editable state is rendered by the dedicated `Editable install:`
+        line (and doctor's `Install method`), so the inline annotation carries
+        only drift — here there is none.
+        """
         info = _distribution_version(
             name="deepagents-code",
             source_version="0.1.41",
             metadata_version="0.1.41",
             editable=True,
         )
-        assert format_cli_version_annotation(info) == " (editable)"
+        assert format_cli_version_annotation(info) == ""
 
     def test_cli_annotation_shows_stale_metadata(self) -> None:
-        """An editable CLI with stale metadata shows both versions."""
+        """An editable CLI with stale metadata shows the drift, not `editable`."""
         info = _distribution_version(
             name="deepagents-code",
             source_version="0.1.41",
             metadata_version="0.1.40",
             editable=True,
         )
-        assert (
-            format_cli_version_annotation(info)
-            == " (editable; installed metadata: 0.1.40)"
-        )
+        assert format_cli_version_annotation(info) == " (installed metadata: 0.1.40)"
 
     def test_sdk_annotation_empty_for_normal_install(self) -> None:
         """A non-editable SDK whose requirement is satisfied gets no annotation."""
@@ -777,6 +817,24 @@ class TestVersionAnnotations:
         )
         annotation = format_sdk_version_annotation(report)
         assert "required by deepagents-code: <0.8,>=0.7 — mismatch" in annotation
+
+    def test_sdk_annotation_combines_editable_drift_and_mismatch(self) -> None:
+        """Editable, drift, and mismatch parts join in order when they co-occur.
+
+        This is the case where the displayed primary (source) version happens to
+        equal the requirement yet the (stale) installed metadata does not — the
+        drift note reconciles the apparent contradiction.
+        """
+        sdk = _distribution_version(
+            source_version="0.7.0a7", metadata_version="0.6.12", editable=True
+        )
+        report = self._report(
+            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=False
+        )
+        assert format_sdk_version_annotation(report) == (
+            " (editable; installed metadata: 0.6.12; "
+            "required by deepagents-code: 0.7.0a7 — mismatch)"
+        )
 
 
 class TestRequirementSatisfied:
@@ -865,6 +923,48 @@ class TestSdkRequirementFromCli:
         ):
             assert sdk_requirement_from_cli() is None
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+            TypeError("malformed metadata"),
+        ],
+    )
+    def test_unreadable_requirements_return_none(self, error: Exception) -> None:
+        """Unreadable requirement metadata is inconclusive rather than fatal."""
+        dist = MagicMock()
+        type(dist).requires = PropertyMock(side_effect=error)
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            assert sdk_requirement_from_cli() is None
+
+    def test_returns_applicable_marked_requirement(self) -> None:
+        """A base `deepagents` dep whose marker applies is still returned."""
+        dist = self._dist(['deepagents==0.7.0a7; python_version >= "3.0"'])
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req.specifier) == "==0.7.0a7"
+
+    def test_unevaluable_marker_is_treated_as_applicable(self) -> None:
+        """A marker that fails to evaluate must not silently drop the pin.
+
+        Dropping it would hide the SDK requirement mismatch this check exists to
+        surface, so an unexpected evaluation error is treated as applicable.
+        """
+        dist = self._dist(['deepagents==0.7.0a7; python_version >= "3.0"'])
+
+        def boom(_self: object, *_a: object, **_k: object) -> bool:
+            msg = "marker blew up"
+            raise ValueError(msg)
+
+        with (
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("packaging.markers.Marker.evaluate", boom),
+        ):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req.specifier) == "==0.7.0a7"
+
 
 class TestCollectVersionInfo:
     """Tests for the version collectors that read the live environment."""
@@ -908,6 +1008,87 @@ class TestCollectVersionInfo:
         assert info.editable is True
         assert info.source_path == "~/src/deepagents/libs/code"
         assert info.has_drift is True
+
+    def test_collect_cli_metadata_missing_resolves_from_source(self) -> None:
+        """Absent CLI metadata still resolves via the source version."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=PackageNotFoundError("deepagents-code"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "resolved"
+        assert info.metadata_version is None
+        assert info.primary_version == "0.1.41"
+
+    def test_collect_cli_metadata_and_source_missing_is_not_installed(self) -> None:
+        """No source and no metadata reports `not_installed`."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=PackageNotFoundError("deepagents-code"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "not_installed"
+        assert info.primary_version is None
+
+    def test_collect_cli_unexpected_error_with_source_resolves(self) -> None:
+        """An unexpected metadata failure still resolves when source is present."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "resolved"
+        assert info.primary_version == "0.1.41"
+
+    def test_collect_cli_unexpected_error_without_source_is_error(self) -> None:
+        """An unexpected metadata failure with no source reports `error`."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "error"
+        assert info.primary_version is None
 
     def test_collect_sdk_normal_install(self) -> None:
         """A non-editable SDK reports metadata and no editable source."""

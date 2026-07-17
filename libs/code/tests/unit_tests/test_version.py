@@ -414,9 +414,9 @@ def test_build_version_text_reports_editable_drift_and_sdk_mismatch() -> None:
     ):
         text = build_version_text()
 
-    assert (
-        f"deepagents-code {__version__} (editable; installed metadata: 0.1.40)" in text
-    )
+    # Editable status is shown on its own `Editable install:` line, so the CLI
+    # version line carries only the source/metadata drift, not `editable`.
+    assert f"deepagents-code {__version__} (installed metadata: 0.1.40)" in text
     assert (
         "deepagents (SDK) 0.6.12 "
         "(editable; required by deepagents-code: 0.7.0a7 — mismatch)" in text
@@ -443,7 +443,7 @@ async def test_version_slash_command_reports_editable_drift_and_sdk_mismatch() -
         )
         assert (
             f"deepagents-code version: {__version__} "
-            "(editable; installed metadata: 0.1.40)" in content
+            "(installed metadata: 0.1.40)" in content
         )
         assert (
             "deepagents (SDK) version: 0.6.12 "

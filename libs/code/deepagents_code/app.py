@@ -11609,15 +11609,6 @@ class DeepAgentsApp(App):
             await self._handle_mcp_subcommand(args)
         elif cmd == "/plugins":
             await self._mount_message(UserMessage(command))
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
-                return
             await self._show_plugin_manager()
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
@@ -11774,108 +11765,97 @@ class DeepAgentsApp(App):
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
 
-            # Experimental plugins: rediscover and restart the owned server so
-            # plugin MCP config is picked up without a separate slash command.
-            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+            # Rediscover plugins and restart the owned server so plugin MCP config
+            # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
-            if is_env_truthy(EXPERIMENTAL):
-                from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-                try:
-                    plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
-                        self._discover_plugins_with_fingerprints
-                    )
-                except Exception:
-                    # Discovery reads marketplace/plugin config from disk; if it
-                    # fails, keep the rest of the reload intact and point the
-                    # user at a manual retry rather than aborting the report.
-                    logger.exception("Failed to discover plugins during /reload")
-                    report += "\nCouldn't read plugin state; run /reload to be safe."
-                else:
-                    old_plugin_fingerprints = self._plugin_fingerprints
-                    self._plugin_fingerprints = new_plugin_fingerprints
-                    discovered_plugin_ids = frozenset(
-                        plugin.plugin_id for plugin in plugin_result.plugins
-                    )
-                    plugin_count = len(plugin_result.plugins)
-                    mcp_configs = plugin_mcp_configs(plugin_result.plugins)
-                    mcp_count = sum(
-                        len(servers)
-                        for config in mcp_configs
-                        if isinstance((servers := config.get("mcpServers")), dict)
-                    )
-                    plugin_skill_count = sum(
-                        1 for name in new_skill_names if ":" in name
-                    )
-                    report += (
-                        f"\nPlugins: {plugin_count} plugin"
-                        f"{'s' if plugin_count != 1 else ''} · "
-                        f"{plugin_skill_count} skill"
-                        f"{'s' if plugin_skill_count != 1 else ''} · "
-                        f"{mcp_count} plugin MCP server"
-                        f"{'s' if mcp_count != 1 else ''}"
-                    )
-                    if old_plugin_fingerprints is not None:
-                        old_ids = set(old_plugin_fingerprints)
-                        new_ids = set(new_plugin_fingerprints)
-                        added_count = len(new_ids - old_ids)
-                        removed_count = len(old_ids - new_ids)
-                        changed_count = sum(
-                            self._plugin_fingerprint_changed(
-                                old_plugin_fingerprints[plugin_id],
-                                new_plugin_fingerprints[plugin_id],
-                            )
-                            for plugin_id in old_ids & new_ids
+            try:
+                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                    self._discover_plugins_with_fingerprints
+                )
+            except Exception:
+                # Discovery reads marketplace/plugin config from disk; if it
+                # fails, keep the rest of the reload intact and point the
+                # user at a manual retry rather than aborting the report.
+                logger.exception("Failed to discover plugins during /reload")
+                report += "\nCouldn't read plugin state; run /reload to be safe."
+            else:
+                old_plugin_fingerprints = self._plugin_fingerprints
+                self._plugin_fingerprints = new_plugin_fingerprints
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugin_result.plugins
+                )
+                plugin_count = len(plugin_result.plugins)
+                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                mcp_count = sum(
+                    len(servers)
+                    for config in mcp_configs
+                    if isinstance((servers := config.get("mcpServers")), dict)
+                )
+                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                report += (
+                    f"\nPlugins: {plugin_count} plugin"
+                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{plugin_skill_count} skill"
+                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{mcp_count} plugin MCP server"
+                    f"{'s' if mcp_count != 1 else ''}"
+                )
+                if old_plugin_fingerprints is not None:
+                    old_ids = set(old_plugin_fingerprints)
+                    new_ids = set(new_plugin_fingerprints)
+                    added_count = len(new_ids - old_ids)
+                    removed_count = len(old_ids - new_ids)
+                    changed_count = sum(
+                        self._plugin_fingerprint_changed(
+                            old_plugin_fingerprints[plugin_id],
+                            new_plugin_fingerprints[plugin_id],
                         )
-                        change_parts = []
-                        for count, label in (
-                            (added_count, "added"),
-                            (removed_count, "removed"),
-                            (changed_count, "changed"),
-                        ):
-                            if count:
-                                noun = "plugin" if count == 1 else "plugins"
-                                change_parts.append(f"{count} {noun} {label}")
-                        if change_parts:
-                            report += (
-                                "\nPlugin changes: " + ", ".join(change_parts) + "."
-                            )
-                        else:
-                            report += "\nPlugin changes: no changes detected."
-                        # Reads each added plugin's MCP config from disk; keep it
-                        # off the UI thread like the discovery scan above.
-                        login_labels = await asyncio.to_thread(
-                            self._plugin_login_labels,
-                            plugin_result.plugins,
-                            new_ids - old_ids,
-                        )
-                        for label in login_labels:
-                            report += f"\nSign in to {label} via `/mcp`."
-                    if plugin_result.warnings:
-                        report += (
-                            f"\n{len(plugin_result.warnings)} plugin warning(s) "
-                            "during load."
-                        )
-
-                    restarted = False
-                    if (
-                        self._server_proc is not None
-                        and self._server_kwargs is not None
+                        for plugin_id in old_ids & new_ids
+                    )
+                    change_parts = []
+                    for count, label in (
+                        (added_count, "added"),
+                        (removed_count, "removed"),
+                        (changed_count, "changed"),
                     ):
-                        if self._agent_running and self._agent_worker:
-                            self._cancel_worker(self._agent_worker)
-                            self._agent_running = False
-                        else:
-                            self._discard_queue()
-                        restarted = await self._restart_server_manual()
-                        if restarted:
-                            self._session_plugin_ids = discovered_plugin_ids
-                            report += "\nAgent server restarted for plugin MCP."
-                        else:
-                            report += (
-                                "\nAgent server was not restarted; plugin MCP may "
-                                "be stale."
-                            )
+                        if count:
+                            noun = "plugin" if count == 1 else "plugins"
+                            change_parts.append(f"{count} {noun} {label}")
+                    if change_parts:
+                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
+                    else:
+                        report += "\nPlugin changes: no changes detected."
+                    # Reads each added plugin's MCP config from disk; keep it
+                    # off the UI thread like the discovery scan above.
+                    login_labels = await asyncio.to_thread(
+                        self._plugin_login_labels,
+                        plugin_result.plugins,
+                        new_ids - old_ids,
+                    )
+                    for label in login_labels:
+                        report += f"\nSign in to {label} via `/mcp`."
+                if plugin_result.warnings:
+                    report += (
+                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                        "during load."
+                    )
+
+                restarted = False
+                if self._server_proc is not None and self._server_kwargs is not None:
+                    if self._agent_running and self._agent_worker:
+                        self._cancel_worker(self._agent_worker)
+                        self._agent_running = False
+                    else:
+                        self._discard_queue()
+                    restarted = await self._restart_server_manual()
+                    if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
+                        report += "\nAgent server restarted for plugin MCP."
+                    else:
+                        report += (
+                            "\nAgent server was not restarted; plugin MCP may be stale."
+                        )
 
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()

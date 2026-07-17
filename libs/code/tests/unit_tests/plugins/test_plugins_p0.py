@@ -15,7 +15,6 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import _list_skills as list_sdk_skills
 from textual.widgets import Input, OptionList
 
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.config import get_glyphs
 from deepagents_code.mcp_tools import MCPServerInfo
@@ -75,11 +74,6 @@ from deepagents_code.tui.modals.plugin_manager.state import (
     _list_plugin_skill_names,
     _load_manager_state,
 )
-
-
-@pytest.fixture(autouse=True)
-def _enable_experimental(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(EXPERIMENTAL, "1")
 
 
 def _write_json(path: Path, data: dict[str, object]) -> None:

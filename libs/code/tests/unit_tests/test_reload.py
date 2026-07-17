@@ -1060,7 +1060,7 @@ class TestReloadThemeReapply:
 
 
 class TestReloadPluginsViaReload:
-    """Experimental plugins should reload through `/reload`."""
+    """Plugins should reload through `/reload`."""
 
     def test_fingerprint_detects_nested_skill_edits(self, tmp_path: Path) -> None:
         """Editing `SKILL.md` under a skills directory must change the fingerprint."""
@@ -1695,16 +1695,13 @@ class TestReloadPluginsViaReload:
         assert isinstance(message, AppMessage)
         assert "/reload" in str(message._content)
 
-    async def test_reports_plugin_summary_when_experimental(
+    async def test_reports_plugin_summary(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`/reload` includes a plugin summary when experimental mode is on."""
-        from deepagents_code._env_vars import EXPERIMENTAL
+        """`/reload` includes a plugin summary."""
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
         from deepagents_code.tui.widgets.messages import AppMessage
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1743,12 +1740,9 @@ class TestReloadPluginsViaReload:
         Returns:
             The joined transcript text of all rendered app messages.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
         from deepagents_code.tui.widgets.messages import AppMessage
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1961,11 +1955,8 @@ class TestReloadPluginsViaReload:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A discovery failure degrades to a manual-retry note, not a crash."""
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.tui.widgets.messages import AppMessage
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1990,31 +1981,6 @@ class TestReloadPluginsViaReload:
             assert "Configuration reloaded." in text
             assert "Plugins:" not in text
 
-    async def test_skips_plugin_summary_when_experimental_off(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`/reload` omits plugin summary when experimental mode is off."""
-        from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.tui.widgets.messages import AppMessage
-
-        monkeypatch.setenv(EXPERIMENTAL, "0")
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            async def _fake_discover() -> bool:  # noqa: RUF029
-                return True
-
-            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-
-            await app._handle_command("/reload")
-            await pilot.pause()
-
-            text = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Plugins:" not in text
-
     @pytest.mark.parametrize(
         ("restarted", "expected_ids"),
         [
@@ -2029,11 +1995,9 @@ class TestReloadPluginsViaReload:
         expected_ids: frozenset[str],
     ) -> None:
         """A failed restart leaves the prior server's plugin status intact."""
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

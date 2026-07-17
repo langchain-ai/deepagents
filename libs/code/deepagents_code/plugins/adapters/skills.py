@@ -126,8 +126,7 @@ def discover_plugin_skill_sources_and_roots() -> tuple[
     """Discover plugin skill sources and containment roots.
 
     Returns:
-        Plugin skill sources and roots, or empty tuples when plugins are disabled
-        or discovery fails.
+        Plugin skill sources and roots, or empty tuples when discovery fails.
     """
     plugin_sources, plugin_roots, _plugin_ids = discover_plugin_skill_state()
 

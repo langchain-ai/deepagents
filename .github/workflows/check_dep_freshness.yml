@@ -1,0 +1,136 @@
+# Advisory check: reports release-package dependency minimums that trail PyPI.
+# Does not block merge; updates or removes one marker-tagged PR comment.
+
+name: "📦 Check Dependency Freshness"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - "libs/**/pyproject.toml"
+      - "release-please-config.json"
+      - ".github/scripts/check_dep_freshness.py"
+      - ".github/scripts/check_release_deps.py"
+      - ".github/workflows/check_dep_freshness.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-dependency-freshness:
+    name: "compare dependency minimums with PyPI"
+    if: >-
+      startsWith(github.event.pull_request.title, 'release(') &&
+      !contains(github.event.pull_request.labels.*.name, 'release-deps: acknowledged')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      stale: ${{ steps.check.outputs.stale }}
+      indeterminate: ${{ steps.check.outputs.indeterminate }}
+      comment_body: ${{ steps.check.outputs.comment_body }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: "🐍 Set up Python and uv"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
+      - name: "🔍 Compare dependency minimums with PyPI"
+        id: check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # "bound" includes pre-releases only for pre-release minimums. The
+          # script also accepts "always" and "never" for future policy changes.
+          DEP_FRESHNESS_PRERELEASE_POLICY: "bound"
+        run: uv run --no-project --with packaging python .github/scripts/check_dep_freshness.py
+
+  manage-dependency-freshness-comment:
+    name: "manage dependency freshness PR comment"
+    needs: check-dependency-freshness
+    # Run for bypassed and renamed PRs too, so an obsolete comment is removed.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: "💬 Manage PR comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          COMMENT_BODY: ${{ needs.check-dependency-freshness.outputs.comment_body }}
+          INDETERMINATE: ${{ needs.check-dependency-freshness.outputs.indeterminate }}
+          RESULT: ${{ needs.check-dependency-freshness.result }}
+          STALE: ${{ needs.check-dependency-freshness.outputs.stale }}
+        with:
+          script: |
+            const marker = '<!-- dep-freshness-check -->';
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body = process.env.COMMENT_BODY || '';
+            const staleRaw = process.env.STALE || '';
+            const result = process.env.RESULT || '';
+            const stale = staleRaw === 'true';
+            const indeterminate = process.env.INDETERMINATE === 'true';
+
+            // Empty outputs mean the check was skipped (bypass/non-release) or
+            // crashed. Skips resolve the advisory; crashes preserve its last
+            // known result while the failed job explains that no result exists.
+            const crashed = staleRaw === '' && result !== 'skipped';
+
+            try {
+              if (crashed) {
+                core.info('Dependency freshness check produced no result; leaving any existing comment in place.');
+                return;
+              }
+
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+              const existing = comments.find(
+                c => c.user?.login === 'github-actions[bot]' &&
+                  (c.body ?? '').startsWith(marker),
+              );
+
+              if (stale) {
+                if (!body.trim()) {
+                  core.warning('Dependency freshness check found stale bounds but produced no comment body; keeping any existing comment.');
+                  return;
+                }
+                if (existing) {
+                  await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+                  core.info('Updated dependency freshness warning comment.');
+                } else {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+                  core.info('Created dependency freshness warning comment.');
+                }
+                return;
+              }
+
+              if (indeterminate) {
+                core.warning('Some PyPI queries were indeterminate; leaving any existing dependency freshness comment in place.');
+                return;
+              }
+
+              if (existing) {
+                await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+                core.info('Dependency minimums are current or acknowledged — removed stale warning comment.');
+              } else {
+                core.info('No dependency freshness warning comment needed.');
+              }
+            } catch (err) {
+              if (err.status === 403) {
+                core.warning(`Skipping dependency freshness PR comment (token cannot write comments): ${err.message}`);
+                return;
+              }
+              throw err;
+            }

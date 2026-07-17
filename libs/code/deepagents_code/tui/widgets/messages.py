@@ -1798,7 +1798,7 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content(output))
 
         if not items:
-            return FormattedOutput(content=Content.styled("    No todos", "dim"))
+            return FormattedOutput(content=Content.styled("No todos", "dim"))
 
         lines: list[Content] = []
         max_items = 4 if is_preview else len(items)
@@ -1806,7 +1806,7 @@ class ToolCallMessage(Vertical):
         # Build stats header
         stats = self._build_todo_stats(items)
         if stats:
-            lines.extend([Content.assemble("    ", stats), Content("")])
+            lines.extend([stats, Content("")])
 
         # Format each item
         lines.extend(
@@ -1972,19 +1972,19 @@ class ToolCallMessage(Vertical):
         glyphs = get_glyphs()
         if status == "completed":
             return self._format_todo_line(
-                Content.styled(f"    {glyphs.checkmark} done   ", colors.success),
+                Content.styled(f"{glyphs.checkmark} done   ", colors.success),
                 text,
                 is_preview=is_preview,
                 text_style="dim",
             )
         if status == "in_progress":
             return self._format_todo_line(
-                Content.styled(f"    {glyphs.circle_filled} active ", colors.warning),
+                Content.styled(f"{glyphs.circle_filled} active ", colors.warning),
                 text,
                 is_preview=is_preview,
             )
         return self._format_todo_line(
-            Content.styled(f"    {glyphs.circle_empty} todo   ", "dim"),
+            Content.styled(f"{glyphs.circle_empty} todo   ", "dim"),
             text,
             is_preview=is_preview,
         )
@@ -2007,13 +2007,13 @@ class ToolCallMessage(Vertical):
                     path = Path(str(item))
                     name = path.name
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
+                        lines.append(Content.styled(name, theme.FILE_PYTHON))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
+                        lines.append(Content.styled(name, theme.FILE_CONFIG))
                     elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
+                        lines.append(Content.styled(f"{name}/", theme.FILE_DIR))
                     else:
-                        lines.append(Content(f"    {name}"))
+                        lines.append(Content(name))
 
                 truncation = None
                 if is_preview and len(items) > max_items:

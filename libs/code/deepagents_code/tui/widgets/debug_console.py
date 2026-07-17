@@ -717,7 +717,7 @@ class DebugConsoleScreen(ModalScreen[None]):
 
         Args:
             snapshot: Ordered `SnapshotField` rows rendered in the header.
-            cleared_upto: Absolute buffer index a prior `Ctrl+L` cleared up to.
+            cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
             on_clear: Invoked with the new clear cursor whenever `Ctrl+L` clears

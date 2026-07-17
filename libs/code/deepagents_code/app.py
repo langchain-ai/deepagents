@@ -2638,7 +2638,7 @@ class DeepAgentsApp(App):
         """
 
         self._debug_console_cleared_upto = 0
-        """Absolute log-buffer index the Debug Console was last cleared up to.
+        """Absolute emission index the Debug Console was last cleared up to.
 
         Persists a `Ctrl+L` clear across close/reopen of the console for the
         process lifetime; each newly opened `DebugConsoleScreen` is seeded from

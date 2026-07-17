@@ -464,9 +464,12 @@ class TestDebugConsoleScreen:
             buffer = get_log_buffer()
             assert buffer is not None
 
+            # Capture the cursor at clear time; the shared process-wide buffer
+            # may accrue records between the clear and a later re-read.
+            expected = buffer.total_emitted
             await pilot.press("ctrl+l")
             await pilot.pause()
-            assert cleared == [buffer.total_emitted]
+            assert cleared == [expected]
 
     async def test_cleared_upto_seeds_render_cursor(self) -> None:
         logger.info("debug-console-pre-clear-marker")
@@ -1239,11 +1242,19 @@ class TestDebugConsoleToggle:
                 for record in log.records
             )
 
+            buffer = get_log_buffer()
+            assert buffer is not None
+            expected = buffer.total_emitted
             await pilot.press("ctrl+l")
             await pilot.pause()
-            assert app._debug_console_cleared_upto > 0
+            assert app._debug_console_cleared_upto == expected
 
-            # Close and reopen: the cleared records must not come back.
+            # A record emitted after the clear must survive the reopen; only the
+            # pre-clear tail is suppressed.
+            logger.info("debug-console-post-clear-marker")
+
+            # Close and reopen: the cleared records must not come back, but the
+            # post-clear record must appear.
             await pilot.press("ctrl+backslash")
             await pilot.pause()
             await pilot.press("ctrl+backslash")
@@ -1252,6 +1263,10 @@ class TestDebugConsoleToggle:
             reopened_log = reopened.query_one("#debug-log", _DebugLogView)
             assert not any(
                 "debug-console-persist-marker" in record.message
+                for record in reopened_log.records
+            )
+            assert any(
+                "debug-console-post-clear-marker" in record.message
                 for record in reopened_log.records
             )
 

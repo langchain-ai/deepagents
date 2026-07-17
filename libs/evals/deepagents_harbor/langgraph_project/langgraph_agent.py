@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
@@ -30,13 +31,12 @@ _DEFAULT_WORKDIR = Path("/app")
 _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
-_GLM_5_2_MODEL_SPECS = frozenset(
-    {
-        "baseten:zai-org/glm-5.2",
-        "fireworks:accounts/fireworks/models/glm-5p2",
-        "openrouter:z-ai/glm-5.2",
-    }
-)
+# Single source of truth for which specs are GLM-5.2: reuse dcode's exact,
+# case-sensitive spec set so this eval default and dcode's media guard / prompt
+# suffix / profile registration fire on precisely the same specs. Matching
+# case-insensitively here would re-bump reasoning for a spec dcode classifies as
+# non-GLM (so the media guard would be absent) — the divergence we must avoid.
+_GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -124,11 +124,13 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
 
     Experiment (for now). Fireworks GLM takes this as a nested
     ``model_kwargs={"reasoning_effort": ...}`` on the model constructor (see
-    dcode ``reasoning_effort._fireworks_model_params``). Gated to the three
-    GLM-5.2 profile specs so the shared harness is unaffected for other models;
-    an explicit provider-native ``reasoning``/``reasoning_effort`` still wins.
+    dcode ``reasoning_effort._fireworks_model_params``). Gated case-sensitively
+    to dcode's exact GLM-5.2 profile specs so the shared harness is unaffected
+    for other models and this default fires on precisely the specs dcode also
+    guards; an explicit provider-native ``reasoning``/``reasoning_effort`` still
+    wins.
     """
-    if model_spec.lower() not in _GLM_5_2_MODEL_SPECS:
+    if model_spec not in _GLM_5_2_MODEL_SPECS:
         return
     if "reasoning_effort" in model_kwargs or "reasoning" in model_kwargs:
         return
@@ -233,25 +235,39 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
     profile = getattr(model, "profile", None)
     if not isinstance(profile, dict):
         # No usable profile: the identity section renders with no context window
-        # and no modality restrictions. Log it so an eval running with a degraded
-        # identity is attributable rather than silently mysterious.
-        logger.debug(
+        # and no modality restrictions. Warn (not debug) so an eval running with
+        # a degraded identity is attributable — harbor configures no logging, so
+        # a debug record would be dropped at the default root level and the
+        # intended attribution would never reach the operator.
+        logger.warning(
             "Model %r exposes no profile dict; Model Identity will omit the "
             "context limit and unsupported modalities",
             name,
         )
-    if isinstance(profile, dict):
-        max_input = profile.get("max_input_tokens")
-        settings.model_context_limit = max_input if isinstance(max_input, int) else None
-        modality_keys = {
-            "image_inputs": "image",
-            "audio_inputs": "audio",
-            "video_inputs": "video",
-            "pdf_inputs": "pdf",
-        }
-        settings.model_unsupported_modalities = frozenset(
-            label for key, label in modality_keys.items() if profile.get(key) is False
+        return
+
+    max_input = profile.get("max_input_tokens")
+    if isinstance(max_input, int):
+        settings.model_context_limit = max_input
+    else:
+        # A profile that is present but lacks a usable context window is an
+        # unexpected shape (e.g. a renamed key); surface it rather than silently
+        # coercing to None with no signal.
+        logger.warning(
+            "Model %r profile has no usable 'max_input_tokens' (%r); Model "
+            "Identity will omit the context limit",
+            name,
+            max_input,
         )
+    modality_keys = {
+        "image_inputs": "image",
+        "audio_inputs": "audio",
+        "video_inputs": "video",
+        "pdf_inputs": "pdf",
+    }
+    settings.model_unsupported_modalities = frozenset(
+        label for key, label in modality_keys.items() if profile.get(key) is False
+    )
 
 
 def make_graph(config: dict[str, object] | None = None) -> object:

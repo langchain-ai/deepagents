@@ -12,9 +12,12 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
-# Private import: the SDK exposes no public helper to derive a model's
-# provider-native identifier, which the guards need to classify the runtime model.
-from deepagents._models import get_model_identifier  # noqa: PLC2701
+# Private import: the SDK exposes no public helpers to derive the exact
+# provider/model spec that the guards need to classify the runtime model.
+from deepagents._models import (  # noqa: PLC2701
+    get_model_identifier,
+    get_model_provider,
+)
 from deepagents.profiles import HarnessProfile, register_harness_profile
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -49,29 +52,17 @@ _GLM_5P2_MODEL_SPECS: tuple[str, ...] = (
 )
 """Exact provider/model specs that receive the GLM-5.2 profile."""
 
-_GLM_5P2_MODEL_IDENTIFIERS: frozenset[str] = frozenset(
-    spec.partition(":")[2] for spec in _GLM_5P2_MODEL_SPECS
-)
-"""Provider-native identifiers recognized as GLM-5.2."""
-
-_SPEC_BY_IDENTIFIER: dict[str, str] = {
-    spec.partition(":")[2]: spec for spec in _GLM_5P2_MODEL_SPECS
-}
-"""Provider-native identifier to full registry spec, for ownership lookups."""
-
-_FIREWORKS_GLM_5P2_IDENTIFIER = _FIREWORKS_GLM_5P2_SPEC.partition(":")[2]
-"""Fireworks model identifier whose terminal output cap was measured."""
+_GLM_5P2_MODEL_SPEC_SET = frozenset(_GLM_5P2_MODEL_SPECS)
+"""Exact provider/model specs recognized as GLM-5.2."""
 
 # Enforce the latent invariants the derived structures above rely on, at import
-# time rather than by luck of the current literals: every spec is `provider:id`
-# (so `partition` yields a real identifier), identifiers are unique across specs
-# (so the frozenset/dict cannot silently collapse two specs onto one entry), and
-# the measured Fireworks spec is actually one of the registered specs.
+# time rather than by luck of the current literals: every spec is `provider:id`,
+# specs are unique, and the measured Fireworks spec is actually registered.
 if not all(":" in spec for spec in _GLM_5P2_MODEL_SPECS):
     msg = "every GLM-5.2 spec must be in `provider:identifier` form"
     raise ValueError(msg)
-if len(_GLM_5P2_MODEL_IDENTIFIERS) != len(_GLM_5P2_MODEL_SPECS):
-    msg = "GLM-5.2 specs must have distinct provider-native identifiers"
+if len(_GLM_5P2_MODEL_SPEC_SET) != len(_GLM_5P2_MODEL_SPECS):
+    msg = "GLM-5.2 specs must be unique"
     raise ValueError(msg)
 if _FIREWORKS_GLM_5P2_SPEC not in _GLM_5P2_MODEL_SPECS:
     msg = "the measured Fireworks spec must be a registered GLM-5.2 spec"
@@ -154,22 +145,26 @@ def _has_only_text_content(message: ToolMessage) -> bool:
     )
 
 
-def _model_identifier(model: str | BaseChatModel) -> str | None:
-    """Return the provider-native identifier for a model or model spec."""
+def _model_spec(model: str | BaseChatModel) -> str | None:
+    """Return the exact provider/model spec for a model or model spec."""
     if isinstance(model, str):
-        _, separator, identifier = model.partition(":")
-        return identifier if separator else model
-    return get_model_identifier(model)
+        _, separator, _ = model.partition(":")
+        return model if separator else None
+    identifier = get_model_identifier(model)
+    provider = get_model_provider(model)
+    if identifier is None or provider is None:
+        return None
+    return f"{provider}:{identifier}"
 
 
 def _is_glm_5p2_model(model: str | BaseChatModel) -> bool:
-    """Return whether a model or spec has an exact GLM-5.2 identifier."""
-    return _model_identifier(model) in _GLM_5P2_MODEL_IDENTIFIERS
+    """Return whether a model or spec is an exact registered GLM-5.2 spec."""
+    return _model_spec(model) in _GLM_5P2_MODEL_SPEC_SET
 
 
 def _is_fireworks_glm_5p2_model(model: str | BaseChatModel) -> bool:
     """Return whether a model resolves to the measured Fireworks GLM-5.2."""
-    return _model_identifier(model) == _FIREWORKS_GLM_5P2_IDENTIFIER
+    return _model_spec(model) == _FIREWORKS_GLM_5P2_SPEC
 
 
 def _dcode_owns_suffix(model: str | BaseChatModel) -> bool:
@@ -180,9 +175,8 @@ def _dcode_owns_suffix(model: str | BaseChatModel) -> bool:
     guard must leave that suffix alone instead of appending the dcode one, so an
     override actually wins rather than getting the dcode suffix bolted on.
     """
-    identifier = _model_identifier(model)
-    spec = _SPEC_BY_IDENTIFIER.get(identifier) if identifier is not None else None
-    if spec is None:
+    spec = _model_spec(model)
+    if spec is None or spec not in _GLM_5P2_MODEL_SPEC_SET:
         return False
     # Private import: no public accessor exposes the live registry we must read
     # to tell whether the dcode suffix or an override currently owns this spec.
@@ -256,8 +250,8 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
         super().__init__()
         self._construction_active = _is_glm_5p2_model(model)
 
-    @staticmethod
     def _prepare_model_request(
+        self,
         request: ModelRequest,
     ) -> tuple[ModelRequest, bool]:
         """Classify the resolved model and transition its trusted prompt suffix.
@@ -268,10 +262,19 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
         only manages the dcode suffix for a spec the dcode profile actually owns,
         so a user/built-in override that won registration keeps its own suffix.
 
+        When the runtime model's spec is unresolvable, the media guard must fail
+        closed rather than open: it falls back to the construction-time
+        classification instead of silently treating "cannot tell" as non-GLM,
+        and leaves the prompt untouched since it cannot know which profile owns
+        any suffix already present.
+
         Returns:
             The request to send downstream and whether its model is GLM-5.2.
         """
-        active = _is_glm_5p2_model(request.model)
+        spec = _model_spec(request.model)
+        if spec is None:
+            return request, self._construction_active
+        active = spec in _GLM_5P2_MODEL_SPEC_SET
         suffix_active = active and _dcode_owns_suffix(request.model)
         prompt = request.system_prompt
         transitioned = _transition_system_prompt(prompt, active=suffix_active)
@@ -392,8 +395,9 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
     A tool-free GLM response truncated by the output cap (`finish_reason
     "length"`) has stalled: the empty turn would otherwise end a headless run
     with no deliverable. This retries such a turn once with a trusted recovery
-    instruction, reasoning disabled, and a forced tool call, which by
-    construction cannot itself re-stall.
+    instruction, reasoning disabled, and a forced tool call. The retry is issued
+    at most once, so it cannot loop even when the provider ignores the forced
+    tool call and the retry itself re-stalls (see `_log_if_still_stalled`).
 
     Two scoping constraints, neither expressed on `_GLM_5P2_PROFILE`:
 
@@ -431,10 +435,22 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
             if not prompt
             else f"{prompt}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
         )
-        model_settings = {
-            **request.model_settings,
-            "reasoning_effort": "none",
-        }
+        # Recovery is Fireworks-only (`_should_recover`), and Fireworks reads
+        # `reasoning_effort` nested under `model_kwargs` (see dcode
+        # `reasoning_effort._fireworks_model_params`), not at the top level. This
+        # middleware runs inner to `ConfigurableModelMiddleware`, so a top-level
+        # key set here would never be translated into the nested form the model
+        # actually reads, leaving reasoning at its default. Write the nested form
+        # directly so the retry runs with reasoning disabled as documented,
+        # preserving any other `model_kwargs` already on the request.
+        existing_model_kwargs = request.model_settings.get("model_kwargs")
+        model_kwargs = (
+            dict(existing_model_kwargs)
+            if isinstance(existing_model_kwargs, Mapping)
+            else {}
+        )
+        model_kwargs["reasoning_effort"] = "none"
+        model_settings = {**request.model_settings, "model_kwargs": model_kwargs}
         return request.override(
             system_prompt=recovery_prompt,
             tool_choice="any",

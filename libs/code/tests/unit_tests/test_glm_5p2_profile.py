@@ -43,6 +43,13 @@ _BASETEN_GLM = "baseten:zai-org/GLM-5.2"
 _NON_GLM = "openai:gpt-5.5"
 _MISSING = object()
 
+_PROVIDER_BY_IDENTIFIER = {
+    "accounts/fireworks/models/glm-5p2": "fireworks",
+    "z-ai/glm-5.2": "openrouter",
+    "zai-org/GLM-5.2": "baseten",
+    "gpt-5.5": "openai",
+}
+
 
 @pytest.fixture(autouse=True)
 def _dcode_owns_all_glm_specs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,9 +68,12 @@ def _dcode_owns_all_glm_specs(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _model(identifier: str) -> BaseChatModel:
+def _model(identifier: str, *, provider: str | None = None) -> BaseChatModel:
     model = MagicMock(spec=BaseChatModel)
     model.model_name = identifier
+    model._get_ls_params.return_value = {
+        "ls_provider": provider or _PROVIDER_BY_IDENTIFIER[identifier]
+    }
     return cast("BaseChatModel", model)
 
 
@@ -71,11 +81,12 @@ def _model_request(
     identifier: str,
     *,
     prompt: str = "base prompt",
+    provider: str | None = None,
     requested_model: str | None = None,
 ) -> ModelRequest:
     runtime = SimpleNamespace(context={"model": requested_model})
     return ModelRequest(
-        model=_model(identifier),
+        model=_model(identifier, provider=provider),
         messages=[HumanMessage(content="run")],
         tools=[],
         system_prompt=prompt,
@@ -383,6 +394,50 @@ def test_model_wrapper_recognizes_provider_native_glm_identifiers(
     assert actual.system_prompt.endswith(glm_profile._SYSTEM_PROMPT_SUFFIX)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "accounts/fireworks/models/glm-5p2",
+        "z-ai/glm-5.2",
+        "zai-org/GLM-5.2",
+    ],
+)
+def test_model_wrapper_rejects_glm_identifier_from_other_provider(
+    identifier: str,
+) -> None:
+    middleware = _GlmReadFileMediaGuard(_NON_GLM)
+
+    result, actual = _run_model(
+        middleware,
+        _model_request(identifier, provider="custom_gateway"),
+    )
+
+    assert _model_update(result) is False
+    assert actual.system_prompt == "base prompt"
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "accounts/fireworks/models/glm-5p2",
+        "z-ai/glm-5.2",
+        "zai-org/GLM-5.2",
+    ],
+)
+def test_construction_spec_rejects_glm_identifier_from_other_provider(
+    identifier: str,
+) -> None:
+    middleware = _GlmReadFileMediaGuard(f"custom_gateway:{identifier}")
+    media = _media_message()
+
+    result = middleware.wrap_tool_call(
+        _request(active=_MISSING),
+        lambda _request: media,
+    )
+
+    assert result is media
+
+
 def test_model_wrapper_deduplicates_trusted_suffix() -> None:
     middleware = _GlmReadFileMediaGuard(_FIREWORKS_GLM)
     suffix = glm_profile._SYSTEM_PROMPT_SUFFIX
@@ -602,10 +657,16 @@ async def test_async_model_wrapper_matches_sync_transition() -> None:
 def test_headless_glm_retries_length_truncated_turn() -> None:
     middleware = _GlmTerminalStallRecovery()
     tools: list[BaseTool | dict[str, Any]] = [{"name": "write_file"}]
+    # Fireworks carries reasoning effort nested under `model_kwargs` (see dcode
+    # `reasoning_effort._fireworks_model_params`), so the request the recovery
+    # sees uses that shape.
     request = _model_request("accounts/fireworks/models/glm-5p2").override(
         tools=tools,
         tool_choice="auto",
-        model_settings={"reasoning_effort": "high", "temperature": 0.25},
+        model_settings={
+            "model_kwargs": {"reasoning_effort": "max"},
+            "temperature": 0.25,
+        },
     )
     requests: list[ModelRequest] = []
     responses = iter(
@@ -624,21 +685,24 @@ def test_headless_glm_retries_length_truncated_turn() -> None:
     assert len(requests) == 2
     assert requests[0].tool_choice == "auto"
     assert requests[0].model_settings == {
-        "reasoning_effort": "high",
+        "model_kwargs": {"reasoning_effort": "max"},
         "temperature": 0.25,
     }
     assert requests[0].tools == tools
     assert requests[1].system_prompt is not None
     assert "call a tool now" in requests[1].system_prompt
     assert requests[1].tool_choice == "any"
+    # Reasoning is disabled in the nested `model_kwargs` form Fireworks reads,
+    # not at the top level, and other model kwargs are preserved.
     assert requests[1].model_settings == {
-        "reasoning_effort": "none",
+        "model_kwargs": {"reasoning_effort": "none"},
         "temperature": 0.25,
     }
     assert requests[1].tools == tools
+    # The original request is left unmutated.
     assert request.tool_choice == "auto"
     assert request.model_settings == {
-        "reasoning_effort": "high",
+        "model_kwargs": {"reasoning_effort": "max"},
         "temperature": 0.25,
     }
     assert request.tools == tools
@@ -662,6 +726,28 @@ async def test_async_headless_glm_retries_at_most_once() -> None:
 
     assert calls == 2
     assert result.result[0].text == "still stalled"
+
+
+def test_terminal_stall_recovery_rejects_fireworks_identifier_from_other_provider() -> (
+    None
+):
+    middleware = _GlmTerminalStallRecovery()
+    calls = 0
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        return _model_response(finish_reason="length")
+
+    middleware.wrap_model_call(
+        _model_request(
+            "accounts/fireworks/models/glm-5p2",
+            provider="custom_gateway",
+        ),
+        handler,
+    )
+
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
@@ -970,6 +1056,121 @@ def test_media_guard_ignores_other_tools() -> None:
     )
 
     assert result is original
+
+
+def _unresolvable_model_request(prompt: str = "base prompt") -> ModelRequest:
+    """A request whose model exposes no derivable provider/identifier."""
+    model = MagicMock(spec=BaseChatModel)
+    model.model_name = None
+    model.model = None
+    model._get_ls_params.return_value = {}
+    runtime = SimpleNamespace(context={"model": None})
+    return ModelRequest(
+        model=cast("BaseChatModel", model),
+        messages=[HumanMessage(content="run")],
+        tools=[],
+        system_prompt=prompt,
+        state={"messages": []},
+        runtime=cast("Any", runtime),
+    )
+
+
+def test_media_guard_fails_closed_when_runtime_model_unresolvable() -> None:
+    """An unresolvable runtime spec falls back to the GLM construction default.
+
+    A text-only guard must not treat "cannot resolve the model" as "not GLM"
+    and let media through; it reuses the construction-time classification.
+    """
+    middleware = _GlmReadFileMediaGuard(_FIREWORKS_GLM)
+
+    model_result, actual = _run_model(middleware, _unresolvable_model_request())
+
+    active = _model_update(model_result)
+    assert active is True
+    # The prompt is left untouched: the guard cannot know which profile owns any
+    # suffix present, so it neither adds nor removes one.
+    assert actual.system_prompt == "base prompt"
+
+    media = _media_message()
+    tool_result = middleware.wrap_tool_call(
+        _request(active=active),
+        lambda _request: media,
+    )
+    _assert_generic_media_error(tool_result)
+
+
+def test_media_guard_unresolvable_model_stays_inactive_for_non_glm_construction() -> (
+    None
+):
+    """Fail-closed means the construction default, not "always block".
+
+    A non-GLM stack whose runtime spec is unresolvable must keep passing media
+    through rather than start blocking it.
+    """
+    middleware = _GlmReadFileMediaGuard(_NON_GLM)
+
+    model_result, actual = _run_model(middleware, _unresolvable_model_request())
+
+    active = _model_update(model_result)
+    assert active is False
+    assert actual.system_prompt == "base prompt"
+
+    media = _media_message()
+    tool_result = middleware.wrap_tool_call(
+        _request(active=active),
+        lambda _request: media,
+    )
+    assert tool_result is media
+
+
+def test_media_guard_and_stall_recovery_compose_prompt_order() -> None:
+    """Recovery (inner) appends its suffix after the guard's execution suffix.
+
+    Exercises the two middlewares composed as they are wired in `create_cli_agent`
+    (media guard outer, recovery inner): on a real stall the retry must keep the
+    guard's transitioned prompt with the execution suffix intact at the tail, and
+    disable reasoning in the nested `model_kwargs` form Fireworks reads.
+    """
+    suffix = glm_profile._SYSTEM_PROMPT_SUFFIX
+    recovery_suffix = glm_profile._TERMINAL_STALL_RECOVERY_SUFFIX
+    stack: list[AgentMiddleware[Any, Any]] = [
+        _GlmReadFileMediaGuard(_FIREWORKS_GLM),
+        _GlmTerminalStallRecovery(),
+    ]
+    composed = _chain_model_call_handlers([mw.wrap_model_call for mw in stack])
+    assert composed is not None
+
+    captured: list[ModelRequest] = []
+    responses = iter(
+        [
+            _model_response(content="unfinished", finish_reason="length"),
+            _model_response(content="recovered", with_tool_call=True),
+        ]
+    )
+
+    def handler(actual: ModelRequest) -> ModelResponse[Any]:
+        captured.append(actual)
+        return next(responses)
+
+    result = composed(
+        _model_request("accounts/fireworks/models/glm-5p2", prompt="base prompt"),
+        handler,
+    )
+
+    assert len(captured) == 2
+    # First call: the outer media guard appended the execution suffix at the tail.
+    assert captured[0].system_prompt == f"base prompt\n\n{suffix}"
+    # Retry: recovery appended its suffix AFTER the execution suffix, leaving the
+    # execution suffix intact (count == 1) rather than displacing it.
+    assert captured[1].system_prompt == f"base prompt\n\n{suffix}\n\n{recovery_suffix}"
+    assert captured[1].system_prompt.count(suffix) == 1
+    assert captured[1].model_settings == {"model_kwargs": {"reasoning_effort": "none"}}
+    # The recovered turn propagates out, and the guard still marks GLM active.
+    assert result.model_response.result[0].text == "recovered"
+    assert any(
+        isinstance(command, Command) and command.update == {"_glm_5p2_active": True}
+        for command in result.commands
+    )
 
 
 def test_profile_is_suffix_only() -> None:

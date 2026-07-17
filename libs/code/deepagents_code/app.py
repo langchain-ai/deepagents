@@ -19486,6 +19486,13 @@ class DeepAgentsApp(App):
         # banner; `_log_task_exception` surfaces anything unexpected. The
         # pre-respawn guards above (remote/starting/failed/deferred) already
         # ran synchronously, so the user got immediate feedback before this.
+        # Mark the app reconnecting before scheduling because `create_task`
+        # does not run the coroutine inline. Otherwise a submission or second
+        # `/restart` could enter before `_respawn_server` sets these fields.
+        self._connecting = True
+        self._reconnecting = True
+        self._agent = None
+        self._sync_status_connection()
         task = asyncio.create_task(self._run_restart_respawn())
         self._restart_respawn_task = task
         task.add_done_callback(_log_task_exception)
@@ -19500,11 +19507,16 @@ class DeepAgentsApp(App):
         respawn succeeds, returns `False`, or raises, and mounts the
         completion banner only on success.
         """
-        restarting = await self._mount_transient_app_message("Restarting server...")
+        restarting = None
         restarted = False
         try:
+            restarting = await self._mount_transient_app_message("Restarting server...")
             restarted = await self._restart_server_manual()
         finally:
+            if not restarted:
+                self._connecting = False
+                self._reconnecting = False
+                self._sync_status_connection()
             if restarting is not None:
                 with suppress(NoMatches, ScreenStackError):
                     await restarting.remove()

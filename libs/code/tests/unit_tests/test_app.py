@@ -24268,6 +24268,60 @@ class TestRestartCommand:
             await pilot.pause()
             assert typed == "hi"
 
+    @pytest.mark.timeout(15)
+    async def test_marks_reconnecting_before_detached_respawn_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart state must be visible before the detached task's first await."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            status_started = asyncio.Event()
+            release_status = asyncio.Event()
+
+            async def _blocked_status(_content: str) -> None:
+                status_started.set()
+                await release_status.wait()
+
+            restart = AsyncMock(return_value=False)
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_mount_transient_app_message", _blocked_status)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            await app._handle_restart_command("/restart")
+            task = app._restart_respawn_task
+            assert task is not None
+            assert not status_started.is_set()
+            assert app._connecting is True
+            assert app._reconnecting is True
+            assert app._agent is None
+
+            try:
+                await status_started.wait()
+                await app._submit_input("queued during restart", mode="normal")
+                assert len(app._pending_messages) == 1
+                assert app._pending_messages[0].text == "queued during restart"
+
+                await app._handle_restart_command("/restart")
+                assert app._restart_respawn_task is task
+                restart.assert_not_awaited()
+            finally:
+                release_status.set()
+                await task
+
+            restart.assert_awaited_once()
+            assert app._connecting is False
+            assert app._reconnecting is False
+
     async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

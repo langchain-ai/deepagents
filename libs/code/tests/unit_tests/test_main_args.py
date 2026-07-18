@@ -136,6 +136,14 @@ class TestAutoApproveArgument:
         with mock_argv():
             assert parse_args().auto_approve is None
 
+    def test_yolo_is_explicit_and_mutually_exclusive(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with mock_argv("--yolo"):
+            assert parse_args().yolo is True
+        with mock_argv("--yolo", "--auto-approve"), pytest.raises(SystemExit):
+            parse_args()
+
 
 class TestResolveAutoApprove:
     """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
@@ -160,8 +168,8 @@ class TestResolveAutoApprove:
         ):
             assert _resolve_auto_approve(args) is False
 
-    def test_omitted_flag_dangerously_auto_config_resolves_true(self) -> None:
-        """No flag + `[startup].mode = dangerously-auto` auto-approves (True)."""
+    def test_omitted_flag_dangerously_auto_config_resolves_false(self) -> None:
+        """The removed `dangerously-auto` spelling fails closed."""
         from deepagents_code.main import _resolve_auto_approve
 
         args = argparse.Namespace(auto_approve=None)
@@ -169,7 +177,80 @@ class TestResolveAutoApprove:
             "deepagents_code.model_config.load_startup_mode",
             return_value="dangerously-auto",
         ):
-            assert _resolve_auto_approve(args) is True
+            assert _resolve_auto_approve(args) is False
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (argparse.Namespace(auto_approve=True, yolo=False), "auto"),
+            (argparse.Namespace(auto_approve=None, yolo=True), "yolo"),
+        ],
+    )
+    def test_typed_mode_resolution(
+        self, args: argparse.Namespace, expected: str
+    ) -> None:
+        from deepagents_code.main import _resolve_approval_mode
+
+        assert _resolve_approval_mode(args).value == expected
+
+
+class TestYoloAcknowledgement:
+    """Tests for the versioned local unrestricted-mode acknowledgement."""
+
+    def test_existing_acknowledgement_skips_prompt(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=True,
+            ),
+            patch("deepagents_code.main._prompt_yolo_acknowledgement") as prompt,
+            patch("deepagents_code.approval_mode.save_yolo_acknowledgement") as save,
+        ):
+            assert _ensure_yolo_acknowledged(console)
+        prompt.assert_not_called()
+        save.assert_not_called()
+
+    def test_declined_acknowledgement_fails_closed(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.main._prompt_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch("deepagents_code.approval_mode.save_yolo_acknowledgement") as save,
+        ):
+            assert not _ensure_yolo_acknowledged(console)
+        save.assert_not_called()
+
+    def test_new_acknowledgement_must_persist(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.main._prompt_yolo_acknowledgement",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.save_yolo_acknowledgement",
+                return_value=False,
+            ),
+        ):
+            assert not _ensure_yolo_acknowledged(console)
+        assert console.print.called
 
 
 class TestAutoApproveHeadlessValidation:
@@ -219,6 +300,23 @@ class TestAutoApproveHeadlessValidation:
         assert "--auto-approve is only supported in interactive mode" in stderr
         assert "--shell-allow-list" in stderr
 
+    def test_rejects_yolo_in_non_interactive_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--yolo", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--yolo is only supported in interactive mode" in capsys.readouterr().err
+
     def test_accepts_auto_approve_in_interactive_mode(self) -> None:
         """`--auto-approve` must still be honored on an interactive launch.
 
@@ -243,6 +341,7 @@ class TestAutoApproveHeadlessValidation:
         with (
             patch.object(sys, "argv", ["deepagents", "--auto-approve", "-m", "hello"]),
             patch.object(sys, "stdin", mock_stdin),
+            patch.dict(os.environ, {"DEEPAGENTS_CODE_EXPERIMENTAL": "1"}),
             patch("deepagents_code.main.run_textual_cli_async", run_tui),
             patch("deepagents_code.main._run_startup_auto_update"),
             patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
@@ -262,7 +361,9 @@ class TestAutoApproveHeadlessValidation:
         run_tui.assert_awaited_once()
         await_args = run_tui.await_args
         assert await_args is not None
-        assert await_args.kwargs["auto_approve"] is True
+        from deepagents_code.approval_mode import ApprovalMode
+
+        assert await_args.kwargs["approval_mode"] is ApprovalMode.AUTO
 
 
 @pytest.mark.parametrize(

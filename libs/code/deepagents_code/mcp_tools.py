@@ -440,8 +440,33 @@ class MCPSessionManager:
         try:
             session = await exit_stack.enter_async_context(create_session(connection))
             await session.initialize()
-        except Exception:
-            await exit_stack.aclose()
+        except BaseException:
+            # Close the partially entered stack in *this* task before
+            # propagating. `create_session` enters an AnyIO task group whose
+            # cancel scope must be exited by the task that entered it; deferring
+            # teardown to async-generator finalization on another task raises
+            # "Attempted to exit cancel scope in a different task than it was
+            # entered in". Catch `BaseException` (not just `Exception`) so a
+            # `CancelledError` — e.g. from a crashed Streamable HTTP transport
+            # task group cancelling `session.initialize()` — also triggers the
+            # in-task teardown below instead of abandoning the session. The bare
+            # `raise` re-raises the original exception unchanged, so cancellation
+            # (and any other error) always propagates regardless; widening the
+            # catch only controls whether teardown runs, not whether the error
+            # propagates.
+            try:
+                await exit_stack.aclose()
+            except Exception:
+                # An ordinary cleanup failure must not mask the original error;
+                # the session is being discarded regardless. A `CancelledError`
+                # raised *by* `aclose()` is intentionally not caught here — it
+                # supersedes the original error, matching structured-cancellation
+                # semantics where an in-flight cancellation wins.
+                logger.warning(
+                    "Failed to close a partially initialized MCP session for %r",
+                    server_name,
+                    exc_info=True,
+                )
             raise
 
         return _MCPSessionEntry(session=session, exit_stack=exit_stack)
@@ -1508,7 +1533,12 @@ def _build_cached_mcp_tool(
         mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
     )
     wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {**base_meta, **wrapped_meta} or None
+    metadata = {
+        **base_meta,
+        **wrapped_meta,
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+    }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
         try:
@@ -2059,6 +2089,7 @@ async def _load_tools_from_config(
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
+                format_login_failure,
             )
 
             status: MCPServerStatus
@@ -2086,31 +2117,36 @@ async def _load_tools_from_config(
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception only in debug logs
-                # so expected re-auth skips don't flood non-interactive output.
+                # re-login. This is an expected, already-classified outcome, so
+                # the actionable WARNING says everything useful; the full
+                # traceback adds no diagnostic value, so keep the DEBUG log to a
+                # concise, token-safe breadcrumb. Use `format_login_failure`
+                # rather than `exc.__class__.__name__`: these failures usually
+                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
+                # class name would just read "ExceptionGroup"; the helper walks
+                # the group/cause chain to name the nested culprit instead.
                 status = "unauthenticated"
-                detail = (
-                    "details redacted because config uses environment interpolation"
-                    if redact_failure_details
-                    else "the original error is in debug logs"
-                )
-                error = f"{reauth} (token refresh failed; {detail})"
+                error = f"{reauth} (token refresh failed)"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: tool discovery failed",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: token refresh failed (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
                 # (RFC 9728) that wasn't already handled as a token refresh —
                 # typically a server not opted into OAuth in config. Surface it
                 # as unauthenticated so the user can log in, rather than as an
-                # opaque connection error.
+                # opaque connection error. Like the reauth case, this is a
+                # recognized outcome: keep the DEBUG log to a concise,
+                # token-safe breadcrumb (via `format_login_failure`, which
+                # names the nested culprit inside the anyio `ExceptionGroup`)
+                # rather than dumping the full challenge traceback.
                 status = "unauthenticated"
                 error = (
                     f"MCP server {server_name!r} requires authentication; "
@@ -2121,10 +2157,10 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             else:
                 status = "error"

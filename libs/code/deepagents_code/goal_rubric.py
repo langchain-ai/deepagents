@@ -965,15 +965,32 @@ def _criteria_approval_description(
 
 def _criteria_interrupt_on(
     tools: Sequence[BaseTool],
+    *,
+    auto_mode_enabled: bool = True,
 ) -> dict[str, InterruptOnConfig]:
     """Resolve criteria HITL policy from normal tool policy and loaded MCP tools.
+
+    Args:
+        tools: External context tools available to the criteria agent.
+        auto_mode_enabled: Whether classifier-backed Auto is eligible to bypass
+            delegated context approval. When `False`, the `when` predicate keeps
+            a live Auto record gated instead of bypassing.
 
     Returns:
         Per-tool interrupt configuration for every external context tool.
     """
-    from deepagents_code.agent import _add_interrupt_on, _should_interrupt_tool_call
+    from deepagents_code.agent import (
+        _add_interrupt_on,
+        _interrupt_predicate,
+        _should_interrupt_tool_call,
+    )
 
-    normal = _add_interrupt_on()
+    normal = _add_interrupt_on(auto_mode_enabled=auto_mode_enabled)
+    when = (
+        _should_interrupt_tool_call
+        if auto_mode_enabled
+        else _interrupt_predicate(auto_mode_enabled=False)
+    )
     interrupt_on: dict[str, InterruptOnConfig] = {}
     for tool in tools:
         config = normal.get(tool.name)
@@ -997,7 +1014,7 @@ def _criteria_interrupt_on(
                         tool.description,
                     ),
                 ),
-                "when": _should_interrupt_tool_call,
+                "when": when,
             },
         )
     return interrupt_on
@@ -1483,14 +1500,49 @@ def create_goal_criteria_agent(
 
     Raises:
         ValueError: If a context tool conflicts with a criteria-agent tool.
+    """  # noqa: DOC502 - `ValueError` propagates from `_create_goal_criteria_agent`
+    return _create_goal_criteria_agent(
+        model=model,
+        repository_backend=repository_backend,
+        repository_root=repository_root,
+        context_tools=context_tools,
+        auto_mode_enabled=True,
+        retry_fallback=retry_fallback,
+    )
+
+
+def _create_goal_criteria_agent(
+    *,
+    model: str | BaseChatModel,
+    repository_backend: BackendProtocol | None,
+    repository_root: str,
+    context_tools: Sequence[BaseTool | Callable[..., Any]],
+    auto_mode_enabled: bool,
+    retry_fallback: int | None = None,
+) -> Any:  # noqa: ANN401
+    """Build a criteria agent with the parent runtime's Auto eligibility.
+
+    Args:
+        model: Chat model or model identifier used by the server graph.
+        repository_backend: Backend rooted at the active repository or sandbox.
+        repository_root: Absolute path that bounds repository reads.
+        context_tools: External context tools available to the criteria agent.
+        auto_mode_enabled: Whether Auto may bypass delegated context approval.
+        retry_fallback: Retry budget for models without attached metadata.
+
+    Returns:
+        Compiled criteria agent graph.
+
+    Raises:
+        ValueError: If a context tool conflicts with a criteria-agent tool.
     """
     from deepagents.middleware import FilesystemMiddleware
     from langchain.agents import create_agent
-    from langchain.agents.middleware import HumanInTheLoopMiddleware
     from langchain.agents.structured_output import ToolStrategy
     from langchain_core.tools import BaseTool, StructuredTool
 
     from deepagents_code._cli_context import CLIContextSchema
+    from deepagents_code.agent import AsyncApprovalHITLMiddleware
     from deepagents_code.configurable_model import ConfigurableModelMiddleware
     from deepagents_code.model_retry import CodeModelRetryMiddleware
 
@@ -1543,10 +1595,10 @@ def create_goal_criteria_agent(
             ]
         )
     middleware.append(
-        HumanInTheLoopMiddleware(
-            interrupt_on=cast(
-                "dict[str, bool | InterruptOnConfig]",
-                _criteria_interrupt_on(normalized_context_tools),
+        AsyncApprovalHITLMiddleware(
+            interrupt_on=_criteria_interrupt_on(
+                normalized_context_tools,
+                auto_mode_enabled=auto_mode_enabled,
             )
         )
     )

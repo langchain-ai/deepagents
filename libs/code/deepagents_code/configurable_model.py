@@ -266,6 +266,11 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
             model_params=ctx.get("model_params") or {},
             profile_overrides=ctx.get("profile_overrides") or {},
             model_context_limit=ctx.get("model_context_limit"),
+            approval_mode=(
+                ctx.get("approval_mode")
+                if isinstance(ctx.get("approval_mode"), str)
+                else "manual"
+            ),
             auto_approve=bool(ctx.get("auto_approve", False)),
             approval_mode_key=raw_key if isinstance(raw_key, str) else None,
             thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,

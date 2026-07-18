@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from typing import cast
+from typing import TypedDict, cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
 import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
+import eval_agent_configs as agent_configs  # noqa: E402
 
 MAX_TASKS_PER_MODEL = 40
 MAX_RUNNERS = 80
@@ -89,6 +91,66 @@ if DEFAULT_AGENT_IMPL not in CODE_AGENT_IMPLS:
 PROFILES = {"full", "lite"}
 
 TOTAL_JOB_BUDGET = 400
+
+
+class Source(TypedDict):
+    """One immutable product source selected for an evaluation."""
+
+    version_id: str
+    branch: str
+    sha: str
+    product_artifact: str
+
+
+def parse_sources(raw: str) -> list[Source]:
+    """Validate branch heads resolved once by the workflow prep job."""
+    if not raw.strip():
+        return [
+            {
+                "version_id": "",
+                "branch": "current",
+                "sha": os.environ.get("GITHUB_SHA", "0" * 40),
+                "product_artifact": "",
+            }
+        ]
+
+    msg = "UNIFIED_SOURCES_JSON must contain ordered branch/SHA source objects"
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(msg) from exc
+    if not isinstance(value, list) or not value:
+        raise SystemExit(msg)
+
+    comparison = len(value) > 1
+    sources: list[Source] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(msg)
+        expected_id = f"v{index}" if comparison else ""
+        version_id = item.get("version_id")
+        branch = item.get("branch")
+        sha = item.get("sha")
+        if (
+            version_id != expected_id
+            or not isinstance(branch, str)
+            or not branch
+            or not isinstance(sha, str)
+            or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+        ):
+            raise SystemExit(msg)
+        artifact = f"unified-products-{version_id}-{sha[:12]}" if version_id else ""
+        sources.append(
+            {
+                "version_id": version_id,
+                "branch": branch,
+                "sha": sha,
+                "product_artifact": artifact,
+            }
+        )
+    if len({source["sha"] for source in sources}) != len(sources):
+        raise SystemExit("comparison branches must resolve to distinct commit SHAs")
+    return sources
 
 
 def total_job_guard(total_jobs: int) -> None:
@@ -312,25 +374,14 @@ def main(argv: list[str] | None = None) -> int:
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
 
-    # Comma list of code harnesses; empty defaults to the bare create_deep_agent
-    # harness. Conversation is always tau3 and is never taken from this input.
     raw_impls = os.environ.get("UNIFIED_AGENT_IMPLS", "").strip()
-    code_impls = list(
-        dict.fromkeys(s.strip() for s in raw_impls.split(",") if s.strip())
-    ) or [DEFAULT_AGENT_IMPL]
-    unknown_impls = [i for i in code_impls if i not in CODE_AGENT_IMPLS]
-    if unknown_impls:
+    try:
+        code_impls = agent_configs.parse_code_configs(raw_impls)
+    except ValueError as exc:
         raise SystemExit(
-            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}, "
-            f"got unknown {unknown_impls}"
-        )
-
-    # Comma list of git refs to pull agent source from; empty means the current
-    # checkout only (the sentinel "current" runs no overlay in the leaf).
-    raw_branches = os.environ.get("UNIFIED_BRANCHES", "").strip()
-    branches = list(
-        dict.fromkeys(b.strip() for b in raw_branches.split(",") if b.strip())
-    ) or ["current"]
+            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}: {exc}"
+        ) from exc
+    sources = parse_sources(os.environ.get("UNIFIED_SOURCES_JSON", ""))
 
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
     if profile not in PROFILES:
@@ -371,21 +422,23 @@ def main(argv: list[str] | None = None) -> int:
         m: build_flat_matrix(m, categories, tasks_by_cat, code_impls)
         for m in model_specs
     }
-    outer_entries = len(model_specs) * len(branches)
+    outer_entries = len(model_specs) * len(sources)
     if outer_entries > shard_matrix.GITHUB_MATRIX_MAX:
         raise SystemExit(
             f"eval matrix would have {outer_entries} (model, branch) entries, over "
             f"GitHub's {shard_matrix.GITHUB_MATRIX_MAX}-entry matrix cap "
-            f"({len(model_specs)} models x {len(branches)} branches). Reduce models or branches."
+            f"({len(model_specs)} models x {len(sources)} branches). Reduce models or branches."
         )
-    total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(branches)
+    total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(
+        sources
+    )
     total_job_guard(total_jobs)
 
     # Pool sizing stays per-model. n_shards is the largest per-model entry count
     # (what one model's shared pool drains); derive_pool caps max_parallel so
     # per-model concurrency is unchanged by the config axis.
     n_shards = max((len(v) for v in per_model_matrices.values()), default=1)
-    n_branches = len(branches)
+    n_branches = len(sources)
     # A packed shard uses full `concurrency`, so the per-model concurrent-shard
     # budget divides by concurrency (not min(concurrency, rollouts)).
     budget_shards = max(1, MAX_TASKS_PER_MODEL // concurrency)
@@ -403,15 +456,17 @@ def main(argv: list[str] | None = None) -> int:
     expected_leaves: list[dict] = []
     seen_leaves: set[tuple[str, str, str, str]] = set()
     for m, entries in per_model_matrices.items():
-        for b in branches:
+        for source in sources:
             for e in entries:
-                key = (m, b, e["agent_impl"], e["category"])
+                key = (m, source["sha"], e["agent_impl"], e["category"])
                 if key not in seen_leaves:
                     seen_leaves.add(key)
                     expected_leaves.append(
                         {
                             "model": m,
-                            "branch": b,
+                            "version_id": source["version_id"],
+                            "branch": source["branch"],
+                            "sha": source["sha"],
                             "config": e["agent_impl"],
                             "category": e["category"],
                         }
@@ -421,22 +476,39 @@ def main(argv: list[str] | None = None) -> int:
         "models": model_specs,
         "categories": categories,
         "configs": code_impls,
-        "branches": branches,
+        "branches": [source["branch"] for source in sources],
+        "sources": sources,
+        "comparison_mode": "true"
+        if len(sources) > 1 or len(code_impls) > 1
+        else "false",
+        "has_branch_products": "true"
+        if any(s["version_id"] for s in sources)
+        else "false",
         "expected_leaves": expected_leaves,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
+        "build_matrix": {
+            "include": [
+                {
+                    **source,
+                    "packages": agent_configs.required_packages(code_impls),
+                }
+                for source in sources
+                if source["version_id"]
+            ]
+        },
     }
     eval_include = [
         {
+            **source,
             "model": m,
-            "branch": b,
-            "slug": _slug(f"{m}-{b}"),
+            "slug": _slug(f"{m}-{source['version_id'] or 'current'}"),
             "flat_matrix": json.dumps(
                 {"include": per_model_matrices[m]}, separators=(",", ":")
             ),
         }
         for m in model_specs
-        for b in branches
+        for source in sources
     ]
     outputs["eval_matrix"] = {"include": eval_include}
     _emit(os.environ.get("GITHUB_OUTPUT"), outputs)

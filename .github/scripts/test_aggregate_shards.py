@@ -492,6 +492,8 @@ def test_make_summary_records_config():
         category="autonomous",
         config="bare",
         branch=None,
+        version_id=None,
+        source_sha=None,
         rollouts=3,
         shards_found=1,
         expected_shards=1,
@@ -543,13 +545,21 @@ def test_make_summary_records_branch():
         category="autonomous",
         config="bare",
         branch="main",
+        version_id=None,
+        source_sha=None,
         rollouts=3,
         shards_found=1,
         expected_shards=1,
         skipped_files=0,
         harbor_result="success",
         incomplete=False,
-        totals={"tasks": 1, "trials": 3, "expected_trials": 3, "passed": 1, "errored": 0},
+        totals={
+            "tasks": 1,
+            "trials": 3,
+            "expected_trials": 3,
+            "passed": 1,
+            "errored": 0,
+        },
         pass_at_k=1.0,
         avg_at_k=1.0,
     )
@@ -557,15 +567,55 @@ def test_make_summary_records_branch():
     assert summary["config"] == "bare"
 
 
+def test_make_summary_records_immutable_source_provenance():
+    summary = agg.make_summary(
+        dataset="d",
+        model="openai:gpt",
+        category="autonomous",
+        config="bare",
+        branch="feature/todos",
+        version_id="v2",
+        source_sha="a" * 40,
+        rollouts=3,
+        shards_found=1,
+        expected_shards=1,
+        skipped_files=0,
+        harbor_result="success",
+        incomplete=False,
+        totals={
+            "tasks": 1,
+            "trials": 3,
+            "expected_trials": 3,
+            "passed": 1,
+            "errored": 0,
+        },
+        pass_at_k=1.0,
+        avg_at_k=1.0,
+    )
+    assert summary["version_id"] == "v2"
+    assert summary["source_sha"] == "a" * 40
+
+
 def test_main_cli_records_branch(tmp_path):
     root = tmp_path / "shards"
     root.mkdir()
     agg.main(
         [
-            str(root), "--rollouts", "3",
-            "--config", "bare", "--branch", "main",
-            "--model", "openai:gpt", "--category", "autonomous",
-            "--dataset", "d", "--harbor-result", "success",
+            str(root),
+            "--rollouts",
+            "3",
+            "--config",
+            "bare",
+            "--branch",
+            "main",
+            "--model",
+            "openai:gpt",
+            "--category",
+            "autonomous",
+            "--dataset",
+            "d",
+            "--harbor-result",
+            "success",
         ]
     )
     summary = json.loads((root / "summary.json").read_text())

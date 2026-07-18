@@ -140,7 +140,7 @@ def test_eval_job_uses_single_flat_pool_matrix() -> None:
     assert "_has_models" not in workflow
 
     eval_job = _indented_block(workflow, "  eval:")
-    assert "needs: prep" in eval_job
+    assert "needs: [prep, build-products]" in eval_job
     strategy = _indented_block(eval_job, "    strategy:")
     assert "fail-fast: false" in strategy
     assert (
@@ -164,13 +164,16 @@ def test_eval_job_uses_single_flat_pool_matrix() -> None:
 def test_branches_input_present() -> None:
     dispatch = UNIFIED_WORKFLOW.read_text()
     assert "branches_to_compare:" in dispatch
-    assert "UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}" in dispatch
+    assert "Resolve comparison branches" in dispatch
+    assert "UNIFIED_SOURCES_JSON: ${{ steps.sources.outputs.sources }}" in dispatch
 
 
 def test_eval_job_passes_branch() -> None:
     reusable = UNIFIED_WORKFLOW.read_text()
     assert "branch: ${{ matrix.branch }}" in reusable
     assert "branches: ${{ steps.p.outputs.branches }}" in reusable
+    assert "source_sha: ${{ matrix.sha }}" in reusable
+    assert "product_artifact: ${{ matrix.product_artifact }}" in reusable
 
 
 def test_enumerate_step_gated_on_full_profile() -> None:
@@ -401,8 +404,7 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     # from prep's own shard-matrix output on the single-dataset path), not a
     # single job-level env var on the aggregate job.
     assert (
-        "SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}"
-        in prep_job
+        "SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}" in prep_job
     )
     assert "EXPECTED_SHARDS: ${{ matrix.expected_shards }}" in aggregate
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
@@ -422,7 +424,9 @@ def test_aggregate_runs_per_category() -> None:
     prep_job = _indented_block(workflow, "  prep:")
     aggregate_job = _indented_block(workflow, "  aggregate:")
 
-    assert "aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}" in prep_job
+    assert (
+        "aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}" in prep_job
+    )
     derive_step = _indented_block(prep_job, '      - name: "🗂️ Derive aggregate matrix"')
     assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in derive_step
     assert "expected_shards" in derive_step
@@ -440,7 +444,9 @@ def test_aggregate_runs_per_category() -> None:
     assert "CATEGORY: ${{ matrix.category }}" in compute
     assert "--category" in compute
 
-    upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
+    upload = _indented_block(
+        aggregate_job, '      - name: "📤 Upload combined results"'
+    )
     assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
     assert (
         "format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, "
@@ -478,6 +484,17 @@ def test_harbor_overlays_branch_source() -> None:
     assert "libs/code" in harbor
     assert "libs/partners/quickjs" in harbor
     assert "deepagents_harbor/langgraph_project/langgraph_agent.py" not in harbor
+    assert "inputs.product_artifact == ''" in harbor
+
+
+def test_explicit_branch_sources_use_immutable_wheels() -> None:
+    unified = UNIFIED_WORKFLOW.read_text()
+    harbor = HARBOR_WORKFLOW.read_text()
+    assert "ref: ${{ matrix.sha }}" in unified
+    assert "Build immutable product wheels" in unified
+    assert "package-manifest.json" in unified
+    assert "Download immutable product wheels" in harbor
+    assert "dependency_overrides" in harbor
 
 
 def test_shard_artifact_name_includes_branch() -> None:
@@ -621,17 +638,15 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     """Wire a flat per-model matrix through prep without losing the single-dataset path."""
     workflow = HARBOR_WORKFLOW.read_text()
     call_inputs = _indented_block(workflow, "    inputs:")
-    assert 'flat_matrix:' in call_inputs
-    assert 'max_parallel:' in call_inputs
+    assert "flat_matrix:" in call_inputs
+    assert "max_parallel:" in call_inputs
     flat_matrix_input = _indented_block(call_inputs, "      flat_matrix:")
     assert 'default: ""' in flat_matrix_input
     max_parallel_input = _indented_block(call_inputs, "      max_parallel:")
     assert 'default: "0"' in max_parallel_input
 
     prep_job = _indented_block(workflow, "  prep:")
-    assert (
-        "matrix: ${{ steps.resolve-matrix.outputs.matrix }}" in prep_job
-    )
+    assert "matrix: ${{ steps.resolve-matrix.outputs.matrix }}" in prep_job
     assert (
         "effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}"
         in prep_job
@@ -639,10 +654,12 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     expand_step = _indented_block(prep_job, '      - name: "🔀 Expand matrix by shard"')
     assert "if: ${{ inputs.flat_matrix == '' }}" in expand_step
 
-    resolve_step = _indented_block(prep_job, '      - name: "🧮 Resolve matrix + parallel pool"')
-    assert 'FLAT_MATRIX: ${{ inputs.flat_matrix }}' in resolve_step
-    assert 'MAX_PARALLEL: ${{ inputs.max_parallel }}' in resolve_step
-    assert 'SHARD_PARALLEL: ${{ inputs.shard_parallel }}' in resolve_step
+    resolve_step = _indented_block(
+        prep_job, '      - name: "🧮 Resolve matrix + parallel pool"'
+    )
+    assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in resolve_step
+    assert "MAX_PARALLEL: ${{ inputs.max_parallel }}" in resolve_step
+    assert "SHARD_PARALLEL: ${{ inputs.shard_parallel }}" in resolve_step
     assert 'if [ -n "$FLAT_MATRIX" ]; then' in resolve_step
     assert 'matrix="$FLAT_MATRIX"' in resolve_step
     assert 'echo "matrix=$matrix"' in resolve_step
@@ -670,9 +687,7 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
         "HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}"
         in job_env
     )
-    assert (
-        "HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}" in job_env
-    )
+    assert "HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}" in job_env
     assert (
         "HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}"
         in job_env

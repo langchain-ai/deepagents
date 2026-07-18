@@ -65,6 +65,7 @@ jobs:
     environment: evals
     outputs:
       eval_matrix: ${{ steps.p.outputs.eval_matrix }}
+      build_matrix: ${{ steps.p.outputs.build_matrix }}
       max_parallel: ${{ steps.p.outputs.max_parallel }}
       model_parallel: ${{ steps.p.outputs.model_parallel }}
       models: ${{ steps.p.outputs.models }}
@@ -72,9 +73,72 @@ jobs:
       configs: ${{ steps.p.outputs.configs }}
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
+      sources: ${{ steps.p.outputs.sources }}
+      comparison_mode: ${{ steps.p.outputs.comparison_mode }}
+      has_branch_products: ${{ steps.p.outputs.has_branch_products }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🔖 Resolve comparison branches"
+        id: sources
+        env:
+          BRANCHES_TO_COMPARE: ${{ inputs.branches_to_compare }}
+          CONTROLLER_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          raw = os.environ.get("BRANCHES_TO_COMPARE", "").strip()
+          if not raw:
+              sources = [{
+                  "version_id": "",
+                  "branch": "current",
+                  "sha": os.environ["CONTROLLER_SHA"],
+              }]
+          else:
+              branches = list(dict.fromkeys(
+                  branch.strip() for branch in raw.split(",") if branch.strip()
+              ))
+              if len(branches) < 2:
+                  raise SystemExit(
+                      "::error::branches_to_compare must contain at least two distinct branches"
+                  )
+              sources = []
+              for index, branch in enumerate(branches, start=1):
+                  valid = subprocess.run(
+                      ["git", "check-ref-format", "--branch", branch],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if valid.returncode:
+                      raise SystemExit(f"::error::Invalid comparison branch: {branch!r}")
+                  resolved = subprocess.run(
+                      ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+                      capture_output=True,
+                      text=True,
+                  )
+                  fields = resolved.stdout.split()
+                  sha = fields[0] if resolved.returncode == 0 and fields else ""
+                  if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+                      raise SystemExit(
+                          f"::error::Could not resolve branch {branch!r} to a branch-head commit"
+                      )
+                  sources.append({
+                      "version_id": f"v{index}",
+                      "branch": branch,
+                      "sha": sha,
+                  })
+              if len({source["sha"] for source in sources}) != len(sources):
+                  raise SystemExit(
+                      "::error::Every comparison branch must resolve to a distinct commit"
+                  )
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("sources=" + json.dumps(sources, separators=(",", ":")) + "\n")
+          PY
 
       - name: "🐍 Set up Python + UV"
         if: ${{ inputs.profile == 'full' }}
@@ -177,7 +241,7 @@ jobs:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
           UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
-          UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
+          UNIFIED_SOURCES_JSON: ${{ steps.sources.outputs.sources }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
@@ -250,9 +314,66 @@ jobs:
             echo "| harbor_package_override | \`${override_status}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  build-products:
+    name: "📦 Build ${{ matrix.version_id }} / ${{ matrix.branch }}"
+    needs: prep
+    if: ${{ needs.prep.outputs.has_branch_products == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.build_matrix) }}
+    steps:
+      - name: "📋 Checkout comparison controller"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "📋 Checkout evaluated product"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ matrix.sha }}
+          path: _product_source
+          persist-credentials: false
+          sparse-checkout: |
+            libs/deepagents
+            libs/code
+            libs/partners/quickjs
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          enable-cache: "false"
+
+      - name: "📦 Build immutable product wheels"
+        env:
+          VERSION_ID: ${{ matrix.version_id }}
+          SOURCE_BRANCH: ${{ matrix.branch }}
+          SOURCE_SHA: ${{ matrix.sha }}
+          PACKAGES: ${{ toJson(matrix.packages) }}
+        run: |
+          python3 .github/scripts/eval_product_packages.py build \
+            --source-root _product_source \
+            --out-dir _product_dist/packages \
+            --packages-json "$PACKAGES" \
+            --version-id "$VERSION_ID" \
+            --source-branch "$SOURCE_BRANCH" \
+            --source-sha "$SOURCE_SHA" \
+            --manifest _product_dist/package-manifest.json
+
+      - name: "📤 Upload immutable product wheels"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.product_artifact }}
+          path: _product_dist/
+          if-no-files-found: error
+          compression-level: 0
+
   eval:
     name: "🚀 Evaluate (${{ matrix.model }} / ${{ matrix.branch }})"
-    needs: prep
+    needs: [prep, build-products]
+    if: ${{ always() && needs.prep.result == 'success' && (needs.prep.outputs.has_branch_products != 'true' || needs.build-products.result == 'success') }}
     strategy:
       fail-fast: false
       # Caps how many models run concurrently so total runners across every
@@ -282,6 +403,10 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
+      version_id: ${{ matrix.version_id }}
+      source_branch: ${{ matrix.branch }}
+      source_sha: ${{ matrix.sha }}
+      product_artifact: ${{ matrix.product_artifact }}
 
   combine:
     name: "📊 Combine cross-model results"

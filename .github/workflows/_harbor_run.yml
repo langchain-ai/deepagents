@@ -94,6 +94,22 @@ on:
         # not the model under test, to avoid self-grading bias.
         type: string
         default: "gpt-5.6-luna"
+      version_id:
+        description: "Optional artifact-safe comparison identity (`v1`..`vN`)."
+        type: string
+        default: ""
+      source_branch:
+        description: "Human-readable branch paired with the immutable source SHA."
+        type: string
+        default: ""
+      source_sha:
+        description: "Full immutable commit used to build the evaluated product."
+        type: string
+        default: ""
+      product_artifact:
+        description: "Artifact containing branch-built wheels and their manifest."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -282,7 +298,7 @@ jobs:
       HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
-      HARBOR_BRANCH: ${{ inputs.branch }}
+      HARBOR_BRANCH: ${{ inputs.source_branch || inputs.branch }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
       # aggregated per category downstream.
@@ -358,6 +374,13 @@ jobs:
 
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "⬇️ Download immutable product wheels"
+        if: ${{ inputs.product_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.product_artifact }}
+          path: libs/evals/deepagents_harbor/langgraph_project/.branch_wheels
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -459,7 +482,7 @@ jobs:
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
 
       - name: "🌿 Overlay branch agent source"
-        if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
+        if: ${{ inputs.product_artifact == '' && inputs.branch != '' && inputs.branch != 'current' }}
         working-directory: .
         env:
           BRANCH: ${{ inputs.branch }}
@@ -519,38 +542,45 @@ jobs:
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          PRODUCT_ARTIFACT: ${{ inputs.product_artifact }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION_ID: ${{ inputs.version_id }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
-          # Stage current checkout packages for LangGraph's sandbox install.
-          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          # partners/ must pre-exist: rsync only creates the final path component.
-          mkdir -p "$local_deps_dir/partners"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          dependency_override_args=()
+          if [ -n "$PRODUCT_ARTIFACT" ]; then
+            if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::source_sha must be a full commit SHA"
+              exit 1
+            fi
+            if ! [[ "$VERSION_ID" =~ ^v[1-9][0-9]*$ ]]; then
+              echo "::error::Invalid comparison version: $VERSION_ID"
+              exit 1
+            fi
+            overrides=$(python3 "$GITHUB_WORKSPACE/.github/scripts/eval_product_packages.py" overrides \
+              --project-dir "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project" \
+              --manifest "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/.branch_wheels/package-manifest.json" \
+              --runtime "$HARBOR_AGENT_IMPL" \
+              --source-sha "$SOURCE_SHA")
+            dependency_override_args=(--agent-kwarg "dependency_overrides=$overrides")
+          else
+            # Preserve ordinary callers and config-only comparisons exactly: use
+            # the fixed workflow checkout's established editable-source path.
+            local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
+            mkdir -p "$local_deps_dir/partners"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../deepagents/ "$local_deps_dir/deepagents/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../code/ "$local_deps_dir/deepagents-code/"
+            rsync -a --delete \
+              --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+              --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+              ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          fi
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -841,6 +871,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${dependency_override_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
@@ -1117,7 +1148,9 @@ jobs:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ matrix.category }}
           AGENT_IMPL: ${{ matrix.agent_impl }}
-          BRANCH: ${{ inputs.branch }}
+          BRANCH: ${{ inputs.source_branch || inputs.branch }}
+          VERSION_ID: ${{ inputs.version_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
@@ -1151,6 +1184,8 @@ jobs:
             --category "$CATEGORY" \
             --config "$AGENT_IMPL" \
             --branch "$BRANCH" \
+            --version-id "$VERSION_ID" \
+            --source-sha "$SOURCE_SHA" \
             "${harbor_result_args[@]}" \
             --out-dir _shards
 

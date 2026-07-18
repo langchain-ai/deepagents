@@ -109,6 +109,14 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if branch is not None and not isinstance(branch, str):
         msg = "branch must be a string or null"
         raise _LeafSummaryError(msg)
+    version_id = summary.get("version_id")
+    if version_id is not None and not isinstance(version_id, str):
+        msg = "version_id must be a string or null"
+        raise _LeafSummaryError(msg)
+    source_sha = summary.get("source_sha")
+    if source_sha is not None and not isinstance(source_sha, str):
+        msg = "source_sha must be a string or null"
+        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -121,6 +129,8 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "category": category or "unknown",
         "config": config or "unknown",
         "branch": branch or "current",
+        "version_id": version_id or "",
+        "source_sha": source_sha or "",
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "tasks": tasks,
@@ -150,12 +160,14 @@ def combine(
     # so a missing leaf is flagged without assuming which categories a config ran
     # (tau3 covers conversation only; code configs cover the code categories).
     required_by_row: dict[tuple[str, str, str], set[str]] = {}
+    provenance_by_row: dict[tuple[str, str, str], tuple[str, str]] = {}
     row_order: list[tuple[str, str, str]] = []
     for quad in expected_leaves or []:
         row = (quad["model"], quad["branch"], quad["config"])
         if row not in required_by_row:
             required_by_row[row] = set()
             row_order.append(row)
+            provenance_by_row[row] = (quad.get("version_id", ""), quad.get("sha", ""))
         required_by_row[row].add(quad["category"])
 
     by_row: dict[tuple[str, str, str], list[dict]] = {}
@@ -175,16 +187,18 @@ def combine(
         if row not in required_by_row:
             required_by_row[row] = set()
             row_order.append(row)
+        provenance_by_row.setdefault(
+            row, (leaf.get("version_id", ""), leaf.get("source_sha", ""))
+        )
 
     rows_out: list[dict] = []
     for row in row_order:
         model, branch, config = row
+        version_id, source_sha = provenance_by_row.get(row, ("", ""))
         row_leaves = by_row.get(row, [])
         required = required_by_row.get(row, set())
         scored = [
-            leaf
-            for leaf in row_leaves
-            if not required or leaf["category"] in required
+            leaf for leaf in row_leaves if not required or leaf["category"] in required
         ]
         cats = {
             leaf["category"]: {
@@ -217,6 +231,8 @@ def combine(
             {
                 "model": model,
                 "branch": branch,
+                "version_id": version_id,
+                "source_sha": source_sha,
                 "config": config,
                 "categories": cats,
                 "macro": macro,
@@ -225,9 +241,7 @@ def combine(
                 "incomplete": (
                     not row_leaves
                     or bool(missing)
-                    or any(
-                        leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored
-                    )
+                    or any(leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored)
                 ),
             }
         )

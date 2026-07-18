@@ -282,6 +282,8 @@ def make_summary(
     category: str | None,
     config: str | None,
     branch: str | None,
+    version_id: str | None,
+    source_sha: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -302,6 +304,8 @@ def make_summary(
         "category": category,
         "config": config,
         "branch": branch,
+        "version_id": version_id,
+        "source_sha": source_sha,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -446,6 +450,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Git branch/ref the agent source came from; recorded into summary.json.",
     )
     parser.add_argument(
+        "--version-id",
+        default=None,
+        help="Artifact-safe comparison identity; recorded into summary.json.",
+    )
+    parser.add_argument(
+        "--source-sha",
+        default=None,
+        help="Full immutable product commit; recorded into summary.json.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -492,6 +506,8 @@ def main(argv: list[str] | None = None) -> int:
             category=args.category,
             config=args.config,
             branch=args.branch,
+            version_id=args.version_id,
+            source_sha=args.source_sha,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
@@ -550,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
         category=args.category,
         config=args.config,
         branch=args.branch,
+        version_id=args.version_id,
+        source_sha=args.source_sha,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,

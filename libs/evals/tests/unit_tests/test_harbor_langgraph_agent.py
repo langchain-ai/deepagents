@@ -440,9 +440,23 @@ def test_structured_turn_finish_uses_latest_tool_result_automatically() -> None:
 
     assert middleware._to_response(turn, evidence_tool_call_id=None) is None
 
-    evidence_tool_call_id = middleware._latest_tool_call_id(
-        [ToolMessage(content="ACCEPTANCE: PASS", tool_call_id="structured_action_1")]
+    uncorrelated_result = ToolMessage(
+        content="ACCEPTANCE: PASS", tool_call_id="structured_action_lookalike"
     )
+    assert middleware._latest_tool_call_id([uncorrelated_result]) is None
+
+    structured_result = ToolMessage(
+        content="ACCEPTANCE: PASS",
+        tool_call_id="structured_action_1",
+        response_metadata={
+            "structured_action": {
+                "name": "execute",
+                "args": {"command": "run-verifier"},
+                "tool_call_id": "structured_action_1",
+            }
+        },
+    )
+    evidence_tool_call_id = middleware._latest_tool_call_id([structured_result])
     assert evidence_tool_call_id == "structured_action_1"
 
     response = middleware._to_response(turn, evidence_tool_call_id=evidence_tool_call_id)

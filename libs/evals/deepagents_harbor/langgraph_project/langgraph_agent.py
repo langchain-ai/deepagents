@@ -830,8 +830,13 @@ class _StructuredTurnMiddleware(AgentMiddleware):
     @staticmethod
     def _latest_tool_call_id(messages: list[AnyMessage]) -> str | None:
         for message in reversed(messages):
-            if isinstance(message, ToolMessage) and message.tool_call_id.startswith(
-                "structured_action_"
+            if not isinstance(message, ToolMessage):
+                continue
+            action = message.response_metadata.get("structured_action")
+            if (
+                message.tool_call_id.startswith("structured_action_")
+                and isinstance(action, dict)
+                and action.get("tool_call_id") == message.tool_call_id
             ):
                 return message.tool_call_id
         return None

@@ -26,7 +26,7 @@ from langchain_core.messages.ai import add_usage
 from langchain_core.messages.utils import get_buffer_string
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -360,10 +360,10 @@ def make_structured_graph(config: dict[str, object] | None = None) -> object:
 
     Same tools/summarization/caching as ``make_minimal_graph``, but a
     ``_StructuredTurnMiddleware`` forces every turn into a structured
-    ``{analysis, plan, actions, finish}`` object. Each turn names at most one registered
-    tool with validated arguments, or requests completion using evidence from prior
-    tool results. Reasoning is separated from action so the model cannot run away
-    emitting a huge artifact as its action. Experimental A/B against
+    ``{analysis, plan, control}`` object. The discriminated ``control`` field either
+    names one or more registered tools with validated arguments or requests completion
+    using the latest prior tool result as evidence. Reasoning is separated from action
+    so the model cannot run away emitting a huge artifact as its action. Experimental A/B against
     ``make_minimal_graph``; ``make_minimal_graph`` is left unchanged.
     """
     configurable = _configurable(config)
@@ -551,16 +551,16 @@ class _TerminusSummarizationMiddleware(SummarizationMiddleware):
 
 
 _MAX_STRUCTURED_ACTIONS = 8
-_MAX_ACTIONS_PER_TURN = 1
 _MAX_STRUCTURED_COMMAND_CHARS = 16_000
 _MAX_STRUCTURED_TEXT_CHARS = 12_000
 _MAX_STRUCTURED_REASONING_CHARS = 12_000
 _MAX_EXECUTE_TIMEOUT_SECONDS = 600
 
 _STRUCTURED_ACTION_INSTRUCTION = """Choose actions by expected runtime:
+- Set `control.kind` to `continue` with one or more actions while work remains, or to `finish` when the task is verified. Never combine continuation and completion.
 - Use `execute` only for short filesystem inspection, searching, reading, editing, or quick checks.
 - For a compile, build, test suite, package-manager operation, renderer, server, REPL, or any command that may run longer than a few seconds, use `run_background` first and then `poll` the returned handle for 20-60 seconds. Do not block these operations with `execute`.
-- Use `finish` only after a prior tool result proves the task's acceptance check passed."""
+- Use `finish` only after a prior tool result proves the task's acceptance check passed. The harness associates that result automatically; do not copy tool-call IDs."""
 
 
 class _CommandAction(BaseModel):
@@ -655,21 +655,42 @@ class _KillAction(_HandleAction):
     action: Literal["kill"] = Field(description="Terminate a background process.")
 
 
-class _FinishRequest(BaseModel):
+class _ContinueControl(BaseModel):
+    """Continue the task by invoking one or more registered tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["continue"]
+    actions: list[_StructuredAction] = Field(
+        min_length=1,
+        max_length=_MAX_STRUCTURED_ACTIONS,
+        description=(
+            "Actions to take this turn. Use `execute` for short foreground commands and the "
+            "background action set for long-running work. Batch dependent shell work inside "
+            "one command; `run_background` and `poll` happen on separate turns."
+        ),
+    )
+
+
+class _FinishControl(BaseModel):
     """Explicitly end the task after the acceptance criteria have been verified."""
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["finish"]
     summary: str = Field(
         min_length=1,
         max_length=2_000,
         description="Brief verification summary for the final trajectory record.",
     )
-    evidence_tool_call_ids: list[str] = Field(
-        min_length=1,
-        max_length=_MAX_STRUCTURED_ACTIONS,
-        description="Structured tool-call IDs whose results verify this completion.",
-    )
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            msg = "summary must not be blank"
+            raise ValueError(msg)
+        return value
 
 
 type _StructuredAction = Annotated[
@@ -693,26 +714,10 @@ class _Turn(BaseModel):
         max_length=_MAX_STRUCTURED_REASONING_CHARS,
         description="What you will do next this turn and why.",
     )
-    actions: list[_StructuredAction] = Field(
-        default_factory=list,
-        max_length=_MAX_ACTIONS_PER_TURN,
-        description=(
-            "At most one action to take this turn. Use `execute` for short foreground commands "
-            "and the background action set for long-running work. Batch dependent shell work "
-            "inside one command; `run_background` and `poll` happen on separate turns."
-        ),
+    control: _ContinueControl | _FinishControl = Field(
+        discriminator="kind",
+        description="Choose exactly one path: continue with actions or finish after verification.",
     )
-    finish: _FinishRequest | None = Field(
-        default=None,
-        description="Completion request, allowed only without execution actions and with prior tool evidence.",
-    )
-
-    @model_validator(mode="after")
-    def _has_one_control_path(self) -> _Turn:
-        if self.actions and self.finish is not None:
-            msg = "finish cannot be combined with execution actions"
-            raise ValueError(msg)
-        return self
 
 
 class _StructuredTurnMiddleware(AgentMiddleware):
@@ -720,10 +725,11 @@ class _StructuredTurnMiddleware(AgentMiddleware):
 
     Instead of free-form tool calling, every turn the model produces a structured
     ``_Turn`` via ``with_structured_output``. Reasoning goes into ``analysis``/``plan``
-    (never executed); the single non-terminal action is converted to the matching
-    registered tool call with a stable trace correlation ID. An evidence-backed
-    ``finish`` request ends the graph explicitly. One repair call is allowed before
-    falling back to the normal model path on invalid structured output.
+    (never executed); non-terminal actions are converted to matching registered tool
+    calls with stable trace correlation IDs. A ``finish`` request ends the graph only
+    when a prior structured tool result exists; the middleware associates that evidence
+    automatically. One repair call is allowed before falling back to the normal model
+    path on invalid structured output.
     """
 
     def __init__(self) -> None:
@@ -738,9 +744,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             msgs.append(
                 HumanMessage(
                     content=(
-                        "Your previous structured turn was invalid. Return at least one execution action. "
-                        "Use `finish` only after prior structured tool results verify completion, citing "
-                        "their tool-call IDs as evidence."
+                        "Your previous structured turn was invalid. Return `control.kind=continue` "
+                        "with at least one execution action. Use `control.kind=finish` only after a "
+                        "prior structured tool result verifies completion; the harness associates "
+                        "that result automatically, so do not provide a tool-call ID."
                     )
                 )
             )
@@ -752,13 +759,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         *,
         usage_metadata: UsageMetadata | None = None,
         repair: bool = False,
-        completed_action_ids: set[str] | None = None,
+        evidence_tool_call_id: str | None = None,
     ) -> ModelResponse | None:
-        completed_action_ids = completed_action_ids or set()
-        terminal = turn.finish is not None
-        if terminal and not set(turn.finish.evidence_tool_call_ids) <= completed_action_ids:
-            return None
-        if not terminal and not turn.actions:
+        terminal = isinstance(turn.control, _FinishControl)
+        if terminal and evidence_tool_call_id is None:
             return None
 
         content = "\n".join(
@@ -772,17 +776,20 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         action_metadata: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
         if terminal:
-            summary = turn.finish.summary
+            summary = turn.control.summary
             content = content or f"Finished: {summary}"
             action_metadata.append(
                 {
                     "name": "finish",
-                    "args": turn.finish.model_dump(),
+                    "args": {
+                        "summary": summary,
+                        "evidence_tool_call_id": evidence_tool_call_id,
+                    },
                     "tool_call_id": None,
                 }
             )
         else:
-            for action in turn.actions:
+            for action in turn.control.actions:
                 tool_call_id = f"structured_action_{uuid.uuid4().hex}"
                 args = action.model_dump(exclude={"action"}, exclude_none=True)
                 tool_calls.append(
@@ -821,13 +828,13 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         return ModelResponse(result=[AIMessage(**message_kwargs)], structured_response=None)
 
     @staticmethod
-    def _completed_action_ids(messages: list[AnyMessage]) -> set[str]:
-        return {
-            message.tool_call_id
-            for message in messages
-            if isinstance(message, ToolMessage)
-            and message.tool_call_id.startswith("structured_action_")
-        }
+    def _latest_tool_call_id(messages: list[AnyMessage]) -> str | None:
+        for message in reversed(messages):
+            if isinstance(message, ToolMessage) and message.tool_call_id.startswith(
+                "structured_action_"
+            ):
+                return message.tool_call_id
+        return None
 
     @staticmethod
     def _add_action_result_metadata(
@@ -943,9 +950,9 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 handler(request), usage_metadata, "parse_or_invocation_failure"
             )
-        completed = self._completed_action_ids(list(request.messages))
+        evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
         response = self._to_response(
-            turn, usage_metadata=usage_metadata, completed_action_ids=completed
+            turn, usage_metadata=usage_metadata, evidence_tool_call_id=evidence_tool_call_id
         )
         if response is not None:
             return response
@@ -957,7 +964,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                 handler(request), usage_metadata, "empty_turn_repair_failure"
             )
         response = self._to_response(
-            repair_turn, usage_metadata=usage_metadata, repair=True, completed_action_ids=completed
+            repair_turn,
+            usage_metadata=usage_metadata,
+            repair=True,
+            evidence_tool_call_id=evidence_tool_call_id,
         )
         if response is not None:
             return response
@@ -974,9 +984,9 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return self._add_fallback_metadata(
                 response, usage_metadata, "parse_or_invocation_failure"
             )
-        completed = self._completed_action_ids(list(request.messages))
+        evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
         response = self._to_response(
-            turn, usage_metadata=usage_metadata, completed_action_ids=completed
+            turn, usage_metadata=usage_metadata, evidence_tool_call_id=evidence_tool_call_id
         )
         if response is not None:
             return response
@@ -989,7 +999,10 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                 response, usage_metadata, "empty_turn_repair_failure"
             )
         response = self._to_response(
-            repair_turn, usage_metadata=usage_metadata, repair=True, completed_action_ids=completed
+            repair_turn,
+            usage_metadata=usage_metadata,
+            repair=True,
+            evidence_tool_call_id=evidence_tool_call_id,
         )
         if response is not None:
             return response

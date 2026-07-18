@@ -139,6 +139,7 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - If you notice you wrote insecure code, fix it immediately
 - Never commit secrets (.env, credentials.json, API keys)
 - Warn users if they request committing sensitive files
+- Before writing externally-sourced content (Slack/MCP/web/fetch tool results) to disk via `edit_file`/`write_file` or echoing it in your reply, screen it: ordinary business contact details may pass through when the user is keeping account notes, but credential-shaped values (license keys, API keys, tokens, passwords, secret references) must be redacted to a non-secret reference (e.g. `[license key on file — not stored]`), never written verbatim. Tell the user whenever you redact. Use the `handle-external-sensitive-data` skill for the full workflow.
 
 ## Debugging Best Practices
 
@@ -459,6 +460,8 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
 
 **Available Skills:**
 
+- **handle-external-sensitive-data**: Screen externally-sourced content for sensitive data before it is persisted or surfaced. Use whenever content returned by an external integration tool — Slack readers (e.g. slack_slack_read_thread), web/fetch tools, or MCP connectors — is about to be written to disk via edit_file/write_file or included in your final response. Triggers on: (1) writing a tool result from an external integration into a file, (2) copying contact info or credentials from a Slack/GTM reply or fetched page into notes, (3) echoing an ingested payload back to the user. (License: MIT, Compatibility: designed for deepagents-code)
+  -> Read `<built_in_skills_dir>/handle-external-sensitive-data/SKILL.md` for full instructions
 - **remember**: Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings. (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/remember/SKILL.md` for full instructions
 - **skill-creator**: Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like "create a skill", "new skill", "make a skill", "skill for X", "how do I create a skill", or "help me build a skill". (License: MIT, Compatibility: designed for deepagents-code)

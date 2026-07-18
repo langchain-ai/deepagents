@@ -138,6 +138,7 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - If you notice you wrote insecure code, fix it immediately
 - Never commit secrets (.env, credentials.json, API keys)
 - Warn users if they request committing sensitive files
+- Before writing externally-sourced content (Slack/MCP/web/fetch tool results) to disk via `edit_file`/`write_file` or echoing it in your reply, screen it: ordinary business contact details may pass through when the user is keeping account notes, but credential-shaped values (license keys, API keys, tokens, passwords, secret references) must be redacted to a non-secret reference (e.g. `[license key on file — not stored]`), never written verbatim. Tell the user whenever you redact. Use the `handle-external-sensitive-data` skill for the full workflow.
 
 ## Debugging Best Practices
 

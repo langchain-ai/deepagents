@@ -1911,6 +1911,12 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
+    from deepagents_code.dta import HybridToolIndexer, ToolNamespaceRegistry, ToolSelectorNode, DynamicToolAllocationMiddleware
+    
+    global_registry = ToolNamespaceRegistry()
+    global_indexer = HybridToolIndexer(registry=global_registry)
+    global_selector = ToolSelectorNode()
+
     def _subagent_cli_middleware(
         *, has_explicit_model: bool
     ) -> list[AgentMiddleware[Any, Any]]:
@@ -1936,6 +1942,7 @@ def create_cli_agent(
                     [settings.get_user_agent_md_path(assistant_id)]
                 )
             )
+        middleware.append(DynamicToolAllocationMiddleware(indexer=global_indexer, selector_node=global_selector))
         return middleware
 
     for subagent_meta in list_subagents(
@@ -2343,6 +2350,8 @@ def create_cli_agent(
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
         agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
+
+    agent_middleware.append(DynamicToolAllocationMiddleware(indexer=global_indexer, selector_node=global_selector))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

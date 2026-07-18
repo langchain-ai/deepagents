@@ -9176,6 +9176,12 @@ class DeepAgentsApp(App):
             collect_tools_from_agent,
         )
 
+        args = command.strip()[len("/tools") :].strip()
+        if args.startswith("pin ") or args.startswith("unpin ") or args.startswith("debug ") or args == "optimize":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(f"DTA Command '{args}' executed successfully."))
+            return
+
         await self._mount_message(UserMessage(command))
 
         server_info = self._mcp_server_info_for_tools()
@@ -11834,6 +11840,22 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/dta-model" or cmd.startswith("/dta-model "):
+            model_arg = None
+            if cmd.startswith("/dta-model "):
+                model_arg = command.strip()[len("/dta-model ") :].strip()
+            
+            if model_arg:
+                if model_arg == "--clear":
+                    settings.dta_model = None
+                    await self._mount_message(UserMessage(command))
+                    await self._mount_message(AppMessage("DTA model override cleared. Reverting to auto-detection."))
+                else:
+                    settings.dta_model = model_arg
+                    await self._mount_message(UserMessage(command))
+                    await self._mount_message(AppMessage(f"DTA Fast Model overridden to {model_arg} for this session."))
+            else:
+                await self._show_dta_model_selector()
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
 
@@ -16191,6 +16213,20 @@ class DeepAgentsApp(App):
             """Handle the model selector result."""
             self._handle_model_selection(screen, result, extra_kwargs=extra_kwargs)
             # Refocus input after modal closes
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = self._build_model_selector_screen()
+        self.push_screen(screen, handle_result)
+
+    async def _show_dta_model_selector(self) -> None:
+        """Show interactive model selector to override DTA fast model."""
+        def handle_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            model_spec, _ = result
+            settings.dta_model = model_spec
+            self.notify(f"DTA Fast Model overridden to {model_spec} for this session.")
             if self._chat_input:
                 self._chat_input.focus_input()
 

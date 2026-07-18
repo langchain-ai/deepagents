@@ -2281,6 +2281,9 @@ class Settings:
     model_name: str | None = None
     """Currently active model name, set after model creation."""
 
+    dta_model: str | None = None
+    """Fast model explicitly configured for Dynamic Tool Allocation (DTA)."""
+
     model_provider: str | None = None
     """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
 

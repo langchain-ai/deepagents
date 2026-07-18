@@ -123,6 +123,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/dta-model",
+        description="Select the fast model for Dynamic Tool Allocation routing",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="dta fast router option b model",
+    ),
+    SlashCommand(
         name="/effort",
         description="Set reasoning effort for the current model",
         bypass_tier=BypassTier.QUEUED,
@@ -200,9 +206,10 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/tools",
-        description="List the tools available to the agent",
+        description="List and manage the dynamic tools available to the agent",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="mcp functions capabilities builtin built-in",
+        hidden_keywords="mcp functions capabilities builtin built-in dynamic allocation pin debug optimize",
+        argument_hint="[list|pin <name>|unpin <name>|debug <query>|optimize]",
     ),
     SlashCommand(
         name="/rubric",

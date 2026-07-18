@@ -138,6 +138,51 @@ async def test_plugin_search_filters_and_clears() -> None:
         assert options.has_focus
 
 
+async def test_typing_letter_from_plugin_list_refocuses_search() -> None:
+    """Typing on the plugin list should start filtering without pressing `/`."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Read/write documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
+        errors=(),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert options.has_focus
+
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert search.has_focus
+        assert search.value == "d"
+        assert screen._search_query == "d"
+        assert options.option_count == 1
+        assert options.get_option_at_index(0).id == "detail:docs@official"
+
+
 async def test_plugin_search_and_footer_fit_standard_terminal() -> None:
     """Search must not push the plugin list or footer outside an 80x24 modal."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

@@ -16,7 +16,7 @@ on:
         type: string
         default: "bare"
       branches_to_compare:
-        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs + the harness graph factory) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
+        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
         type: string
         default: ""
       profile:
@@ -265,6 +265,7 @@ jobs:
     with:
       model: ${{ matrix.model }}
       branch: ${{ matrix.branch }}
+      branch_sha: ${{ matrix.branch_sha }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.

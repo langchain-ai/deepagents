@@ -21,6 +21,9 @@ on:
       branch:
         type: string
         default: "current"
+      branch_sha:
+        type: string
+        default: ""
       langsmith_dataset:
         # Explicit LangSmith dataset name; empty derives it from the dataset.
         type: string
@@ -463,17 +466,21 @@ jobs:
         working-directory: .
         env:
           BRANCH: ${{ inputs.branch }}
+          BRANCH_SHA: ${{ inputs.branch_sha }}
         run: |
           # Overlay the compared branch's agent source AFTER the harness's locked
           # install (so `uv sync --locked` matched the workflow-ref lockfile) and
           # just before the rsync into .local_deps stages it for the sandbox. The
           # harness runs at the workflow ref; only the agent under test is the
-          # branch's source. BRANCH arrives via env, never interpolated into the
-          # shell body; reject a leading dash (git arg injection) and traversal.
+          # branch's source. BRANCH and BRANCH_SHA arrive via env, never
+          # interpolated into the shell body; reject malformed values before use.
           if ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BRANCH" == -* ]] || [[ "$BRANCH" == *".."* ]]; then
             echo "::error::Invalid branch ref: $BRANCH"; exit 1
           fi
-          git fetch origin "$BRANCH" --depth=1
+          if ! [[ "$BRANCH_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Invalid resolved branch SHA: $BRANCH_SHA"; exit 1
+          fi
+          git fetch origin "$BRANCH_SHA" --depth=1
           # Overlay ONLY the agent-under-test libraries. The harness (harbor +
           # deepagents_harbor/langgraph_project, including langgraph_agent.py) must
           # stay at the eval ref: it carries eval-infra fixes the pinned harbor
@@ -482,7 +489,7 @@ jobs:
             libs/deepagents \
             libs/code \
             libs/partners/quickjs
-          echo "Overlaid agent source from branch: $BRANCH"
+          echo "Overlaid agent source from branch: $BRANCH ($BRANCH_SHA)"
 
       - name: "🐳 Wait for the Docker daemon"
         # GH-hosted runners intermittently have the Docker daemon not-yet-ready at
@@ -772,6 +779,7 @@ jobs:
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
+          experiment_branch="${experiment_branch}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
           experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
@@ -1160,9 +1168,9 @@ jobs:
         # the plain unqualified name; a flat multi-category run qualifies it by
         # the branch slug (inputs.branch can contain '/', which artifact names
         # reject) plus raw matrix.agent_impl / matrix.category, which are safe
-        # because the cat-slug step's `exit 1` validation (rejects anything
-        # outside [A-Za-z0-9_.-]) already ran earlier in this job; don't reorder
-        # past it. Attribution is read from summary.json downstream, not this name.
+        # because prep restricts agent_impl to the upstream enum and cat-slug
+        # validates category before this step; don't reorder past those guards.
+        # Attribution is read from summary.json downstream, not this name.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}

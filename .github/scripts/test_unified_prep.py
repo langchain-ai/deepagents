@@ -22,6 +22,31 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
     assert up.provider_of("weirdvendor:x", known) == "other"
 
 
+def test_resolve_branch_sha_uses_ls_remote_argument_list(monkeypatch):
+    import subprocess
+
+    calls = []
+
+    def fake_run(args, *, check, capture_output, text):
+        calls.append((args, check, capture_output, text))
+        return subprocess.CompletedProcess(
+            args, 0, stdout="a" * 40 + "\trefs/heads/feature/x\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert up._resolve_branch_sha("feature/x") == "a" * 40
+    assert calls == [(["git", "ls-remote", "origin", "feature/x"], True, True, True)]
+
+
+def test_resolve_branch_sha_rejects_unsafe_refs():
+    import pytest
+
+    for branch in ("../bad", "-main", "feature*"):
+        with pytest.raises(SystemExit, match=r"Invalid branch ref"):
+            up._resolve_branch_sha(branch)
+
+
 def test_derive_pool_from_concurrency_and_rollouts():
     # Packed shards use full concurrency: conc 4 -> 40//4=10 ; 80//10=8 capped to n_groups
     assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_groups=1) == (10, 1)
@@ -65,9 +90,7 @@ def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):
     assert up.main([]) == 0
     import json as _j
 
-    lines = dict(
-        line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines()
-    )
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
     assert _j.loads(lines["categories"]) == ["context"]  # one entry, not three
     # the flat matrix isn't tripled either: one shard per context task
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
@@ -109,6 +132,22 @@ def test_main_rejects_empty_categories(tmp_path, monkeypatch):
         up.main([])
 
 
+def test_main_rejects_empty_requested_category(tmp_path, monkeypatch):
+    import json
+    import pytest
+
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps({"autonomous": ["task-1"]}))
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    with pytest.raises(SystemExit, match=r"No tasks resolved.*context"):
+        up.main([])
+
+
 def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus, openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
@@ -117,9 +156,7 @@ def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
     assert up.main([]) == 0
     import json as _j
 
-    lines = dict(
-        line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines()
-    )
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
     assert _j.loads(lines["models"]) == ["anthropic:opus", "openai:gpt"]
     assert _j.loads(lines["categories"]) == ["autonomous", "context"]
 
@@ -138,6 +175,13 @@ def test_total_job_guard_rejects_over_budget():
 
     with pytest.raises(SystemExit, match=r"TOTAL_JOB_BUDGET"):
         up.total_job_guard(total_jobs=up.TOTAL_JOB_BUDGET + 1)
+
+
+def test_total_job_guard_rejects_zero_jobs():
+    import pytest
+
+    with pytest.raises(SystemExit, match=r"no jobs"):
+        up.total_job_guard(total_jobs=0)
 
 
 def test_build_flat_matrix_expands_code_categories_over_configs():
@@ -213,9 +257,7 @@ def test_build_flat_matrix_dedupes_duplicate_configs():
     # A repeated config collapses to a single config: ["bare", "bare"] yields
     # the same entries as ["bare"] (guards the cap invariant, see Fix 1).
     tasks = {"autonomous": ["a1", "a2"], "context": ["c1"]}
-    once = up.build_flat_matrix(
-        "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare"]
-    )
+    once = up.build_flat_matrix("openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare"])
     twice = up.build_flat_matrix(
         "openai:gpt", ["autonomous", "context"], tasks, code_impls=["bare", "bare"]
     )
@@ -224,6 +266,7 @@ def test_build_flat_matrix_dedupes_duplicate_configs():
 
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     import json as _j
+
     out = tmp_path / "o"
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt, anthropic:opus")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context")
@@ -233,14 +276,14 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert up.main([]) == 0
     lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
-    assert lines["max_parallel"] == "10"      # conc4 -> 40//4 (packed shard = full conc)
-    assert lines["model_parallel"] == "2"     # 80//10=8 -> min(8, 2 groups)
+    assert lines["max_parallel"] == "10"  # conc4 -> 40//4 (packed shard = full conc)
+    assert lines["model_parallel"] == "2"  # 80//10=8 -> min(8, 2 groups)
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
     assert len(eval_matrix) == 2  # one entry per (model, branch); default branch=current
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
     assert {e["branch"] for e in eval_matrix} == {"current"}
     for entry in eval_matrix:
-        assert set(entry) == {"model", "branch", "slug", "flat_matrix"}
+        assert set(entry) == {"model", "branch", "branch_sha", "flat_matrix"}
         flat = _j.loads(entry["flat_matrix"])["include"]
         # lite totals 15+11+8 = 34 single-task shards per model
         assert len(flat) == 34
@@ -270,22 +313,19 @@ def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
 
 def test_derive_pool_divides_inner_by_branches():
     # conc 4 -> per_model=40//4=10; two branches -> inner=10//2=5; outer bounded by groups.
-    inner, outer = up.derive_pool(
-        concurrency=4, rollouts=3, n_shards=100, n_groups=2, n_branches=2
-    )
+    inner, outer = up.derive_pool(concurrency=4, rollouts=3, n_shards=100, n_groups=2, n_branches=2)
     assert inner == 5
     assert outer == 2
 
 
 def test_derive_pool_single_branch_matches_legacy():
-    inner, outer = up.derive_pool(
-        concurrency=4, rollouts=3, n_shards=100, n_groups=5, n_branches=1
-    )
+    inner, outer = up.derive_pool(concurrency=4, rollouts=3, n_shards=100, n_groups=5, n_branches=1)
     assert (inner, outer) == (10, 5)
 
 
 def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
     import pytest
+
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
@@ -298,6 +338,8 @@ def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
 
 def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     import json as _j
+
+    monkeypatch.setattr(up, "_resolve_branch_sha", lambda branch: "a" * 40)
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
@@ -312,11 +354,33 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     )
     pairs = {(e["model"], e["branch"]) for e in matrix["include"]}
     assert pairs == {("openai:gpt-5.6-luna", "main"), ("openai:gpt-5.6-luna", "feature")}
+    assert all(
+        set(e) == {"model", "branch", "branch_sha", "flat_matrix"} for e in matrix["include"]
+    )
+    assert {e["branch_sha"] for e in matrix["include"]} == {"a" * 40}
     leaves = _j.loads(
         next(l for l in text.splitlines() if l.startswith("expected_leaves=")).split("=", 1)[1]
     )
     assert {l["branch"] for l in leaves} == {"main", "feature"}
     assert all({"model", "branch", "config", "category"} <= set(l) for l in leaves)
+
+
+def test_main_total_job_guard_counts_branches(tmp_path, monkeypatch):
+    import json
+    import pytest
+
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps({"autonomous": [f"task-{i}" for i in range(401)]}))
+    monkeypatch.setattr(up, "_resolve_branch_sha", lambda branch: "a" * 40)
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks))
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature,release")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    with pytest.raises(SystemExit, match=r"TOTAL_JOB_BUDGET"):
+        up.main([])
 
 
 def test_main_rejects_over_256_outer_matrix(tmp_path, monkeypatch):
@@ -338,6 +402,7 @@ def test_main_rejects_over_256_outer_matrix(tmp_path, monkeypatch):
 
 def test_main_default_branch_is_current(tmp_path, monkeypatch):
     import json as _j
+
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
@@ -393,20 +458,14 @@ def test_derive_pool_budgets_packed_shards_at_full_concurrency():
     entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks)
     assert any(len(entry["include_tasks"].split()) > 1 for entry in entries)
 
-    inner, _ = up.derive_pool(
-        concurrency=4, rollouts=3, n_shards=len(entries), n_groups=1
-    )
+    inner, _ = up.derive_pool(concurrency=4, rollouts=3, n_shards=len(entries), n_groups=1)
     assert inner == 10
     assert inner * 4 == up.MAX_TASKS_PER_MODEL
 
 
 def test_build_flat_matrix_packs_above_cap():
-    tasks = {
-        "autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]
-    }
-    entries = up.build_flat_matrix(
-        "openai:gpt", ["autonomous"], tasks, code_impls=["dcode"]
-    )
+    tasks = {"autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]}
+    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks, code_impls=["dcode"])
     assert len(entries) <= shard_matrix.MAX_SHARDS
     # Every task still present, split across include_tasks strings.
     seen = " ".join(e["include_tasks"] for e in entries).split()

@@ -318,8 +318,14 @@ class WhatsAppChannel:
         Returns:
             Result indicating whether the send succeeded.
         """
-        for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
-            response = await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
+        try:
+            for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
+                response = await self._post_result(
+                    "/send",
+                    {"chatId": conversation_id, "text": chunk},
+                )
+        except _WhatsAppBridgeError as error:
+            return SendResult(success=False, error=str(error), retryable=False)
         return SendResult(success=True, message_id=_extract_message_id(response))
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:

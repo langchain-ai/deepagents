@@ -94,7 +94,9 @@ client.on("message_create", (message) => {
 });
 
 async function enqueueMessage(message) {
-  if (message.from === "status@broadcast") {
+  const data = message && message._data ? message._data : {};
+  const messageFrom = widString(message.from) || widString(data.from);
+  if (messageFrom === "status@broadcast") {
     return;
   }
   const fromSelf = isSelfMessage(message);
@@ -104,8 +106,10 @@ async function enqueueMessage(message) {
 
   const chat = await safeGetChat(message);
   const contact = await safeGetContact(message);
-  const messageId = serializedId(message.id);
-  const chatId = serializedId(chat && chat.id) || (fromSelf ? message.to : message.from);
+  const messageId = serializedId(message.id) || serializedId(data.id);
+  const messageTo = widString(message.to) || widString(data.to);
+  const remoteId = widString(message.id && message.id.remote) || widString(data.id && data.id.remote);
+  const chatId = widString(chat && chat.id) || (fromSelf ? messageTo : messageFrom) || remoteId;
   if (!messageId || !chatId) {
     console.error("Skipping WhatsApp message without a message id or chat id");
     return;
@@ -118,7 +122,7 @@ async function enqueueMessage(message) {
       `[bridge] Message ${messageId} reported media but no attachment was downloaded; type=${message.type || "unknown"} mediaType=${mediaType}`,
     );
   }
-  const senderId = message.author || (fromSelf && botId ? botId : message.from);
+  const senderId = widString(message.author) || (fromSelf && botId ? botId : messageFrom);
   const isGroup =
     chat && typeof chat.isGroup === "boolean"
       ? chat.isGroup
@@ -368,8 +372,47 @@ function decodedBase64Size(value) {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
+function widString(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value !== "object") {
+    return null;
+  }
+  if (typeof value._serialized === "string" && value._serialized) {
+    return value._serialized;
+  }
+  if (typeof value.user === "string" && typeof value.server === "string") {
+    return `${value.user}@${value.server}`;
+  }
+  return null;
+}
+
 function serializedId(value) {
-  return value && value._serialized ? value._serialized : null;
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value !== "object") {
+    return null;
+  }
+  if (typeof value._serialized === "string" && value._serialized) {
+    return value._serialized;
+  }
+  const remote = widString(value.remote);
+  if (remote && typeof value.id === "string" && value.id) {
+    const fromMe = value.fromMe ? "true" : "false";
+    return `${fromMe}_${remote}_${value.id}`;
+  }
+  if (typeof value.id === "string" && value.id) {
+    return value.id;
+  }
+  return null;
 }
 
 function normalizeIds(values) {

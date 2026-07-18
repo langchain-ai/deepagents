@@ -12,6 +12,7 @@ from deepagents_talon.channels.base import (
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
+    send_with_retry,
 )
 from deepagents_talon.channels.whatsapp import (
     DEFAULT_WHATSAPP_MAX_MEDIA_BYTES,
@@ -59,6 +60,16 @@ class DelayedHealthTransport:
             msg = "bridge not listening yet"
             raise _WhatsAppBridgeError(msg)
         return {"status": "qr_pending", "botId": None}
+
+
+class FailingSendTransport:
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, dict[str, object]]] = []
+
+    async def post(self, path: str, payload: dict[str, object]) -> object:
+        self.posts.append((path, payload))
+        msg = "WhatsApp bridge request failed: POST /send"
+        raise _WhatsAppBridgeError(msg)
 
 
 class JsonResponse:
@@ -490,6 +501,23 @@ async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
     assert transport.posts[1][0] == "/send"
     assert len(cast("str", transport.posts[1][1]["text"])) <= 4096
     assert cast("str", transport.posts[1][1]["text"]).startswith("*deepagents bot*\n")
+
+
+async def test_channel_does_not_retry_failed_text_sends(tmp_path: Path) -> None:
+    transport = FailingSendTransport()
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    result = await send_with_retry(
+        lambda: channel.send_message("chat", "hello"),
+        base_delay=0,
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert transport.posts == [("/send", {"chatId": "chat", "text": "*deepagents bot*\nhello"})]
 
 
 async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:

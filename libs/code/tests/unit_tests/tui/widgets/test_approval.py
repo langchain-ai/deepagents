@@ -394,6 +394,109 @@ class TestOptionOrdering:
         assert decision_received == {"type": expected_type}
 
 
+class TestAutoOptionEligibility:
+    """The Auto option is only offered when Auto can actually be enabled."""
+
+    def test_auto_option_hidden_when_not_eligible(self) -> None:
+        """With Auto ineligible, only Approve and Reject are offered."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        labels = [label for label, _ in menu._build_options()]
+        decisions = [decision for _, decision in menu._build_options()]
+        assert menu._num_options == 2
+        assert decisions == ["approve", "reject"]
+        assert all("Auto" not in label for label in labels)
+
+    def test_auto_option_shown_when_eligible(self) -> None:
+        """The default (eligible) layout still offers Auto in the middle."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=True,
+        )
+        decisions = [decision for _, decision in menu._build_options()]
+        assert menu._num_options == 3
+        assert decisions == ["approve", "auto_approve_all", "reject"]
+
+    def test_reject_index_tracks_layout_when_auto_hidden(self) -> None:
+        """Reject is the second (last) option when Auto is hidden."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        assert menu._reject_index == 1
+
+    def test_reject_via_second_position_when_auto_hidden(self) -> None:
+        """The `2` quick key selects Reject once Auto is removed."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu.set_future(future)
+        menu.action_select_position(1)
+        assert future.result() == {"type": "reject"}
+        loop.close()
+
+    def test_select_auto_is_no_op_when_hidden(self) -> None:
+        """Pressing `a` does nothing when Auto is not offered."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu.set_future(future)
+        menu.action_select_auto()
+        assert not future.done()
+        assert menu.display is True
+        loop.close()
+
+    def test_third_position_is_no_op_when_auto_hidden(self) -> None:
+        """The `3` quick key has no target once Auto is removed."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu.set_future(future)
+        menu.action_select_position(2)
+        assert not future.done()
+        loop.close()
+
+    def test_help_omits_auto_quick_key_when_hidden(self) -> None:
+        """The footer advertises `y/n` (not `y/a/n`) when Auto is hidden."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        help_text = menu._compose_help_text()
+        assert "y/n quick keys" in help_text
+        assert "y/a/n" not in help_text
+
+    def test_auto_fallback_shows_switch_even_when_not_eligible(self) -> None:
+        """A live Auto fallback keeps its Switch-to-Manual option."""
+        menu = ApprovalMenu(
+            {
+                "name": "delete",
+                "args": {"file_path": "old.py"},
+                "description": "Auto human fallback (consecutive denials: 3).",
+            },
+            auto_mode_eligible=False,
+        )
+        decisions = [decision for _, decision in menu._build_options()]
+        assert decisions == ["approve", "switch_manual", "reject"]
+
+
 class TestRejectWithReason:
     """Tests for the free-text reject mode (`action_reject_with_reason`)."""
 

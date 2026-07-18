@@ -7073,7 +7073,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
+        menu = ApprovalMenu(
+            action_requests,
+            assistant_id,
+            id=unique_id,
+            auto_mode_eligible=self._auto_mode_eligible,
+        )
         menu.set_future(result_future)
 
         self._pending_approval_widget = menu

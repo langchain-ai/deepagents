@@ -284,7 +284,27 @@ class TestGetCommandDisplayGuard:
 
 
 class TestOptionOrdering:
-    """Tests for the HITL option ordering: approve, auto-approve, reject."""
+    """Tests for approval, mode-change, and reject ordering."""
+
+    def test_auto_fallback_middle_option_switches_to_manual(self) -> None:
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {
+                "name": "delete",
+                "args": {"file_path": "old.py"},
+                "description": "Auto human fallback (consecutive denials: 3).",
+            }
+        )
+        menu.set_future(future)
+
+        menu._handle_selection(1)
+
+        assert menu._is_auto_fallback
+        assert future.result() == {"type": "switch_manual"}
+        loop.close()
 
     @pytest.mark.parametrize(
         ("index", "expected_type"),

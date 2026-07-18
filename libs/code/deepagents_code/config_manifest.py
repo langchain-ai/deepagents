@@ -173,7 +173,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config`."""
 
     summary: str
     """One-line description of what the option controls."""
@@ -194,7 +194,7 @@ class ConfigOption:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
     mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
     `LANGSMITH_PROJECT`.
     """
@@ -209,7 +209,7 @@ class ConfigOption:
     """Representative CLI flag that sets the option, or `None`."""
 
     redacted: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value.
+    """Whether `config` reports only set/not-set, never the raw value.
 
     Named `redacted` rather than `secret` so the value (and the JSON field it
     populates) carries no credential-suggesting identifier — the flag is
@@ -238,7 +238,7 @@ class ConfigOption:
     Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
     where it is the key `/auth` stores the credential under and the name passed
     to `model_config.is_service`. Carrying it as a structured field lets
-    `config show`/`get` look up the stored credential without re-parsing it out
+    `config`/`config get` look up the stored credential without re-parsing it out
     of `key`. `None` for every other option.
     """
 
@@ -396,7 +396,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config show` reports the real source
+            # malformed scalar, so `config` reports the real source
             # (config.toml/default) instead of crediting the env var with a
             # value it did not actually supply.
             logger.warning("Ignoring %s=%r (expected bool)", name, raw)
@@ -473,7 +473,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         if raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
             name,
             raw,
         )
@@ -540,7 +540,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
             label,
             raw,
         )
@@ -1321,7 +1321,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.mode",
         group="Startup",
-        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
         kind=OptionKind.STARTUP_MODE_DELEGATE,
         default="manual",
         toml_keys=("startup", "mode"),

@@ -163,6 +163,11 @@ class ApprovalMenu(Container):
         self._assistant_id = assistant_id
         # For display purposes, get tool names
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
+        self._is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback ")
+            for request in self._action_requests
+        )
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
@@ -407,16 +412,21 @@ class ApprovalMenu(Container):
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
         count = len(self._action_requests)
+        middle = (
+            "2. Switch to Manual (a)"
+            if self._is_auto_fallback
+            else "2. Enable Auto for this thread (a)"
+        )
         if count == 1:
             options = [
                 "1. Approve (y)",
-                "2. Auto-approve for this thread (a)",
+                middle,
                 "3. Reject (n)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
-                "2. Auto-approve for this thread (a)",
+                middle,
                 f"3. Reject all {count} (n)",
             ]
 
@@ -492,7 +502,7 @@ class ApprovalMenu(Container):
         """
         decision_map = {
             0: "approve",
-            1: "auto_approve_all",
+            1: "switch_manual" if self._is_auto_fallback else "auto_approve_all",
             2: "reject",
         }
         decision: dict[str, str] = {"type": decision_map[option]}

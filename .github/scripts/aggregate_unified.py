@@ -406,13 +406,17 @@ def _load_leaves_env(name: str) -> list[dict] | None:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise SystemExit(msg) from exc
+    fields = {"model", "branch", "config", "category"}
     if not isinstance(value, list) or not all(
         isinstance(item, dict)
-        and {"model", "branch", "config", "category"} <= set(item)
+        and fields <= set(item)
+        and all(isinstance(item[field], str) for field in fields)
         for item in value
     ):
         raise SystemExit(msg)
-    return cast(list[dict], value) or None
+    # Keep an explicit [] distinct from an unset variable: callers can deliberately
+    # request an empty expected grid while still aggregating discovered leaves.
+    return cast(list[dict], value)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -435,6 +439,12 @@ def main(argv: list[str] | None = None) -> int:
     write_outputs(
         combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
     )
+    # A scorecard containing only placeholders is not a usable unified-eval
+    # result. Still write it for diagnostics, but fail the combine job so artifact
+    # download/auth failures cannot be reported as a successful comparison.
+    if not leaves:
+        print("::error::No usable eval leaf summaries were found; failing the run.")
+        return 1
     rows = combined["rows"]
     # Incompleteness is surfaced per row in write_outputs (a ::warning:: plus the
     # ⚠️ markers in the table) and never fails the job: a partial scorecard the

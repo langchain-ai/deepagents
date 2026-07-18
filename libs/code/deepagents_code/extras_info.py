@@ -548,6 +548,7 @@ def format_extras_status_plain(status: ExtrasStatus) -> str:
 CORE_DEPENDENCIES: tuple[str, ...] = (
     "langchain",
     "langchain-core",
+    "langchain-quickjs",
     "langgraph",
     "langgraph-checkpoint",
     "langgraph-prebuilt",
@@ -559,6 +560,9 @@ CORE_DEPENDENCIES: tuple[str, ...] = (
 The deepagents SDK is reported separately by `/version`, so it is omitted
 here. These are the packages a local checkout is most likely to pin or
 override, so their resolved versions help diagnose editable environments.
+`langchain-quickjs` powers the built-in interpreter and is a core dependency
+(not an optional extra), so it belongs here rather than under the optional
+dependencies section.
 """
 
 

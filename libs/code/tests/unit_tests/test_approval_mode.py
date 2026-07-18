@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
+    ApprovalMode,
     approval_mode_key,
     approval_mode_payload,
+    aread_approval_mode_from_store,
     awrite_approval_mode,
+    has_yolo_acknowledgement,
     read_approval_mode_from_store,
+    save_yolo_acknowledgement,
 )
 
 
@@ -38,6 +45,28 @@ class _FailingStore:
         raise RuntimeError(msg)
 
 
+class _AsyncOnlyStore:
+    def __init__(self, item: object = None) -> None:
+        self.item = item
+
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
+        assert namespace == APPROVAL_MODE_NAMESPACE
+        assert key
+        return self.item
+
+    def get(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        msg = "synchronous Store access is forbidden on the event loop"
+        raise AssertionError(msg)
+
+
+class _AsyncFailingStore:
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        msg = "store unavailable"
+        raise RuntimeError(msg)
+
+
 class _Writer:
     def __init__(self) -> None:
         self.items: list[tuple[tuple[str, ...], str, dict[str, Any]]] = []
@@ -51,22 +80,26 @@ class _Writer:
         self.items.append((namespace, key, value))
 
 
-def test_approval_mode_payload_shape() -> None:
-    assert approval_mode_payload(auto_approve=True) == {"auto_approve": True}
+@pytest.mark.parametrize("mode", list(ApprovalMode))
+def test_approval_mode_payload_shape(mode: ApprovalMode) -> None:
+    payload = approval_mode_payload(mode=mode)
+
+    assert payload == {"mode": mode.value}
+    assert "auto_approve" not in payload
 
 
 def test_read_approval_mode_from_store_accepts_mapping_item() -> None:
     key = approval_mode_key("thread-1")
-    item = {"value": {"auto_approve": True}}
+    item = {"value": {"mode": "auto"}}
 
-    assert read_approval_mode_from_store(_Store(item), key) is True
+    assert read_approval_mode_from_store(_Store(item), key) is ApprovalMode.AUTO
 
 
 def test_read_approval_mode_from_store_accepts_attribute_item() -> None:
     key = approval_mode_key("thread-1")
-    item = _StoreItem({"auto_approve": False})
+    item = _StoreItem({"mode": "yolo"})
 
-    assert read_approval_mode_from_store(_Store(item), key) is False
+    assert read_approval_mode_from_store(_Store(item), key) is ApprovalMode.YOLO
 
 
 @pytest.mark.parametrize(
@@ -115,15 +148,92 @@ def test_read_approval_mode_from_store_exception_fails_closed(
     assert "Could not read approval-mode store item" in caplog.text
 
 
+async def test_aread_approval_mode_prefers_async_store_api() -> None:
+    key = approval_mode_key("thread-1")
+    item = _StoreItem({"mode": "auto"})
+
+    assert (
+        await aread_approval_mode_from_store(_AsyncOnlyStore(item), key)
+        is ApprovalMode.AUTO
+    )
+
+
+async def test_aread_approval_mode_falls_back_to_sync_get() -> None:
+    """A store exposing only sync `get()` is still read via the fallback branch."""
+    key = approval_mode_key("thread-1")
+    item = _StoreItem({"mode": "yolo"})
+
+    assert await aread_approval_mode_from_store(_Store(item), key) is ApprovalMode.YOLO
+
+
+@pytest.mark.parametrize(
+    ("store", "key"),
+    [
+        (None, approval_mode_key("thread-1")),
+        (object(), approval_mode_key("thread-1")),  # no get()/aget()
+        (_AsyncOnlyStore(None), approval_mode_key("thread-1")),  # missing item
+        (
+            _AsyncOnlyStore(_StoreItem(["not", "a", "mapping"])),
+            approval_mode_key("thread-1"),
+        ),
+        (
+            _AsyncOnlyStore(_StoreItem({"auto_approve": "yes"})),
+            approval_mode_key("thread-1"),
+        ),
+        (_AsyncOnlyStore(_StoreItem({"mode": "not-a-mode"})), approval_mode_key("x")),
+        (_AsyncOnlyStore(_StoreItem({"mode": "auto"})), ""),
+        (_AsyncOnlyStore(_StoreItem({"mode": "auto"})), None),
+    ],
+)
+async def test_aread_approval_mode_fails_closed(
+    store: object,
+    key: str | None,
+) -> None:
+    """The async reader re-implements the sync fail-closed guards; verify each."""
+    assert await aread_approval_mode_from_store(store, key) is None
+
+
+async def test_aread_approval_mode_exception_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="deepagents_code.approval_mode"):
+        assert (
+            await aread_approval_mode_from_store(
+                _AsyncFailingStore(),
+                approval_mode_key("thread-1"),
+            )
+            is None
+        )
+
+    assert "Could not read approval-mode store item" in caplog.text
+
+
 async def test_awrite_approval_mode_writes_payload() -> None:
     writer = _Writer()
-    key = await awrite_approval_mode(writer, "thread-1", auto_approve=True)
+    key = await awrite_approval_mode(writer, "thread-1", mode=ApprovalMode.AUTO)
 
     assert key == approval_mode_key("thread-1")
     assert writer.items == [
-        (APPROVAL_MODE_NAMESPACE, approval_mode_key("thread-1"), {"auto_approve": True})
+        (APPROVAL_MODE_NAMESPACE, approval_mode_key("thread-1"), {"mode": "auto"})
     ]
 
 
 async def test_awrite_approval_mode_returns_none_without_writer() -> None:
-    assert (await awrite_approval_mode(object(), "thread-1", auto_approve=True)) is None
+    assert (
+        await awrite_approval_mode(object(), "thread-1", mode=ApprovalMode.AUTO)
+    ) is None
+
+
+def test_yolo_acknowledgement_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / ".state" / "approval.json"
+
+    assert not has_yolo_acknowledgement(path)
+    assert save_yolo_acknowledgement(path)
+    assert has_yolo_acknowledgement(path)
+
+
+def test_yolo_acknowledgement_rejects_stale_policy(tmp_path: Path) -> None:
+    path = tmp_path / "approval.json"
+    path.write_text('{"version":1,"policy_version":"old","acknowledged":true}\n')
+
+    assert not has_yolo_acknowledgement(path)

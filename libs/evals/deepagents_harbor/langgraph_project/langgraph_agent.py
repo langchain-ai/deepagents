@@ -190,33 +190,17 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # No `system_prompt`: left unset, `create_deep_agent` builds the prompt from
+    # the library's own `BASE_AGENT_PROMPT` — the value this benchmark varies
+    # across branches. A harness override is normalized to a prepended
+    # `{"prefix": ...}` that would sit ahead of that base on every arm, masking
+    # the difference and giving the no-system-prompt arm a prompt it should not
+    # have. The sandbox workdir is already enforced by the shell backend's
+    # `root_dir`.
     return create_deep_agent(
         model=model,
         backend=backend,
-        system_prompt=_SYSTEM_PROMPT,
     )
-
-
-_TAU3_SYSTEM_PROMPT = """You are a customer-service agent in a Harbor benchmark, \
-talking with a simulated user through the `tau3-runtime` MCP tools. Follow the \
-task's policy exactly.
-
-Protocol:
-- Call `start_conversation` exactly once at the very start to begin (or resume) the
-  conversation and read the user's first message.
-- Call `send_message_to_user` to say anything to the user; it returns their next
-  message.
-- Use the domain tools (also on the `tau3-runtime` server) to inspect or modify the
-  environment.
-- In each step, either talk to the user OR call one domain tool — never both, and
-  only one tool call at a time.
-- When you are confident the case is resolved, end the conversation by calling
-  `end_conversation` (or, if your agent emits stop tokens directly, reply
-  `###STOP###`).
-
-Unlike terminal tasks, there IS a user to talk to here: do not try to finish
-silently. Keep working with the user until the case is resolved.
-"""
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
@@ -312,8 +296,12 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     model = _build_model(configurable)
     client = MultiServerMCPClient(_mcp_connections(configurable))
     tools = await client.get_tools()
+    # No `system_prompt`: the agent uses the overlaid branch's own
+    # BASE_AGENT_PROMPT (the value this benchmark varies) and learns the
+    # tau3-runtime conversation protocol from the MCP tools' server-advertised
+    # descriptions, keeping the conversation category a fair, base-prompt-only
+    # comparison parallel to the bare path.
     return create_deep_agent(
         model=model,
         tools=tools,
-        system_prompt=_TAU3_SYSTEM_PROMPT,
     )

@@ -194,17 +194,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._refresh_view()
 
     def on_resize(self) -> None:
-        """Refit the width-sized marketplaces divider when the modal resizes.
-
-        The divider is the only content sized to the options width, so restrict the
-        rebuild to the marketplaces list view to avoid needless focus/highlight churn
-        on unrelated tabs and while the add-marketplace input is focused.
-        """
-        if (
+        """Refit width-sized dividers when the modal resizes."""
+        marketplace_divider_visible = (
             self._mode == "list"
             and self._tab == "marketplaces"
-            and self._state.marketplaces
-        ):
+            and bool(self._state.marketplaces)
+        )
+        details_divider_visible = (
+            self._mode == "installed_details" and self._selected_plugin is not None
+        )
+        if marketplace_divider_visible or details_divider_visible:
             self._refresh_view()
 
     def _update_tab_labels(self) -> None:
@@ -317,7 +316,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         return [Option(Content(error), id="empty") for error in self._state.errors]
 
     def _divider_width(self) -> int:
-        """Width for the marketplaces divider, sized to the options list.
+        """Width for option-list dividers, sized to the available content.
 
         The options list respects the modal's `max-width`, so a fixed width wraps on
         terminals narrower than the full modal. Measure the laid-out content width when
@@ -496,7 +495,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if self._mode == "plugin_details":
             return _install_details_options()
         if self._mode == "installed_details" and self._selected_plugin is not None:
-            return _installed_details_options(self._selected_plugin)
+            return _installed_details_options(
+                self._selected_plugin, divider_width=self._divider_width()
+            )
         if (
             self._mode == "marketplace_details"
             and self._selected_marketplace is not None

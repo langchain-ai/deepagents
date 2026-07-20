@@ -18,7 +18,7 @@ from enum import StrEnum
 from hashlib import sha256
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -49,6 +49,7 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from typing_extensions import TypedDict
 
 from deepagents_code.approval_mode import (
     ApprovalMode,

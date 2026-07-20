@@ -119,6 +119,10 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_AUTO_MODE_ENABLED_WARNING = (
+    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+)
+
 _BLOCKED_GOAL_RETRY_CONTEXT = (
     "<dcode_blocked_goal_retry_context>\n"
     "The active goal was previously marked blocked.\n\n"
@@ -2447,10 +2451,10 @@ class DeepAgentsApp(App):
         Binding("j", "approval_down", "Down", show=False),
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
-        Binding("1", "approval_yes", "Yes", show=False),
-        Binding("2", "approval_auto", "Auto", show=False),
+        Binding("1", "approval_position(0)", "Select first", show=False),
+        Binding("2", "approval_position(1)", "Select second", show=False),
+        Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
@@ -3596,8 +3600,7 @@ class DeepAgentsApp(App):
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
             self.notify(
-                "Auto beta reviews gated actions but is not sandbox containment; "
-                "PTC and delegated subagent internals remain bypasses.",
+                _AUTO_MODE_ENABLED_WARNING,
                 severity="warning",
                 timeout=10,
                 markup=False,
@@ -7073,7 +7076,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
+        menu = ApprovalMenu(
+            action_requests,
+            assistant_id,
+            id=unique_id,
+            auto_mode_eligible=self._auto_mode_eligible,
+        )
         menu.set_future(result_future)
 
         self._pending_approval_widget = menu
@@ -7264,8 +7272,7 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
         self.notify(
-            "Auto beta enabled. It classifies gated actions but is not sandbox "
-            "containment.",
+            _AUTO_MODE_ENABLED_WARNING,
             severity="warning",
             timeout=8,
             markup=False,
@@ -15934,17 +15941,26 @@ class DeepAgentsApp(App):
         return focused.id == "chat-input" or focused in self._chat_input.walk_children()
 
     def action_approval_yes(self) -> None:
-        """Handle yes/1 in approval menu."""
+        """Handle the semantic approve key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
+    def action_approval_position(self, position: int) -> None:
+        """Select an approval option by its visible position.
+
+        Args:
+            position: Zero-based position of the displayed option.
+        """
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_position(position)
+
     def action_approval_auto(self) -> None:
-        """Handle auto/2 in approval menu."""
+        """Handle the semantic Auto key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
 
     def action_approval_no(self) -> None:
-        """Handle no/3 in approval menu."""
+        """Handle the semantic reject key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 

@@ -119,6 +119,10 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_AUTO_MODE_ENABLED_WARNING = (
+    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+)
+
 _BLOCKED_GOAL_RETRY_CONTEXT = (
     "<dcode_blocked_goal_retry_context>\n"
     "The active goal was previously marked blocked.\n\n"
@@ -3596,8 +3600,7 @@ class DeepAgentsApp(App):
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
             self.notify(
-                "Auto beta reviews gated actions but is not sandbox containment; "
-                "PTC and delegated subagent internals remain bypasses.",
+                _AUTO_MODE_ENABLED_WARNING,
                 severity="warning",
                 timeout=10,
                 markup=False,
@@ -7264,8 +7267,7 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
         self.notify(
-            "Auto beta enabled. It classifies gated actions but is not sandbox "
-            "containment.",
+            _AUTO_MODE_ENABLED_WARNING,
             severity="warning",
             timeout=8,
             markup=False,

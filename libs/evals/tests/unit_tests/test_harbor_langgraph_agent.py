@@ -563,11 +563,28 @@ def test_strategy_ledger_bounds_latest_correlated_results() -> None:
             },
         )
     )
+    messages.append(
+        ToolMessage(
+            content="UNPREFIXED_TOOL_OUTPUT",
+            tool_call_id="ordinary_tool_1",
+            response_metadata={
+                "structured_action": {
+                    "name": "unprefixed",
+                    "args": {"command": "UNPREFIXED_COMMAND"},
+                    "tool_call_id": "ordinary_tool_1",
+                }
+            },
+        )
+    )
 
     ledger = langgraph_agent._strategy_ledger(messages)
+    ledger_payload = json.dumps(ledger)
 
     assert [entry["name"] for entry in ledger] == [f"execute-{index}" for index in range(1, 13)]
     assert all("MISMATCHED_TOOL_OUTPUT" not in entry["result"] for entry in ledger)
+    assert "unprefixed" not in ledger_payload
+    assert "UNPREFIXED_COMMAND" not in ledger_payload
+    assert "UNPREFIXED_TOOL_OUTPUT" not in ledger_payload
     assert all(len(entry["args"]) <= langgraph_agent._MAX_STRATEGY_ARGS_CHARS for entry in ledger)
     assert all(
         len(entry["result"]) <= langgraph_agent._MAX_STRATEGY_RESULT_CHARS for entry in ledger

@@ -9,7 +9,9 @@ GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k =
   <img alt="Grouped bar chart of lite pass@k (top panel) and avg@k (bottom panel) by category (autonomous, conversation, context) across GPT-5.6 terra, sol, luna, Claude Opus 4.8, Claude Sonnet 5, and GLM-5.2, sorted by macro pass@k" src="assets/lite-scorecard-light.svg">
 </picture>
 
-pass@k (top) and avg@k (bottom), sorted by macro pass@k. Context is now graded by the faithful Letta **`model_judge`** (rubric-based LLM judge, `gpt-5.6-luna`) matching upstream Context-Bench, **not exact string match** — verbose-but-correct answers are no longer zeroed. This confirms the earlier low context scores were an output-format artifact, not a retrieval gap. **Re-graded so far:** GPT-5.6 sol context 0.000 → 0.750 and Claude Opus 4.8 context 0.125 → 0.500 (run [29778028063](https://github.com/langchain-ai/deepagents/actions/runs/29778028063)). GPT-5.6 terra, luna, Sonnet 5, and GLM-5.2 context below still show the **old exact-match** numbers pending re-grade (run [29778667492](https://github.com/langchain-ai/deepagents/actions/runs/29778667492)); the chart above regenerates once all are re-graded. Judging luna with a luna grader is self-grading (noted where it applies).
+Context is now graded by the faithful Letta **`model_judge`** (rubric-based LLM judge) matching upstream Context-Bench, **not exact string match** — verbose-but-correct answers are no longer zeroed, confirming the earlier low context scores were an output-format artifact, not a retrieval gap. All six models below are re-graded (2026-07-20). By **macro avg@k** the lite order is **sol 0.501 > terra 0.449 > luna 0.356 > opus 0.330 > Sonnet 5 0.297 > GLM-5.2 0.133**. luna's context is judged by `gpt-5.6-terra` (independent, to avoid self-grading); all others by `gpt-5.6-luna`.
+
+> **Pending recalibration.** Under the faithful judge the current lite context set saturates (four of six models sit at 0.750 context pass@k), so it barely discriminates. Next: re-run the full 30-task context set for terra + sol under this judge and re-pick the lite context subset to the difficulty frontier (tasks strong models don't saturate). The chart below is stale — it still shows the old pass@k/avg@k panels and will be regenerated as **avg@k-only (macro + micro)** once the lite context set is finalized.
 
 ## GPT-5.6 terra
 
@@ -35,11 +37,11 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.400 | 0.267 | 15 |
 | conversation (tau3-subset) | 0.727 | 0.455 | 11 |
-| context (context-retrieval) | 0.625 | 0.375 | 8 |
-| **macro** | **0.584** | **0.365** |  |
-| **micro** | **0.559** | **0.353** |  |
+| context (context-retrieval) | 0.750 | 0.625 | 8 |
+| **macro** | **0.626** | **0.449** |  |
+| **micro** | **0.588** | **0.412** |  |
 
-Run [29509108062](https://github.com/langchain-ai/deepagents/actions/runs/29509108062) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~25m
+Autonomous and conversation from run [29509108062](https://github.com/langchain-ai/deepagents/actions/runs/29509108062) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~25m. Context re-graded 2026-07-20 via run [29778667492](https://github.com/langchain-ai/deepagents/actions/runs/29778667492) with the faithful Letta `model_judge` (judge `gpt-5.6-luna`), up from an exact-match `0.625`.
 
 One conversation shard hit a transient Docker-daemon failure; recovered from the run's artifacts (merged the retried shard), no tasks re-run.
 
@@ -65,15 +67,15 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.333 | 0.178 | 15 |
 | conversation (tau3-subset) | 0.273 | 0.182 | 11 |
-| context (context-retrieval) | 0.500 | 0.333 | 8 |
-| **macro** | **0.369** | **0.231** |  |
-| **micro** | **0.353** | **0.216** |  |
+| context (context-retrieval) | 0.750 | 0.708 | 8 |
+| **macro** | **0.452** | **0.356** |  |
+| **micro** | **0.412** | **0.304** |  |
 
-Run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/29509109809) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~50m
+Autonomous and conversation from run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/29509109809) · 2026-07-16 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~50m. Context re-graded 2026-07-20 via run [29779192946](https://github.com/langchain-ai/deepagents/actions/runs/29779192946) with the faithful Letta `model_judge`, judged by **`gpt-5.6-terra`** (independent, to avoid luna self-grading), up from an exact-match `0.500`.
 
 ---
 
-2026-07-17 lite runs. Context is graded by exact string match on the answer file, so the context column below is output-format-sensitive. Judge `gpt-5.6-luna` is independent for all four.
+2026-07-17 lite runs (sol, opus, Sonnet 5, GLM-5.2). Their context columns have since been re-graded (2026-07-20) with the faithful Letta `model_judge`; the old exact-match context is superseded (see each model's note). Judge `gpt-5.6-luna` is independent for all four.
 
 ## GPT-5.6 sol
 
@@ -117,11 +119,11 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.267 | 0.133 | 15 |
 | conversation (tau3-subset) | 0.182 | 0.091 | 11 |
-| context (context-retrieval) | 0.000 | 0.000 | 8 |
-| **macro** | **0.149** | **0.075** |  |
-| **micro** | **0.176** | **0.088** |  |
+| context (context-retrieval) | 0.750 | 0.667 | 8 |
+| **macro** | **0.400** | **0.297** |  |
+| **micro** | **0.353** | **0.245** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
+Autonomous and conversation from run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context re-graded 2026-07-20 via run [29778667492](https://github.com/langchain-ai/deepagents/actions/runs/29778667492) with the faithful Letta `model_judge` (judge `gpt-5.6-luna`), up from an exact-match `0.000`.
 
 ## GLM-5.2
 
@@ -133,8 +135,8 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.133 | 0.067 | 15 |
 | conversation (tau3-subset) | 0.000 | 0.000 | 11 |
-| context (context-retrieval) | 0.125 | 0.042 | 8 |
-| **macro** | **0.086** | **0.036** |  |
-| **micro** | **0.088** | **0.039** |  |
+| context (context-retrieval) | 0.625 | 0.333 | 8 |
+| **macro** | **0.253** | **0.133** |  |
+| **micro** | **0.206** | **0.108** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
+Autonomous and conversation from run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context re-graded 2026-07-20 via run [29778667492](https://github.com/langchain-ai/deepagents/actions/runs/29778667492) with the faithful Letta `model_judge` (judge `gpt-5.6-luna`), up from an exact-match `0.125`.

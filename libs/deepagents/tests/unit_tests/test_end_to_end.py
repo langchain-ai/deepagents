@@ -3128,10 +3128,10 @@ class TestFilesystemRoutingPrompt:
         assert "## Following Conventions" not in content, "filesystem usage prose should be suppressed"
         assert "You are a deep agent" not in content, "base prose should be suppressed"
 
-    def test_routing_still_present_when_flag_true(self) -> None:
-        content = self._capture_system_prompt(self._routed_backend(), _builtin_middleware_prompts=True)
+    def test_routing_still_present_when_prose_kept(self) -> None:
+        content = self._capture_system_prompt(self._routed_backend(), trim_duplicate_tool_prompts=False)
         assert "Shell paths vs. virtual paths" in content
-        # With the flag on, the filesystem usage prose returns alongside routing.
+        # With trimming disabled, the filesystem usage prose returns alongside routing.
         assert "## Following Conventions" in content
 
     def test_no_routing_section_for_non_composite_backend(self) -> None:
@@ -3188,8 +3188,8 @@ class TestArtifactsRoot:
             backend=backend,
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
-            # suppressed by default; opt in so this test can assert on it.
-            _builtin_middleware_prompts=True,
+            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
+            trim_duplicate_tool_prompts=False,
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
@@ -3325,8 +3325,8 @@ class TestArtifactsRoot:
             backend=backend,
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
-            # suppressed by default; opt in so this test can assert on it.
-            _builtin_middleware_prompts=True,
+            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
+            trim_duplicate_tool_prompts=False,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)
@@ -3343,8 +3343,8 @@ class TestArtifactsRoot:
             backend=backend,
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
-            # suppressed by default; opt in so this test can assert on it.
-            _builtin_middleware_prompts=True,
+            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
+            trim_duplicate_tool_prompts=False,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)

@@ -391,7 +391,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
-    _builtin_middleware_prompts: bool = False,
+    trim_duplicate_tool_prompts: bool = True,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -480,24 +480,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             profile suffix, joined by blank lines. Any part may be a
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
-        _builtin_middleware_prompts: Whether the built-in middleware contribute
-            their own tool-usage guidance prose (how to use the todo, filesystem,
-            and subagent tools).
+        trim_duplicate_tool_prompts: Whether to drop the built-in tool-usage
+            guidance prose that largely duplicates the tools' own descriptions.
 
-            `False` (default): that guidance prose is suppressed on every
-            middleware stack (main agent, subagents, and the general-purpose
-            subagent). The tools and their own descriptions are unaffected, so
-            the agent stays functional; only the prose is removed. Set this to
-            `True` to restore it.
+            `True` (default): the todo, filesystem, and subagent middleware are
+            built without their usage-guidance prose, on every stack (main agent,
+            subagents, and the general-purpose subagent). The tools and their own
+            schema descriptions are unaffected, so the model still knows how to
+            call them; only the redundant prose is trimmed. Set this to `False`
+            to keep the full built-in guidance.
 
-            This does not affect the skills or memory middleware: their fragment
-            is the only channel that surfaces the loaded skill index / memory
-            content, so `create_deep_agent(skills=...)` / `memory=...` always
-            emit it regardless of this flag.
-
-            Marked private because it is internal wiring for first-party
-            harnesses (e.g. the Deep Agents CLI) that want the full built-in
-            behavior; most callers should leave it at the default.
+            This is deliberately narrow. It only trims prose that repeats the
+            tool schemas. It never touches content that the schemas do not carry:
+            the skills index and memory content (emitted whenever `skills=` /
+            `memory=` are set) and the filesystem host-path routing section
+            always remain, regardless of this flag.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -767,28 +764,29 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
-    # System-prompt suppression for the built-in middleware whose fragment is
-    # pure usage guidance. Unless the caller opts back in via
-    # `_builtin_middleware_prompts=True`, todo / filesystem / subagent /
-    # async-subagent are constructed with their guidance prose suppressed, on
-    # every stack below (main agent, subagents, general-purpose subagent). The
-    # suppression value depends on how the middleware treats `system_prompt`:
-    #   - `TodoListMiddleware` always appends, so `""` suppresses; omitting the
-    #     kwarg (empty dict) restores its built-in prose.
+    # Trim the built-in tool-usage guidance prose that duplicates the tool
+    # schemas. When `trim_duplicate_tool_prompts` (the default), todo /
+    # filesystem / subagent / async-subagent are constructed with that prose
+    # dropped, on every stack below (main agent, subagents, general-purpose
+    # subagent). The trim value depends on how the middleware treats
+    # `system_prompt`:
+    #   - `TodoListMiddleware` always appends, so `""` trims; omitting the kwarg
+    #     (empty dict) keeps its built-in prose.
     #   - `FilesystemMiddleware` builds its prose when `system_prompt is None`,
-    #     so it is passed explicitly at each call site (`None` to restore, `""`
-    #     to suppress).
+    #     so it is passed explicitly at each call site (`""` to trim, `None` to
+    #     keep). Its host-path routing section is preserved either way (see
+    #     `_filter_unsupported_tools_and_apply_prompt`).
     #   - subagent / async-subagent treat `None` as "no fragment", so `None`
-    #     suppresses; omitting the kwarg restores. The available-agent list still
+    #     trims; omitting the kwarg keeps it. The available-agent list still
     #     reaches the model through the `task` tool / async tools, so only the
-    #     usage prose is dropped.
-    # Skills and Memory are intentionally NOT suppressed: their fragment is the
+    #     duplicate usage prose is dropped.
+    # Skills and Memory are intentionally never trimmed: their fragment is the
     # only channel that surfaces the loaded skill index / memory content (no tool
     # carries it), and both are built only when the caller explicitly passes
-    # `skills=` / `memory=`. Suppressing them would silently disable an
-    # opted-into feature, so they always emit their built-in fragment.
-    _empty_prompt_kwargs: dict[str, str] = {} if _builtin_middleware_prompts else {"system_prompt": ""}
-    _none_prompt_kwargs: dict[str, None] = {} if _builtin_middleware_prompts else {"system_prompt": None}
+    # `skills=` / `memory=`. Trimming them would silently disable an opted-into
+    # feature, so they always emit their built-in fragment.
+    _empty_prompt_kwargs: dict[str, str] = {"system_prompt": ""} if trim_duplicate_tool_prompts else {}
+    _none_prompt_kwargs: dict[str, None] = {"system_prompt": None} if trim_duplicate_tool_prompts else {}
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -822,7 +820,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
-                    system_prompt=None if _builtin_middleware_prompts else "",
+                    system_prompt="" if trim_duplicate_tool_prompts else None,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -909,7 +907,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
-                system_prompt=None if _builtin_middleware_prompts else "",
+                system_prompt="" if trim_duplicate_tool_prompts else None,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -980,7 +978,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
-            system_prompt=None if _builtin_middleware_prompts else "",
+            system_prompt="" if trim_duplicate_tool_prompts else None,
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None

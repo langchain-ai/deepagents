@@ -669,19 +669,20 @@ class TestSystemPromptAssembly:
 _ABSENT = object()
 
 
-class TestBuiltinMiddlewarePrompts:
-    """`create_deep_agent` toggles built-in middleware tool-usage guidance prose.
+class TestTrimDuplicateToolPrompts:
+    """`create_deep_agent(trim_duplicate_tool_prompts=...)` trims duplicate prose.
 
     The usage-guidance middleware (Todo, Filesystem, SubAgent, AsyncSubAgent)
-    are suppressed by default and restored when `_builtin_middleware_prompts=True`:
-    `system_prompt=""` for those that always append (Todo, Filesystem) and
-    `system_prompt=None` for those whose `None` means "no fragment" (SubAgent,
-    AsyncSubAgent). Restoration omits the kwarg (or passes `None` to Filesystem,
-    whose built-in prose is its `None` default).
+    have their tool-usage prose trimmed by default and kept when
+    `trim_duplicate_tool_prompts=False`: trimming passes `system_prompt=""` for
+    those that always append (Todo, Filesystem) and `system_prompt=None` for
+    those whose `None` means "no fragment" (SubAgent, AsyncSubAgent). Keeping
+    omits the kwarg (or passes `None` to Filesystem, whose built-in prose is its
+    `None` default).
 
-    Skills and Memory are never suppressed: their fragment is the only channel
-    that surfaces the loaded skill index / memory content, so they always emit
-    it (kwarg omitted) regardless of the flag.
+    Skills and Memory are never trimmed: their fragment is the only channel that
+    surfaces the loaded skill index / memory content, so they always emit it
+    (kwarg omitted) regardless of the flag.
     """
 
     def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
@@ -727,7 +728,7 @@ class TestBuiltinMiddlewarePrompts:
             "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
         }
 
-    def test_usage_prose_suppressed_by_default(self) -> None:
+    def test_usage_prose_trimmed_by_default(self) -> None:
         captured = self._capture_middleware_kwargs(**self._create_kwargs())
 
         assert captured["TodoListMiddleware"], "expected TodoListMiddleware to be built"
@@ -736,9 +737,9 @@ class TestBuiltinMiddlewarePrompts:
         assert all(v is None for v in captured["SubAgentMiddleware"])
         assert all(v is None for v in captured["AsyncSubAgentMiddleware"])
 
-    def test_usage_prose_restored_when_flag_true(self) -> None:
+    def test_usage_prose_kept_when_disabled(self) -> None:
         captured = self._capture_middleware_kwargs(
-            _builtin_middleware_prompts=True,
+            trim_duplicate_tool_prompts=False,
             **self._create_kwargs(),
         )
 
@@ -751,21 +752,21 @@ class TestBuiltinMiddlewarePrompts:
             assert values, f"expected {name} to be built"
             assert all(v is _ABSENT for v in values), f"{name} should not receive system_prompt"
 
-    def test_skills_and_memory_never_suppressed(self) -> None:
+    def test_skills_and_memory_never_trimmed(self) -> None:
         """Regression guard for the skills/memory content channel.
 
         Their fragments carry the feature's only content, so they must emit even
-        on the lean default (kwarg omitted, never `None`).
+        on the trimmed default (kwarg omitted, never `None`), for either flag value.
         """
         for flag in (False, True):
             captured = self._capture_middleware_kwargs(
-                _builtin_middleware_prompts=flag,
+                trim_duplicate_tool_prompts=flag,
                 **self._create_kwargs(),
             )
             for name in ("SkillsMiddleware", "MemoryMiddleware"):
                 values = captured[name]
                 assert values, f"expected {name} to be built (flag={flag})"
-                assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be suppressed (flag={flag})"
+                assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed (flag={flag})"
 
 
 class TestToolExclusionMiddleware:

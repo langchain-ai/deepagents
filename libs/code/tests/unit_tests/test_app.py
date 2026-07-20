@@ -13420,6 +13420,52 @@ class TestInterruptApprovalPriority:
         assert app._quit_pending is False
 
 
+class TestApprovalPositionBindings:
+    """Tests for app-level approval fallback shortcuts."""
+
+    @pytest.mark.parametrize(
+        ("key", "action"),
+        [
+            ("1", "approval_position(0)"),
+            ("2", "approval_position(1)"),
+            ("3", "approval_position(2)"),
+        ],
+    )
+    def test_numeric_bindings_route_by_visible_position(
+        self, key: str, action: str
+    ) -> None:
+        """Each app fallback number maps to the matching display position."""
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == key
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == action
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_numeric_position_delegates_to_visible_option(self, position: int) -> None:
+        """Fallback number actions use the widget's visible option positions."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+
+        app.action_approval_position(position)
+
+        approval.action_select_position.assert_called_once_with(position)
+
+    def test_numeric_position_is_no_op_without_pending_approval(self) -> None:
+        """Fallback number actions do nothing outside an approval prompt."""
+        app = DeepAgentsApp()
+        assert app._pending_approval_widget is None
+
+        # Must not raise despite there being no widget to delegate to.
+        app.action_approval_position(1)
+
+        assert app._pending_approval_widget is None
+
+
 class TestIsUserTyping:
     """Unit tests for `_is_user_typing()` threshold logic."""
 
@@ -13579,6 +13625,45 @@ class TestRequestApprovalBranching:
         assert ApprovalMenu in mounted_types, (
             f"Expected ApprovalMenu to be mounted, got {mounted_types}"
         )
+
+    @pytest.mark.parametrize("eligible", [True, False])
+    async def test_menu_receives_auto_mode_eligibility(self, *, eligible: bool) -> None:
+        """The app forwards `_auto_mode_eligible` into the mounted ApprovalMenu.
+
+        Guards the load-bearing seam: if this kwarg were dropped or hardcoded,
+        the Auto option would (dis)appear regardless of session eligibility, and
+        the widget-level tests — which pass the flag themselves — would not catch
+        it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+        app._auto_mode_eligible = eligible
+
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, _widget: object
+        ) -> None:
+            return None
+
+        app._mount_before_queued = fake_mount_before_queued  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.query_one = MagicMock(return_value=MagicMock())  # ty: ignore
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/e.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(asyncio, "get_running_loop") as mock_loop,
+            patch.object(app, "_reveal_pending_tool_calls"),
+        ):
+            mock_loop.return_value.create_future.return_value = future
+            await app._request_approval(action_requests, None)
+
+        # For a non-fallback request `_show_auto_option` equals the eligibility
+        # flag, so this asserts the value actually crossed the app→widget seam.
+        assert app._pending_approval_widget is not None
+        assert app._pending_approval_widget._show_auto_option is eligible
 
 
 class TestDeferredShowApproval:

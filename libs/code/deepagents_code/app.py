@@ -2447,10 +2447,10 @@ class DeepAgentsApp(App):
         Binding("j", "approval_down", "Down", show=False),
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
-        Binding("1", "approval_yes", "Yes", show=False),
-        Binding("2", "approval_auto", "Auto", show=False),
+        Binding("1", "approval_position(0)", "Select first", show=False),
+        Binding("2", "approval_position(1)", "Select second", show=False),
+        Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
@@ -7073,7 +7073,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
+        menu = ApprovalMenu(
+            action_requests,
+            assistant_id,
+            id=unique_id,
+            auto_mode_eligible=self._auto_mode_eligible,
+        )
         menu.set_future(result_future)
 
         self._pending_approval_widget = menu
@@ -15934,17 +15939,26 @@ class DeepAgentsApp(App):
         return focused.id == "chat-input" or focused in self._chat_input.walk_children()
 
     def action_approval_yes(self) -> None:
-        """Handle yes/1 in approval menu."""
+        """Handle the semantic approve key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
+    def action_approval_position(self, position: int) -> None:
+        """Select an approval option by its visible position.
+
+        Args:
+            position: Zero-based position of the displayed option.
+        """
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_position(position)
+
     def action_approval_auto(self) -> None:
-        """Handle auto/2 in approval menu."""
+        """Handle the semantic Auto key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
 
     def action_approval_no(self) -> None:
-        """Handle no/3 in approval menu."""
+        """Handle the semantic reject key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 

@@ -1967,7 +1967,7 @@ def test_strategy_ledger_bounds_latest_correlated_results() -> None:
             raise AssertionError(msg)
 
     messages: list[AnyMessage] = []
-    for index in range(13):
+    for index in range(21):
         tool_call_id = f"structured_action_{index}"
         command: object = (
             _UnexpectedSerialization() if index == 0 else f"command-{index}-" + "a" * 4_000
@@ -2015,7 +2015,7 @@ def test_strategy_ledger_bounds_latest_correlated_results() -> None:
     ledger = langgraph_agent._strategy_ledger(messages)
     ledger_payload = json.dumps(ledger)
 
-    assert [entry["name"] for entry in ledger] == [f"execute-{index}" for index in range(1, 13)]
+    assert [entry["name"] for entry in ledger] == [f"execute-{index}" for index in range(1, 21)]
     assert all("MISMATCHED_TOOL_OUTPUT" not in entry["result"] for entry in ledger)
     assert "unprefixed" not in ledger_payload
     assert "UNPREFIXED_COMMAND" not in ledger_payload

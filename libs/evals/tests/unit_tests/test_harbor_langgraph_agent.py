@@ -225,8 +225,65 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
-    assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    # The bare path must not inject a harness system prompt; the overlaid
+    # branch's own BASE_AGENT_PROMPT is the variable this benchmark tests.
+    assert "system_prompt" not in captured_create[0]
+
+
+def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
+    import asyncio
+
+    captured_create: list[dict[str, object]] = []
+
+    class FakeMCPClient:
+        def __init__(self, connections: object) -> None:
+            self._connections = connections
+
+        async def get_tools(self) -> list[str]:
+            return ["start_conversation", "send_message_to_user", "end_conversation"]
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        return "chat-model"
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        captured_create.append(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "MultiServerMCPClient", FakeMCPClient)
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
+
+    result = asyncio.run(
+        langgraph_agent.make_tau3_graph(
+            {
+                "configurable": {
+                    "model": "test-provider:test-model",
+                    "mcp_servers": [
+                        {
+                            "name": "tau3-runtime",
+                            "transport": "streamable-http",
+                            "url": "http://tau3-runtime:8000/mcp",
+                            "command": None,
+                            "args": [],
+                        }
+                    ],
+                }
+            }
+        )
+    )
+
+    assert result == "graph"
+    assert captured_create
+    assert captured_create[0]["model"] == "chat-model"
+    # The tau3 conversation protocol comes from the MCP tools' descriptions, not a
+    # harness system prompt; the overlaid branch's BASE_AGENT_PROMPT is the only
+    # injected system-prompt content, parallel to the bare path.
+    assert "system_prompt" not in captured_create[0]
+    assert captured_create[0]["tools"] == [
+        "start_conversation",
+        "send_message_to_user",
+        "end_conversation",
+    ]
 
 
 def test_mcp_connections_maps_streamable_http_server() -> None:

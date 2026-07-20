@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("deepagents_code.hooks")
 
 HOOK_TOOL_OUTPUT_LIMIT = 2000
 """Max characters of `tool_output` included in `tool.result` hook payloads.

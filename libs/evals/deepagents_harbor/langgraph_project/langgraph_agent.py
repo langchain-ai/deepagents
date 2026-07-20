@@ -1058,6 +1058,26 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return None, None
         return self._planning_result_parts(result)
 
+    async def _ainvoke_planning(
+        self, request: ModelRequest[None], *, feedback: str | None = None
+    ) -> tuple[_PlanningTurn | None, UsageMetadata | None]:
+        try:
+            result: object = await request.model.with_structured_output(
+                _PlanningTurn, include_raw=True
+            ).ainvoke(
+                self._planning_messages(request, feedback=feedback),
+                config={
+                    "metadata": {
+                        "lc_source": (
+                            "strategy-planning-revision" if feedback else "strategy-planning"
+                        )
+                    }
+                },
+            )
+        except Exception:  # noqa: BLE001  # the gate fails open through structured execution
+            return None, None
+        return self._planning_result_parts(result)
+
     @staticmethod
     def _evaluation_result_parts(result: object) -> _EvaluationCallResult:
         if not isinstance(result, dict):
@@ -1080,6 +1100,24 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             result: object = request.model.with_structured_output(
                 _PlanVerdict, include_raw=True
             ).invoke(
+                _strategy_evaluator_messages(task, list(request.messages), proposal),
+                config={"metadata": {"lc_source": "strategy-evaluator"}},
+                max_tokens=_MAX_STRATEGY_EVALUATOR_OUTPUT_TOKENS,
+            )
+        except Exception:  # noqa: BLE001  # failures are explicitly classified for fail-open policy
+            return _EvaluationCallResult(verdict=None, usage=None, error="invocation_failure")
+        return self._evaluation_result_parts(result)
+
+    async def _ainvoke_evaluator(
+        self,
+        request: ModelRequest[None],
+        task: str,
+        proposal: _StrategyPlan,
+    ) -> _EvaluationCallResult:
+        try:
+            result: object = await request.model.with_structured_output(
+                _PlanVerdict, include_raw=True
+            ).ainvoke(
                 _strategy_evaluator_messages(task, list(request.messages), proposal),
                 config={"metadata": {"lc_source": "strategy-evaluator"}},
                 max_tokens=_MAX_STRATEGY_EVALUATOR_OUTPUT_TOKENS,
@@ -1503,6 +1541,42 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return response
         return self._add_fallback_metadata(handler(request), usage, "empty_turn_repair")
 
+    async def _run_structured_async(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[object]]],
+        accumulated_usage: UsageMetadata | None = None,
+    ) -> ModelResponse[object]:
+        """Run the existing asynchronous structured turn and bounded repair path."""
+        turn, turn_usage = await self._ainvoke_structured(request)
+        usage = add_usage(accumulated_usage, turn_usage)
+        if not isinstance(turn, _Turn):
+            return self._add_fallback_metadata(
+                await handler(request), usage, "parse_or_invocation_failure"
+            )
+        evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
+        response = self._to_response(
+            turn, usage_metadata=usage, evidence_tool_call_id=evidence_tool_call_id
+        )
+        if response is not None:
+            return response
+
+        repair_turn, repair_usage = await self._ainvoke_structured(request, repair=True)
+        usage = add_usage(usage, repair_usage)
+        if not isinstance(repair_turn, _Turn):
+            return self._add_fallback_metadata(
+                await handler(request), usage, "empty_turn_repair_failure"
+            )
+        response = self._to_response(
+            repair_turn,
+            usage_metadata=usage,
+            repair=True,
+            evidence_tool_call_id=evidence_tool_call_id,
+        )
+        if response is not None:
+            return response
+        return self._add_fallback_metadata(await handler(request), usage, "empty_turn_repair")
+
     def wrap_model_call(
         self,
         request: ModelRequest[None],
@@ -1833,36 +1907,331 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         request: ModelRequest[None],
         handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[object]]],
     ) -> ModelCallResult[object]:
-        turn, usage_metadata = await self._ainvoke_structured(request)
-        if not isinstance(turn, _Turn):
-            response = await handler(request)
-            return self._add_fallback_metadata(
-                response, usage_metadata, "parse_or_invocation_failure"
+        saved_record = request.state.get("_strategy_gate")
+        if isinstance(saved_record, dict) and saved_record.get("phase") in {
+            "approved",
+            "bypassed",
+        }:
+            record = cast("_StrategyGateRecord", saved_record)
+            execution_request = self._execution_request(request, record.get("selected_plan"))
+            return self._with_strategy_state(
+                await self._run_structured_async(execution_request, handler), record
             )
-        evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
-        response = self._to_response(
-            turn, usage_metadata=usage_metadata, evidence_tool_call_id=evidence_tool_call_id
-        )
-        if response is not None:
-            return response
+        if not isinstance(saved_record, dict) or saved_record.get("phase") == "planning":
+            evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
+            task = (
+                saved_record.get("task", "")
+                if isinstance(saved_record, dict)
+                else _strategy_task(list(request.messages))
+            )
+            pending_revision = (
+                isinstance(saved_record, dict)
+                and saved_record.get("revision_count") == 1
+                and saved_record.get("evaluator_decision") == "revise"
+                and isinstance(saved_record.get("recommended_plan"), dict)
+            )
+            continuing_revision = (
+                pending_revision
+                and saved_record.get("evidence_tool_call_id") == evidence_tool_call_id
+            )
+            planning_feedback = (
+                self._saved_revision_feedback(cast("_StrategyGateRecord", saved_record))
+                if continuing_revision
+                else None
+            )
+            planning, planning_usage = await self._ainvoke_planning(
+                request, feedback=planning_feedback
+            )
+            if isinstance(planning, _PlanningTurn) and isinstance(planning.control, _ReconControl):
+                if continuing_revision:
+                    previous = cast("_StrategyGateRecord", saved_record)
+                    record = self._strategy_record(
+                        task,
+                        phase="planning",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                        proposal_id=previous["proposal_id"],
+                        current_proposal=previous["current_proposal"],
+                        recommended_plan=previous["recommended_plan"],
+                        evaluator_decision="revise",
+                        critique=previous["critique"],
+                        missing_evidence=previous["missing_evidence"],
+                        cheaper_alternative=previous["cheaper_alternative"],
+                        revision_count=1,
+                        evaluator_usage=previous["evaluator_usage"],
+                    )
+                    feedback = self._saved_revision_feedback(record)
+                else:
+                    record = self._strategy_record(
+                        task,
+                        phase="planning",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                    )
+                    feedback = None
+                return self._with_strategy_state(
+                    self._reconnaissance_response(planning, planning_usage, feedback=feedback),
+                    record,
+                )
+            if isinstance(planning, _PlanningTurn) and isinstance(
+                planning.control, _SubmitPlanControl
+            ):
+                proposal = planning.control.proposal
+                proposal_json = proposal.model_dump(mode="json")
+                proposal_id = f"strategy_proposal_{uuid.uuid4().hex}"
+                evaluation = await self._ainvoke_evaluator(request, task, proposal)
+                usage = add_usage(planning_usage, evaluation.usage)
+                if continuing_revision:
+                    previous = cast("_StrategyGateRecord", saved_record)
+                    evaluator_usage = add_usage(previous["evaluator_usage"], evaluation.usage)
+                    if evaluation.error is not None:
+                        selected_plan = cast("dict[str, Any]", previous["recommended_plan"])
+                        selected_source: Literal["actor", "evaluator"] = "evaluator"
+                        revision_count = 1
+                        decision: Literal["approve", "revise"] = "revise"
+                        critique = previous["critique"]
+                        missing_evidence = previous["missing_evidence"]
+                        cheaper_alternative = previous["cheaper_alternative"]
+                        bypass_reason = f"second_evaluator_{evaluation.error}"
+                    else:
+                        second_review = cast("_PlanVerdict", evaluation.verdict).result
+                        critique = second_review.critique
+                        missing_evidence = list(second_review.missing_evidence)
+                        cheaper_alternative = second_review.cheaper_alternative
+                        bypass_reason = None
+                        if isinstance(second_review, _ApprovePlan):
+                            selected_plan = proposal_json
+                            selected_source = "actor"
+                            revision_count = 1
+                            decision = "approve"
+                        else:
+                            selected_plan = second_review.recommended_plan.model_dump(mode="json")
+                            selected_source = "evaluator"
+                            revision_count = 2
+                            decision = "revise"
+                    record = self._strategy_record(
+                        task,
+                        phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                        proposal_id=proposal_id,
+                        current_proposal=proposal_json,
+                        recommended_plan=previous["recommended_plan"],
+                        evaluator_decision=decision,
+                        selected_plan=selected_plan,
+                        selected_source=selected_source,
+                        critique=critique,
+                        missing_evidence=missing_evidence,
+                        cheaper_alternative=cheaper_alternative,
+                        revision_count=revision_count,
+                        bypass_reason=bypass_reason,
+                        evaluator_usage=evaluator_usage,
+                    )
+                    execution_request = self._execution_request(request, selected_plan)
+                    return self._with_strategy_state(
+                        await self._run_structured_async(execution_request, handler, usage),
+                        record,
+                    )
+                if evaluation.error is not None:
+                    record = self._strategy_record(
+                        task,
+                        phase="bypassed",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                        proposal_id=proposal_id,
+                        current_proposal=proposal_json,
+                        selected_plan=proposal_json,
+                        selected_source="actor",
+                        bypass_reason=f"evaluator_{evaluation.error}",
+                        evaluator_usage=evaluation.usage,
+                    )
+                    execution_request = self._execution_request(request, proposal_json)
+                    return self._with_strategy_state(
+                        await self._run_structured_async(execution_request, handler, usage), record
+                    )
+                if evaluation.verdict is not None and isinstance(
+                    evaluation.verdict.result, _ApprovePlan
+                ):
+                    review = evaluation.verdict.result
+                    record = self._strategy_record(
+                        task,
+                        phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                        proposal_id=proposal_id,
+                        current_proposal=proposal_json,
+                        evaluator_decision="approve",
+                        selected_plan=proposal_json,
+                        selected_source="actor",
+                        critique=review.critique,
+                        missing_evidence=list(review.missing_evidence),
+                        cheaper_alternative=review.cheaper_alternative,
+                        evaluator_usage=evaluation.usage,
+                    )
+                    execution_request = self._execution_request(request, proposal_json)
+                    return self._with_strategy_state(
+                        await self._run_structured_async(execution_request, handler, usage), record
+                    )
+                if evaluation.verdict is not None and isinstance(
+                    evaluation.verdict.result, _RevisePlan
+                ):
+                    review = evaluation.verdict.result
+                    feedback = self._revision_feedback(review)
+                    revision_planning, revision_usage = await self._ainvoke_planning(
+                        request, feedback=feedback
+                    )
+                    usage = add_usage(usage, revision_usage)
+                    if isinstance(revision_planning, _PlanningTurn) and isinstance(
+                        revision_planning.control, _ReconControl
+                    ):
+                        record = self._strategy_record(
+                            task,
+                            phase="planning",
+                            evidence_tool_call_id=evidence_tool_call_id,
+                            proposal_id=proposal_id,
+                            current_proposal=proposal_json,
+                            recommended_plan=review.recommended_plan.model_dump(mode="json"),
+                            evaluator_decision="revise",
+                            critique=review.critique,
+                            missing_evidence=list(review.missing_evidence),
+                            cheaper_alternative=review.cheaper_alternative,
+                            revision_count=1,
+                            evaluator_usage=evaluation.usage,
+                        )
+                        response = self._reconnaissance_response(
+                            revision_planning, usage, feedback=feedback
+                        )
+                        return self._with_strategy_state(response, record)
+                    if isinstance(revision_planning, _PlanningTurn) and isinstance(
+                        revision_planning.control, _SubmitPlanControl
+                    ):
+                        revised_proposal = revision_planning.control.proposal
+                        revised_json = revised_proposal.model_dump(mode="json")
+                        revised_id = f"strategy_proposal_{uuid.uuid4().hex}"
+                        second_evaluation = await self._ainvoke_evaluator(
+                            request, task, revised_proposal
+                        )
+                        usage = add_usage(usage, second_evaluation.usage)
+                        evaluator_usage = add_usage(evaluation.usage, second_evaluation.usage)
+                        if second_evaluation.error is not None:
+                            selected_plan = review.recommended_plan.model_dump(mode="json")
+                            record = self._strategy_record(
+                                task,
+                                phase="approved",
+                                evidence_tool_call_id=evidence_tool_call_id,
+                                proposal_id=revised_id,
+                                current_proposal=revised_json,
+                                evaluator_decision="revise",
+                                selected_plan=selected_plan,
+                                selected_source="evaluator",
+                                critique=review.critique,
+                                missing_evidence=list(review.missing_evidence),
+                                cheaper_alternative=review.cheaper_alternative,
+                                revision_count=1,
+                                bypass_reason=f"second_evaluator_{second_evaluation.error}",
+                                evaluator_usage=evaluator_usage,
+                            )
+                            execution_request = self._execution_request(request, selected_plan)
+                            return self._with_strategy_state(
+                                await self._run_structured_async(execution_request, handler, usage),
+                                record,
+                            )
+                        if second_evaluation.verdict is not None:
+                            second_review = second_evaluation.verdict.result
+                            if isinstance(second_review, _ApprovePlan):
+                                selected_plan = revised_json
+                                selected_source: Literal["actor", "evaluator"] = "actor"
+                                revision_count = 1
+                                decision: Literal["approve", "revise"] = "approve"
+                            else:
+                                selected_plan = second_review.recommended_plan.model_dump(
+                                    mode="json"
+                                )
+                                selected_source = "evaluator"
+                                revision_count = 2
+                                decision = "revise"
+                            record = self._strategy_record(
+                                task,
+                                phase="approved",
+                                evidence_tool_call_id=evidence_tool_call_id,
+                                proposal_id=revised_id,
+                                current_proposal=revised_json,
+                                evaluator_decision=decision,
+                                selected_plan=selected_plan,
+                                selected_source=selected_source,
+                                critique=second_review.critique,
+                                missing_evidence=list(second_review.missing_evidence),
+                                cheaper_alternative=second_review.cheaper_alternative,
+                                revision_count=revision_count,
+                                evaluator_usage=evaluator_usage,
+                            )
+                            execution_request = self._execution_request(request, selected_plan)
+                            return self._with_strategy_state(
+                                await self._run_structured_async(execution_request, handler, usage),
+                                record,
+                            )
+                    if not isinstance(revision_planning, _PlanningTurn):
+                        selected_plan = review.recommended_plan.model_dump(mode="json")
+                        record = self._strategy_record(
+                            task,
+                            phase="approved",
+                            evidence_tool_call_id=evidence_tool_call_id,
+                            proposal_id=proposal_id,
+                            current_proposal=proposal_json,
+                            evaluator_decision="revise",
+                            selected_plan=selected_plan,
+                            selected_source="evaluator",
+                            critique=review.critique,
+                            missing_evidence=list(review.missing_evidence),
+                            cheaper_alternative=review.cheaper_alternative,
+                            revision_count=1,
+                            bypass_reason="revision_planning_failure",
+                            evaluator_usage=evaluation.usage,
+                        )
+                        execution_request = self._execution_request(request, selected_plan)
+                        return self._with_strategy_state(
+                            await self._run_structured_async(execution_request, handler, usage),
+                            record,
+                        )
+            if not isinstance(planning, _PlanningTurn):
+                if continuing_revision:
+                    previous = cast("_StrategyGateRecord", saved_record)
+                    selected_plan = cast("dict[str, Any]", previous["recommended_plan"])
+                    record = self._strategy_record(
+                        task,
+                        phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                        proposal_id=previous["proposal_id"],
+                        current_proposal=previous["current_proposal"],
+                        recommended_plan=selected_plan,
+                        evaluator_decision="revise",
+                        selected_plan=selected_plan,
+                        selected_source="evaluator",
+                        critique=previous["critique"],
+                        missing_evidence=previous["missing_evidence"],
+                        cheaper_alternative=previous["cheaper_alternative"],
+                        revision_count=1,
+                        bypass_reason="revision_planning_failure",
+                        evaluator_usage=previous["evaluator_usage"],
+                    )
+                    execution_request = self._execution_request(request, selected_plan)
+                    return self._with_strategy_state(
+                        await self._run_structured_async(
+                            execution_request,
+                            handler,
+                            accumulated_usage=planning_usage,
+                        ),
+                        record,
+                    )
+                record = self._strategy_record(
+                    task,
+                    phase="bypassed",
+                    evidence_tool_call_id=evidence_tool_call_id,
+                    bypass_reason="planning_failure",
+                )
+                return self._with_strategy_state(
+                    await self._run_structured_async(
+                        request, handler, accumulated_usage=planning_usage
+                    ),
+                    record,
+                )
 
-        repair_turn, repair_usage = await self._ainvoke_structured(request, repair=True)
-        usage_metadata = add_usage(usage_metadata, repair_usage)
-        if not isinstance(repair_turn, _Turn):
-            response = await handler(request)
-            return self._add_fallback_metadata(
-                response, usage_metadata, "empty_turn_repair_failure"
-            )
-        response = self._to_response(
-            repair_turn,
-            usage_metadata=usage_metadata,
-            repair=True,
-            evidence_tool_call_id=evidence_tool_call_id,
-        )
-        if response is not None:
-            return response
-        response = await handler(request)
-        return self._add_fallback_metadata(response, usage_metadata, "empty_turn_repair")
+        return await self._run_structured_async(request, handler)
 
 
 class _ProcessManager:

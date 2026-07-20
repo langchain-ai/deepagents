@@ -401,6 +401,28 @@ class _StructuredSequenceRunnable:
             raise result
         return result
 
+    async def ainvoke(
+        self,
+        messages: list[object],
+        *,
+        config: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> object:
+        expected_schema, result = self.model.results.pop(0)
+        assert self.schema is expected_schema
+        self.model.calls.append(
+            {
+                "schema": self.schema,
+                "messages": messages,
+                "config": config,
+                "kwargs": kwargs,
+                "method": "ainvoke",
+            }
+        )
+        if isinstance(result, Exception):
+            raise result
+        return result
+
 
 class _StructuredSequenceModel:
     def __init__(self, results: list[tuple[type[object], object]]) -> None:
@@ -627,6 +649,93 @@ def test_strategy_approval_runs_selected_actor_plan_with_summed_usage() -> None:
     assert isinstance(record["proposal_id"], str)
 
 
+async def test_strategy_async_approval_runs_selected_actor_plan() -> None:
+    proposal = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
+    planning = langgraph_agent._PlanningTurn.model_validate(
+        {"control": {"kind": "propose_plan", "proposal": proposal.model_dump()}}
+    )
+    verdict = langgraph_agent._PlanVerdict.model_validate(
+        {"result": {"decision": "approve", "critique": "Uses packaged dependencies."}}
+    )
+    turn = langgraph_agent._Turn.model_validate(
+        {
+            "control": {
+                "kind": "continue",
+                "actions": [{"action": "execute", "command": "./configure -use-external-menhir"}],
+            }
+        }
+    )
+    model = _StructuredSequenceModel(
+        [
+            (
+                langgraph_agent._PlanningTurn,
+                _raw_result(
+                    planning,
+                    {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                ),
+            ),
+            (
+                langgraph_agent._PlanVerdict,
+                _raw_result(
+                    verdict,
+                    {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+                ),
+            ),
+            (
+                langgraph_agent._Turn,
+                _raw_result(
+                    turn,
+                    {"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+                ),
+            ),
+        ]
+    )
+    request = ModelRequest(
+        model=cast("Any", model),
+        messages=[HumanMessage(content="Build CompCert economically.")],
+        system_message=SystemMessage(content="Actor system prompt."),
+        state={"messages": []},
+    )
+    fallback_calls = 0
+
+    async def fallback(_request: object) -> ModelResponse[object]:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return ModelResponse(result=[AIMessage(content="fallback")])
+
+    response = await langgraph_agent._StructuredTurnMiddleware().awrap_model_call(request, fallback)
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert fallback_calls == 0
+    assert [call["schema"] for call in model.calls] == [
+        langgraph_agent._PlanningTurn,
+        langgraph_agent._PlanVerdict,
+        langgraph_agent._Turn,
+    ]
+    assert [call["method"] for call in model.calls] == ["ainvoke"] * 3
+    execution_messages = cast("list[AnyMessage]", model.calls[2]["messages"])
+    strategy_message = execution_messages[-2]
+    assert isinstance(strategy_message, HumanMessage)
+    assert "Required execution strategy" in strategy_message.text
+    assert proposal.objective in strategy_message.text
+
+    message = response.model_response.result[0]
+    assert isinstance(message, AIMessage)
+    assert [call["name"] for call in message.tool_calls] == ["execute"]
+    assert message.usage_metadata == {
+        "input_tokens": 30,
+        "output_tokens": 9,
+        "total_tokens": 39,
+    }
+    gate_metadata = message.response_metadata["strategy_gate"]
+    assert "task" not in gate_metadata
+    assert "evidence_tool_call_id" not in gate_metadata
+    record = _response_strategy_record(response)
+    assert record["phase"] == "approved"
+    assert record["selected_plan"] == proposal.model_dump(mode="json")
+    assert record["selected_source"] == "actor"
+
+
 def test_strategy_first_revision_can_return_to_reconnaissance() -> None:
     rejected_plan = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
     recommended_plan = langgraph_agent._StrategyPlan.model_validate(
@@ -726,6 +835,93 @@ def test_strategy_first_revision_can_return_to_reconnaissance() -> None:
     assert record["evaluator_decision"] == "revise"
     assert record["critique"] == "The build commitment is unsupported."
     assert record["revision_count"] == 1
+    assert record["selected_plan"] is None
+    assert record["selected_source"] is None
+
+
+async def test_strategy_async_revision_can_return_to_reconnaissance() -> None:
+    rejected_plan = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
+    recommended_plan = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Confirm packaged dependencies before building CompCert.")
+    )
+    planning = langgraph_agent._PlanningTurn.model_validate(
+        {"control": {"kind": "propose_plan", "proposal": rejected_plan.model_dump()}}
+    )
+    verdict = langgraph_agent._PlanVerdict.model_validate(
+        {
+            "result": {
+                "decision": "revise",
+                "critique": "The build commitment is unsupported.",
+                "missing_evidence": ["Installed Coq and Menhir versions."],
+                "cheaper_alternative": "Inspect package metadata first.",
+                "recommended_plan": recommended_plan.model_dump(),
+            }
+        }
+    )
+    reconnaissance = langgraph_agent._PlanningTurn.model_validate(
+        {
+            "control": {
+                "kind": "reconnaissance",
+                "actions": [{"action": "execute", "command": "apt-cache policy coq menhir"}],
+            }
+        }
+    )
+    model = _StructuredSequenceModel(
+        [
+            (
+                langgraph_agent._PlanningTurn,
+                _raw_result(
+                    planning,
+                    {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+                ),
+            ),
+            (
+                langgraph_agent._PlanVerdict,
+                _raw_result(
+                    verdict,
+                    {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17},
+                ),
+            ),
+            (
+                langgraph_agent._PlanningTurn,
+                _raw_result(
+                    reconnaissance,
+                    {"input_tokens": 15, "output_tokens": 2, "total_tokens": 17},
+                ),
+            ),
+        ]
+    )
+    request = ModelRequest(
+        model=cast("Any", model),
+        messages=[HumanMessage(content="Build CompCert.")],
+        state={"messages": []},
+    )
+
+    async def fallback(_request: object) -> ModelResponse[object]:
+        return ModelResponse(result=[AIMessage(content="UNEXPECTED_FALLBACK")])
+
+    response = await langgraph_agent._StructuredTurnMiddleware().awrap_model_call(request, fallback)
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert [call["schema"] for call in model.calls] == [
+        langgraph_agent._PlanningTurn,
+        langgraph_agent._PlanVerdict,
+        langgraph_agent._PlanningTurn,
+    ]
+    assert [call["method"] for call in model.calls] == ["ainvoke"] * 3
+    assert langgraph_agent._Turn not in [call["schema"] for call in model.calls]
+    message = response.model_response.result[0]
+    assert isinstance(message, AIMessage)
+    assert [call["name"] for call in message.tool_calls] == ["execute"]
+    assert message.usage_metadata == {
+        "input_tokens": 37,
+        "output_tokens": 10,
+        "total_tokens": 47,
+    }
+    record = _response_strategy_record(response)
+    assert record["phase"] == "planning"
+    assert record["revision_count"] == 1
+    assert record["current_proposal"] == rejected_plan.model_dump(mode="json")
     assert record["selected_plan"] is None
     assert record["selected_source"] is None
 

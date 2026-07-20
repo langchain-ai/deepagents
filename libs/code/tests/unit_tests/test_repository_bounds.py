@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +20,9 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_RESULT_LIMIT,
     RepositoryBounds,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _backend(*, size: int = 10) -> MagicMock:
@@ -82,6 +86,10 @@ class TestClampArgs:
     def test_search_path_defaults_to_root(self) -> None:
         bounds = RepositoryBounds(_backend(), root="/workspace")
         assert bounds.clamp_args("glob", {"pattern": "**/*.py"})["path"] == "/workspace"
+        assert (
+            bounds.clamp_args("grep", {"pattern": "x", "path": None})["path"]
+            == "/workspace"
+        )
 
     def test_grep_max_count_is_clamped(self) -> None:
         bounds = RepositoryBounds(_backend(), root="/")
@@ -115,6 +123,67 @@ class TestPreflight:
             bounds.preflight("read_file", {"file_path": "/etc/passwd"})
             == REPOSITORY_PATH_ERROR
         )
+
+    def test_rejects_local_symlink_outside_root(self, tmp_path: Path) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        link = repository / "proof.txt"
+        link.symlink_to(secret)
+        backend = FilesystemBackend(root_dir=repository, virtual_mode=False)
+        bounds = RepositoryBounds(backend, root=str(repository))
+
+        assert (
+            bounds.preflight("read_file", {"file_path": str(link)})
+            == REPOSITORY_PATH_ERROR
+        )
+
+    async def test_async_rejects_local_symlink_outside_root(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        link = repository / "proof.txt"
+        link.symlink_to(secret)
+        backend = FilesystemBackend(root_dir=repository, virtual_mode=False)
+        bounds = RepositoryBounds(backend, root=str(repository))
+
+        assert (
+            await bounds.apreflight("read_file", {"file_path": str(link)})
+            == REPOSITORY_PATH_ERROR
+        )
+
+    def test_allows_local_symlink_within_root(self, tmp_path: Path) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        target = repository / "target.txt"
+        target.write_text("safe")
+        link = repository / "proof.txt"
+        link.symlink_to(target)
+        backend = FilesystemBackend(root_dir=repository, virtual_mode=False)
+        bounds = RepositoryBounds(backend, root=str(repository))
+
+        assert bounds.preflight("read_file", {"file_path": str(link)}) is None
+
+    def test_allows_virtual_filesystem_path_within_root(self, tmp_path: Path) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        (repository / "proof.txt").write_text("safe")
+        backend = FilesystemBackend(root_dir=repository, virtual_mode=True)
+        bounds = RepositoryBounds(backend)
+
+        assert bounds.preflight("read_file", {"file_path": "/proof.txt"}) is None
 
     def test_rejects_large_file(self) -> None:
         bounds = RepositoryBounds(

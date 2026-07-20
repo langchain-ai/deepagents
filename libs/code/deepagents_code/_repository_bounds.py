@@ -3,8 +3,9 @@
 Both the goal-criteria agent's `_RepositoryToolBudgetMiddleware` and the rubric
 grader's read-only tools let an LLM sub-agent inspect working-directory files.
 They must apply identical guarantees: reads stay confined to the repository
-root, symlink escapes are rejected in a sandbox, and every result is size
-bounded so a single tool call cannot blow the sub-agent's context budget.
+root, symlink escapes are rejected in sandboxes and local filesystems, and every
+result is size bounded so a single tool call cannot blow the sub-agent's context
+budget.
 
 `RepositoryBounds` centralizes that logic so the middleware and the grader tool
 wrappers share one implementation. It is intentionally framework-agnostic: it
@@ -16,12 +17,14 @@ per-run call budget to the caller.
 from __future__ import annotations
 
 import ast
+import asyncio
 import base64
 import json
 import logging
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import SandboxBackendProtocol
 
 if TYPE_CHECKING:
@@ -77,6 +80,21 @@ class RepositoryBounds:
         self._backend = backend
         self._root = str(path)
         self._sandbox = backend if isinstance(backend, SandboxBackendProtocol) else None
+        self._filesystem = (
+            backend
+            if self._sandbox is None and isinstance(backend, FilesystemBackend)
+            else None
+        )
+        self._filesystem_root: Path | None = None
+        if self._filesystem is not None:
+            try:
+                self._filesystem_root = self._resolve_filesystem_path(self._root)
+            except _BACKEND_ERRORS:
+                logger.warning(
+                    "Could not resolve the local repository root; local repository "
+                    "paths will be unavailable",
+                    exc_info=True,
+                )
 
     @property
     def root(self) -> str:
@@ -100,6 +118,42 @@ class RepositoryBounds:
         path = PurePosixPath(pattern.replace("\\", "/"))
         return ".." not in path.parts and "~" not in pattern
 
+    def _resolve_filesystem_path(self, raw_path: str) -> Path:
+        """Resolve a backend path to its canonical local filesystem target.
+
+        Returns:
+            The canonical host path used by the local filesystem backend.
+
+        Raises:
+            RuntimeError: If called for a backend without local filesystem access.
+        """
+        if self._filesystem is None:
+            msg = "Local filesystem backend is unavailable."
+            raise RuntimeError(msg)
+        if self._filesystem.virtual_mode:
+            return (self._filesystem.cwd / raw_path.lstrip("/")).resolve(strict=False)
+        return Path(raw_path).resolve(strict=False)
+
+    def _filesystem_contains(self, raw_path: str) -> bool:
+        """Return whether a local path canonically resolves below the root."""
+        if self._filesystem is None:
+            return True
+        if self._filesystem_root is None:
+            return False
+        try:
+            resolved = self._resolve_filesystem_path(raw_path)
+        except _BACKEND_ERRORS:
+            logger.warning(
+                "Local repository containment check failed; treating the path as "
+                "unavailable",
+                exc_info=True,
+            )
+            return False
+        return (
+            resolved == self._filesystem_root
+            or self._filesystem_root in resolved.parents
+        )
+
     def _containment_command(self, raw_path: str) -> str:
         """Build a sandbox command that checks the canonical repository boundary.
 
@@ -116,9 +170,9 @@ class RepositoryBounds:
         )
 
     def sandbox_contains(self, raw_path: str) -> bool:
-        """Return whether the sandbox resolves a path below the repository root."""
+        """Return whether the backend resolves a path below the repository root."""
         if self._sandbox is None:
-            return True
+            return self._filesystem_contains(raw_path)
         try:
             result = self._sandbox.execute(self._containment_command(raw_path))
         except _BACKEND_ERRORS:
@@ -133,13 +187,15 @@ class RepositoryBounds:
         )
 
     async def asandbox_contains(self, raw_path: str) -> bool:
-        """Asynchronously check canonical sandbox repository containment.
+        """Asynchronously check canonical backend repository containment.
 
         Returns:
-            `True` when the sandbox resolves the path below the repository root.
+            `True` when the backend resolves the path below the repository root.
         """
         if self._sandbox is None:
-            return True
+            if self._filesystem is None:
+                return True
+            return await asyncio.to_thread(self._filesystem_contains, raw_path)
         try:
             result = await self._sandbox.aexecute(self._containment_command(raw_path))
         except _BACKEND_ERRORS:
@@ -209,8 +265,10 @@ class RepositoryBounds:
             error = self._validate_search_paths(name, args)
             if error is not None:
                 return error
-            raw_path = args.get("path", self._root)
-            if isinstance(raw_path, str) and not self.sandbox_contains(raw_path):
+            raw_path = args.get("path")
+            if raw_path is None:
+                raw_path = self._root
+            if not isinstance(raw_path, str) or not self.sandbox_contains(raw_path):
                 return REPOSITORY_PATH_ERROR
             return None
 
@@ -261,8 +319,12 @@ class RepositoryBounds:
             error = self._validate_search_paths(name, args)
             if error is not None:
                 return error
-            raw_path = args.get("path", self._root)
-            if isinstance(raw_path, str) and not await self.asandbox_contains(raw_path):
+            raw_path = args.get("path")
+            if raw_path is None:
+                raw_path = self._root
+            if not isinstance(raw_path, str) or not await self.asandbox_contains(
+                raw_path
+            ):
                 return REPOSITORY_PATH_ERROR
             return None
 
@@ -313,8 +375,8 @@ class RepositoryBounds:
             if not isinstance(limit, int) or isinstance(limit, bool):
                 limit = REPOSITORY_READ_LINE_LIMIT
             clamped["limit"] = max(1, min(limit, REPOSITORY_READ_LINE_LIMIT))
-        elif name in {"glob", "grep"}:
-            clamped.setdefault("path", self._root)
+        elif name in {"glob", "grep"} and clamped.get("path") is None:
+            clamped["path"] = self._root
         if name == "grep":
             count = clamped.get("max_count", REPOSITORY_GREP_MATCH_LIMIT)
             if not isinstance(count, int) or isinstance(count, bool) or count <= 0:

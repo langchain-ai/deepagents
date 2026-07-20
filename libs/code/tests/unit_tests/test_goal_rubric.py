@@ -419,7 +419,7 @@ class TestRepositoryToolBudgetMiddleware:
         call_id: str,
         name: str = "read_file",
         limit: object = 999,
-        path: str = "/src.py",
+        path: str | None = "/src.py",
         operation_id: str = "operation-1",
         max_count: object = 999,
         search_glob: object = None,
@@ -1367,6 +1367,40 @@ class TestRepositoryPathGuards:
         backend.ls.return_value = LsResult(entries=[])
         backend.als = AsyncMock(return_value=LsResult(entries=[]))
         return backend
+
+    @pytest.mark.parametrize("name", ["glob", "grep"])
+    def test_sync_replaces_none_search_path_with_root(self, name: str) -> None:
+        middleware = _RepositoryToolBudgetMiddleware(self._backend(), root="/workspace")
+        handler = MagicMock(
+            return_value=ToolMessage(content="ok", tool_call_id="search")
+        )
+
+        middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="search", name=name, path=None
+            ),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["path"] == "/workspace"
+
+    @pytest.mark.parametrize("name", ["glob", "grep"])
+    async def test_async_replaces_none_search_path_with_root(self, name: str) -> None:
+        middleware = _RepositoryToolBudgetMiddleware(self._backend(), root="/workspace")
+        handler = AsyncMock(
+            return_value=ToolMessage(content="ok", tool_call_id="search")
+        )
+
+        await middleware.awrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="search", name=name, path=None
+            ),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["path"] == "/workspace"
 
     @pytest.mark.parametrize("name", ["read_file", "ls", "glob", "grep"])
     @pytest.mark.parametrize(

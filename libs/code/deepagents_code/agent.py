@@ -326,7 +326,7 @@ def _create_rubric_grader_tools(
     escape the working directory or blow the grader's context budget.
 
     Args:
-        backend: The composite backend the agent uses.
+        backend: Composite backend used to read offloaded tool results.
         repository_backend: Working-directory backend for repository inspection,
             or `None` to expose only offloaded-result reads.
         repository_root: Absolute root that bounds repository reads.
@@ -337,25 +337,27 @@ def _create_rubric_grader_tools(
     from langchain_core.messages import ToolMessage as LCToolMessage
 
     read_file_prefix = _rubric_grader_read_file_prefix(backend)
-    filesystem = FilesystemMiddleware(
+    artifact_filesystem = FilesystemMiddleware(
         backend=backend,
-        tools=["ls", "read_file", "glob", "grep"],
-        grep_max_count=REPOSITORY_GREP_MATCH_LIMIT,
+        tools=["read_file"],
         tool_token_limit_before_evict=None,
     )
-    fs_tools = {candidate.name: candidate for candidate in filesystem.tools}
+    artifact_tools = {
+        candidate.name: candidate for candidate in artifact_filesystem.tools
+    }
 
-    def _fs_func(name: str) -> Callable[..., Any]:
-        candidate = cast("StructuredTool | None", fs_tools.get(name))
+    def _fs_func(tools_by_name: dict[str, BaseTool], name: str) -> Callable[..., Any]:
+        candidate = cast("StructuredTool | None", tools_by_name.get(name))
         if candidate is None or candidate.func is None:
             msg = f"SDK {name} tool is unavailable."
             raise RuntimeError(msg)
         return candidate.func
 
-    fs_read_file = cast("StructuredTool", fs_tools["read_file"])
-    fs_read_file_func = _fs_func("read_file")
+    artifact_read_file = cast("StructuredTool", artifact_tools["read_file"])
+    artifact_read_file_func = _fs_func(artifact_tools, "read_file")
 
     bounds: RepositoryBounds | None = None
+    repository_tools: dict[str, BaseTool] = {}
     if repository_backend is not None and repository_root is not None:
         try:
             bounds = RepositoryBounds(repository_backend, root=repository_root)
@@ -365,6 +367,19 @@ def _create_rubric_grader_tools(
                 "working-directory inspection",
                 repository_root,
             )
+        if bounds is not None:
+            repository_filesystem = FilesystemMiddleware(
+                backend=repository_backend,
+                tools=["ls", "read_file", "glob", "grep"],
+                grep_max_count=REPOSITORY_GREP_MATCH_LIMIT,
+                tool_token_limit_before_evict=None,
+            )
+            repository_tools = {
+                candidate.name: candidate for candidate in repository_filesystem.tools
+            }
+    repository_read_file_func = (
+        _fs_func(repository_tools, "read_file") if bounds is not None else None
+    )
 
     def _bound(active: RepositoryBounds, name: str, result: object) -> object:
         if isinstance(result, LCToolMessage):
@@ -377,7 +392,7 @@ def _create_rubric_grader_tools(
             return active.bound_text(name, result)
         return _RUBRIC_GRADER_NON_TEXT_MESSAGE
 
-    @tool(description=fs_read_file.description)
+    @tool(description=artifact_read_file.description)
     def read_file(
         file_path: str,
         runtime: ToolRuntime[None, Any],
@@ -394,7 +409,7 @@ def _create_rubric_grader_tools(
         if normalized.startswith(read_file_prefix):
             if error := _validate_rubric_grader_read_path(file_path, read_file_prefix):
                 return error
-            return fs_read_file_func(
+            return artifact_read_file_func(
                 file_path=file_path,
                 runtime=runtime,
                 offset=offset,
@@ -411,7 +426,7 @@ def _create_rubric_grader_tools(
         return _bound(
             bounds,
             "read_file",
-            fs_read_file_func(
+            active_read_file_func(
                 file_path=file_path,
                 runtime=runtime,
                 offset=offset,
@@ -420,16 +435,17 @@ def _create_rubric_grader_tools(
         )
 
     grader_tools: list[BaseTool] = [read_file]
-    if bounds is None:
+    if bounds is None or repository_read_file_func is None:
         return grader_tools
 
     active_bounds = bounds
-    fs_ls = cast("StructuredTool", fs_tools["ls"])
-    fs_ls_func = _fs_func("ls")
-    fs_glob = cast("StructuredTool", fs_tools["glob"])
-    fs_glob_func = _fs_func("glob")
-    fs_grep = cast("StructuredTool", fs_tools["grep"])
-    fs_grep_func = _fs_func("grep")
+    active_read_file_func = repository_read_file_func
+    fs_ls = cast("StructuredTool", repository_tools["ls"])
+    fs_ls_func = _fs_func(repository_tools, "ls")
+    fs_glob = cast("StructuredTool", repository_tools["glob"])
+    fs_glob_func = _fs_func(repository_tools, "glob")
+    fs_grep = cast("StructuredTool", repository_tools["grep"])
+    fs_grep_func = _fs_func(repository_tools, "grep")
 
     @tool(description=fs_ls.description)
     def ls(path: str, runtime: ToolRuntime[None, Any]) -> object:
@@ -2548,15 +2564,23 @@ def create_cli_agent(
 
     # Give the rubric grader read-only inspection of the working directory so it
     # can verify criteria against the actual files rather than the transcript,
-    # which is truncated for extremely long efforts. The root mirrors the
-    # goal-criteria agent's wiring: the sandbox working dir in sandbox mode, or
-    # the real working directory in local mode.
-    if sandbox is not None:
-        grader_repository_root = (
-            get_default_working_dir(sandbox_type) if sandbox_type is not None else "/"
+    # which is truncated for extremely long efforts. Local grading gets a
+    # dedicated virtual backend rooted at the working directory so files found by
+    # `glob` and `grep` receive the backend's canonical containment checks too.
+    # Without a recognized sandbox type there is no trusted working-directory
+    # root, so repository inspection stays disabled rather than exposing `/`.
+    if sandbox is not None and sandbox_type is not None:
+        grader_repository_backend: BackendProtocol | None = backend
+        grader_repository_root = get_default_working_dir(sandbox_type)
+    elif sandbox is None:
+        grader_repository_backend = FilesystemBackend(
+            root_dir=root_dir,
+            virtual_mode=True,
         )
+        grader_repository_root = "/"
     else:
-        grader_repository_root = str(root_dir)
+        grader_repository_backend = None
+        grader_repository_root = None
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.
@@ -2574,7 +2598,7 @@ def create_cli_agent(
             ),
             "tools": _create_rubric_grader_tools(
                 composite_backend,
-                repository_backend=backend,
+                repository_backend=grader_repository_backend,
                 repository_root=grader_repository_root,
             ),
         }

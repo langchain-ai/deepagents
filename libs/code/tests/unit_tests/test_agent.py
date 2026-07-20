@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -4265,6 +4266,113 @@ class TestCreateCliAgentInterpreterWiring:
             "grep",
         ]
 
+    def test_untyped_sandbox_omits_rubric_repository_tools(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        # A real backend lets the grader tools initialize without contacting a
+        # remote sandbox; this test only varies the missing `sandbox_type`.
+        sandbox = cast(
+            "SandboxBackendProtocol",
+            FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        )
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                sandbox=sandbox,
+            )
+
+        rubrics = [
+            middleware
+            for middleware in mock_create.call_args.kwargs["middleware"]
+            if isinstance(middleware, RubricMiddleware)
+        ]
+        assert len(rubrics) == 1
+        assert "read-only `ls`, `read_file`, `glob`, and `grep`" not in (
+            rubrics[0]._system_prompt
+        )
+        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_local_rubric_grep_skips_outside_symlink_target(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        secret = tmp_path / "secret.txt"
+        marker = "outside-secret-marker"
+        secret.write_text(marker)
+        (repository / "proof.txt").symlink_to(secret)
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch(
+                "deepagents.backends.filesystem._resolve_ripgrep_path",
+                return_value=None,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=repository,
+            )
+            rubrics = [
+                middleware
+                for middleware in mock_create.call_args.kwargs["middleware"]
+                if isinstance(middleware, RubricMiddleware)
+            ]
+            assert len(rubrics) == 1
+            assert "working directory rooted at `/`" in rubrics[0]._system_prompt
+            grep = next(tool for tool in rubrics[0]._tools if tool.name == "grep")
+            result = cast("Any", grep).func(
+                pattern=marker,
+                path="/",
+                output_mode="content",
+                runtime=SimpleNamespace(tool_call_id="g", state={"messages": []}),
+            )
+
+        assert marker not in result.content
+
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -4354,6 +4462,48 @@ class TestCreateCliAgentInterpreterWiring:
 
         assert "can only read files under /srv/art/large_tool_results/" in denied
 
+    def test_rubric_repository_tools_use_repository_backend(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        artifact_root = tmp_path / "artifacts"
+        artifact_root.mkdir()
+        repository_root = tmp_path / "repository"
+        repository_root.mkdir()
+        marker = "artifact-only-marker"
+        (artifact_root / "proof.txt").write_text(marker)
+        artifact_backend = FilesystemBackend(
+            root_dir=artifact_root,
+            virtual_mode=True,
+        )
+        repository_backend = FilesystemBackend(
+            root_dir=repository_root,
+            virtual_mode=True,
+        )
+        composite = CompositeBackend(default=artifact_backend, routes={})
+        tools = {
+            tool.name: cast("Any", tool)
+            for tool in _create_rubric_grader_tools(
+                composite,
+                repository_backend=repository_backend,
+                repository_root="/",
+            )
+        }
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+
+        read = tools["read_file"].func(file_path="/proof.txt", runtime=runtime)
+        searched = tools["grep"].func(
+            pattern=marker,
+            path="/",
+            output_mode="content",
+            runtime=runtime,
+        )
+
+        assert marker not in read.content
+        assert marker not in searched.content
+
     @staticmethod
     def _grader_repo_tools(tmp_path: Path) -> tuple[dict[str, Any], Path]:
         """Build grader tools wired to a real working-directory backend.
@@ -4363,12 +4513,12 @@ class TestCreateCliAgentInterpreterWiring:
             inspection.
         """
         from deepagents.backends import CompositeBackend
-        from deepagents.backends.local_shell import LocalShellBackend
+        from deepagents.backends.filesystem import FilesystemBackend
 
         repo = tmp_path / "repo"
         repo.mkdir()
         (repo / "app.py").write_text("print('hello world')\n")
-        backend = LocalShellBackend(root_dir=tmp_path, virtual_mode=False)
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
         composite = CompositeBackend(default=backend, routes={})
         tools = {
             tool.name: cast("Any", tool)
@@ -4401,6 +4551,20 @@ class TestCreateCliAgentInterpreterWiring:
 
         runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
         denied = tools["read_file"].func(file_path=str(secret), runtime=runtime)
+
+        assert "unavailable" in denied
+
+    def test_rubric_grader_rejects_symlink_outside_working_root(
+        self, tmp_path: Path
+    ) -> None:
+        tools, repo = self._grader_repo_tools(tmp_path)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        link = repo / "proof.txt"
+        link.symlink_to(secret)
+
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+        denied = tools["read_file"].func(file_path=str(link), runtime=runtime)
 
         assert "unavailable" in denied
 

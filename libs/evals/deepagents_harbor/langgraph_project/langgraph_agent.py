@@ -720,6 +720,12 @@ _MAX_STRATEGY_ARGS_CHARS = 2_000
 _MAX_STRATEGY_RESULT_CHARS = 1_500
 _MAX_STRATEGY_TASK_CHARS = 8_000
 _MAX_STRATEGY_EVALUATOR_OUTPUT_TOKENS = 2_000
+_MAX_STRATEGY_EVALUATOR_PAYLOAD_CHARS = 64_000
+_MAX_STRATEGY_TASK_BLOCK_CHARS = 12_000
+_MAX_STRATEGY_LEDGER_BLOCK_CHARS = 32_000
+_MAX_STRATEGY_PLAN_BLOCK_CHARS = 19_000
+
+_STRATEGY_TRUNCATION_MARKER = "\n[... content truncated ...]\n"
 
 _STRATEGY_EVALUATOR_INSTRUCTION = """You are a context-neutral strategy evaluator.
 Review only the task, correlated action ledger, and proposed strategy provided in the user message.
@@ -733,25 +739,29 @@ def _bounded_text(value: object, limit: int) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= limit:
         return text
+    if limit <= 0:
+        return ""
+    if limit <= len(_STRATEGY_TRUNCATION_MARKER):
+        head_length = limit // 2
+        tail_length = limit - head_length
+        return text[:head_length] + text[-tail_length:]
 
-    bounded = ""
-    lower = 2
-    upper = limit
-    while lower <= upper:
-        midpoint = (lower + upper) // 2
-        candidate = _head_tail(text, midpoint)
-        if len(candidate) <= limit:
-            bounded = candidate
-            lower = midpoint + 1
-        else:
-            upper = midpoint - 1
-    return bounded
+    available = limit - len(_STRATEGY_TRUNCATION_MARKER)
+    head_length = (available + 1) // 2
+    tail_length = available - head_length
+    return (
+        text[:head_length]
+        + _STRATEGY_TRUNCATION_MARKER
+        + (text[-tail_length:] if tail_length else "")
+    )
 
 
 def _strategy_task(messages: list[AnyMessage]) -> str:
     """Return the bounded content of the first human task message."""
     for message in messages:
-        if isinstance(message, HumanMessage):
+        if isinstance(message, HumanMessage) and (
+            message.additional_kwargs.get("lc_source") != "summarization"
+        ):
             return _bounded_text(message.content, _MAX_STRATEGY_TASK_CHARS)
     return ""
 
@@ -759,7 +769,7 @@ def _strategy_task(messages: list[AnyMessage]) -> str:
 def _strategy_ledger(messages: list[AnyMessage]) -> list[dict[str, str]]:
     """Build a bounded ledger from correlated structured action results."""
     ledger: list[dict[str, str]] = []
-    for message in messages:
+    for message in reversed(messages):
         if not isinstance(message, ToolMessage):
             continue
         action = message.response_metadata.get("structured_action")
@@ -778,13 +788,18 @@ def _strategy_ledger(messages: list[AnyMessage]) -> list[dict[str, str]]:
                 "result": _bounded_text(message.content, _MAX_STRATEGY_RESULT_CHARS),
             }
         )
-    return ledger[-_MAX_STRATEGY_LEDGER_ENTRIES:]
+        if len(ledger) == _MAX_STRATEGY_LEDGER_ENTRIES:
+            break
+    ledger.reverse()
+    return ledger
 
 
-def _strategy_data_block(name: str, value: object) -> str:
+def _strategy_data_block(
+    name: str, value: object, *, content_limit: int = _MAX_STRATEGY_EVALUATOR_PAYLOAD_CHARS
+) -> str:
     """Serialize and escape untrusted evaluator data inside a named XML block."""
-    payload = json.dumps(value, ensure_ascii=False, default=str)
-    return f"<{name}>{escape(payload)}</{name}>"
+    payload = escape(json.dumps(value, ensure_ascii=False, default=str))
+    return f"<{name}>{_bounded_text(payload, content_limit)}</{name}>"
 
 
 type _StrategyItem = Annotated[
@@ -814,16 +829,31 @@ class _StrategyPlan(BaseModel):
 
 
 def _strategy_evaluator_messages(
-    messages: list[AnyMessage], proposal: _StrategyPlan
+    task: str, messages: list[AnyMessage], proposal: _StrategyPlan
 ) -> list[AnyMessage]:
     """Build an isolated evaluator context from bounded, escaped task data."""
     payload = "\n".join(
         (
-            _strategy_data_block("task", _strategy_task(messages)),
-            _strategy_data_block("action_ledger", _strategy_ledger(messages)),
-            _strategy_data_block("strategy_plan", proposal.model_dump()),
+            _strategy_data_block(
+                "task",
+                _bounded_text(task, _MAX_STRATEGY_TASK_CHARS),
+                content_limit=_MAX_STRATEGY_TASK_BLOCK_CHARS,
+            ),
+            _strategy_data_block(
+                "action_ledger",
+                _strategy_ledger(messages),
+                content_limit=_MAX_STRATEGY_LEDGER_BLOCK_CHARS,
+            ),
+            _strategy_data_block(
+                "strategy_plan",
+                proposal.model_dump(),
+                content_limit=_MAX_STRATEGY_PLAN_BLOCK_CHARS,
+            ),
         )
     )
+    if len(payload) > _MAX_STRATEGY_EVALUATOR_PAYLOAD_CHARS:
+        msg = "strategy evaluator payload exceeds its configured limit"
+        raise ValueError(msg)
     return [
         SystemMessage(content=_STRATEGY_EVALUATOR_INSTRUCTION),
         HumanMessage(content=payload),
@@ -896,6 +926,7 @@ class _StrategyGateRecord(TypedDict):
     """Private bookkeeping for the pre-execution strategy gate."""
 
     phase: Literal["planning", "approved", "bypassed"]
+    task: str
     selected_plan: dict[str, Any] | None
     selected_source: Literal["actor", "evaluator"] | None
     critique: str

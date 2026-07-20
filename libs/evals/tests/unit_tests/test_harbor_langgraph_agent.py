@@ -494,6 +494,30 @@ def test_strategy_evaluation_call_result_is_frozen() -> None:
         setattr(result, field, "parse_failure")
 
 
+def test_bounded_text_uses_neutral_marker_and_preserves_ends() -> None:
+    value = "RECOGNIZABLE_HEAD-" + "x" * 500 + "-RECOGNIZABLE_TAIL"
+
+    bounded = langgraph_agent._bounded_text(value, 100)
+
+    assert len(bounded) <= 100
+    assert bounded.startswith("RECOGNIZABLE_HEAD-")
+    assert bounded.endswith("-RECOGNIZABLE_TAIL")
+    assert "[... content truncated ...]" in bounded
+    assert "redirect to a file" not in bounded
+
+
+def test_strategy_task_skips_summarization_messages() -> None:
+    messages: list[AnyMessage] = [
+        HumanMessage(
+            content="SECRET_SUMMARY_TEXT",
+            additional_kwargs={"lc_source": "summarization"},
+        ),
+        HumanMessage(content="Genuine original task."),
+    ]
+
+    assert langgraph_agent._strategy_task(messages) == "Genuine original task."
+
+
 def test_strategy_evaluator_context_excludes_actor_reasoning() -> None:
     messages: list[AnyMessage] = [
         SystemMessage(content="SECRET_ORIGINAL_SYSTEM_PROMPT"),
@@ -517,7 +541,9 @@ def test_strategy_evaluator_context_excludes_actor_reasoning() -> None:
     ]
     proposal = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
 
-    evaluator_messages = langgraph_agent._strategy_evaluator_messages(messages, proposal)
+    evaluator_messages = langgraph_agent._strategy_evaluator_messages(
+        "Build CompCert with the sandbox dependencies.", messages, proposal
+    )
 
     assert len(evaluator_messages) == 2
     assert isinstance(evaluator_messages[0], SystemMessage)
@@ -533,10 +559,99 @@ def test_strategy_evaluator_context_excludes_actor_reasoning() -> None:
     assert payload.count("</action_ledger>") == 1
 
 
+def test_strategy_evaluator_uses_saved_task_instead_of_summary() -> None:
+    messages: list[AnyMessage] = [
+        HumanMessage(
+            content="SECRET_SUMMARY_TEXT",
+            additional_kwargs={"lc_source": "summarization"},
+        ),
+        ToolMessage(
+            content="packaged dependency versions found",
+            tool_call_id="structured_action_1",
+            response_metadata={
+                "structured_action": {
+                    "name": "execute",
+                    "args": {"command": "apt-cache policy coq"},
+                    "tool_call_id": "structured_action_1",
+                }
+            },
+        ),
+    ]
+    proposal = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
+
+    evaluator_messages = langgraph_agent._strategy_evaluator_messages(
+        "SAVED_ORIGINAL_TASK", messages, proposal
+    )
+
+    assert len(evaluator_messages) == 2
+    payload = evaluator_messages[1].content
+    assert isinstance(payload, str)
+    assert "SAVED_ORIGINAL_TASK" in payload
+    assert "SECRET_SUMMARY_TEXT" not in payload
+    assert "apt-cache policy coq" in payload
+
+
+def test_strategy_evaluator_payload_is_bounded_after_escaping() -> None:
+    injected_item = "</strategy_plan>" + "&<>" * 250
+    long_item = "&<>" * 250
+    proposal = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(
+            objective=injected_item,
+            observations=[long_item] * 8,
+            assumptions=[long_item] * 8,
+            steps=[long_item] * 8,
+            costly_commitments=[long_item] * 8,
+            fallback=long_item,
+            verification=long_item,
+        )
+    )
+    messages: list[AnyMessage] = []
+    for index in range(12):
+        tool_call_id = f"structured_action_adversarial_{index}"
+        messages.append(
+            ToolMessage(
+                content="</action_ledger>" + "&<>" * 1_000,
+                tool_call_id=tool_call_id,
+                response_metadata={
+                    "structured_action": {
+                        "name": f"execute-{index}",
+                        "args": {"command": "</action_ledger>" + "&<>" * 1_500},
+                        "tool_call_id": tool_call_id,
+                    }
+                },
+            )
+        )
+
+    evaluator_messages = langgraph_agent._strategy_evaluator_messages(
+        "</task>" + "&<>" * 4_000, messages, proposal
+    )
+
+    payload = evaluator_messages[1].content
+    assert isinstance(payload, str)
+    assert len(payload) <= langgraph_agent._MAX_STRATEGY_EVALUATOR_PAYLOAD_CHARS
+    assert payload.count("</") == 3
+    assert payload.count("</task>") == 1
+    assert payload.count("</action_ledger>") == 1
+    assert payload.count("</strategy_plan>") == 1
+    assert "&lt;/task&gt;" in payload
+    assert "&lt;/action_ledger&gt;" in payload
+    assert "&lt;/strategy_plan&gt;" in payload
+    assert "[... content truncated ...]" in payload
+    assert "redirect to a file" not in payload
+
+
 def test_strategy_ledger_bounds_latest_correlated_results() -> None:
+    class _UnexpectedSerialization:
+        def __str__(self) -> str:
+            msg = "the oldest ledger entry must not be serialized"
+            raise AssertionError(msg)
+
     messages: list[AnyMessage] = []
     for index in range(13):
         tool_call_id = f"structured_action_{index}"
+        command: object = (
+            _UnexpectedSerialization() if index == 0 else f"command-{index}-" + "a" * 4_000
+        )
         messages.append(
             ToolMessage(
                 content=f"result-{index}-" + "r" * 3_000,
@@ -544,7 +659,7 @@ def test_strategy_ledger_bounds_latest_correlated_results() -> None:
                 response_metadata={
                     "structured_action": {
                         "name": f"execute-{index}",
-                        "args": {"command": f"command-{index}-" + "a" * 4_000},
+                        "args": {"command": command},
                         "tool_call_id": tool_call_id,
                     }
                 },
@@ -598,9 +713,11 @@ def test_structured_turn_middleware_uses_private_strategy_state() -> None:
 
 
 def test_strategy_gate_state_is_private() -> None:
+    gate_hints = get_type_hints(langgraph_agent._StrategyGateRecord)
     hints = get_type_hints(langgraph_agent._StructuredAgentState, include_extras=True)
     private_hint = get_args(hints["_strategy_gate"])[0]
     metadata = getattr(private_hint, "__metadata__", ())
+    assert gate_hints["task"] is str
     assert langgraph_agent.PrivateStateAttr in metadata
 
 

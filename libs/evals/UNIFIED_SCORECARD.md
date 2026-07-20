@@ -2,7 +2,7 @@
 
 GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k = fraction of tasks solved in ≥1 of k rollouts; avg@k = mean reward across rollouts; rewards are binary (0/1).
 
-## openai:gpt-5.6-terra
+## GPT-5.6 terra
 
 ### Full (default)
 
@@ -34,7 +34,7 @@ Run [29509108062](https://github.com/langchain-ai/deepagents/actions/runs/295091
 
 One conversation shard hit a transient Docker-daemon failure; recovered from the run's artifacts (merged the retried shard), no tasks re-run.
 
-## openai:gpt-5.6-luna
+## GPT-5.6 luna
 
 ### Full (default)
 
@@ -66,7 +66,7 @@ Run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/295091
 
 2026-07-17 lite runs. Context is graded by exact string match on the answer file, so the context column below is output-format-sensitive. Judge `gpt-5.6-luna` is independent for all four.
 
-## openai:gpt-5.6-sol
+## GPT-5.6 sol
 
 ### Lite
 
@@ -82,7 +82,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 
 Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
-## anthropic:claude-opus-4-8
+## Claude Opus 4.8
 
 ### Lite
 
@@ -98,7 +98,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 
 Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
-## anthropic:claude-sonnet-5
+## Claude Sonnet 5
 
 ### Lite
 
@@ -114,7 +114,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 
 Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
-## fireworks:accounts/fireworks/models/glm-5p2
+## GLM-5.2
 
 ### Lite
 

@@ -64,7 +64,7 @@ Run [29509109809](https://github.com/langchain-ai/deepagents/actions/runs/295091
 
 ---
 
-**6-model lite stress run — 2026-07-17, run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741).** Two Baseten models are excluded from the tables below: `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B` did not serve (per-trial `reward` null with pervasive 5xx / 401 / 404 / 429 / timeout signatures across trials), and `thinkingmachines/inkling` is dropped with it. The **context** column is low across all four models (0.000–0.125) versus the 2026-07-16 terra/luna lite (0.625 / 0.500). This is a genuine output-format / instruction-following gap, not a harness regression: each task instructs "write your final answer (and nothing else)" and is graded by exact string match, and these models compute the right entity but write a full explanatory sentence — reproduced on an independent context-only rerun ([29763976690](https://github.com/langchain-ai/deepagents/actions/runs/29763976690)). terra/luna scored higher on 2026-07-16 by emitting the bare answer. Read context here as a format / instruction-following signal, not pure retrieval. cb-cloud-5 is additionally under-specified (its gold picks the owner's first-listed state via an unordered `LIMIT 1`, and Adrian's owner is multi-state), so every model misses it regardless. Judge `gpt-5.6-luna` is independent for all four (not in the set).
+2026-07-17 lite runs. Context is graded by exact string match on the answer file, so the context column below is output-format-sensitive. Judge `gpt-5.6-luna` is independent for all four.
 
 ## openai:gpt-5.6-sol
 
@@ -80,11 +80,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | **macro** | **0.376** | **0.251** |  |
 | **micro** | **0.412** | **0.275** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context: format / instruction-following gap (see run note).
-
-Note: the 0.000 context is an instruction-following / output-format failure, not a retrieval failure. Each task instructs "write your final answer (and nothing else) to `/app/answer.txt`" and context is graded by exact string match. On 2 of 3 spot-checked tasks sol computed the correct entity (cb-cloud-15 "Julie Guzman", cb-cloud-49 "Gregory Luna") but wrote a full explanatory sentence anyway, so it scored 0; cb-cloud-5 was a genuine miss.
-
-Reproduced on an independent context-only rerun ([29763976690](https://github.com/langchain-ai/deepagents/actions/runs/29763976690), 2026-07-20, harbor `4efafd8d`): 0/8 again, same empty-final-answer / verbose-write pattern.
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
 ## anthropic:claude-opus-4-8
 
@@ -100,9 +96,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | **macro** | **0.318** | **0.191** |  |
 | **micro** | **0.353** | **0.216** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context: format / instruction-following gap (see run note).
-
-Context reproduced on rerun [29763976690](https://github.com/langchain-ai/deepagents/actions/runs/29763976690) (2026-07-20, harbor `4efafd8d`): 0.125 again (1/8, cb-cloud-26).
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
 ## anthropic:claude-sonnet-5
 
@@ -118,7 +112,7 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | **macro** | **0.149** | **0.075** |  |
 | **micro** | **0.176** | **0.088** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context: format / instruction-following gap (see run note).
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
 
 ## fireworks:accounts/fireworks/models/glm-5p2
 
@@ -134,4 +128,4 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | **macro** | **0.086** | **0.036** |  |
 | **micro** | **0.088** | **0.039** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context: format / instruction-following gap (see run note).
+Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.

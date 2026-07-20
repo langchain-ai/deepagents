@@ -572,7 +572,9 @@ _MAX_STRUCTURED_REASONING_CHARS = 12_000
 _MAX_EXECUTE_TIMEOUT_SECONDS = 600
 
 _STRUCTURED_ACTION_INSTRUCTION = """Choose actions by expected runtime:
-- Set `control.kind` to `continue` with one or more actions while work remains, or to `finish` when the task is verified. Never combine continuation and completion.
+- Set `control.kind` to `continue` with one or more actions while carrying out the selected strategy or gathering cheap diagnostic evidence.
+- Before a material strategy pivot, set `control.kind` to `replan` with a complete replacement strategy and no actions. Changing package managers, building a dependency or toolchain from source, or repeating expensive environment setup is a material pivot.
+- Set `control.kind` to `finish` only when the task is verified. Never combine continuation, replanning, and completion.
 - Use `execute` only for short filesystem inspection, searching, reading, editing, or quick checks.
 - For a compile, build, test suite, package-manager operation, renderer, server, REPL, or any command that may run longer than a few seconds, use `run_background` first and then `poll` the returned handle for 20-60 seconds. Do not block these operations with `execute`.
 - Use `finish` only after a prior tool result proves the task's acceptance check passed. The harness associates that result automatically; do not copy tool-call IDs."""
@@ -840,6 +842,15 @@ class _StrategyPlan(BaseModel):
     verification: _StrategyItem
 
 
+class _ReplanControl(BaseModel):
+    """Submit a replacement strategy before a material execution-time pivot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["replan"]
+    proposal: _StrategyPlan
+
+
 def _strategy_evaluator_messages(
     task: str, messages: list[AnyMessage], proposal: _StrategyPlan
 ) -> list[AnyMessage]:
@@ -950,6 +961,7 @@ class _StrategyGateRecord(TypedDict):
     missing_evidence: list[str]
     cheaper_alternative: str
     revision_count: int
+    replan_count: int
     bypass_reason: str | None
     evaluator_usage: UsageMetadata | None
 
@@ -994,9 +1006,12 @@ class _Turn(BaseModel):
         max_length=_MAX_STRUCTURED_REASONING_CHARS,
         description="What you will do next this turn and why.",
     )
-    control: _ContinueControl | _FinishControl = Field(
+    control: _ContinueControl | _ReplanControl | _FinishControl = Field(
         discriminator="kind",
-        description="Choose exactly one path: continue with actions or finish after verification.",
+        description=(
+            "Choose exactly one path: continue within the selected strategy, submit a replacement "
+            "strategy before a material pivot, or finish after verification."
+        ),
     )
 
 
@@ -1145,6 +1160,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         missing_evidence: list[str] | None = None,
         cheaper_alternative: str = "",
         revision_count: int = 0,
+        replan_count: int = 0,
         bypass_reason: str | None = None,
         evaluator_usage: UsageMetadata | None = None,
     ) -> _StrategyGateRecord:
@@ -1176,6 +1192,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             "missing_evidence": list(missing_evidence or []),
             "cheaper_alternative": cheaper_alternative,
             "revision_count": revision_count,
+            "replan_count": replan_count,
             "bypass_reason": bypass_reason,
             "evaluator_usage": evaluator_usage,
         }
@@ -1194,6 +1211,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             "selected_plan": record["selected_plan"],
             "selected_source": record["selected_source"],
             "revision_count": record["revision_count"],
+            "replan_count": record["replan_count"],
             "bypass_reason": record["bypass_reason"],
             "evaluator_usage": record["evaluator_usage"],
         }
@@ -1282,6 +1300,65 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             _MAX_STRATEGY_FEEDBACK_CHARS,
         )
 
+    def _replan_record(
+        self,
+        record: _StrategyGateRecord,
+        proposal: _StrategyPlan,
+        evaluation: _EvaluationCallResult,
+        *,
+        evidence_tool_call_id: str | None,
+    ) -> tuple[_StrategyGateRecord, dict[str, Any]]:
+        """Select and record one execution-time replacement strategy."""
+        proposal_json = proposal.model_dump(mode="json")
+        proposal_id = f"strategy_proposal_{uuid.uuid4().hex}"
+        evaluator_usage = add_usage(record["evaluator_usage"], evaluation.usage)
+        replan_count = record["replan_count"] + 1
+        if evaluation.error is not None:
+            updated = self._strategy_record(
+                record["task"],
+                phase="bypassed",
+                evidence_tool_call_id=evidence_tool_call_id,
+                proposal_id=proposal_id,
+                current_proposal=proposal_json,
+                selected_plan=proposal_json,
+                selected_source="actor",
+                revision_count=record["revision_count"],
+                replan_count=replan_count,
+                bypass_reason=f"replan_evaluator_{evaluation.error}",
+                evaluator_usage=evaluator_usage,
+            )
+            return updated, proposal_json
+
+        review = cast("_PlanVerdict", evaluation.verdict).result
+        if isinstance(review, _ApprovePlan):
+            selected_plan = proposal_json
+            selected_source: Literal["actor", "evaluator"] = "actor"
+            recommended_plan = None
+            decision: Literal["approve", "revise"] = "approve"
+        else:
+            selected_plan = review.recommended_plan.model_dump(mode="json")
+            selected_source = "evaluator"
+            recommended_plan = selected_plan
+            decision = "revise"
+        updated = self._strategy_record(
+            record["task"],
+            phase="approved",
+            evidence_tool_call_id=evidence_tool_call_id,
+            proposal_id=proposal_id,
+            current_proposal=proposal_json,
+            recommended_plan=recommended_plan,
+            evaluator_decision=decision,
+            selected_plan=selected_plan,
+            selected_source=selected_source,
+            critique=review.critique,
+            missing_evidence=list(review.missing_evidence),
+            cheaper_alternative=review.cheaper_alternative,
+            revision_count=record["revision_count"],
+            replan_count=replan_count,
+            evaluator_usage=evaluator_usage,
+        )
+        return updated, selected_plan
+
     def _messages(self, request: ModelRequest[None], *, repair: bool = False) -> list[AnyMessage]:
         msgs = list(request.messages)
         if request.system_message is not None:
@@ -1308,6 +1385,8 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         repair: bool = False,
         evidence_tool_call_id: str | None = None,
     ) -> ModelResponse | None:
+        if isinstance(turn.control, _ReplanControl):
+            return None
         terminal = isinstance(turn.control, _FinishControl)
         if terminal and evidence_tool_call_id is None:
             return None
@@ -1515,9 +1594,12 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         request: ModelRequest[None],
         handler: Callable[[ModelRequest[None]], ModelResponse[object]],
         accumulated_usage: UsageMetadata | None = None,
+        initial_result: tuple[_Turn | None, UsageMetadata | None] | None = None,
     ) -> ModelResponse[object]:
         """Run the existing synchronous structured turn and bounded repair path."""
-        turn, turn_usage = self._invoke_structured(request)
+        turn, turn_usage = (
+            self._invoke_structured(request) if initial_result is None else initial_result
+        )
         usage = add_usage(accumulated_usage, turn_usage)
         if not isinstance(turn, _Turn):
             return self._add_fallback_metadata(
@@ -1549,9 +1631,12 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         request: ModelRequest[None],
         handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[object]]],
         accumulated_usage: UsageMetadata | None = None,
+        initial_result: tuple[_Turn | None, UsageMetadata | None] | None = None,
     ) -> ModelResponse[object]:
         """Run the existing asynchronous structured turn and bounded repair path."""
-        turn, turn_usage = await self._ainvoke_structured(request)
+        turn, turn_usage = (
+            await self._ainvoke_structured(request) if initial_result is None else initial_result
+        )
         usage = add_usage(accumulated_usage, turn_usage)
         if not isinstance(turn, _Turn):
             return self._add_fallback_metadata(
@@ -1580,6 +1665,84 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             return response
         return self._add_fallback_metadata(await handler(request), usage, "empty_turn_repair")
 
+    def _run_reviewed_sync(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], ModelResponse[object]],
+        record: _StrategyGateRecord,
+    ) -> tuple[ModelResponse[object], _StrategyGateRecord]:
+        """Run one approved turn, reviewing an explicit strategy pivot if requested."""
+        execution_request = self._execution_request(request, record["selected_plan"])
+        initial_result = self._invoke_structured(execution_request)
+        turn, turn_usage = initial_result
+        if not isinstance(turn, _Turn) or not isinstance(turn.control, _ReplanControl):
+            return (
+                self._run_structured_sync(
+                    execution_request,
+                    handler,
+                    initial_result=initial_result,
+                ),
+                record,
+            )
+
+        evaluation = self._invoke_evaluator(request, record["task"], turn.control.proposal)
+        updated, selected_plan = self._replan_record(
+            record,
+            turn.control.proposal,
+            evaluation,
+            evidence_tool_call_id=self._latest_tool_call_id(list(request.messages)),
+        )
+        replacement_request = self._execution_request(request, selected_plan)
+        usage = add_usage(turn_usage, evaluation.usage)
+        return (
+            self._run_structured_sync(
+                replacement_request,
+                handler,
+                accumulated_usage=usage,
+            ),
+            updated,
+        )
+
+    async def _run_reviewed_async(
+        self,
+        request: ModelRequest[None],
+        handler: Callable[[ModelRequest[None]], Awaitable[ModelResponse[object]]],
+        record: _StrategyGateRecord,
+    ) -> tuple[ModelResponse[object], _StrategyGateRecord]:
+        """Run one approved turn, asynchronously reviewing an explicit strategy pivot."""
+        execution_request = self._execution_request(request, record["selected_plan"])
+        initial_result = await self._ainvoke_structured(execution_request)
+        turn, turn_usage = initial_result
+        if not isinstance(turn, _Turn) or not isinstance(turn.control, _ReplanControl):
+            return (
+                await self._run_structured_async(
+                    execution_request,
+                    handler,
+                    initial_result=initial_result,
+                ),
+                record,
+            )
+
+        evaluation = await self._ainvoke_evaluator(
+            request, record["task"], turn.control.proposal
+        )
+        updated, selected_plan = self._replan_record(
+            record,
+            turn.control.proposal,
+            evaluation,
+            evidence_tool_call_id=self._latest_tool_call_id(list(request.messages)),
+        )
+        replacement_request = self._execution_request(request, selected_plan)
+        usage = add_usage(turn_usage, evaluation.usage)
+        return (
+            await self._run_structured_async(
+                replacement_request,
+                handler,
+                accumulated_usage=usage,
+            ),
+            updated,
+        )
+
     def wrap_model_call(
         self,
         request: ModelRequest[None],
@@ -1591,10 +1754,8 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             "bypassed",
         }:
             record = cast("_StrategyGateRecord", saved_record)
-            execution_request = self._execution_request(request, record.get("selected_plan"))
-            return self._with_strategy_state(
-                self._run_structured_sync(execution_request, handler), record
-            )
+            response, updated = self._run_reviewed_sync(request, handler, record)
+            return self._with_strategy_state(response, updated)
         if not isinstance(saved_record, dict) or saved_record.get("phase") == "planning":
             evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
             task = (
@@ -1916,10 +2077,8 @@ class _StructuredTurnMiddleware(AgentMiddleware):
             "bypassed",
         }:
             record = cast("_StrategyGateRecord", saved_record)
-            execution_request = self._execution_request(request, record.get("selected_plan"))
-            return self._with_strategy_state(
-                await self._run_structured_async(execution_request, handler), record
-            )
+            response, updated = await self._run_reviewed_async(request, handler, record)
+            return self._with_strategy_state(response, updated)
         if not isinstance(saved_record, dict) or saved_record.get("phase") == "planning":
             evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
             task = (

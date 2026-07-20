@@ -736,6 +736,141 @@ async def test_strategy_async_approval_runs_selected_actor_plan() -> None:
     assert record["selected_source"] == "actor"
 
 
+async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
+    original = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Build CompCert with packaged dependencies.")
+    )
+    pivot = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(
+            objective="Replace packaged Coq with an opam switch.",
+            steps=["Initialize opam.", "Install an older Coq release.", "Rebuild CompCert."],
+            costly_commitments=["Change package managers and install a second Coq toolchain."],
+        )
+    )
+    replacement = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(
+            objective="Probe the packaged external Flocq library before replacing Coq.",
+            steps=[
+                "Inspect the packaged Flocq candidate.",
+                "Configure with -use-external-Flocq if it is available.",
+            ],
+        )
+    )
+    record = langgraph_agent._StructuredTurnMiddleware._strategy_record(
+        "Build CompCert economically.",
+        phase="approved",
+        proposal_id="strategy_proposal_initial",
+        current_proposal=original.model_dump(mode="json"),
+        evaluator_decision="approve",
+        selected_plan=original.model_dump(mode="json"),
+        selected_source="actor",
+    )
+    replan = langgraph_agent._Turn.model_validate(
+        {"control": {"kind": "replan", "proposal": pivot.model_dump()}}
+    )
+    revision = langgraph_agent._PlanVerdict.model_validate(
+        {
+            "result": {
+                "decision": "revise",
+                "critique": "The opam pivot skips a cheaper packaged-library probe.",
+                "missing_evidence": ["Availability of libcoq-flocq."],
+                "cheaper_alternative": "Inspect and use the packaged external Flocq library.",
+                "recommended_plan": replacement.model_dump(),
+            }
+        }
+    )
+    execution = langgraph_agent._Turn.model_validate(
+        {
+            "control": {
+                "kind": "continue",
+                "actions": [{"action": "execute", "command": "apt-cache search flocq"}],
+            }
+        }
+    )
+    model = _StructuredSequenceModel(
+        [
+            (
+                langgraph_agent._Turn,
+                _raw_result(
+                    replan,
+                    {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                ),
+            ),
+            (
+                langgraph_agent._PlanVerdict,
+                _raw_result(
+                    revision,
+                    {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+                ),
+            ),
+            (
+                langgraph_agent._Turn,
+                _raw_result(
+                    execution,
+                    {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+                ),
+            ),
+        ]
+    )
+    failure = ToolMessage(
+        content="Error: The variable Z_div_mod_eq was not found in the current environment.",
+        tool_call_id="structured_action_build",
+        response_metadata={
+            "structured_action": {
+                "name": "poll",
+                "args": {"handle": "proc-build", "wait_seconds": 45},
+                "tool_call_id": "structured_action_build",
+            }
+        },
+    )
+    request = ModelRequest(
+        model=cast("Any", model),
+        messages=[HumanMessage(content="Summary replaced the original task."), failure],
+        state=cast("Any", {"messages": [], "_strategy_gate": record}),
+    )
+
+    async def fallback(_request: object) -> ModelResponse[object]:
+        return ModelResponse(result=[AIMessage(content="UNEXPECTED_FALLBACK")])
+
+    response = await langgraph_agent._StructuredTurnMiddleware().awrap_model_call(request, fallback)
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert [call["schema"] for call in model.calls] == [
+        langgraph_agent._Turn,
+        langgraph_agent._PlanVerdict,
+        langgraph_agent._Turn,
+    ]
+    assert [call["method"] for call in model.calls] == ["ainvoke"] * 3
+    evaluator_messages = cast("list[AnyMessage]", model.calls[1]["messages"])
+    evaluator_payload = evaluator_messages[1].text
+    assert "Z_div_mod_eq was not found" in evaluator_payload
+    assert pivot.objective in evaluator_payload
+    execution_messages = cast("list[AnyMessage]", model.calls[2]["messages"])
+    assert any(
+        isinstance(message, HumanMessage)
+        and "Required execution strategy" in message.text
+        and replacement.objective in message.text
+        and pivot.objective not in message.text
+        for message in execution_messages
+    )
+    message = response.model_response.result[0]
+    assert isinstance(message, AIMessage)
+    assert [(call["name"], call["args"]) for call in message.tool_calls] == [
+        ("execute", {"command": "apt-cache search flocq"})
+    ]
+    assert message.usage_metadata == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "total_tokens": 14,
+    }
+    updated = _response_strategy_record(response)
+    assert updated["phase"] == "approved"
+    assert updated["current_proposal"] == pivot.model_dump(mode="json")
+    assert updated["selected_plan"] == replacement.model_dump(mode="json")
+    assert updated["selected_source"] == "evaluator"
+    assert updated["replan_count"] == 1
+
+
 def test_strategy_first_revision_can_return_to_reconnaissance() -> None:
     rejected_plan = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
     recommended_plan = langgraph_agent._StrategyPlan.model_validate(

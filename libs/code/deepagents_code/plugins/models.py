@@ -5,10 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from deepagents_code.json_types import (  # noqa: TC001
-    JsonObject as JsonObject,
-    JsonValue as JsonValue,
-)
+from deepagents_code.json_types import JsonObject, JsonValue  # noqa: TC001, F401
 
 if TYPE_CHECKING:
     from pathlib import Path

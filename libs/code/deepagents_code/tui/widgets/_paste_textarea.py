@@ -101,8 +101,10 @@ class PasteBurstTextArea(TextArea):
     """Shared key bindings for every paste-aware text area.
 
     These are the single source of truth for shortcut keys, inherited by both
-    the chat input and inline prompts (Textual aggregates BINDINGS across the
-    MRO). `_NEWLINE_KEYS` is derived from this list so `_on_key` stays in sync.
+    the chat input and inline prompts, which no longer define their own (were a
+    subclass to add its own BINDINGS, Textual would merge them across the MRO
+    rather than replace these). `_NEWLINE_KEYS` is derived from this list so
+    `_on_key` stays in sync.
     """
 
     _NEWLINE_KEYS: ClassVar[frozenset[str]] = frozenset(
@@ -420,7 +422,16 @@ class PasteBurstTextArea(TextArea):
     def _consume_backslash_enter_newline(
         self, event: events.Key, now: float, *, enabled: bool = True
     ) -> bool:
-        """Return whether a terminal-emitted backslash+Enter became a newline."""
+        """Return whether a terminal-emitted backslash+Enter became a newline.
+
+        Args:
+            event: The key event being handled.
+            now: Current monotonic timestamp, compared against the pending
+                backslash time via `_BACKSLASH_ENTER_GAP_SECONDS`.
+            enabled: When `False`, the fallback is skipped (still clearing any
+                pending backslash). Callers pass `False` to suppress it while a
+                competing affordance owns Enter (e.g. an open completion popup).
+        """
         if (
             event.key == "enter"
             and enabled

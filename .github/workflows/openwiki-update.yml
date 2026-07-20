@@ -27,9 +27,10 @@ jobs:
       - name: Run OpenWiki
         run: openwiki code --update --print
         env:
-          OPENWIKI_PROVIDER: openrouter
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENWIKI_MODEL_ID: z-ai/glm-5.2
+          OPENWIKI_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.LS_GATEWAY_OPENAI_API_KEY }}
+          OPENAI_BASE_URL: https://gateway.smith.langchain.com/openai/v1
+          OPENWIKI_MODEL_ID: gpt-5.6-terra
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGCHAIN_PROJECT: openwiki
           LANGCHAIN_TRACING_V2: "true"

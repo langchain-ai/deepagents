@@ -4438,6 +4438,7 @@ class TestSelectiveProjectMcpTrust:
         *,
         user_config: Path,
         trust_project_mcp: bool | None,
+        additional_configs: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any] | None:
         """Run resolution and return the merged config passed to the loader.
 
@@ -4459,6 +4460,7 @@ class TestSelectiveProjectMcpTrust:
         await resolve_and_load_mcp_tools(
             project_context=ctx,
             trust_project_mcp=trust_project_mcp,
+            additional_configs=additional_configs,
         )
         if not loader.called:
             return None
@@ -5113,6 +5115,47 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_plugin_config_requires_scoped_approval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plugin-provided MCP servers do not load without user approval."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=True,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is None
+
+    async def test_plugin_config_loads_scoped_approval_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Approved plugin MCP servers load while unapproved siblings are dropped."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+        self._write_user_approvals(user_config, project, servers, ["plugin"])
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin"}
 
 
 class TestProjectRootForMcpConfigPath:

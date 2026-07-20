@@ -56,21 +56,16 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-banking_knowledge-task-073",
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
-    # 8 — difficulty frontier measured on gpt-5.6-terra over the full 100-task
-    # cloud pool under the faithful model_judge (run 29781251542). Mirrors the
-    # full-30 spread: 4 truly-hard (terra 0/3) + 2 at 1/3 + 1 at 2/3 + 1 guard
-    # (terra 3/3, a regression floor). Multi-state bad-gold (cb-cloud-5, -78)
-    # excluded. All deep-join types (multi_hop_chain / multi_entity_comparison)
-    # except the set_intersection guard.
+    # 8 — calibrated tiers: 4 hard, 3 medium, 1 easy guard.
     "context": [
-        "cb-cloud-10",  # hard  0/3  multi_hop_chain
-        "cb-cloud-71",  # hard  0/3  multi_hop_chain
-        "cb-cloud-74",  # hard  0/3  multi_entity_comparison
-        "cb-cloud-90",  # hard  0/3  multi_hop_chain
-        "cb-cloud-15",  # mid   1/3  multi_entity_comparison
-        "cb-cloud-47",  # mid   1/3  multi_entity_comparison
-        "cb-cloud-41",  # mid   2/3  multi_entity_comparison
-        "cb-cloud-3",   # guard 3/3  set_intersection
+        "cb-cloud-10",  # hard    multi_hop_chain
+        "cb-cloud-71",  # hard    multi_hop_chain
+        "cb-cloud-74",  # hard    multi_entity_comparison
+        "cb-cloud-90",  # hard    multi_hop_chain
+        "cb-cloud-15",  # medium  multi_entity_comparison
+        "cb-cloud-47",  # medium  multi_entity_comparison
+        "cb-cloud-41",  # medium  multi_entity_comparison
+        "cb-cloud-3",   # easy    set_intersection
     ],
 }
 

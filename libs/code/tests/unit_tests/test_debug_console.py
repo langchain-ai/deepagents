@@ -1308,6 +1308,24 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
+    async def test_build_snapshot_experimental_off_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Experimental"] == "off"
+
+    async def test_build_snapshot_experimental_on_when_env_truthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "1")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Experimental"] == "on"
+
     async def test_build_snapshot_thread_field_is_copyable_and_linkable(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz")
         async with app.run_test():

@@ -1178,9 +1178,12 @@ A condensed summary follows:
 
         See `_offload_inline_media` for full documentation, including the
         `(messages, failed_block_count)` return contract.
+
+        Uploads run concurrently, as in `_aclip_overflow_tail`. Each keeps its
+        own `aupload_files` call, so a failing file still fails alone; only the
+        waiting overlaps, turning one round trip per image into one overall.
         """
-        path_map: dict[str, str] = {}
-        failed_keys: set[str] = set()
+        pending: dict[str, tuple[str, bytes]] = {}
         saw_inline_media = False
 
         for msg in messages:
@@ -1194,31 +1197,25 @@ A condensed summary follows:
                     continue  # undecodable; rewrite emits a failed-offload placeholder
                 raw, ext, _mime = decoded
                 key = hashlib.sha256(raw).hexdigest()[:16]
-                if key in path_map or key in failed_keys:
-                    continue
-                img_path = f"{self._media_prefix}/{key}.{ext}"
-                try:
-                    responses = await backend.aupload_files([(img_path, raw)])
-                    if error := _upload_response_error(responses):
-                        logger.warning(
-                            "Failed to upload media %s to backend: %s",
-                            img_path,
-                            error,
-                        )
-                        failed_keys.add(key)
-                        continue
-                    path_map[key] = img_path
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "Failed to upload media %s to backend: %s: %s",
-                        img_path,
-                        type(e).__name__,
-                        e,
-                    )
-                    failed_keys.add(key)
+                if key not in pending:
+                    pending[key] = (f"{self._media_prefix}/{key}.{ext}", raw)
 
         if not saw_inline_media:
             return messages, 0
+
+        async def _upload(key: str, img_path: str, raw: bytes) -> tuple[str, str | None]:
+            """Upload one media file, returning `(key, path)`, or `(key, None)` on failure."""
+            try:
+                error = _upload_response_error(await backend.aupload_files([(img_path, raw)]))
+            except Exception as e:  # noqa: BLE001
+                error = f"{type(e).__name__}: {e}"
+            if error:
+                logger.warning("Failed to upload media %s to backend: %s", img_path, error)
+                return key, None
+            return key, img_path
+
+        results = await asyncio.gather(*(_upload(key, *item) for key, item in pending.items()))
+        path_map: dict[str, str] = {key: path for key, path in results if path is not None}
 
         return _rewrite_data_url_blocks(messages, path_map)
 

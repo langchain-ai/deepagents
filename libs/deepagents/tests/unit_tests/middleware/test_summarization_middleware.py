@@ -3295,6 +3295,118 @@ class TestTokenCountingEfficiency:
         assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
+class TestAsyncInlineMediaOffload:
+    """Async media offload overlaps uploads without changing per-file outcomes."""
+
+    @staticmethod
+    def _media_message(payload: bytes, idx: int) -> BaseMessage:
+        b64 = _base64.b64encode(payload).decode()
+        return HumanMessage(
+            content=[{"type": "image", "base64": b64, "mime_type": "image/png"}],
+            id=f"img-{idx}",
+        )
+
+    @staticmethod
+    def _middleware(backend: MockBackend) -> SummarizationMiddleware:
+        return SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+    @staticmethod
+    def _expected_path(payload: bytes) -> str:
+        return f"/conversation_history/media/{hashlib.sha256(payload).hexdigest()[:16]}.png"
+
+    async def test_uploads_are_concurrent(self) -> None:
+        """All uploads are in flight together, not one round trip per file."""
+        in_flight = 0
+        peak = 0
+
+        class _TrackingBackend(MockBackend):
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0)  # yield so siblings can start
+                in_flight -= 1
+                return [FileUploadResponse(path=path, error=None) for path, _ in files]
+
+        backend = _TrackingBackend()
+        middleware = self._middleware(backend)
+        messages = [self._media_message(f"png-{i}".encode(), i) for i in range(5)]
+
+        _, failed = await middleware._aoffload_inline_media(backend, messages)
+
+        assert failed == 0
+        assert peak == 5  # every upload overlapped; serialized offload peaks at 1
+
+    async def test_single_failure_does_not_affect_siblings(self) -> None:
+        """A per-file error still fails only that file, as in the serial path."""
+        bad = b"png-bad"
+
+        class _PartialFailureBackend(MockBackend):
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return [FileUploadResponse(path=path, error="permission_denied" if content == bad else None) for path, content in files]
+
+        backend = _PartialFailureBackend()
+        middleware = self._middleware(backend)
+        payloads = [b"png-ok-1", bad, b"png-ok-2"]
+        messages = [self._media_message(p, i) for i, p in enumerate(payloads)]
+
+        result, failed = await middleware._aoffload_inline_media(backend, messages)
+
+        assert failed == 1  # only the rejected upload becomes a placeholder
+        rendered = repr([m.content for m in result])
+        assert self._expected_path(b"png-ok-1") in rendered
+        assert self._expected_path(b"png-ok-2") in rendered
+        assert self._expected_path(bad) not in rendered
+
+    async def test_raising_upload_does_not_cancel_siblings(self) -> None:
+        """One upload raising must not abort the others (no gather fail-fast)."""
+
+        class _RaisingBackend(MockBackend):
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                if any(content == b"png-boom" for _, content in files):
+                    msg = "backend exploded"
+                    raise RuntimeError(msg)
+                return [FileUploadResponse(path=path, error=None) for path, _ in files]
+
+        backend = _RaisingBackend()
+        middleware = self._middleware(backend)
+        payloads = [b"png-fine", b"png-boom"]
+        messages = [self._media_message(p, i) for i, p in enumerate(payloads)]
+
+        result, failed = await middleware._aoffload_inline_media(backend, messages)
+
+        assert failed == 1
+        assert self._expected_path(b"png-fine") in repr([m.content for m in result])
+
+    async def test_duplicate_media_uploads_once(self) -> None:
+        """Content-hash dedup survives the switch to concurrent uploads."""
+        backend = MockBackend()
+        middleware = self._middleware(backend)
+        payload = b"png-repeated"
+        messages = [self._media_message(payload, i) for i in range(4)]
+
+        await middleware._aoffload_inline_media(backend, messages)
+
+        media_writes = [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_writes == [self._expected_path(payload)]
+
+    async def test_no_inline_media_returns_messages_unchanged(self) -> None:
+        """The `saw_inline_media` short-circuit still returns the original list."""
+        backend = MockBackend()
+        middleware = self._middleware(backend)
+        messages = make_conversation_messages(num_old=5, num_recent=2)
+
+        result, failed = await middleware._aoffload_inline_media(backend, messages)
+
+        assert result is messages
+        assert failed == 0
+
+
 class _OpaqueCounter:
     """Wraps a counter so its signature cannot be introspected.
 

@@ -37,6 +37,7 @@ from deepagents._excluded_middleware import (
     _verify_excluded_middleware_coverage,
 )
 from deepagents._messages_reducer import _messages_delta_reducer
+from deepagents._middleware import apply_custom_middleware
 from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
@@ -52,17 +53,14 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
-    GENERAL_PURPOSE_SUBAGENT,
+    _REQUIRED_MIDDLEWARE_CLASSES,
+    _REQUIRED_MIDDLEWARE_NAMES,
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
-from deepagents.profiles.harness.harness_profiles import (
-    GeneralPurposeSubagentProfile,
-    _apply_profile_prompt,
-    _harness_profile_for_model,
-)
+from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -264,73 +262,6 @@ def _merge_fs_interrupt_on(
     if user_interrupt_on:
         merged.update(user_interrupt_on)
     return merged
-
-
-def _apply_custom_middleware(
-    base: list[AgentMiddleware[Any, Any, Any]],
-    custom: Sequence[AgentMiddleware[Any, Any, Any]],
-    *,
-    core_names: set[str] | None = None,
-) -> list[AgentMiddleware[Any, Any, Any]]:
-    """Merge custom middleware into the base stack by name.
-
-    - If its `.name` matches a name still present in `base`: replace in-place,
-      preserving stack order.
-    - Otherwise: a brand-new entry lands after the last `core_names` member (so it
-      precedes the profile/prompt-caching/memory tail), or at the end when
-      `core_names` is unset.
-    """
-    if not custom:
-        return list(base)
-    current_names = {m.name for m in base}
-    replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
-    to_append: list[AgentMiddleware[Any, Any, Any]] = []
-    for m in custom:
-        if m.name in current_names:
-            replacements[m.name] = m
-        else:
-            to_append.append(m)
-    result = list(base)
-    for i, m in enumerate(result):
-        if m.name in replacements:
-            result[i] = replacements[m.name]
-    if to_append and core_names is not None:
-        # Land new middleware after the last core entry, ahead of the tail.
-        pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
-        result[pos:pos] = to_append
-    else:
-        result.extend(to_append)
-    return result
-
-
-_REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
-    (FilesystemMiddleware, ()),
-    (SubAgentMiddleware, ()),
-)
-"""Scaffolding middleware that core deep agent features depend on.
-
-Each entry pairs a class with any extra string aliases its `.name` may take
-beyond `__name__`. Removing any of these silently breaks core features:
-`FilesystemMiddleware` backs every built-in file tool and now also enforces
-`permissions` rules (a security guarantee), while `SubAgentMiddleware` backs
-the `task` tool handler.
-
-Tracked here so `HarnessProfile.excluded_middleware` cannot strip them:
-`_apply_excluded_middleware` raises `ValueError` rather than proceeding with
-a silently degraded agent.
-"""
-
-_REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(cls for cls, _ in _REQUIRED_MIDDLEWARE)
-"""Set of all class types that cannot be excluded from the middleware stack.
-
-Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
-"""
-
-_REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in _REQUIRED_MIDDLEWARE for name in (cls.__name__, *aliases))
-"""Set of all `.name` values that cannot be excluded from the middleware stack.
-
-Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
-"""
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -694,182 +625,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
-    # Process caller-supplied subagents first so the decision of whether to
-    # auto-add the default general-purpose subagent can factor in an explicit
-    # override, and so its middleware stack (including any factory-based
-    # `extra_middleware`) isn't built and then discarded.
-    inline_subagents: list[SubAgent | CompiledSubAgent] = []
+    # Async subagents are dispatched by their dedicated middleware. Inline
+    # subagent normalization and default general-purpose-agent construction
+    # are owned by SubAgentMiddleware.
+    inline_subagent_specs: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
         if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
             async_subagents.append(cast("AsyncSubAgent", spec))
-            continue
-        if "runnable" in spec:
-            # CompiledSubAgent - use as-is
-            inline_subagents.append(spec)
         else:
-            # SubAgent - fill in defaults and prepend base middleware
-            raw_subagent_model = spec.get("model", model)
-            subagent_model = resolve_model(raw_subagent_model)
-
-            _subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
-            _subagent_profile = _harness_profile_for_model(subagent_model, _subagent_spec)
-
-            # Resolve permissions: subagent's own rules take priority, else inherit parent's
-            subagent_permissions = spec.get("permissions", permissions)
-
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
-                FilesystemMiddleware(
-                    backend=backend,
-                    custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    _permissions=subagent_permissions,
-                ),
-                create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
-            ]
-            subagent_skills = spec.get("skills")
-            if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            # Core names captured before the tail so new spec middleware splices in ahead of it.
-            _subagent_core_names = {m.name for m in subagent_middleware}
-            # Harness-profile middleware for this subagent's model
-            subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-
-            append_prompt_caching_middleware(subagent_middleware)
-
-            _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-            _subagent_matched_names: set[str] = set()
-            _validate_excluded_middleware_config(
-                _subagent_profile,
-                required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
-                required_names=_REQUIRED_MIDDLEWARE_NAMES,
-            )
-            subagent_middleware = _apply_excluded_middleware(
-                subagent_middleware,
-                _subagent_profile,
-                matched_classes=_subagent_matched_classes,
-                matched_names=_subagent_matched_names,
-            )
-            subagent_middleware = _apply_custom_middleware(
-                subagent_middleware,
-                spec.get("middleware", []),
-                core_names=_subagent_core_names,
-            )
-            subagent_middleware = _apply_excluded_middleware(
-                subagent_middleware,
-                _subagent_profile,
-                matched_classes=_subagent_matched_classes,
-                matched_names=_subagent_matched_names,
-            )
-            _verify_excluded_middleware_coverage(
-                _subagent_profile,
-                _subagent_matched_classes,
-                _subagent_matched_names,
-                required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
-                required_names=_REQUIRED_MIDDLEWARE_NAMES,
-            )
-            if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-
-            subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
-            subagent_interrupt_on = _merge_fs_interrupt_on(
-                _build_interrupt_on_from_permissions(subagent_permissions or []),
-                subagent_interrupt_on,
-            )
-
-            # Inherit parent tools unless the subagent declares its own.
-            # Descriptions are rewritten; exclusion is handled by middleware.
-            raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
-            subagent_tools = _apply_tool_description_overrides(
-                raw_subagent_tools,
-                _subagent_profile.tool_description_overrides,
-            )
-
-            processed_spec: SubAgent = {
-                **spec,
-                "model": subagent_model,
-                "tools": subagent_tools or [],
-                "middleware": subagent_middleware,
-            }
-            processed_spec["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec["system_prompt"])
-            if subagent_interrupt_on is not None:
-                processed_spec["interrupt_on"] = subagent_interrupt_on
-            inline_subagents.append(processed_spec)
-
-    # Auto-add the default general-purpose subagent unless the harness profile
-    # disables it or the caller already supplied their own — an explicit spec
-    # is how callers override the default. Skipping in those cases also avoids
-    # invoking factory-based `extra_middleware` whose output would be thrown
-    # away.
-    gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-    if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
-        gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(),
-            FilesystemMiddleware(
-                backend=backend,
-                custom_tool_descriptions=_profile.tool_description_overrides,
-                _permissions=permissions,
-            ),
-            create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
-        ]
-        if skills is not None:
-            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-
-        # Add harness-profile middleware, if any
-        gp_middleware.extend(_profile.materialize_extra_middleware())
-
-        append_prompt_caching_middleware(gp_middleware)
-        _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
-        gp_middleware = _apply_excluded_middleware(
-            gp_middleware,
-            _profile,
-            matched_classes=_main_matched_classes,
-            matched_names=_main_matched_names,
-        )
-        # Inherit only middleware that overrides a default GP slot (including excluded
-        # ones) without carrying over middleware that's specific to the main agent.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
-        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
-        gp_middleware = _apply_excluded_middleware(
-            gp_middleware,
-            _profile,
-            matched_classes=_main_matched_classes,
-            matched_names=_main_matched_names,
-        )
-        # Tool exclusion runs last so excluded tool names are stripped after all
-        # tool-injecting middleware has run.
-        if _profile.excluded_tools:
-            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-
-        general_purpose_spec: SubAgent = {
-            **GENERAL_PURPOSE_SUBAGENT,
-            "model": model,
-            "tools": _tools or [],
-            "middleware": gp_middleware,
-        }
-        if gp_profile.description is not None:
-            general_purpose_spec["description"] = gp_profile.description
-        if gp_profile.system_prompt is not None:
-            # GP-specific override beats `profile.base_system_prompt`; only the
-            # profile suffix layers on top.
-            gp_prompt = gp_profile.system_prompt
-            if _profile.system_prompt_suffix is not None:
-                gp_prompt = gp_prompt + "\n\n" + _profile.system_prompt_suffix
-            general_purpose_spec["system_prompt"] = gp_prompt
-        else:
-            general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
-        gp_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or []),
-            interrupt_on,
-        )
-        if gp_interrupt_on is not None:
-            general_purpose_spec["interrupt_on"] = gp_interrupt_on
-
-        inline_subagents.insert(0, general_purpose_spec)
+            inline_subagent_specs.append(cast("SubAgent | CompiledSubAgent", spec))
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -884,20 +649,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
-    sub_agent_middleware: SubAgentMiddleware | None = None
-    if inline_subagents:
-        sub_agent_middleware = SubAgentMiddleware(
-            backend=backend,
-            subagents=inline_subagents,
-            # Overrides the task tool description. Value should include
-            # {available_agents} — a format placeholder replaced with the
-            # subagent name/description list. Without it the model can't
-            # see which subagents exist. None (default) uses the built-in
-            # template. Stale keys silently no-op if the tool is renamed.
-            task_description=_profile.tool_description_overrides.get("task"),
-            state_schema=state_schema,
-        )
-        deepagent_middleware.append(sub_agent_middleware)
+    sub_agent_middleware = SubAgentMiddleware(
+        backend=backend,
+        subagents=inline_subagent_specs,
+        default_model=model,
+        default_tools=tools,
+        default_permissions=permissions,
+        default_interrupt_on=interrupt_on,
+        profile=_profile,
+        skills=skills,
+        inherited_middleware=middleware,
+        # Overrides the task tool description. Value should include
+        # {available_agents} — a format placeholder replaced with the
+        # subagent name/description list. Without it the model can't
+        # see which subagents exist. None (default) uses the built-in
+        # template. Stale keys silently no-op if the tool is renamed.
+        task_description=_profile.tool_description_overrides.get("task"),
+        state_schema=state_schema,
+    )
+    gp_matched_classes, gp_matched_names = sub_agent_middleware.profile_exclusion_matches
+    _main_matched_classes.update(gp_matched_classes)
+    _main_matched_names.update(gp_matched_names)
+    deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -940,7 +713,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
-    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], core_names=_main_core_names)
+    deepagent_middleware = apply_custom_middleware(deepagent_middleware, middleware or [], core_names=_main_core_names)
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

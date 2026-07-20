@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from deepagents_code.json_types import (  # noqa: TC001
+    JsonObject as JsonObject,
+    JsonValue as JsonValue,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -12,8 +17,6 @@ MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
 UnsupportedComponent = Literal["agents", "commands", "hooks"]
 """Plugin component directory that `deepagents-code` does not load."""
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject = dict[str, JsonValue]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

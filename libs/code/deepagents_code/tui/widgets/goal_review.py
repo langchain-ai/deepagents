@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-from deepagents_code.config import get_glyphs
+from deepagents_code.config import get_glyphs, newline_shortcut
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -363,7 +363,7 @@ class GoalReviewMenu(Container):
         glyphs = get_glyphs()
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
-            f"Shift+Enter newline {glyphs.bullet} Ctrl+X external editor"
+            f"{newline_shortcut()} newline {glyphs.bullet} Ctrl+X external editor"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:
@@ -388,14 +388,14 @@ class GoalReviewMenu(Container):
         if self._input_mode == "edit":
             self._help_widget.update(
                 f"Enter save edits {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} "
+                f"{newline_shortcut()} newline {glyphs.bullet} "
                 f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return
         if self._input_mode == "reject":
             self._help_widget.update(
                 f"Enter regenerate {glyphs.bullet} "
-                f"Shift+Enter newline {glyphs.bullet} "
+                f"{newline_shortcut()} newline {glyphs.bullet} "
                 f"Ctrl+X external editor {glyphs.bullet} Esc back"
             )
             return

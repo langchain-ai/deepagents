@@ -21,13 +21,19 @@ if TYPE_CHECKING:
 async def test_mcp_auth_import_is_warmed_off_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The MCP auth startup import remains safe on the server event loop."""
-    for module_name in tuple(sys.modules):
-        if module_name == "deepagents_code.mcp_auth" or module_name.startswith(
-            "filelock."
-        ):
-            monkeypatch.delitem(sys.modules, module_name)
-    monkeypatch.delitem(sys.modules, "filelock", raising=False)
+    """Warmup routes the `mcp_auth` first-import off the server event loop.
+
+    Importing `mcp_auth` today does block on the loop (its `httpx` -> `rich`
+    chain calls `os.getcwd()` at import time). Rather than couple to that exact
+    transitive culprit, this test injects a *synthetic* block via a first-import
+    hook, so it stays a stable regression guard for the routing — that
+    `_warm_mcp_adapter_imports` consumes the cold import in a worker thread —
+    even as dependencies shift. It does not itself prove the real chain blocks.
+    If warmup stopped importing `mcp_auth`, the on-loop import below would hit
+    the synthetic block and raise `BlockingError` outside `pytest.raises`,
+    failing the test.
+    """
+    monkeypatch.delitem(sys.modules, "deepagents_code.mcp_auth", raising=False)
     monkeypatch.delattr(deepagents_code, "mcp_auth", raising=False)
 
     original_import = builtins.__import__
@@ -44,8 +50,9 @@ async def test_mcp_auth_import_is_warmed_off_loop(
             or (name == "deepagents_code" and "mcp_auth" in fromlist)
         )
         if cold_auth_import:
-            # Model a future transitive dependency that blocks when `mcp_auth`
-            # first imports it. The call is allowed only in the worker thread.
+            # Synthetic stand-in for `mcp_auth`'s real import-time blocking: a
+            # call Blockbuster rejects on the loop but allows in a worker
+            # thread. Fires only on the first (cold) import.
             time.sleep(0)
         return original_import(name, globals_, locals_, fromlist, level)
 

@@ -1770,17 +1770,35 @@ def _warm_mcp_adapter_imports() -> None:
     """Eagerly import MCP modules whose first import may block.
 
     Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
-    blocking import side effect (package-resource scans, or a dependency that
-    does file I/O at import time — e.g. `filelock`, pulled in by `mcp_auth`)
-    happens off the server event loop where Blockbuster would otherwise reject
-    it. Runs only when at least one active MCP server exists.
+    blocking side effect of a first import happens off the server event loop
+    rather than where Blockbuster would reject it. Two known offenders:
+
+    - `langchain_mcp_adapters` runs a package-resource scan on first import.
+    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
+      calls `os.getcwd()` in its module body (verified against the pinned
+      versions — the exact culprit may shift as dependencies change, but the
+      general risk of import-time I/O in this subtree does not).
+
+    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
+    (remote-server preflight and the per-tool call path), where an import
+    failure is captured and reported per server. A failure to warm it must not
+    abort loading for every server — notably stdio-only configs, which never
+    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
+    at the real use site. Runs only when at least one active MCP server exists.
     """
     from langchain_mcp_adapters import (
         sessions as _sessions,  # noqa: F401
         tools as _tools,  # noqa: F401
     )
 
-    from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    try:
+        from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm mcp_auth import off the event loop; "
+            "deferring to per-server use",
+            exc_info=True,
+        )
 
 
 async def _gather_bounded(

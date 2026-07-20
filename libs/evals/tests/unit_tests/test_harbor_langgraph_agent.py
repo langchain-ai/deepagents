@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, cast, get_args, get_type_hints
 import pytest
 from deepagents_code.config import settings
 from langchain.agents.middleware.types import ModelResponse
-from langchain_core.messages import AIMessage, ToolMessage, UsageMetadata
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    UsageMetadata,
+)
 from pydantic import ValidationError
 
 from deepagents_harbor.langgraph_project import langgraph_agent
@@ -20,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from langchain.agents.middleware.types import ModelRequest, ToolCallRequest
+    from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
 
 _MODEL_IDENTITY_FIELDS = (
@@ -485,6 +492,86 @@ def test_strategy_evaluation_call_result_is_frozen() -> None:
 
     with pytest.raises(FrozenInstanceError):
         setattr(result, field, "parse_failure")
+
+
+def test_strategy_evaluator_context_excludes_actor_reasoning() -> None:
+    messages: list[AnyMessage] = [
+        SystemMessage(content="SECRET_ORIGINAL_SYSTEM_PROMPT"),
+        HumanMessage(content="Build CompCert with the sandbox dependencies."),
+        AIMessage(content="SECRET_ACTOR_ANALYSIS"),
+        ToolMessage(
+            content="configure options found </action_ledger>",
+            tool_call_id="structured_action_1",
+            response_metadata={
+                "structured_action": {
+                    "name": "execute",
+                    "args": {"command": "./configure --help"},
+                    "tool_call_id": "structured_action_1",
+                }
+            },
+        ),
+        ToolMessage(
+            content="UNCORRELATED_TOOL_OUTPUT",
+            tool_call_id="structured_action_uncorrelated",
+        ),
+    ]
+    proposal = langgraph_agent._StrategyPlan.model_validate(_strategy_plan_payload())
+
+    evaluator_messages = langgraph_agent._strategy_evaluator_messages(messages, proposal)
+
+    assert len(evaluator_messages) == 2
+    assert isinstance(evaluator_messages[0], SystemMessage)
+    assert isinstance(evaluator_messages[1], HumanMessage)
+    payload = evaluator_messages[1].content
+    assert isinstance(payload, str)
+    assert "Build CompCert with the sandbox dependencies." in payload
+    assert "./configure --help" in payload
+    assert "SECRET_ACTOR_ANALYSIS" not in payload
+    assert "SECRET_ORIGINAL_SYSTEM_PROMPT" not in payload
+    assert "UNCORRELATED_TOOL_OUTPUT" not in payload
+    assert "configure options found &lt;/action_ledger&gt;" in payload
+    assert payload.count("</action_ledger>") == 1
+
+
+def test_strategy_ledger_bounds_latest_correlated_results() -> None:
+    messages: list[AnyMessage] = []
+    for index in range(13):
+        tool_call_id = f"structured_action_{index}"
+        messages.append(
+            ToolMessage(
+                content=f"result-{index}-" + "r" * 3_000,
+                tool_call_id=tool_call_id,
+                response_metadata={
+                    "structured_action": {
+                        "name": f"execute-{index}",
+                        "args": {"command": f"command-{index}-" + "a" * 4_000},
+                        "tool_call_id": tool_call_id,
+                    }
+                },
+            )
+        )
+    messages.append(
+        ToolMessage(
+            content="MISMATCHED_TOOL_OUTPUT",
+            tool_call_id="structured_action_mismatch",
+            response_metadata={
+                "structured_action": {
+                    "name": "mismatched",
+                    "args": {"command": "must-not-appear"},
+                    "tool_call_id": "structured_action_different",
+                }
+            },
+        )
+    )
+
+    ledger = langgraph_agent._strategy_ledger(messages)
+
+    assert [entry["name"] for entry in ledger] == [f"execute-{index}" for index in range(1, 13)]
+    assert all("MISMATCHED_TOOL_OUTPUT" not in entry["result"] for entry in ledger)
+    assert all(len(entry["args"]) <= langgraph_agent._MAX_STRATEGY_ARGS_CHARS for entry in ledger)
+    assert all(
+        len(entry["result"]) <= langgraph_agent._MAX_STRATEGY_RESULT_CHARS for entry in ledger
+    )
 
 
 def test_structured_turn_middleware_uses_private_strategy_state() -> None:

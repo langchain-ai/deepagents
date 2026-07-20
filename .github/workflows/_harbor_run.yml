@@ -753,29 +753,14 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
+          # agent_impl IS the graph key in langgraph.json (the single registry).
+          # Validate membership before it reaches `harbor run --agent-kwarg
+          # graph=...`. Callers already validate, so this is defense-in-depth;
+          # AGENT_IMPL is passed via env, never interpolated into the validator.
+          AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
+            "$GITHUB_WORKSPACE/.github/scripts/validate_agent_graph.py" \
+            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+          HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
@@ -795,7 +780,6 @@ jobs:
           # is already set (local-path-aware) in the dataset-resolution block above.
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_branch}-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
-          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
 
@@ -840,7 +824,7 @@ jobs:
           esac
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
-          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
+          echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
           uv run harbor run \
@@ -891,7 +875,6 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
           HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
-          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
@@ -918,7 +901,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
+            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then

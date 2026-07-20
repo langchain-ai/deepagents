@@ -52,6 +52,7 @@ from deepagents_code.goal_rubric import (
     GoalCriteriaState,
     _coerce_goal_proposal,
     _conversation_context,
+    _create_goal_criteria_agent,
     _criteria_interrupt_on,
     _CriteriaContextBudgetMiddleware,
     _goal_amendment_human_prompt,
@@ -75,6 +76,32 @@ if TYPE_CHECKING:
 
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
+
+    from deepagents_code.agent import AsyncApprovalHITLMiddleware
+
+
+class _LoopBoundAsyncStore:
+    """Async server Store whose sync API is invalid on the event loop."""
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.aget_calls = 0
+        self.get_calls = 0
+
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
+        from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE
+
+        assert namespace == APPROVAL_MODE_NAMESPACE
+        assert key
+        self.aget_calls += 1
+        await asyncio.sleep(0)
+        return SimpleNamespace(value=self.value)
+
+    def get(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        self.get_calls += 1
+        msg = "synchronous Store access is forbidden on the event loop"
+        raise asyncio.InvalidStateError(msg)
 
 
 class TestGoalPrompts:
@@ -973,6 +1000,120 @@ class TestCreateGoalCriteriaAgent:
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]
         )
+
+    @staticmethod
+    def _async_hitl(*, auto_mode_enabled: bool = True) -> AsyncApprovalHITLMiddleware:
+        from deepagents_code.agent import AsyncApprovalHITLMiddleware
+
+        fetch = StructuredTool.from_function(
+            func=lambda url: url,
+            name="fetch_url",
+            description="Fetch a URL.",
+        )
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+        with patch("langchain.agents.create_agent", return_value=graph) as make_agent:
+            _create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=None,
+                repository_root="/",
+                context_tools=[fetch],
+                auto_mode_enabled=auto_mode_enabled,
+            )
+
+        return next(
+            item
+            for item in make_agent.call_args.kwargs["middleware"]
+            if isinstance(item, AsyncApprovalHITLMiddleware)
+        )
+
+    @staticmethod
+    def _async_runtime(store: _LoopBoundAsyncStore) -> SimpleNamespace:
+        from deepagents_code.approval_mode import approval_mode_key
+
+        thread_id = "criteria-thread"
+        return SimpleNamespace(
+            context={
+                "thread_id": thread_id,
+                "approval_mode_key": approval_mode_key(thread_id),
+                "approval_mode": "auto",
+            },
+            store=store,
+            stream_writer=lambda _event: None,
+            execution_info=None,
+            server_info=None,
+        )
+
+    @staticmethod
+    def _fetch_state() -> dict[str, object]:
+        return {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "fetch_url",
+                            "args": {"url": "https://example.com/context"},
+                            "id": "call-fetch",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        }
+
+    async def test_context_tool_honors_auto_from_async_store(self) -> None:
+        """Goal-criteria external context bypasses HITL in eligible Auto."""
+        middleware = self._async_hitl()
+        store = _LoopBoundAsyncStore({"mode": "auto"})
+
+        update = await middleware.aafter_model(
+            cast("Any", self._fetch_state()),
+            cast("Any", self._async_runtime(store)),
+        )
+
+        assert update is None
+        assert store.aget_calls == 1
+        assert store.get_calls == 0
+
+    async def test_context_tool_still_interrupts_in_manual(self) -> None:
+        """Goal-criteria external context retains its Manual approval gate."""
+        middleware = self._async_hitl()
+        store = _LoopBoundAsyncStore({"mode": "manual"})
+
+        with (
+            patch(
+                "langchain.agents.middleware.human_in_the_loop.interrupt",
+                side_effect=GraphInterrupt(()),
+            ),
+            pytest.raises(GraphInterrupt),
+        ):
+            await middleware.aafter_model(
+                cast("Any", self._fetch_state()),
+                cast("Any", self._async_runtime(store)),
+            )
+
+        assert store.aget_calls == 1
+        assert store.get_calls == 0
+
+    async def test_context_tool_auto_is_ineligible_when_classifier_is_off(
+        self,
+    ) -> None:
+        """Goal-criteria Auto cannot bypass an ineligible parent runtime."""
+        middleware = self._async_hitl(auto_mode_enabled=False)
+        store = _LoopBoundAsyncStore({"mode": "auto"})
+
+        with (
+            patch(
+                "langchain.agents.middleware.human_in_the_loop.interrupt",
+                side_effect=GraphInterrupt(()),
+            ),
+            pytest.raises(GraphInterrupt),
+        ):
+            await middleware.aafter_model(
+                cast("Any", self._fetch_state()),
+                cast("Any", self._async_runtime(store)),
+            )
 
     def test_client_generation_symbols_are_removed(self) -> None:
         import deepagents_code.goal_rubric as module

@@ -143,7 +143,11 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(
-        "  -y, --auto-approve         Auto-approve all tool calls in interactive mode (toggle: Shift+Tab)"  # noqa: E501
+        "  -y, --auto-approve         Enable beta classifier-backed Auto mode"
+    )
+    console.print(
+        "  --yolo                     Run gated actions without review after "
+        "acknowledgement"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(

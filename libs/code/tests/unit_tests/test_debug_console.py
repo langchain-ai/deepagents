@@ -1305,7 +1305,7 @@ class TestDebugConsoleToggle:
             assert snapshot["Thread"] == "thread-xyz"
             assert snapshot["CWD"] == "/tmp/work"
             assert "Version" in snapshot
-            assert "Auto-approve" in snapshot
+            assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
     async def test_build_snapshot_thread_field_is_copyable_and_linkable(self) -> None:

@@ -736,16 +736,9 @@ async def test_strategy_async_approval_runs_selected_actor_plan() -> None:
     assert record["selected_source"] == "actor"
 
 
-async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
+async def test_strategy_async_background_action_reviews_unlabeled_pivot() -> None:
     original = langgraph_agent._StrategyPlan.model_validate(
         _strategy_plan_payload(objective="Build CompCert with packaged dependencies.")
-    )
-    pivot = langgraph_agent._StrategyPlan.model_validate(
-        _strategy_plan_payload(
-            objective="Replace packaged Coq with an opam switch.",
-            steps=["Initialize opam.", "Install an older Coq release.", "Rebuild CompCert."],
-            costly_commitments=["Change package managers and install a second Coq toolchain."],
-        )
     )
     replacement = langgraph_agent._StrategyPlan.model_validate(
         _strategy_plan_payload(
@@ -765,8 +758,18 @@ async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
         selected_plan=original.model_dump(mode="json"),
         selected_source="actor",
     )
-    replan = langgraph_agent._Turn.model_validate(
-        {"control": {"kind": "replan", "proposal": pivot.model_dump()}}
+    pivot = langgraph_agent._Turn.model_validate(
+        {
+            "control": {
+                "kind": "continue",
+                "actions": [
+                    {
+                        "action": "run_background",
+                        "command": "opam init && opam install coq.8.16.1",
+                    }
+                ],
+            }
+        }
     )
     revision = langgraph_agent._PlanVerdict.model_validate(
         {
@@ -792,7 +795,7 @@ async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
             (
                 langgraph_agent._Turn,
                 _raw_result(
-                    replan,
+                    pivot,
                     {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
                 ),
             ),
@@ -844,13 +847,13 @@ async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
     evaluator_messages = cast("list[AnyMessage]", model.calls[1]["messages"])
     evaluator_payload = evaluator_messages[1].text
     assert "Z_div_mod_eq was not found" in evaluator_payload
-    assert pivot.objective in evaluator_payload
+    assert "opam init" in evaluator_payload
     execution_messages = cast("list[AnyMessage]", model.calls[2]["messages"])
     assert any(
         isinstance(message, HumanMessage)
         and "Required execution strategy" in message.text
         and replacement.objective in message.text
-        and pivot.objective not in message.text
+        and "opam init" not in message.text
         for message in execution_messages
     )
     message = response.model_response.result[0]
@@ -865,7 +868,7 @@ async def test_strategy_async_replan_reviews_execution_time_pivot() -> None:
     }
     updated = _response_strategy_record(response)
     assert updated["phase"] == "approved"
-    assert updated["current_proposal"] == pivot.model_dump(mode="json")
+    assert updated["current_proposal"] == original.model_dump(mode="json")
     assert updated["selected_plan"] == replacement.model_dump(mode="json")
     assert updated["selected_source"] == "evaluator"
     assert updated["replan_count"] == 1

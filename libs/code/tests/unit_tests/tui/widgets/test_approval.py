@@ -602,8 +602,15 @@ class TestRejectWithReason:
         menu.action_select_reject()
         menu._handle_selection.assert_called_once_with(2)
 
-    async def test_tab_then_type_then_enter_submits_reason(self) -> None:
-        """End-to-end Tab → type → Enter sends a reject decision with the message."""
+    @pytest.mark.parametrize(
+        ("auto_mode_eligible", "down_presses"),
+        [(True, 2), (False, 1)],
+        ids=["auto-shown", "auto-hidden"],
+    )
+    async def test_tab_then_type_then_enter_submits_reason(
+        self, *, auto_mode_eligible: bool, down_presses: int
+    ) -> None:
+        """Tab → type → Enter sends a reason with either option layout."""
         from textual.app import App, ComposeResult
 
         decision_received: dict[str, str] | None = None
@@ -611,7 +618,8 @@ class TestRejectWithReason:
         class ApprovalTestApp(App[None]):
             def compose(self) -> ComposeResult:
                 yield ApprovalMenu(
-                    {"name": "execute", "args": {"command": "echo hello"}}
+                    {"name": "execute", "args": {"command": "echo hello"}},
+                    auto_mode_eligible=auto_mode_eligible,
                 )
 
             def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
@@ -620,8 +628,7 @@ class TestRejectWithReason:
 
         async with ApprovalTestApp().run_test() as pilot:
             await pilot.pause()
-            # Move to Reject (option 3 of 3) — start at 0, so two downs.
-            await pilot.press("down", "down")
+            await pilot.press(*(["down"] * down_presses))
             await pilot.press("tab")
             await pilot.pause()
             for ch in "dry run first":

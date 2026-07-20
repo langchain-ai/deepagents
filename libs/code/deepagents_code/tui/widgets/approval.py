@@ -598,7 +598,7 @@ class ApprovalMenu(Container):
             return
         reason = event.value.strip()
         self._reason_input_active = False
-        self._handle_selection(2, reject_message=reason or None)
+        self._handle_selection(self._reject_index, reject_message=reason or None)
 
     def _collect_security_warnings(self) -> list[str]:
         """Collect warning strings for suspicious Unicode and URL values.

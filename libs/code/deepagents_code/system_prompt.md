@@ -122,6 +122,11 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - Small files (<500 lines)
 - Files you need to edit immediately after reading
 
+**Do not re-read files already in context:**
+
+- Within a single turn, if you already read a file at a given path and offset and it has not been modified since, reuse the content already loaded — do not issue another identical `read_file`. Repeated whole-file re-reads at offset 0 are a dominant, avoidable prompt-token cost in doc-editing and deep-debugging turns.
+- Only re-read after a `edit_file`/`write_file` changed the file and you need the fresh bytes. In that case read only the changed region by `offset`/`limit` rather than reloading the whole file.
+
 ## Git Safety Protocol
 
 - NEVER update the git config

@@ -1,5 +1,8 @@
 """Unit tests for approval widget expandable command display."""
 
+import asyncio
+from collections.abc import Callable, Iterator
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +13,32 @@ from deepagents_code.tui.widgets.approval import (
     _SHELL_COMMAND_TRUNCATE_LINES,
     ApprovalMenu,
 )
+
+MenuFactory = Callable[..., tuple[ApprovalMenu, "asyncio.Future[dict[str, str]]"]]
+
+
+@pytest.fixture
+def wired_menu() -> Iterator[MenuFactory]:
+    """Build an `ApprovalMenu` wired to a future on a throwaway event loop.
+
+    Yields a factory `(*args, **kwargs) -> (menu, future)` that forwards its
+    arguments to `ApprovalMenu` and attaches a fresh future. Every loop it opens
+    is closed at teardown, so tests can assert on `future.result()` without
+    hand-rolling (and remembering to close) an event loop.
+    """
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    def _make(*args: Any, **kwargs: Any) -> tuple[ApprovalMenu, asyncio.Future]:
+        loop = asyncio.new_event_loop()
+        loops.append(loop)
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(*args, **kwargs)
+        menu.set_future(future)
+        return menu, future
+
+    yield _make
+    for loop in loops:
+        loop.close()
 
 
 class TestCheckExpandableCommand:
@@ -427,51 +456,37 @@ class TestAutoOptionEligibility:
         )
         assert menu._reject_index == 1
 
-    def test_reject_via_second_position_when_auto_hidden(self) -> None:
+    def test_reject_via_second_position_when_auto_hidden(
+        self, wired_menu: MenuFactory
+    ) -> None:
         """The `2` quick key selects Reject once Auto is removed."""
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        future: asyncio.Future[dict[str, str]] = loop.create_future()
-        menu = ApprovalMenu(
+        menu, future = wired_menu(
             {"name": "execute", "args": {"command": "echo hello"}},
             auto_mode_eligible=False,
         )
-        menu.set_future(future)
         menu.action_select_position(1)
         assert future.result() == {"type": "reject"}
-        loop.close()
 
-    def test_select_auto_is_no_op_when_hidden(self) -> None:
+    def test_select_auto_is_no_op_when_hidden(self, wired_menu: MenuFactory) -> None:
         """Pressing `a` does nothing when Auto is not offered."""
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        future: asyncio.Future[dict[str, str]] = loop.create_future()
-        menu = ApprovalMenu(
+        menu, future = wired_menu(
             {"name": "execute", "args": {"command": "echo hello"}},
             auto_mode_eligible=False,
         )
-        menu.set_future(future)
         menu.action_select_auto()
         assert not future.done()
         assert menu.display is True
-        loop.close()
 
-    def test_third_position_is_no_op_when_auto_hidden(self) -> None:
+    def test_third_position_is_no_op_when_auto_hidden(
+        self, wired_menu: MenuFactory
+    ) -> None:
         """The `3` quick key has no target once Auto is removed."""
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        future: asyncio.Future[dict[str, str]] = loop.create_future()
-        menu = ApprovalMenu(
+        menu, future = wired_menu(
             {"name": "execute", "args": {"command": "echo hello"}},
             auto_mode_eligible=False,
         )
-        menu.set_future(future)
         menu.action_select_position(2)
         assert not future.done()
-        loop.close()
 
     def test_help_omits_auto_quick_key_when_hidden(self) -> None:
         """The footer advertises `y/n` (not `y/a/n`) when Auto is hidden."""
@@ -499,20 +514,16 @@ class TestAutoOptionEligibility:
         # Ineligible session but Auto is live, so the footer still advertises `a`.
         assert "y/a/n quick keys" in menu._compose_help_text()
 
-    def test_first_position_approves_when_auto_hidden(self) -> None:
+    def test_first_position_approves_when_auto_hidden(
+        self, wired_menu: MenuFactory
+    ) -> None:
         """The `1` quick key still approves in the 2-option layout."""
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        future: asyncio.Future[dict[str, str]] = loop.create_future()
-        menu = ApprovalMenu(
+        menu, future = wired_menu(
             {"name": "execute", "args": {"command": "echo hello"}},
             auto_mode_eligible=False,
         )
-        menu.set_future(future)
         menu.action_select_position(0)
         assert future.result() == {"type": "approve"}
-        loop.close()
 
     def test_batch_labels_when_auto_hidden(self) -> None:
         """Batch (count > 1) Approve/Reject labels stay pluralized with Auto hidden."""
@@ -527,6 +538,31 @@ class TestAutoOptionEligibility:
         decisions = [decision for _, decision in menu._build_options()]
         assert decisions == ["approve", "reject"]
         assert labels == ["Approve all 2 (y)", "Reject all 2 (n)"]
+
+    def test_update_options_renders_contiguous_numbers_when_auto_hidden(self) -> None:
+        """The hidden-Auto layout renders `1.`/`2.` rows, never skipping to `3.`.
+
+        The display number is prefixed in `_update_options`, not baked into the
+        labels, so a regression to hardcoded numbering would show `3. Reject` in
+        a 2-option menu.
+        """
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu._option_widgets = [MagicMock(), MagicMock()]
+        menu._selected = 0
+        menu._update_options()
+        rendered = [
+            widget.update.call_args.args[0]  # ty: ignore
+            for widget in menu._option_widgets
+        ]
+        assert "1. Approve (y)" in rendered[0]
+        assert "2. Reject (n)" in rendered[1]
+        assert not any("3." in text for text in rendered)
+        # The cursor glyph marks the selected row only.
+        assert rendered[0].startswith(f"{get_glyphs().cursor} ")
+        assert rendered[1].startswith("  ")
 
     def test_navigation_wraps_within_two_option_layout(self) -> None:
         """Down/up wrap modulo the visible count, never landing on a phantom index."""
@@ -543,27 +579,23 @@ class TestAutoOptionEligibility:
         menu.action_move_down()
         assert menu._selected == 1
 
-    def test_select_after_wraparound_resolves_without_index_error(self) -> None:
+    def test_select_after_wraparound_resolves_without_index_error(
+        self, wired_menu: MenuFactory
+    ) -> None:
         """Selecting after wraparound in the 2-option layout resolves cleanly.
 
         Guards against a regression to a hardcoded ``% 3`` modulus, which would
         leave ``_selected == 2`` and raise ``IndexError`` on selection.
         """
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        future: asyncio.Future[dict[str, str]] = loop.create_future()
-        menu = ApprovalMenu(
+        menu, future = wired_menu(
             {"name": "execute", "args": {"command": "echo hello"}},
             auto_mode_eligible=False,
         )
-        menu.set_future(future)
         menu._option_widgets = [MagicMock(), MagicMock()]
         menu.action_move_down()  # 0 -> 1 (reject)
         menu.action_move_down()  # 1 -> 0 (wrap to approve)
         menu.action_select()
         assert future.result() == {"type": "approve"}
-        loop.close()
 
     @pytest.mark.parametrize(
         ("key", "expected_type"),

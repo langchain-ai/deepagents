@@ -13458,8 +13458,12 @@ class TestApprovalPositionBindings:
     def test_numeric_position_is_no_op_without_pending_approval(self) -> None:
         """Fallback number actions do nothing outside an approval prompt."""
         app = DeepAgentsApp()
+        assert app._pending_approval_widget is None
 
+        # Must not raise despite there being no widget to delegate to.
         app.action_approval_position(1)
+
+        assert app._pending_approval_widget is None
 
 
 class TestIsUserTyping:
@@ -13621,6 +13625,45 @@ class TestRequestApprovalBranching:
         assert ApprovalMenu in mounted_types, (
             f"Expected ApprovalMenu to be mounted, got {mounted_types}"
         )
+
+    @pytest.mark.parametrize("eligible", [True, False])
+    async def test_menu_receives_auto_mode_eligibility(self, *, eligible: bool) -> None:
+        """The app forwards `_auto_mode_eligible` into the mounted ApprovalMenu.
+
+        Guards the load-bearing seam: if this kwarg were dropped or hardcoded,
+        the Auto option would (dis)appear regardless of session eligibility, and
+        the widget-level tests — which pass the flag themselves — would not catch
+        it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+        app._auto_mode_eligible = eligible
+
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, _widget: object
+        ) -> None:
+            return None
+
+        app._mount_before_queued = fake_mount_before_queued  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.query_one = MagicMock(return_value=MagicMock())  # ty: ignore
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/e.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(asyncio, "get_running_loop") as mock_loop,
+            patch.object(app, "_reveal_pending_tool_calls"),
+        ):
+            mock_loop.return_value.create_future.return_value = future
+            await app._request_approval(action_requests, None)
+
+        # For a non-fallback request `_show_auto_option` equals the eligibility
+        # flag, so this asserts the value actually crossed the app→widget seam.
+        assert app._pending_approval_widget is not None
+        assert app._pending_approval_widget._show_auto_option is eligible
 
 
 class TestDeferredShowApproval:

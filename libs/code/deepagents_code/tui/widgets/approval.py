@@ -483,14 +483,15 @@ class ApprovalMenu(Container):
         """Submit the option at a display position (0-indexed).
 
         Backs the numeric quick keys, which map key `1`/`2`/`3` to position
-        `0`/`1`/`2`. Positions past the last visible option are ignored, so
+        `0`/`1`/`2`. Positions outside the visible options are ignored, so
         when the Auto option is hidden (only positions 0-1 exist) the `3` key
-        (position 2) is a no-op.
+        (position 2) is a no-op and key `2` (position 1) selects Reject rather
+        than Auto.
 
         Args:
             position: Zero-based index of the visible option to submit.
         """
-        if position >= self._num_options:
+        if not 0 <= position < self._num_options:
             return
         self._handle_selection(position)
 

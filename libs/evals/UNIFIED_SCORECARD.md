@@ -9,7 +9,7 @@ GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k =
   <img alt="Grouped bar chart of lite pass@k (top panel) and avg@k (bottom panel) by category (autonomous, conversation, context) across GPT-5.6 terra, sol, luna, Claude Opus 4.8, Claude Sonnet 5, and GLM-5.2, sorted by macro pass@k" src="assets/lite-scorecard-light.svg">
 </picture>
 
-pass@k (top) and avg@k (bottom), sorted by macro pass@k. Context is graded by **exact string match** on `/app/answer.txt`, and each task instructs the agent to write *only* the final answer there ("and nothing else"). The low context scores — GPT-5.6 sol (0.000) and Claude Opus 4.8 (0.125) most notably — are an **instruction-following / output-format gap, not a retrieval gap**: these models reach the correct answer but write it as a full explanatory sentence, which the exact-match check rejects.
+pass@k (top) and avg@k (bottom), sorted by macro pass@k. Context is now graded by the faithful Letta **`model_judge`** (rubric-based LLM judge, `gpt-5.6-luna`) matching upstream Context-Bench, **not exact string match** — verbose-but-correct answers are no longer zeroed. This confirms the earlier low context scores were an output-format artifact, not a retrieval gap. **Re-graded so far:** GPT-5.6 sol context 0.000 → 0.750 and Claude Opus 4.8 context 0.125 → 0.500 (run [29778028063](https://github.com/langchain-ai/deepagents/actions/runs/29778028063)). GPT-5.6 terra, luna, Sonnet 5, and GLM-5.2 context below still show the **old exact-match** numbers pending re-grade (run [29778667492](https://github.com/langchain-ai/deepagents/actions/runs/29778667492)); the chart above regenerates once all are re-graded. Judging luna with a luna grader is self-grading (noted where it applies).
 
 ## GPT-5.6 terra
 
@@ -85,11 +85,11 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.400 | 0.267 | 15 |
 | conversation (tau3-subset) | 0.727 | 0.485 | 11 |
-| context (context-retrieval) | 0.000 | 0.000 | 8 |
-| **macro** | **0.376** | **0.251** |  |
-| **micro** | **0.412** | **0.275** |  |
+| context (context-retrieval) | 0.750 | 0.750 | 8 |
+| **macro** | **0.626** | **0.501** |  |
+| **micro** | **0.588** | **0.451** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
+Autonomous and conversation from run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context re-graded 2026-07-20 via run [29778028063](https://github.com/langchain-ai/deepagents/actions/runs/29778028063) with the faithful Letta `model_judge` (`rubric.txt`, judge `gpt-5.6-luna`), which lifts context from an exact-match `0.000` — sol solves 6/8 context tasks.
 
 ## Claude Opus 4.8
 
@@ -101,11 +101,11 @@ Frozen high-signal subset (`lite_tasks.py`, difficulty-frontier tasks).
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.467 | 0.289 | 15 |
 | conversation (tau3-subset) | 0.364 | 0.242 | 11 |
-| context (context-retrieval) | 0.125 | 0.042 | 8 |
-| **macro** | **0.318** | **0.191** |  |
-| **micro** | **0.353** | **0.216** |  |
+| context (context-retrieval) | 0.500 | 0.458 | 8 |
+| **macro** | **0.444** | **0.330** |  |
+| **micro** | **0.441** | **0.314** |  |
 
-Run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`.
+Autonomous and conversation from run [29593952741](https://github.com/langchain-ai/deepagents/actions/runs/29593952741) · 2026-07-17 · `agent_impl=bare` · `profile=lite` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac`. Context re-graded 2026-07-20 via run [29778028063](https://github.com/langchain-ai/deepagents/actions/runs/29778028063) with the faithful Letta `model_judge` (`rubric.txt`, judge `gpt-5.6-luna`), which lifts context from an exact-match `0.125` — opus solves 4/8 context tasks.
 
 ## Claude Sonnet 5
 

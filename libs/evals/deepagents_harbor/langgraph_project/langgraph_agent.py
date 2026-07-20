@@ -38,7 +38,7 @@ from langchain_core.messages.utils import get_buffer_string
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.types import Command  # noqa: TC002  # staged for runtime strategy state updates
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -720,7 +720,11 @@ _MAX_STRATEGY_EVALUATOR_OUTPUT_TOKENS = 2_000
 
 type _StrategyItem = Annotated[
     str,
-    Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS),
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=_MAX_STRATEGY_ITEM_CHARS,
+    ),
 ]
 
 
@@ -736,8 +740,8 @@ class _StrategyPlan(BaseModel):
     costly_commitments: list[_StrategyItem] = Field(
         default_factory=list, max_length=_MAX_STRATEGY_ITEMS
     )
-    fallback: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
-    verification: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
+    fallback: _StrategyItem
+    verification: _StrategyItem
 
 
 class _ReconControl(BaseModel):
@@ -786,7 +790,7 @@ class _RevisePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["revise"]
-    critique: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
+    critique: _StrategyItem
     missing_evidence: list[_StrategyItem] = Field(
         default_factory=list, max_length=_MAX_STRATEGY_ITEMS
     )

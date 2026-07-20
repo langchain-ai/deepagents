@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast, get_args, get_type_hints
@@ -353,6 +354,20 @@ def test_make_structured_graph_exposes_minimal_background_tools(
     }
 
 
+def _strategy_plan_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "objective": "Build and install CompCert.",
+        "observations": ["Ubuntu packages Coq 8.18."],
+        "assumptions": ["CompCert accepts ignored Coq version checks."],
+        "steps": ["Configure against packaged dependencies.", "Build serially."],
+        "costly_commitments": [],
+        "fallback": "Inspect the first concrete configure or build error.",
+        "verification": "Run ccomp and the task verifier.",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_strategy_planning_contract_only_allows_recon_or_plan() -> None:
     recon = langgraph_agent._PlanningTurn.model_validate(
         {
@@ -369,15 +384,7 @@ def test_strategy_planning_contract_only_allows_recon_or_plan() -> None:
         {
             "control": {
                 "kind": "propose_plan",
-                "proposal": {
-                    "objective": "Build and install CompCert.",
-                    "observations": ["Ubuntu packages Coq 8.18."],
-                    "assumptions": ["CompCert accepts ignored Coq version checks."],
-                    "steps": ["Configure against packaged dependencies.", "Build serially."],
-                    "costly_commitments": [],
-                    "fallback": "Inspect the first concrete configure or build error.",
-                    "verification": "Run ccomp and the task verifier.",
-                },
+                "proposal": _strategy_plan_payload(),
             }
         }
     )
@@ -392,6 +399,98 @@ def test_strategy_planning_contract_only_allows_recon_or_plan() -> None:
                 }
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("objective", " \t "),
+        ("steps", ["\n"]),
+        ("fallback", "   "),
+        ("verification", "\r\n"),
+    ],
+)
+def test_strategy_plan_rejects_whitespace_required_text(field: str, value: object) -> None:
+    payload = _strategy_plan_payload()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        langgraph_agent._StrategyPlan.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("critique", " \t "),
+        ("missing_evidence", ["\n"]),
+    ],
+)
+def test_strategy_revision_rejects_whitespace_required_text(field: str, value: object) -> None:
+    result: dict[str, object] = {
+        "decision": "revise",
+        "critique": "The strategy needs stronger evidence.",
+        "missing_evidence": [],
+        "recommended_plan": _strategy_plan_payload(),
+    }
+    result[field] = value
+
+    with pytest.raises(ValidationError):
+        langgraph_agent._PlanVerdict.model_validate({"result": result})
+
+
+def test_strategy_plan_strips_text_and_bounds_list_items() -> None:
+    steps = [f" step {index} " for index in range(8)]
+
+    plan = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective=" Build CompCert ", steps=steps)
+    )
+
+    assert plan.objective == "Build CompCert"
+    assert plan.steps == [f"step {index}" for index in range(8)]
+
+    with pytest.raises(ValidationError):
+        langgraph_agent._StrategyPlan.model_validate(
+            _strategy_plan_payload(steps=[f"step {index}" for index in range(9)])
+        )
+
+
+def test_strategy_plan_verdict_contracts() -> None:
+    approve = langgraph_agent._PlanVerdict.model_validate({"result": {"decision": "approve"}})
+    revise = langgraph_agent._PlanVerdict.model_validate(
+        {
+            "result": {
+                "decision": "revise",
+                "critique": "Prefer the packaged dependencies.",
+                "recommended_plan": _strategy_plan_payload(),
+            }
+        }
+    )
+
+    assert isinstance(approve.result, langgraph_agent._ApprovePlan)
+    assert isinstance(revise.result, langgraph_agent._RevisePlan)
+
+    with pytest.raises(ValidationError):
+        langgraph_agent._PlanVerdict.model_validate(
+            {"result": {"decision": "approve", "unexpected": True}}
+        )
+    with pytest.raises(ValidationError):
+        langgraph_agent._PlanVerdict.model_validate(
+            {"result": {"decision": "revise", "critique": "Needs revision."}}
+        )
+
+
+def test_strategy_evaluation_call_result_is_frozen() -> None:
+    result = langgraph_agent._EvaluationCallResult(verdict=None, usage=None, error=None)
+    field = "error"
+
+    with pytest.raises(FrozenInstanceError):
+        setattr(result, field, "parse_failure")
+
+
+def test_structured_turn_middleware_uses_private_strategy_state() -> None:
+    assert langgraph_agent._StructuredTurnMiddleware.state_schema is (
+        langgraph_agent._StructuredAgentState
+    )
 
 
 def test_strategy_gate_state_is_private() -> None:

@@ -1533,7 +1533,12 @@ def _build_cached_mcp_tool(
         mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
     )
     wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {**base_meta, **wrapped_meta} or None
+    metadata = {
+        **base_meta,
+        **wrapped_meta,
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+    }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
         try:
@@ -1762,18 +1767,38 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP adapter modules whose first import may block.
+    """Eagerly import MCP modules whose first import may block.
 
-    Run via `asyncio.to_thread` before adapter symbols are used, so the initial
-    (potentially blocking) package-resource scan stays off the server event
-    loop. Because this runs inside `_load_tools_from_config`, it happens only
-    when at least one active MCP server exists — a config with no MCP servers
-    never imports the adapters.
+    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
+    blocking side effect of a first import happens off the server event loop
+    rather than where Blockbuster would reject it. Two known offenders:
+
+    - `langchain_mcp_adapters` runs a package-resource scan on first import.
+    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
+      calls `os.getcwd()` in its module body (verified against the pinned
+      versions — the exact culprit may shift as dependencies change, but the
+      general risk of import-time I/O in this subtree does not).
+
+    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
+    (remote-server preflight and the per-tool call path), where an import
+    failure is captured and reported per server. A failure to warm it must not
+    abort loading for every server — notably stdio-only configs, which never
+    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
+    at the real use site. Runs only when at least one active MCP server exists.
     """
     from langchain_mcp_adapters import (
         sessions as _sessions,  # noqa: F401
         tools as _tools,  # noqa: F401
     )
+
+    try:
+        from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm mcp_auth import off the event loop; "
+            "deferring to per-server use",
+            exc_info=True,
+        )
 
 
 async def _gather_bounded(
@@ -2084,6 +2109,7 @@ async def _load_tools_from_config(
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
+                format_login_failure,
             )
 
             status: MCPServerStatus
@@ -2111,31 +2137,36 @@ async def _load_tools_from_config(
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception only in debug logs
-                # so expected re-auth skips don't flood non-interactive output.
+                # re-login. This is an expected, already-classified outcome, so
+                # the actionable WARNING says everything useful; the full
+                # traceback adds no diagnostic value, so keep the DEBUG log to a
+                # concise, token-safe breadcrumb. Use `format_login_failure`
+                # rather than `exc.__class__.__name__`: these failures usually
+                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
+                # class name would just read "ExceptionGroup"; the helper walks
+                # the group/cause chain to name the nested culprit instead.
                 status = "unauthenticated"
-                detail = (
-                    "details redacted because config uses environment interpolation"
-                    if redact_failure_details
-                    else "the original error is in debug logs"
-                )
-                error = f"{reauth} (token refresh failed; {detail})"
+                error = f"{reauth} (token refresh failed)"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: tool discovery failed",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: token refresh failed (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
                 # (RFC 9728) that wasn't already handled as a token refresh —
                 # typically a server not opted into OAuth in config. Surface it
                 # as unauthenticated so the user can log in, rather than as an
-                # opaque connection error.
+                # opaque connection error. Like the reauth case, this is a
+                # recognized outcome: keep the DEBUG log to a concise,
+                # token-safe breadcrumb (via `format_login_failure`, which
+                # names the nested culprit inside the anyio `ExceptionGroup`)
+                # rather than dumping the full challenge traceback.
                 status = "unauthenticated"
                 error = (
                     f"MCP server {server_name!r} requires authentication; "
@@ -2146,10 +2177,10 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    exc,
+                logger.debug(
+                    "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
+                    server_name,
+                    format_login_failure(exc),
                 )
             else:
                 status = "error"

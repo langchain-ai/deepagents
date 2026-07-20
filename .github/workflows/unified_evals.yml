@@ -11,13 +11,14 @@ on:
         description: "Comma list"
         type: string
         default: "autonomous,conversation,context"
-      agent_impl:
-        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
-        type: choice
+      agent_impls:
+        description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
+        type: string
         default: "bare"
-        options:
-          - bare
-          - dcode
+      branches_to_compare:
+        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
+        type: string
+        default: ""
       profile:
         description: "Task scope: 'full' (every task) or 'lite' (frozen high-signal subset from lite_tasks.py — fewer tasks, full rollouts)."
         type: choice
@@ -42,6 +43,10 @@ on:
         description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         type: string
         default: ""
+      judge_models:
+        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -64,6 +69,9 @@ jobs:
       model_parallel: ${{ steps.p.outputs.model_parallel }}
       models: ${{ steps.p.outputs.models }}
       categories: ${{ steps.p.outputs.categories }}
+      configs: ${{ steps.p.outputs.configs }}
+      expected_leaves: ${{ steps.p.outputs.expected_leaves }}
+      branches: ${{ steps.p.outputs.branches }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -168,7 +176,8 @@ jobs:
         env:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
-          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
+          UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
@@ -189,7 +198,9 @@ jobs:
           RESOLVED_MODELS: ${{ steps.p.outputs.models }}
           IN_CATEGORIES: ${{ inputs.categories }}
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
-          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          IN_BRANCHES: ${{ inputs.branches_to_compare }}
+          RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
@@ -228,7 +239,8 @@ jobs:
             echo "| models (requested) | \`${IN_MODELS}\` |"
             echo "| models (resolved) | \`${resolved_models}\` |"
             echo "| categories | \`${IN_CATEGORIES}\` |"
-            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
+            echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
@@ -239,7 +251,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   eval:
-    name: "🚀 Evaluate (${{ matrix.model }})"
+    name: "🚀 Evaluate (${{ matrix.model }} / ${{ matrix.branch }})"
     needs: prep
     strategy:
       fail-fast: false
@@ -252,6 +264,8 @@ jobs:
     secrets: inherit
     with:
       model: ${{ matrix.model }}
+      branch: ${{ matrix.branch }}
+      branch_sha: ${{ matrix.branch_sha }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.
@@ -262,12 +276,13 @@ jobs:
       category: ""
       dataset: ""
       dataset_path: ""
-      agent_impl: ${{ inputs.agent_impl }}
+      agent_impl: ""
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}
 
   combine:
     name: "📊 Combine cross-model results"
@@ -328,9 +343,9 @@ jobs:
 
       - name: "📊 Combine"
         env:
-          # Expected grid, so a model whose leaf never uploaded is shown and
-          # flagged incomplete rather than silently ranking on fewer categories.
-          EXPECTED_MODELS: ${{ needs.prep.outputs.models }}
+          # Expected grid, so a leaf that never uploaded is shown and flagged
+          # incomplete rather than silently ranking on fewer categories.
+          EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
           mkdir -p _leaves

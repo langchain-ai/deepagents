@@ -462,7 +462,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.42"
+version = "0.1.44"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -573,6 +573,7 @@ provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fir
 
 [package.metadata.requires-dev]
 test = [
+    { name = "blockbuster", specifier = ">=1.5.26,<1.6" },
     { name = "build", specifier = ">=1.5.0,<2.0.0" },
     { name = "hatchling", specifier = ">=1.30.1,<2.0.0" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },

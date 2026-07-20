@@ -22,6 +22,7 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_details_content,
     _plugin_options,
     _plugin_prompt,
+    _status_lines,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
     PluginTab,
@@ -890,6 +891,41 @@ def test_marketplace_options_omit_divider_when_empty() -> None:
     assert [option.id for option in options] == ["add-marketplace"]
 
 
+def test_marketplace_options_pad_between_entries() -> None:
+    """Marketplace entries are separated by disabled spacers, like the plugins list."""
+    screen = PluginManagerScreen()
+    screen._tab = "marketplaces"
+    screen._state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(),
+        marketplaces=(
+            _MarketplaceRow("first", "owner/first", 1, 0),
+            _MarketplaceRow("second", "owner/second", 1, 0),
+            _MarketplaceRow("third", "owner/third", 1, 0),
+        ),
+        errors=(),
+    )
+
+    options = screen._current_options()
+
+    ids = [option.id for option in options]
+    assert ids == [
+        "add-marketplace",
+        "marketplace-divider",
+        "marketplace:first",
+        "marketplace-spacer:1",
+        "marketplace:second",
+        "marketplace-spacer:2",
+        "marketplace:third",
+    ]
+    spacers = [
+        option
+        for option in options
+        if option.id is not None and option.id.startswith("marketplace-spacer:")
+    ]
+    assert all(spacer.disabled for spacer in spacers)
+
+
 def test_healthy_marketplace_label_shows_available_plugins() -> None:
     row = _MarketplaceRow("healthy", "owner/healthy", 3, 0)
 
@@ -1034,6 +1070,47 @@ def test_installed_details_enabled_flags_mcp_restart() -> None:
 
     assert f"Status: {get_glyphs().checkmark} Enabled" in content
     assert "MCP servers need a server restart (/reload) to connect." in content
+
+
+def test_status_lines_enabled_is_success_and_companions_stay_dim() -> None:
+    """The enabled status renders green ($success); companion lines stay dim."""
+    row = _PluginRow(
+        plugin_id="quality@tools",
+        description="Quality",
+        enabled=True,
+        version="1.0.0",
+        author=None,
+        skill_count=1,
+        skill_names=("quality@tools:review",),
+        mcp_connected=False,  # forces the second (dim) status line
+        session_loaded=True,
+    )
+
+    lines = _status_lines(row)
+
+    assert lines[0].plain == f"Status: {get_glyphs().checkmark} Enabled"
+    assert [span.style for span in lines[0].spans] == ["$success"]
+    # The MCP-restart companion line must NOT inherit the success color.
+    assert lines[1].plain.startswith("MCP servers need a server restart")
+    assert [span.style for span in lines[1].spans] == ["dim"]
+
+
+def test_status_lines_non_enabled_states_stay_dim() -> None:
+    """Every line of a non-enabled status keeps the plain dim styling."""
+    row = _PluginRow(
+        plugin_id="broken@tools",
+        description="Broken",
+        enabled=True,
+        version=None,
+        author=None,
+        session_loaded=False,
+        load_error="boom",  # load_state == "error"
+    )
+
+    assert row.load_state == "error"
+    assert all(
+        span.style == "dim" for line in _status_lines(row) for span in line.spans
+    )
 
 
 def test_load_state_label_matches_state() -> None:

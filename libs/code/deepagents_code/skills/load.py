@@ -25,6 +25,7 @@ from deepagents.middleware.skills import (
 )
 
 from deepagents_code._version import __version__ as _cli_version
+from deepagents_code.skills.merge import merge_skill
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def list_skills(
             directories taking priority when names conflict.
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
+    merged_source_labels: dict[str, str | None] = {}
 
     sources: list[tuple[Path | None, str, bool, str]] = [
         (built_in_skills_dir, "built-in", False, ""),
@@ -141,7 +143,12 @@ def list_skills(
                         "deepagents-code-version": _cli_version,
                     }
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
-                all_skills[skill["name"]] = extended
+                merge_skill(
+                    all_skills,
+                    merged_source_labels,
+                    extended,
+                    source_label=source_label,
+                )
         except Exception:
             # Degrade gracefully — one malformed/inaccessible source must not
             # block discovery of others, so catch broadly and log instead.

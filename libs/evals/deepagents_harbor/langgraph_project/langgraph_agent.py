@@ -8,8 +8,9 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -17,15 +18,26 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
-from langchain.agents.middleware.types import ModelResponse
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelResponse,
+    PrivateStateAttr,
+)
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, UsageMetadata
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    ToolMessage,
+    UsageMetadata,
+)
 from langchain_core.messages.ai import add_usage
 from langchain_core.messages.utils import get_buffer_string
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.types import Command  # noqa: TC002  # staged for runtime strategy state updates
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
@@ -33,7 +45,6 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ToolCallRequest
     from langchain_core.messages import AnyMessage
-    from langgraph.types import Command
 
 _DEFAULT_WORKDIR = Path("/app")
 
@@ -699,6 +710,124 @@ type _StructuredAction = Annotated[
 ]
 
 
+_MAX_STRATEGY_ITEMS = 8
+_MAX_STRATEGY_ITEM_CHARS = 800
+_MAX_STRATEGY_LEDGER_ENTRIES = 12
+_MAX_STRATEGY_ARGS_CHARS = 2_000
+_MAX_STRATEGY_RESULT_CHARS = 1_500
+_MAX_STRATEGY_TASK_CHARS = 8_000
+_MAX_STRATEGY_EVALUATOR_OUTPUT_TOKENS = 2_000
+
+type _StrategyItem = Annotated[
+    str,
+    Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS),
+]
+
+
+class _StrategyPlan(BaseModel):
+    """A complete execution strategy submitted for neutral review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    objective: _StrategyItem
+    observations: list[_StrategyItem] = Field(default_factory=list, max_length=_MAX_STRATEGY_ITEMS)
+    assumptions: list[_StrategyItem] = Field(default_factory=list, max_length=_MAX_STRATEGY_ITEMS)
+    steps: list[_StrategyItem] = Field(min_length=1, max_length=_MAX_STRATEGY_ITEMS)
+    costly_commitments: list[_StrategyItem] = Field(
+        default_factory=list, max_length=_MAX_STRATEGY_ITEMS
+    )
+    fallback: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
+    verification: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
+
+
+class _ReconControl(BaseModel):
+    """Gather cheap facts before committing to an execution strategy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reconnaissance"]
+    actions: list[_ExecuteAction] = Field(min_length=1, max_length=_MAX_STRUCTURED_ACTIONS)
+
+
+class _SubmitPlanControl(BaseModel):
+    """Submit a strategy without executing it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["propose_plan"]
+    proposal: _StrategyPlan
+
+
+class _PlanningTurn(BaseModel):
+    """A pre-approval turn that either gathers facts or proposes a plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis: str = Field(default="", max_length=_MAX_STRUCTURED_REASONING_CHARS)
+    control: _ReconControl | _SubmitPlanControl = Field(discriminator="kind")
+
+
+class _ApprovePlan(BaseModel):
+    """Approve a proposed strategy, optionally with bounded review notes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve"]
+    critique: str = Field(default="", max_length=_MAX_STRATEGY_ITEM_CHARS)
+    missing_evidence: list[_StrategyItem] = Field(
+        default_factory=list, max_length=_MAX_STRATEGY_ITEMS
+    )
+    cheaper_alternative: str = Field(default="", max_length=_MAX_STRATEGY_ITEM_CHARS)
+
+
+class _RevisePlan(BaseModel):
+    """Reject a proposed strategy and provide a complete replacement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["revise"]
+    critique: str = Field(min_length=1, max_length=_MAX_STRATEGY_ITEM_CHARS)
+    missing_evidence: list[_StrategyItem] = Field(
+        default_factory=list, max_length=_MAX_STRATEGY_ITEMS
+    )
+    cheaper_alternative: str = Field(default="", max_length=_MAX_STRATEGY_ITEM_CHARS)
+    recommended_plan: _StrategyPlan
+
+
+class _PlanVerdict(BaseModel):
+    """A discriminated neutral review of one proposed strategy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result: _ApprovePlan | _RevisePlan = Field(discriminator="decision")
+
+
+class _StrategyGateRecord(TypedDict):
+    """Private bookkeeping for the pre-execution strategy gate."""
+
+    phase: Literal["planning", "approved", "bypassed"]
+    selected_plan: dict[str, Any] | None
+    selected_source: Literal["actor", "evaluator"] | None
+    critique: str
+    revision_count: int
+    bypass_reason: str | None
+
+
+class _StructuredAgentState(AgentState):
+    """Agent state with strategy-gate bookkeeping hidden from model context."""
+
+    _strategy_gate: NotRequired[Annotated[_StrategyGateRecord, PrivateStateAttr]]
+
+
+@dataclass(frozen=True)
+class _EvaluationCallResult:
+    """Result of an evaluator call, including explicit failure classification."""
+
+    verdict: _PlanVerdict | None
+    usage: UsageMetadata | None
+    error: Literal["invocation_failure", "parse_failure"] | None
+
+
 class _Turn(BaseModel):
     """One structured agent turn with typed actions and explicit completion."""
 
@@ -731,6 +860,8 @@ class _StructuredTurnMiddleware(AgentMiddleware):
     automatically. One repair call is allowed before falling back to the normal model
     path on invalid structured output.
     """
+
+    state_schema = _StructuredAgentState
 
     def __init__(self) -> None:
         super().__init__()

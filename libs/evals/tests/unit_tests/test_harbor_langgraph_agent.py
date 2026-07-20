@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, get_args, get_type_hints
 
 import pytest
 from deepagents_code.config import settings
@@ -351,6 +351,54 @@ def test_make_structured_graph_exposes_minimal_background_tools(
         "write_stdin",
         "kill",
     }
+
+
+def test_strategy_planning_contract_only_allows_recon_or_plan() -> None:
+    recon = langgraph_agent._PlanningTurn.model_validate(
+        {
+            "analysis": "Need version and configuration facts.",
+            "control": {
+                "kind": "reconnaissance",
+                "actions": [{"action": "execute", "command": "./configure --help"}],
+            },
+        }
+    )
+    assert isinstance(recon.control, langgraph_agent._ReconControl)
+
+    proposal = langgraph_agent._PlanningTurn.model_validate(
+        {
+            "control": {
+                "kind": "propose_plan",
+                "proposal": {
+                    "objective": "Build and install CompCert.",
+                    "observations": ["Ubuntu packages Coq 8.18."],
+                    "assumptions": ["CompCert accepts ignored Coq version checks."],
+                    "steps": ["Configure against packaged dependencies.", "Build serially."],
+                    "costly_commitments": [],
+                    "fallback": "Inspect the first concrete configure or build error.",
+                    "verification": "Run ccomp and the task verifier.",
+                },
+            }
+        }
+    )
+    assert isinstance(proposal.control, langgraph_agent._SubmitPlanControl)
+
+    with pytest.raises(ValidationError):
+        langgraph_agent._PlanningTurn.model_validate(
+            {
+                "control": {
+                    "kind": "reconnaissance",
+                    "actions": [{"action": "run_background", "command": "opam install coq"}],
+                }
+            }
+        )
+
+
+def test_strategy_gate_state_is_private() -> None:
+    hints = get_type_hints(langgraph_agent._StructuredAgentState, include_extras=True)
+    private_hint = get_args(hints["_strategy_gate"])[0]
+    metadata = getattr(private_hint, "__metadata__", ())
+    assert langgraph_agent.PrivateStateAttr in metadata
 
 
 def test_structured_turn_routes_multiple_continue_actions() -> None:

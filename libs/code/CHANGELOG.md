@@ -2,6 +2,15 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.44](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.43...deepagents-code==0.1.44) (2026-07-20)
+
+
+### Bug Fixes
+
+* **code:** hide `Auto` option in approval widget when ineligible ([#4839](https://github.com/langchain-ai/deepagents/issues/4839)) ([1a1f06f](https://github.com/langchain-ai/deepagents/commit/1a1f06f506d5a167609de336cced740151b6615a))
+* **code:** move Auto mode path checks off the event loop ([#4856](https://github.com/langchain-ai/deepagents/issues/4856)) ([511203a](https://github.com/langchain-ai/deepagents/commit/511203a2c247f6756af3f06581ab9af761a4c4ef))
+* **code:** warm MCP auth imports off event loop ([#4855](https://github.com/langchain-ai/deepagents/issues/4855)) ([75d37c3](https://github.com/langchain-ai/deepagents/commit/75d37c347556d962ff14850bdde489657c86feb4))
+
 ## [0.1.43](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.42...deepagents-code==0.1.43) (2026-07-17)
 
 ### Features

@@ -3272,6 +3272,12 @@ class DeepAgentsApp(App):
         """Placeholder widgets mounted for messages still sitting in
         `_pending_messages`, removed as the queue drains."""
 
+        self._initial_prompt_queued_widget: QueuedUserMessage | None = None
+        """Placeholder mounted at startup for a `-m`/`--message` prompt so it
+        shows as queued immediately while the server is still connecting,
+        mirroring the typed-while-connecting path. Removed when the initial
+        submission dispatches (see `_submit_initial_submission`)."""
+
         self._message_store = MessageStore()
         """Message virtualization store."""
 
@@ -3670,6 +3676,19 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+        # Surface a `-m`/`--message` prompt as a queued message right away,
+        # while the server is still connecting, instead of waiting for
+        # `ServerReady` to submit it. Matches the immediate feedback a user
+        # gets typing into an already-running session mid-connect. Skipped when
+        # resuming (`-r`): that path bulk-loads history on connect, which would
+        # briefly render the placeholder above the restored transcript.
+        # `_resume_thread_intent` is read here (before the resolve task consumes
+        # it) so the decision is stable.
+        if self._connecting and self._resume_thread_intent is None:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._show_initial_prompt_as_queued()),
+            )
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -6379,7 +6398,10 @@ class DeepAgentsApp(App):
         """Mirror the pending-message queue depth onto the status bar."""
         if self._status_bar is None:
             return
-        self._status_bar.set_queued(len(self._pending_messages))
+        depth = len(self._pending_messages)
+        if self._initial_prompt_queued_widget is not None:
+            depth += 1
+        self._status_bar.set_queued(depth)
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -7877,6 +7899,42 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    async def _show_initial_prompt_as_queued(self) -> None:
+        """Mount the `-m` prompt as a queued placeholder during connect.
+
+        Gives a `-m`/`--message` prompt the same immediate on-screen feedback
+        as a message typed into an already-running session while it reconnects:
+        the text shows as queued right away rather than after `ServerReady`.
+        Scoped to a bare prompt — skills and goals render differently and keep
+        their existing startup path. The placeholder is removed and replaced by
+        a real user message when `_submit_initial_submission` dispatches.
+        """
+        if not self._connecting:
+            return
+        if self._initial_skill is not None or self._initial_goal is not None:
+            return
+        if not (self._initial_prompt and self._initial_prompt.strip()):
+            return
+        if self._initial_prompt_queued_widget is not None:
+            return
+
+        await self._dismiss_startup_tip()
+        queued_widget = QueuedUserMessage(self._initial_prompt)
+        self._initial_prompt_queued_widget = queued_widget
+        await self._mount_message(queued_widget)
+        self._sync_status_queued()
+        self._reveal_connection_status()
+
+    async def _remove_initial_prompt_placeholder(self) -> None:
+        """Drop the `-m` queued placeholder before mounting the real message."""
+        widget = self._initial_prompt_queued_widget
+        if widget is None:
+            return
+        self._initial_prompt_queued_widget = None
+        with suppress(Exception):
+            await widget.remove()
+        self._sync_status_queued()
+
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
         # These startup paths (`-m`, `--skill`, `--goal`) submit outside
@@ -7894,6 +7952,7 @@ class DeepAgentsApp(App):
                 await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
+                await self._remove_initial_prompt_placeholder()
                 await self._handle_user_message(self._initial_prompt)
         except Exception:
             logger.exception("Unhandled error during initial submission")

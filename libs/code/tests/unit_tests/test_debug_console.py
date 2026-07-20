@@ -1317,6 +1317,21 @@ class TestDebugConsoleToggle:
             snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Experimental"] == "off"
 
+    async def test_build_snapshot_experimental_off_when_env_falsy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A present-but-falsy `DEEPAGENTS_CODE_EXPERIMENTAL` reads as `off`.
+
+        Locks the truthy gate (`is_env_truthy`) against a regression to a bare
+        presence check (`EXPERIMENTAL in os.environ`), which the unset and
+        truthy cases would both pass.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "0")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Experimental"] == "off"
+
     async def test_build_snapshot_experimental_on_when_env_truthy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

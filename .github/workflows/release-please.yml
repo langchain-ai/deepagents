@@ -801,8 +801,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
-      issues: write # read release PR labels and comment with the dispatched run link
-      pull-requests: read # resolve the release PR associated with the merge commit
+      issues: write # read release PR labels through the issues API
+      pull-requests: write # resolve the release PR and comment with the dispatched run link
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}

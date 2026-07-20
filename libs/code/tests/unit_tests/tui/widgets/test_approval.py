@@ -495,6 +495,135 @@ class TestAutoOptionEligibility:
         )
         decisions = [decision for _, decision in menu._build_options()]
         assert decisions == ["approve", "switch_manual", "reject"]
+        assert menu._num_options == 3
+        # Ineligible session but Auto is live, so the footer still advertises `a`.
+        assert "y/a/n quick keys" in menu._compose_help_text()
+
+    def test_first_position_approves_when_auto_hidden(self) -> None:
+        """The `1` quick key still approves in the 2-option layout."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu.set_future(future)
+        menu.action_select_position(0)
+        assert future.result() == {"type": "approve"}
+        loop.close()
+
+    def test_batch_labels_when_auto_hidden(self) -> None:
+        """Batch (count > 1) Approve/Reject labels stay pluralized with Auto hidden."""
+        menu = ApprovalMenu(
+            [
+                {"name": "execute", "args": {"command": "echo one"}},
+                {"name": "execute", "args": {"command": "echo two"}},
+            ],
+            auto_mode_eligible=False,
+        )
+        labels = [label for label, _ in menu._build_options()]
+        decisions = [decision for _, decision in menu._build_options()]
+        assert decisions == ["approve", "reject"]
+        assert labels == ["Approve all 2 (y)", "Reject all 2 (n)"]
+
+    def test_navigation_wraps_within_two_option_layout(self) -> None:
+        """Down/up wrap modulo the visible count, never landing on a phantom index."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu._option_widgets = [MagicMock(), MagicMock()]
+        assert menu._selected == 0
+        menu.action_move_up()
+        assert menu._selected == 1  # wrapped backwards to the last option
+        menu.action_move_down()
+        assert menu._selected == 0  # wrapped forward to the first option
+        menu.action_move_down()
+        assert menu._selected == 1
+
+    def test_select_after_wraparound_resolves_without_index_error(self) -> None:
+        """Selecting after wraparound in the 2-option layout resolves cleanly.
+
+        Guards against a regression to a hardcoded ``% 3`` modulus, which would
+        leave ``_selected == 2`` and raise ``IndexError`` on selection.
+        """
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo hello"}},
+            auto_mode_eligible=False,
+        )
+        menu.set_future(future)
+        menu._option_widgets = [MagicMock(), MagicMock()]
+        menu.action_move_down()  # 0 -> 1 (reject)
+        menu.action_move_down()  # 1 -> 0 (wrap to approve)
+        menu.action_select()
+        assert future.result() == {"type": "approve"}
+        loop.close()
+
+    @pytest.mark.parametrize(
+        ("key", "expected_type"),
+        [
+            ("1", "approve"),
+            ("y", "approve"),
+            ("2", "reject"),
+            ("n", "reject"),
+        ],
+    )
+    async def test_key_binding_resolves_decision_when_auto_hidden(
+        self, key: str, expected_type: str
+    ) -> None:
+        """With Auto hidden, keys route to the 2-option layout via real dispatch."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}},
+                    auto_mode_eligible=False,
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+
+        assert decision_received == {"type": expected_type}
+
+    @pytest.mark.parametrize("key", ["a", "3"])
+    async def test_hidden_auto_keys_are_no_ops_via_dispatch(self, key: str) -> None:
+        """`a` and `3` do nothing through real key dispatch when Auto is hidden."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}},
+                    auto_mode_eligible=False,
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+
+        assert decision_received is None
 
 
 class TestRejectWithReason:

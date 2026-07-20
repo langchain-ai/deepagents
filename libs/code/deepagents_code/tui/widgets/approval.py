@@ -175,7 +175,11 @@ class ApprovalMenu(Container):
         # Auto fallback implies Auto is already active, so its "Switch to
         # Manual" affordance is always shown regardless of eligibility.
         self._show_auto_option = self._is_auto_fallback or auto_mode_eligible
-        self._num_options = len(self._build_options())
+        # Built once: every input to `_build_options` is fixed for the widget's
+        # lifetime, so caching keeps `_num_options`/`_reject_index` from ever
+        # disagreeing with the option list they describe.
+        self._options = self._build_options()
+        self._num_options = len(self._options)
         self._reject_index = self._num_options - 1
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
@@ -423,8 +427,9 @@ class ApprovalMenu(Container):
         """Build the visible options as `(label, decision_type)` pairs.
 
         The Auto option is omitted unless Auto can actually be enabled
-        (`_show_auto_option`), so it is never suggested outside the beta.
-        Labels are unnumbered; `_update_options` prefixes the display number.
+        (`_show_auto_option`), so it is never suggested outside the
+        experimental opt-in. Labels are unnumbered; `_update_options`
+        prefixes the display number.
 
         Returns:
             Ordered `(label, decision_type)` pairs for the visible options.
@@ -443,9 +448,8 @@ class ApprovalMenu(Container):
 
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
-        options = self._build_options()
         for i, ((text, _decision), widget) in enumerate(
-            zip(options, self._option_widgets, strict=True)
+            zip(self._options, self._option_widgets, strict=True)
         ):
             cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
             widget.update(f"{cursor}{i + 1}. {text}")
@@ -478,8 +482,10 @@ class ApprovalMenu(Container):
     def action_select_position(self, position: int) -> None:
         """Submit the option at a display position (0-indexed).
 
-        Backs the numeric quick keys. Positions past the last visible option
-        (e.g. `3` when the Auto option is hidden) are ignored.
+        Backs the numeric quick keys, which map key `1`/`2`/`3` to position
+        `0`/`1`/`2`. Positions past the last visible option are ignored, so
+        when the Auto option is hidden (only positions 0-1 exist) the `3` key
+        (position 2) is a no-op.
 
         Args:
             position: Zero-based index of the visible option to submit.
@@ -493,10 +499,11 @@ class ApprovalMenu(Container):
         self._handle_selection(0)
 
     def action_select_auto(self) -> None:
-        """Submit auto-approve option.
+        """Submit the middle option (Auto, or Switch to Manual in a fallback).
 
-        No-op when the Auto option is hidden, since Auto cannot be enabled.
-        Auto is always the second option (index 1) when shown.
+        No-op when the option is hidden, since Auto cannot be enabled. When
+        shown it is always the second option (index 1): "Enable Auto" normally,
+        or "Switch to Manual" during a live Auto fallback.
         """
         if not self._show_auto_option:
             return
@@ -531,10 +538,11 @@ class ApprovalMenu(Container):
         Args:
             option: Index of the chosen visible option. Maps to a decision type
                 via the current option layout (which omits Auto when hidden).
-            reject_message: Optional free-text reason. Only attached when the
-                user rejects with a non-empty message via `action_reject_with_reason`.
+            reject_message: Optional free-text reason. Only attached when a
+                non-empty reason is submitted via `on_input_submitted` (the
+                free-text reject flow opened by `action_reject_with_reason`).
         """
-        decision_type = self._build_options()[option][1]
+        decision_type = self._options[option][1]
         decision: dict[str, str] = {"type": decision_type}
         if decision_type == "reject" and reject_message:
             decision["message"] = reject_message

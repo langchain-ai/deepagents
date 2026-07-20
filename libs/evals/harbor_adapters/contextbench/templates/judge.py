@@ -9,10 +9,10 @@ so our score matches upstream's grading rather than a string comparison:
   ``string.Formatter().vformat`` -- no system prompt, no wrapping;
 * the judge is called through Chat Completions with the upstream
   ``json_schema`` response format ``{score: float in [0, 1], rationale}``;
-* the judge runs at ``temperature=0.0`` for deterministic grading. (Upstream
-  bumps ``o1`` / ``o3`` / ``gpt-5`` judges to 1.0 only because those models
-  reject 0.0 at the API; ``gpt-5.6-luna`` is already used as the harness judge
-  at 0.0, so we keep it deterministic.)
+* upstream's temperature rule is preserved: a judge model matching ``o1`` /
+  ``o3`` / ``gpt-5`` is called at temperature 1.0, any other model at 0.0. These
+  are reasoning models that reject temperature 0.0 at the API (a 0.0 call 400s),
+  which is exactly why upstream bumps them; ``gpt-5.6-luna`` is one of them.
 * ``score = clamp(float(score), 0.0, 1.0)``; any error scores 0.0, exactly as
   the upstream grader returns 0.0 on exception.
 
@@ -35,6 +35,7 @@ import json
 import os
 import re
 import string
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -76,6 +77,13 @@ def _judge_model() -> str:
     return "gpt-5.6-luna"
 
 
+def _temperature(model: str) -> float:
+    """Upstream rule: reasoning judges (o1/o3/gpt-5) reject 0.0, so use 1.0."""
+    if model.startswith(("o1", "o3")) or "gpt-5" in model.lower():
+        return 1.0
+    return 0.0
+
+
 def _judge_prompt(submission: str) -> str:
     case = json.loads(_CASE_PATH.read_text(encoding="utf-8"))
     rubric = _RUBRIC_PATH.read_text(encoding="utf-8")
@@ -96,7 +104,7 @@ def _call_judge(prompt: str, model: str) -> float:
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
+        "temperature": _temperature(model),
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "JudgeResponse", "schema": _RESPONSE_SCHEMA},
@@ -111,8 +119,15 @@ def _call_judge(prompt: str, model: str) -> float:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
-        payload = json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        # Surface the API's reason (e.g. an unsupported-temperature 400) rather
+        # than a bare "HTTP Error 400"; the body carries no secrets.
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        msg = f"HTTP {exc.code} from judge: {detail}"
+        raise RuntimeError(msg) from exc
     content = payload["choices"][0]["message"]["content"]
     result = json.loads(content)
     score = float(result["score"])

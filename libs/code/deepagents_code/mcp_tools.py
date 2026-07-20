@@ -2483,7 +2483,48 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
-    configs.extend(additional_configs)
+    # Plugin-provided (`additional_configs`) MCP servers are treated as
+    # untrusted by default and must pass the same user-level allow/deny
+    # policy applied to project-level `.mcp.json` servers. A malicious
+    # plugin can otherwise specify arbitrary `command`/`args`/`env` for a
+    # stdio server, which would be launched as a subprocess with the
+    # user's privileges on every session start.
+    if additional_configs:
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH as _PLUGIN_TRUST_CONFIG_PATH,
+            load_mcp_server_trust_lists as _plugin_load_trust_lists,
+        )
+
+        _plugin_trust_lists = _plugin_load_trust_lists()
+        if _plugin_trust_lists.read_error is not None:
+            config_load_errors.append(
+                (_PLUGIN_TRUST_CONFIG_PATH, _plugin_trust_lists.read_error)
+            )
+        _plugin_project_root = _resolve_project_config_base(project_context)
+        for _plugin_config in additional_configs:
+            if not isinstance(_plugin_config, dict):
+                continue
+            _plugin_servers = _plugin_config.get("mcpServers")
+            if not isinstance(_plugin_servers, dict) or not _plugin_servers:
+                continue
+            _plugin_kept = filter_trusted_project_servers(
+                _plugin_servers,
+                _plugin_trust_lists,
+                project_root=_plugin_project_root,
+                config_trusted=False,
+            )
+            _plugin_dropped = [
+                name for name in _plugin_servers if name not in _plugin_kept
+            ]
+            if _plugin_dropped:
+                logger.warning(
+                    "Skipped untrusted plugin MCP servers "
+                    "(not yet approved by the user): %s",
+                    ", ".join(sorted(_plugin_dropped)),
+                )
+            if _plugin_kept:
+                configs.append({**_plugin_config, "mcpServers": _plugin_kept})
+
     loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
 
     for path in project_configs:

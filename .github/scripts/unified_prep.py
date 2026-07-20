@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,36 +54,80 @@ CATEGORY_MAP: dict[str, dict] = {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
         "agent_impl": "bare",
+        "fan_out": True,
     },
     "conversation": {
         "dataset": "tau3-subset",
         "dataset_path": "",
         "agent_impl": "tau3",
+        "fan_out": False,
     },
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
         "agent_impl": "bare",
+        "fan_out": True,
     },
 }
-
-# Harnesses selectable for the code categories (autonomous, context) via the
-# `agent_impls` input. Conversation is always tau3 and is never overridden.
-CODE_AGENT_IMPLS = {"dcode", "bare"}
 
 # Harness used when the `agent_impls` input (UNIFIED_AGENT_IMPLS) is unset or blank.
 DEFAULT_AGENT_IMPL = "bare"
 
-# Every harness a category may pin in CATEGORY_MAP (code harnesses plus tau3).
-KNOWN_AGENT_IMPLS = CODE_AGENT_IMPLS | {"tau3"}
+# langgraph.json is the single source of truth for which agent graphs exist. Its
+# path is resolved relative to this file so it holds regardless of the caller's
+# cwd (.github/scripts -> repo root is two parents up).
+_LANGGRAPH_JSON = (
+    Path(__file__).resolve().parents[2]
+    / "libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+)
 
-# A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
-# category ineligible for the override and route it to a nonexistent harness, so
-# validate at import. raise (not assert): asserts are stripped under `python -O`.
-if not all(cm["agent_impl"] in KNOWN_AGENT_IMPLS for cm in CATEGORY_MAP.values()):
-    raise RuntimeError(f"every CATEGORY_MAP agent_impl must be one of {sorted(KNOWN_AGENT_IMPLS)}")
+
+def _load_registry_graphs(path: Path) -> set[str]:
+    """Return the set of graph keys registered in a langgraph.json."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read agent registry {path}: {exc}") from exc
+    graphs = data.get("graphs")
+    if not isinstance(graphs, dict) or not graphs:
+        raise RuntimeError(f"agent registry {path} has no 'graphs' object")
+    return set(graphs)
+
+
+def derive_impl_sets(
+    all_graphs: set[str], category_map: dict[str, dict]
+) -> tuple[set[str], set[str]]:
+    """Derive (known, code) impl sets from the registry and category policy.
+
+    `known` is every registered graph. `code` is the graphs a user may select on
+    the code (fan-out) categories: every graph except one pinned by a non-fan-out
+    category (e.g. `tau3`, bound to conversation).
+    """
+    pinned_non_code = {
+        cm["agent_impl"] for cm in category_map.values() if not cm["fan_out"]
+    }
+    return all_graphs, all_graphs - pinned_non_code
+
+
+ALL_GRAPHS = _load_registry_graphs(_LANGGRAPH_JSON)
+KNOWN_AGENT_IMPLS, CODE_AGENT_IMPLS = derive_impl_sets(ALL_GRAPHS, CATEGORY_MAP)
+
+# A CATEGORY_MAP agent_impl that is not a registered graph would route a category
+# to a nonexistent harness. Validate at import; raise (not assert) so `python -O`
+# cannot strip it.
+_unknown = [
+    cm["agent_impl"] for cm in CATEGORY_MAP.values() if cm["agent_impl"] not in ALL_GRAPHS
+]
+if _unknown:
+    raise RuntimeError(
+        f"CATEGORY_MAP agent_impl(s) {_unknown} are not graphs in {_LANGGRAPH_JSON} "
+        f"(have {sorted(ALL_GRAPHS)})"
+    )
 if DEFAULT_AGENT_IMPL not in CODE_AGENT_IMPLS:
-    raise RuntimeError(f"DEFAULT_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}")
+    raise RuntimeError(
+        f"DEFAULT_AGENT_IMPL {DEFAULT_AGENT_IMPL!r} must be a selectable code "
+        f"harness, one of {sorted(CODE_AGENT_IMPLS)}"
+    )
 
 # Run profiles: "full" = every task in each category; "lite" = the frozen
 # high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
@@ -246,7 +291,7 @@ def build_flat_matrix(
 ) -> list[dict]:
     """One flat matrix of single-`harbor run` shards spanning categories x configs.
 
-    Code categories (their CATEGORY_MAP agent_impl is in CODE_AGENT_IMPLS) emit one
+    Fan-out categories (`CATEGORY_MAP` `fan_out=True`) emit one
     shard group per (category, config) across `code_impls`. A non-code category
     (conversation / tau3) emits one group with its pinned agent_impl and is never
     multiplied by configs. The per-model entry count is bounded by
@@ -267,7 +312,7 @@ def build_flat_matrix(
         tasks = tasks_by_cat.get(cat, [])
         if not tasks:
             continue
-        if cm["agent_impl"] in CODE_AGENT_IMPLS:
+        if cm["fan_out"]:
             for impl in code_impls:
                 groups.append((cat, impl, tasks))
         else:

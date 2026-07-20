@@ -64,9 +64,26 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
-    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "deepagent")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "nonexistent-graph")
     with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPLS entries must be in"):
         up.main()
+
+
+def test_derive_impl_sets_new_graph_is_selectable():
+    cats = {
+        "autonomous": {"agent_impl": "bare", "fan_out": True},
+        "conversation": {"agent_impl": "tau3", "fan_out": False},
+        "context": {"agent_impl": "bare", "fan_out": True},
+    }
+    known, code = up.derive_impl_sets({"bare", "dcode", "tau3", "foo"}, cats)
+    assert known == {"bare", "dcode", "tau3", "foo"}
+    assert "foo" in code
+    assert "tau3" not in code
+
+
+def test_module_impl_sets_match_registry():
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
+    assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

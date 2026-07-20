@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -16,8 +17,10 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
+    _MAX_TRACKED_HISTORY_TAILS,
     SummarizationMiddleware,
     _token_counter_accepts_tools,
     _upload_response_error,
@@ -2803,6 +2806,17 @@ def test_chained_summarization_cutoff_index() -> None:
         """Extract S-labels from backend write content (e.g. `<message ...>S0</message>` -> "S0")."""
         return re.findall(r"S\d+", write_call_content)
 
+    def appended_labels(edit_call_index: int) -> list[str]:
+        """S-labels added by an anchored append.
+
+        The first offload writes the file; later ones append after the previous
+        section, so the newly offloaded messages are the part of `new_string`
+        beyond the anchor.
+        """
+        _, old_string, new_string = backend.edit_calls[edit_call_index]
+        assert new_string.startswith(old_string)
+        return offloaded_labels(new_string[len(old_string) :])
+
     # --- Round 1: first summarization, no previous event ---
     state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
     with mock_get_config():
@@ -2829,8 +2843,7 @@ def test_chained_summarization_cutoff_index() -> None:
     assert event_2["cutoff_index"] == 12
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
-    _, content = backend.write_calls[1]
-    assert offloaded_labels(content) == ["S6", "S7", "S8", "S9", "S10", "S11"]
+    assert appended_labels(0) == ["S6", "S7", "S8", "S9", "S10", "S11"]
 
     # --- Round 3: third summarization, feed back event from round 2 ---
     state = cast(
@@ -2845,8 +2858,7 @@ def test_chained_summarization_cutoff_index() -> None:
     assert event_3["cutoff_index"] == 18
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
-    _, content = backend.write_calls[2]
-    assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]
+    assert appended_labels(1) == ["S12", "S13", "S14", "S15", "S16", "S17"]
 
 
 # -----------------------------------------------------------------------------
@@ -3293,6 +3305,222 @@ class TestTokenCountingEfficiency:
         first_ai = captured_request.messages[0]
         assert isinstance(first_ai, AIMessage)
         assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+class _AnchorRejectingBackend(MockBackend):
+    """Rejects the first `edit`, then behaves normally.
+
+    Mirrors an archive rewritten by another process: the cached anchor no
+    longer matches, so the append must fall back to a full rewrite.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.rejected = 0
+
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+        if self.rejected == 0:
+            self.rejected += 1
+            self.edit_calls.append((path, old_string, new_string))
+            return EditResult(error="String not found in file")
+        return super().edit(path, old_string, new_string, replace_all)
+
+
+class _AnchorRaisingBackend(MockBackend):
+    """Raises on the first `edit`, then behaves normally."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.raised = 0
+
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+        if self.raised == 0:
+            self.raised += 1
+            msg = "Mock anchored edit exception"
+            raise RuntimeError(msg)
+        return super().edit(path, old_string, new_string, replace_all)
+
+
+class TestHistoryArchiveAnchoredAppend:
+    """The archive is appended to via an anchor rather than rewritten in full."""
+
+    @staticmethod
+    def _make_middleware(backend: MockBackend) -> SummarizationMiddleware:
+        return SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("tokens", 1_000_000),
+        )
+
+    @staticmethod
+    def _batch(idx: int) -> list:
+        return [HumanMessage(f"question {idx}"), AIMessage(f"answer {idx}")]
+
+    def test_first_offload_downloads_and_writes(self) -> None:
+        """With no anchor cached, the original download-and-write path runs."""
+        backend = MockBackend()
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            assert middleware._offload_to_backend(backend, self._batch(0)) is not None
+
+        assert len(backend.download_files_calls) == 1
+        assert len(backend.write_calls) == 1
+        assert backend.edit_calls == []
+
+    def test_second_offload_appends_without_downloading(self) -> None:
+        """The anchored append skips the download entirely."""
+        backend = MockBackend()
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            middleware._offload_to_backend(backend, self._batch(0))
+            downloads_after_first = len(backend.download_files_calls)
+            assert middleware._offload_to_backend(backend, self._batch(1)) is not None
+
+        # No further download: the second offload used the cached anchor.
+        assert len(backend.download_files_calls) == downloads_after_first
+        assert len(backend.edit_calls) == 1
+        _, old_string, new_string = backend.edit_calls[0]
+        # The edit appends: the new content is the anchor plus exactly one section.
+        assert new_string.startswith(old_string)
+        assert "question 1" in new_string[len(old_string) :]
+        assert "question 0" not in new_string[len(old_string) :]
+
+    def test_rejected_anchor_falls_back_to_full_rewrite(self) -> None:
+        """A stale anchor is non-fatal: the offload still lands via rewrite."""
+        backend = _AnchorRejectingBackend()
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            middleware._offload_to_backend(backend, self._batch(0))
+            downloads_after_first = len(backend.download_files_calls)
+            assert middleware._offload_to_backend(backend, self._batch(1)) is not None
+
+        assert backend.rejected == 1
+        # The rejection forced the download the fast path had skipped.
+        assert len(backend.download_files_calls) == downloads_after_first + 1
+
+    def test_raising_anchor_falls_back_to_full_rewrite(self) -> None:
+        """An exception from the anchored edit is caught and rewritten instead."""
+        backend = _AnchorRaisingBackend()
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            middleware._offload_to_backend(backend, self._batch(0))
+            downloads_after_first = len(backend.download_files_calls)
+            assert middleware._offload_to_backend(backend, self._batch(1)) is not None
+
+        assert backend.raised == 1
+        assert len(backend.download_files_calls) == downloads_after_first + 1
+
+    def test_failed_offload_does_not_cache_an_anchor(self) -> None:
+        """A failed write must not leave an anchor that never reached the backend."""
+        backend = MockBackend(should_fail=True, error_message="disk full")
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            assert middleware._offload_to_backend(backend, self._batch(0)) is None
+
+        assert middleware._history_tails == {}
+
+    def test_tail_cache_is_bounded(self) -> None:
+        """Tracking many threads must not grow without limit."""
+        middleware = self._make_middleware(MockBackend())
+
+        for i in range(_MAX_TRACKED_HISTORY_TAILS * 3):
+            middleware._record_history_tail(f"/history/thread-{i}.md", f"section {i}")
+
+        assert len(middleware._history_tails) == _MAX_TRACKED_HISTORY_TAILS
+        # The most recent paths are the ones retained.
+        newest = f"/history/thread-{_MAX_TRACKED_HISTORY_TAILS * 3 - 1}.md"
+        assert newest in middleware._history_tails
+
+    async def test_second_offload_appends_without_downloading_async(self) -> None:
+        """Async twin: same anchored append, same skipped download."""
+        backend = MockBackend()
+        middleware = self._make_middleware(backend)
+
+        with mock_get_config():
+            await middleware._aoffload_to_backend(backend, self._batch(0))
+            downloads_after_first = len(backend.download_files_calls)
+            assert await middleware._aoffload_to_backend(backend, self._batch(1)) is not None
+
+        assert len(backend.download_files_calls) == downloads_after_first
+        assert len(backend.edit_calls) == 1
+        _, old_string, new_string = backend.edit_calls[0]
+        assert new_string.startswith(old_string)
+
+    def test_archive_matches_full_rewrite_on_real_backend(self, tmp_path: Path) -> None:
+        """End to end: the stored archive is byte-identical to the rewrite path.
+
+        Uses a real `FilesystemBackend` so the anchored `edit` is executed
+        rather than recorded. Section timestamps are wall-clock, so they are
+        normalized before comparison.
+        """
+
+        def archive_after(events: int, root: Path, *, anchored: bool) -> str:
+            backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+            middleware = self._make_middleware(backend)
+            with mock_get_config():
+                for i in range(events):
+                    if not anchored:
+                        # Drop the anchor each time to force the rewrite path.
+                        middleware._history_tails.clear()
+                    assert middleware._offload_to_backend(backend, self._batch(i)) is not None
+                path = middleware._get_history_path()
+            content = backend.download_files([path])[0].content
+            assert content is not None
+            return re.sub(r"## Summarized at [^\n]+", "## Summarized at <TS>", content.decode())
+
+        rewritten = archive_after(6, tmp_path / "rewrite", anchored=False)
+        appended = archive_after(6, tmp_path / "append", anchored=True)
+
+        assert appended == rewritten
+        assert appended.count("## Summarized at") == 6
+
+    def test_bytes_transferred_do_not_grow_with_archive_size(self, tmp_path: Path) -> None:
+        """Guards the quadratic regression this replaced.
+
+        Rewriting sends the whole archive on every event, so bytes transferred
+        grow with the square of the event count. Appending sends one anchor plus
+        one section regardless of how large the archive has become.
+        """
+
+        def bytes_moved(events: int, root: Path) -> int:
+            backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+            middleware = self._make_middleware(backend)
+            moved = 0
+            real_download, real_edit, real_write = backend.download_files, backend.edit, backend.write
+
+            def download(paths: list[str]) -> list[FileDownloadResponse]:
+                nonlocal moved
+                responses = real_download(paths)
+                moved += sum(len(r.content) for r in responses if r.content)
+                return responses
+
+            def edit(path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+                nonlocal moved
+                moved += len(new_string)
+                return real_edit(path, old_string, new_string, replace_all)
+
+            def write(path: str, content: str) -> WriteResult:
+                nonlocal moved
+                moved += len(content)
+                return real_write(path, content)
+
+            backend.download_files, backend.edit, backend.write = download, edit, write  # ty: ignore[invalid-assignment]
+            with mock_get_config():
+                for i in range(events):
+                    assert middleware._offload_to_backend(backend, self._batch(i)) is not None
+            return moved
+
+        few = bytes_moved(4, tmp_path / "few")
+        many = bytes_moved(16, tmp_path / "many")
+
+        # Four times the events must cost close to four times the bytes. Under
+        # the rewrite path the ratio grows with the event count instead.
+        assert many < few * 6
 
 
 class _OpaqueCounter:

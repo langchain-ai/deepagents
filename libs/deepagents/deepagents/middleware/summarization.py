@@ -125,7 +125,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileUploadResponse
+    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, EditResult, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +303,14 @@ _OFFLOAD_FAILED_PLACEHOLDER = '<image error="failed_to_offload" />'
 
 Marks the spot so the saved history shows a block was present rather than
 silently omitting it.
+"""
+
+_MAX_TRACKED_HISTORY_TAILS = 8
+"""How many per-thread history tails to retain for anchored appends.
+
+Each entry holds one summarized section, so this is bounded by section size
+rather than by run length. Evicting an entry costs a single rewrite on that
+thread's next offload, so a small cap trades little for bounded memory.
 """
 
 
@@ -604,6 +612,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         # token count never pays signature-introspection cost. `None` means the
         # signature could not be introspected, so `_count_tokens` probes instead.
         self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
+
+        # Last history section this middleware wrote, per history path. Used as
+        # the anchor for an appending edit so the archive does not have to be
+        # downloaded and re-uploaded in full on every summarization event.
+        self._history_tails: dict[str, str] = {}
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -1222,6 +1235,72 @@ A condensed summary follows:
 
         return _rewrite_data_url_blocks(messages, path_map)
 
+    def _record_history_tail(self, path: str, section: str) -> None:
+        """Remember `section` as the anchor for the next append to `path`.
+
+        Entries are kept most-recently-used first and capped at
+        `_MAX_TRACKED_HISTORY_TAILS`, so a long-lived middleware serving many
+        threads holds a bounded number of sections.
+        """
+        tails = self._history_tails
+        tails.pop(path, None)
+        tails[path] = section
+        if len(tails) > _MAX_TRACKED_HISTORY_TAILS:
+            del tails[next(iter(tails))]
+
+    def _anchored_append_accepted(self, path: str, result: EditResult | None) -> bool:
+        """Report whether an anchored append landed, logging when it did not.
+
+        A rejection is expected and non-fatal: the archive may have been
+        rewritten by another process, or the anchor may have been evicted. The
+        caller falls back to the download-and-rewrite path, which is what ran
+        before anchoring existed.
+        """
+        if result is not None and not result.error:
+            return True
+        reason = result.error if result is not None else "backend returned None"
+        logger.debug("Anchored history append rejected for %s, rewriting in full: %s", path, reason)
+        return False
+
+    def _append_after_anchor(self, backend: BackendProtocol, path: str, new_section: str) -> bool:
+        """Append `new_section` directly after the section written last.
+
+        Only the anchor and the new section cross the backend, so the archive
+        does not have to be downloaded and re-uploaded in full.
+
+        Returns:
+            `True` when the append landed. `False` means the caller must fall
+                back to the download-and-rewrite path: there is no anchor yet
+                (cold start), or the stored file no longer ends with it.
+        """
+        anchor = self._history_tails.get(path)
+        if anchor is None:
+            return False
+        try:
+            result = backend.edit(path, anchor, anchor + new_section)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Exception on anchored history append to %s, rewriting in full: %s: %s", path, type(e).__name__, e)
+            return False
+        if not self._anchored_append_accepted(path, result):
+            return False
+        self._record_history_tail(path, new_section)
+        return True
+
+    async def _aappend_after_anchor(self, backend: BackendProtocol, path: str, new_section: str) -> bool:
+        """Async twin of `_append_after_anchor`."""
+        anchor = self._history_tails.get(path)
+        if anchor is None:
+            return False
+        try:
+            result = await backend.aedit(path, anchor, anchor + new_section)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Exception on anchored history append to %s, rewriting in full: %s: %s", path, type(e).__name__, e)
+            return False
+        if not self._anchored_append_accepted(path, result):
+            return False
+        self._record_history_tail(path, new_section)
+        return True
+
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -1254,6 +1333,13 @@ A condensed summary follows:
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
+        # Fast path: append after the last section written, avoiding a transfer
+        # of the whole archive. Falls through to the rewrite below on a cold
+        # start or when the anchor no longer matches the stored file.
+        if self._append_after_anchor(backend, path, new_section):
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
+
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
@@ -1275,6 +1361,8 @@ A condensed summary follows:
 
         try:
             result = backend.edit(path, existing_content, combined_content) if existing_content else backend.write(path, combined_content)
+            if result is not None and not result.error:
+                self._record_history_tail(path, new_section)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
@@ -1329,6 +1417,13 @@ A condensed summary follows:
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
+        # Fast path: append after the last section written, avoiding a transfer
+        # of the whole archive. Falls through to the rewrite below on a cold
+        # start or when the anchor no longer matches the stored file.
+        if await self._aappend_after_anchor(backend, path, new_section):
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
+
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
@@ -1352,6 +1447,8 @@ A condensed summary follows:
             result = (
                 await backend.aedit(path, existing_content, combined_content) if existing_content else await backend.awrite(path, combined_content)
             )
+            if result is not None and not result.error:
+                self._record_history_tail(path, new_section)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -976,7 +977,7 @@ async def test_temp_artifact_tool_name_collision_is_rejected(tmp_path: Path) -> 
     assert not executed
 
 
-async def test_managed_temp_path_alias_cannot_bypass_generic_tool_guard(
+async def test_managed_temp_inode_alias_cannot_bypass_generic_tool_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree = tmp_path / "repo"
@@ -991,12 +992,23 @@ async def test_managed_temp_path_alias_cannot_bypass_generic_tool_guard(
     )
     state, artifact = _create_test_temp_artifact(middleware, create_request)
     artifact_path = Path(cast("str", artifact["file_path"]))
-    alias = f"{artifact_path.parent}/./{artifact_path.name}"
+    alias_path = tmp_path / "artifact-hard-link.md"
+    await asyncio.to_thread(os.link, artifact_path, alias_path)
+    event_loop_thread = threading.get_ident()
+    stat_threads: list[int] = []
+    real_stat = Path.stat
+
+    def tracked_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == alias_path:
+            stat_threads.append(threading.get_ident())
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", tracked_stat)
     executed = False
     request = ToolCallRequest(
         tool_call={
             "name": "write_file",
-            "args": {"file_path": alias, "content": "overwrite"},
+            "args": {"file_path": str(alias_path), "content": "overwrite"},
             "id": "generic-write",
             "type": "tool_call",
         },
@@ -1016,10 +1028,14 @@ async def test_managed_temp_path_alias_cannot_bypass_generic_tool_guard(
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
-    assert (
-        await asyncio.to_thread(artifact_path.read_text, encoding="utf-8")
-        == "pull request body"
+    assert stat_threads
+    assert all(thread_id != event_loop_thread for thread_id in stat_threads)
+    artifact_content, alias_content = await asyncio.gather(
+        asyncio.to_thread(artifact_path.read_text, encoding="utf-8"),
+        asyncio.to_thread(alias_path.read_text, encoding="utf-8"),
     )
+    assert artifact_content == "pull request body"
+    assert alias_content == "pull request body"
 
 
 async def test_non_temp_outside_worktree_write_remains_denied(

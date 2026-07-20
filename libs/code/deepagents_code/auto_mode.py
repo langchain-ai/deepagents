@@ -1499,7 +1499,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             os.path.normcase(str(Path(artifact["file_path"]).absolute()))
             for artifact in artifacts.values()
         }
-        if normalized_path not in protected_paths:
+        targets_managed_artifact = normalized_path in protected_paths
+        if not targets_managed_artifact:
+            try:
+                candidate_stat = candidate.stat()
+            except (OSError, ValueError):
+                pass
+            else:
+                targets_managed_artifact = any(
+                    candidate_stat.st_dev == artifact["file_device"]
+                    and candidate_stat.st_ino == artifact["file_inode"]
+                    for artifact in artifacts.values()
+                )
+        if not targets_managed_artifact:
             return None
         return ToolMessage(
             content=(
@@ -1541,7 +1553,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         Returns:
             A rejection for managed paths or the downstream result.
         """
-        rejection = self._managed_temp_rejection(request)
+        rejection = await asyncio.to_thread(self._managed_temp_rejection, request)
         return rejection if rejection is not None else await handler(request)
 
     async def _counter_context(  # noqa: PLR6301

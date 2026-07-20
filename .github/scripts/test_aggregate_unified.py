@@ -603,13 +603,13 @@ def test_main_rejects_nonpositive_rollouts(
     assert "--rollouts must be >= 1" in capsys.readouterr().err
 
 
-def test_main_warns_but_succeeds_when_every_expected_model_is_incomplete(
+def test_main_fails_when_every_expected_row_has_no_leaf(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # An incomplete run must still produce a usable scorecard (exit 0) rather than
-    # voiding everything; the incompleteness is surfaced as a warning.
+    # A diagnostics scorecard is still written, but an entirely missing result set
+    # must fail so a download or execution outage cannot appear successful.
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
         '[{"model": "m", "branch": "current", "config": "bare", '
@@ -620,12 +620,9 @@ def test_main_warns_but_succeeds_when_every_expected_model_is_incomplete(
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 0
+    assert rc == 1
     assert (out / "unified_summary.json").exists()
-    assert (
-        "::warning::Every expected (model, branch, config) row is incomplete"
-        in capsys.readouterr().out
-    )
+    assert "::error::No usable eval leaf summaries were found" in capsys.readouterr().out
 
     _leaf_dir(tmp_path, "m", "context")
     assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
@@ -736,7 +733,8 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
     output = capsys.readouterr().out
     combined = json.loads((out / "unified_summary.json").read_text())
     (model,) = combined["rows"]
-    assert rc == 0
+    assert rc == 1
+    assert "::error::No usable eval leaf summaries were found" in output
     assert "rollouts_per_task is 2; expected 3" in output
     assert model["missing_categories"] == ["context"]
 

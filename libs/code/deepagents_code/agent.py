@@ -9,6 +9,7 @@ import re
 import shutil
 import tomllib
 import warnings
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,14 +24,13 @@ from deepagents.middleware import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from deepagents import SystemPromptConfig
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-    from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
@@ -46,7 +46,11 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
 
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
+    InterruptOnConfig,
+    TodoListMiddleware,
+)
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
@@ -57,6 +61,12 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+from deepagents_code.approval_mode import (
+    ApprovalMode,
+    aread_approval_mode_from_store,
+    coerce_approval_mode,
+    read_approval_mode_from_store,
+)
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -1236,95 +1246,299 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
-def _is_auto_approve_enabled(value: object) -> bool:
-    """Return whether a context value explicitly enables auto-approve."""
-    return isinstance(value, bool) and value
-
-
-def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
-    """Return live approval mode from the LangGraph Store when configured.
-
-    Args:
-        store: `request.runtime.store` from the graph server.
-        key: Live approval-mode store key, or `None` when this run has no live
-            control record.
+def _validated_live_approval_key(key: str | None, thread_id: object) -> str | None:
+    """Validate a live Store key against the thread snapshot when available.
 
     Returns:
-        `None` when no live key is configured for this run — the caller should
-            fall back to the static `auto_approve` context snapshot.
-        `True` or `False` when a live key is configured: these reflect
-            the stored mode, and `False` is also returned when the key
-            is configured but the store is unreadable (missing item,
-            malformed value, read error), so an unreadable live mode fails
-            closed and interrupts.
-        `None` therefore means "feature not in play," the opposite of the store
-            reader's `None` ("unreadable, be careful").
+        The validated key, or `None` when it cannot be trusted.
     """
     if not key:
         return None
-    from deepagents_code.approval_mode import read_approval_mode_from_store
+    if not isinstance(thread_id, str) or not thread_id:
+        return key
+    from deepagents_code.approval_mode import approval_mode_key
 
-    value = read_approval_mode_from_store(store, key)
-    if value is None:
+    if key == approval_mode_key(thread_id):
+        return key
+    logger.warning("Approval-mode Store key does not match the active thread")
+    return None
+
+
+@dataclass(frozen=True)
+class _DecidedMode:
+    """A mode resolved from context alone, needing no live Store read.
+
+    By construction `mode` is only ever `MANUAL` or `YOLO`: typed autonomous
+    modes always require a live record and so never take this variant.
+    """
+
+    mode: ApprovalMode
+    """The resolved mode, only ever `MANUAL` or `YOLO`."""
+
+
+@dataclass(frozen=True)
+class _LiveLookup:
+    """A trusted Store key whose record must be read, failing closed to Manual."""
+
+    key: str
+    """Validated, non-empty Store key whose approval-mode record must be read."""
+
+
+def _approval_mode_source(context: object) -> _DecidedMode | _LiveLookup:
+    """Resolve the live Store lookup or a safe context-only decision.
+
+    Args:
+        context: Run context supplied by the local graph or RemoteGraph.
+
+    Returns:
+        A `_LiveLookup` carrying a validated, trusted Store key, or a
+        `_DecidedMode` when no live record is configured or the key cannot be
+        trusted. A key is only ever emitted as `_LiveLookup`, so callers cannot
+        confuse a live lookup with a context-only decision.
+    """
+    if isinstance(context, CLIContextSchema):
+        raw_key: object = context.approval_mode_key
+        thread_id: object = context.thread_id
+        raw_mode: object = context.approval_mode
+        legacy_auto: object = context.auto_approve
+        has_typed_mode = True
+    elif isinstance(context, dict):
+        raw_key = context.get("approval_mode_key")
+        thread_id = context.get("thread_id")
+        raw_mode = context.get("approval_mode")
+        legacy_auto = context.get("auto_approve")
+        has_typed_mode = "approval_mode" in context
+    else:
+        if context is not None:
+            logger.warning(
+                "approval predicate received unexpected context type %s; "
+                "interrupting for safety",
+                type(context).__name__,
+            )
+        return _DecidedMode(ApprovalMode.MANUAL)
+
+    if raw_key is not None:
+        if not isinstance(raw_key, str) or not raw_key:
+            logger.warning("Approval-mode Store key is malformed")
+            return _DecidedMode(ApprovalMode.MANUAL)
+        key = _validated_live_approval_key(raw_key, thread_id)
+        if key is None:
+            return _DecidedMode(ApprovalMode.MANUAL)
+        return _LiveLookup(key)
+
+    if has_typed_mode:
+        requested = coerce_approval_mode(raw_mode)
+        if requested is not ApprovalMode.MANUAL:
+            logger.warning(
+                "Typed autonomous mode is missing its Store key; using Manual"
+            )
+        elif raw_mode == ApprovalMode.MANUAL.value and legacy_auto is True:
+            # Compatibility for callers predating typed modes. New typed Auto
+            # and YOLO values always require a live Store record.
+            return _DecidedMode(ApprovalMode.YOLO)
+        return _DecidedMode(ApprovalMode.MANUAL)
+    if legacy_auto is True:
+        return _DecidedMode(ApprovalMode.YOLO)
+    return _DecidedMode(ApprovalMode.MANUAL)
+
+
+def _resolve_approval_mode(context: object, store: object) -> ApprovalMode:
+    """Resolve approval mode through the synchronous local Store interface.
+
+    Args:
+        context: Current run context.
+        store: Current LangGraph Store.
+
+    Returns:
+        The validated mode, failing closed to Manual.
+    """
+    source = _approval_mode_source(context)
+    if isinstance(source, _DecidedMode):
+        return source.mode
+    mode = read_approval_mode_from_store(store, source.key)
+    if mode is None:
         logger.warning(
             "Approval-mode store item is unavailable; interrupting for safety"
         )
-        return False
-    return value
+        return ApprovalMode.MANUAL
+    return mode
 
 
-def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
-    """Decide whether a gated tool call should pause for human approval.
-
-    Returns `False` once the run context carries `auto_approve=True` so
-    `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
-    interrupt-then-auto-resolve pattern that previously split each turn into a
-    separate run after every tool call, producing noisy traces.
-
-    Auto-approve is read from the run-scoped `CLIContext` (set by the client)
-    rather than graph state. Sourcing it from state required seeding it with a
-    first-turn `Command(update=...)`, which the LangGraph API server rebuilds
-    with `goto=None` — crashing `_control_branch` on a fresh thread. Context
-    is also safer: the model cannot self-approve by writing state.
+async def _aresolve_approval_mode(context: object, store: object) -> ApprovalMode:
+    """Resolve approval mode through the async server Store interface.
 
     Args:
-        request: The pending tool call under review.
+        context: Current run context.
+        store: Current LangGraph Store.
 
     Returns:
-        `True` to interrupt for approval, `False` to auto-approve.
+        The validated mode, failing closed to Manual.
+    """
+    source = _approval_mode_source(context)
+    if isinstance(source, _DecidedMode):
+        return source.mode
+    mode = await aread_approval_mode_from_store(store, source.key)
+    if mode is None:
+        logger.warning(
+            "Approval-mode store item is unavailable; interrupting for safety"
+        )
+        return ApprovalMode.MANUAL
+    return mode
+
+
+_ASYNC_APPROVAL_ROUTING_KEY = "_deepagents_code_async_approval_routing"
+
+
+@dataclass(frozen=True)
+class _RoutingDecision:
+    """A trusted in-process approval decision from the async read hook.
+
+    Its *type identity* is the trust signal: a checkpoint round-trip or graph
+    input deserializes to a plain `dict`/`list`, never to this private class, so
+    graph state cannot forge an autonomous mode.
+    """
+
+    mode: ApprovalMode
+
+
+def _async_routing_mode(state: object) -> ApprovalMode | None:
+    """Return a mode resolved by the async HITL hook in this call only."""
+    if isinstance(state, dict):
+        routed = state.get(_ASYNC_APPROVAL_ROUTING_KEY)
+        if isinstance(routed, _RoutingDecision):
+            return routed.mode
+    return None
+
+
+def _should_interrupt_tool_call(
+    request: ToolCallRequest, *, auto_mode_enabled: bool = True
+) -> bool:
+    """Decide whether stock HITL should pause for a gated tool call.
+
+    Args:
+        request: Pending tool call.
+        auto_mode_enabled: Whether classifier-backed Auto is eligible to bypass
+            approvals for this graph (the top-level local Textual graph, and the
+            subagent / goal-criteria stacks that reuse this predicate). When
+            `False`, a live Auto record interrupts instead of bypassing, keeping
+            delegated internals gated in graphs without the classifier.
+
+    Returns:
+        `True` to interrupt, or `False` for Auto/YOLO bypass.
     """
     runtime = getattr(request, "runtime", None)
-    ctx = getattr(runtime, "context", None)
-    store = getattr(runtime, "store", None)
-    if isinstance(ctx, CLIContextSchema):
-        if (live := _read_live_auto_approve(store, ctx.approval_mode_key)) is not None:
-            return not live
-        return not _is_auto_approve_enabled(ctx.auto_approve)
-    if isinstance(ctx, dict):
-        raw_key = ctx.get("approval_mode_key")
-        key = raw_key if isinstance(raw_key, str) else None
-        if (live := _read_live_auto_approve(store, key)) is not None:
-            return not live
-        # Type-checked (not truthiness) check: over the JSON/RemoteGraph boundary a
-        # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
-        # silently auto-approve. Only a genuine boolean `True` suppresses.
-        return not _is_auto_approve_enabled(ctx.get("auto_approve"))
-    if ctx is not None:
-        # Context is present but neither expected shape. The registered
-        # `context_schema=CLIContextSchema` guarantees in-process coercion to
-        # that dataclass, and RemoteGraph delivers a dict — so this means the
-        # context-plumbing contract broke (likely an SDK change). Fail closed
-        # (interrupt), but surface it: otherwise auto-approve silently stops
-        # working with no error, looking like a feature that just "broke".
-        logger.warning(
-            "auto-approve predicate received unexpected context type %s; "
-            "interrupting for safety",
-            type(ctx).__name__,
+    mode = _async_routing_mode(getattr(request, "state", None))
+    if mode is None:
+        mode = _resolve_approval_mode(
+            getattr(runtime, "context", None),
+            getattr(runtime, "store", None),
         )
+
+    if mode is ApprovalMode.YOLO:
+        return False
+    if mode is ApprovalMode.AUTO:
+        return not auto_mode_enabled
     return True
 
 
-def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
+class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
+    """Stock HITL routing with an async live-mode read after model completion.
+
+    The transient routing marker is added only to a shallow state copy passed
+    directly into stock HITL routing. It is neither checkpointed nor accepted
+    without the process-local `_RoutingDecision` type identity, so graph input
+    cannot forge an autonomous mode.
+    """
+
+    # Report the stock middleware name so the SDK dedups us into the single HITL
+    # slot rather than appending a second stock HITL alongside us. This pairs
+    # with the explicit `interrupt_on = {}` on subagent specs in
+    # `create_cli_agent`, which suppresses the parent-inherited stock HITL; the
+    # two together guarantee exactly one HITL middleware per graph.
+    name = HumanInTheLoopMiddleware.__name__
+
+    def __init__(
+        self,
+        interrupt_on: Mapping[str, bool | InterruptOnConfig],
+    ) -> None:
+        """Initialize async-aware stock HITL routing.
+
+        Args:
+            interrupt_on: Stock per-tool approval configurations.
+        """
+        super().__init__(dict(interrupt_on))
+
+    async def aafter_model(
+        self,
+        state: AgentState[Any],
+        runtime: Runtime[Any],
+    ) -> dict[str, Any] | None:
+        """Revalidate live mode, then immediately run stock approval routing.
+
+        Args:
+            state: Agent state after the model response has been appended.
+            runtime: Runtime carrying the live context and Store.
+
+        Returns:
+            The stock HITL state update, or `None` when approval is bypassed.
+        """
+        mode = await _aresolve_approval_mode(runtime.context, runtime.store)
+        routed_state = dict(state)
+        # Stock `after_model` threads this state into the `when` predicate's
+        # `ToolCallRequest.state` and returns only `{"messages": [...]}`, so the
+        # marker reaches routing without ever entering checkpointed state.
+        routed_state[_ASYNC_APPROVAL_ROUTING_KEY] = _RoutingDecision(mode)
+        return super().after_model(cast("AgentState[Any]", routed_state), runtime)
+
+    def after_model(
+        self,
+        state: AgentState[Any],
+        runtime: Runtime[Any],
+    ) -> dict[str, Any] | None:
+        """Warn and fail closed if driven synchronously.
+
+        This middleware exists to read the live mode from an async Store. A
+        synchronous run never resolves an autonomous mode (the sync Store read
+        is rejected on the event loop and fails closed to Manual), so surface it
+        loudly rather than letting a wiring change silently over-gate.
+
+        Args:
+            state: Agent state after the model response has been appended.
+            runtime: Runtime carrying the live context and Store.
+
+        Returns:
+            The stock HITL state update, or `None` when approval is bypassed.
+        """
+        logger.warning(
+            "AsyncApprovalHITLMiddleware ran synchronously; live autonomous "
+            "modes will not take effect and gated calls fall back to Manual"
+        )
+        return super().after_model(state, runtime)
+
+
+def _interrupt_predicate(
+    *, auto_mode_enabled: bool
+) -> Callable[[ToolCallRequest], bool]:
+    """Bind runtime eligibility into a stock-HITL predicate.
+
+    Args:
+        auto_mode_enabled: Whether Auto may bypass stock HITL.
+
+    Returns:
+        Predicate suitable for `InterruptOnConfig.when`.
+    """
+
+    def should_interrupt(request: ToolCallRequest) -> bool:
+        return _should_interrupt_tool_call(request, auto_mode_enabled=auto_mode_enabled)
+
+    return should_interrupt
+
+
+def _add_interrupt_on(
+    *,
+    mcp_tools: Sequence[BaseTool] = (),
+    auto_mode_enabled: bool = True,
+) -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
     Every tool that can have side effects or access external resources
@@ -1336,55 +1550,65 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     mid-session (carried in run-scoped context, not graph state) suppresses
     the interrupt itself instead of relying on the client to auto-resolve it.
 
+    Args:
+        mcp_tools: Exact MCP tools to extend the static interrupt map with.
+        auto_mode_enabled: Whether `auto` bypasses stock HITL for delegated
+            subagents. Ineligible runtimes treat `auto` as Manual.
+
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
+    when = (
+        _should_interrupt_tool_call
+        if auto_mode_enabled
+        else _interrupt_predicate(auto_mode_enabled=False)
+    )
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_write_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_edit_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     delete_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_delete_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": "Launch, update, or cancel a remote async subagent.",
-        "when": _should_interrupt_tool_call,
+        "when": when,
     }
 
     interrupt_map: dict[str, InterruptOnConfig] = {
@@ -1400,6 +1624,17 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "cancel_async_task": async_subagent_interrupt_config,
     }
 
+    from deepagents_code.auto_mode import mcp_tool_is_coherently_read_only
+
+    for mcp_tool in mcp_tools:
+        if mcp_tool_is_coherently_read_only(mcp_tool):
+            continue
+        interrupt_map[mcp_tool.name] = {
+            "allowed_decisions": ["approve", "reject"],
+            "description": "This MCP action can mutate or access an external system.",
+            "when": when,
+        }
+
     if REQUIRE_COMPACT_TOOL_APPROVAL:
         interrupt_map["compact_conversation"] = {
             "allowed_decisions": ["approve", "reject"],
@@ -1409,7 +1644,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
                 "window space. Recent messages are kept as-is. "
                 "Full history remains available for retrieval."
             ),
-            "when": _should_interrupt_tool_call,
+            "when": when,
         }
 
     return interrupt_map
@@ -1437,11 +1672,13 @@ def create_cli_agent(
     assistant_id: str,
     *,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    mcp_tools: Sequence[BaseTool] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    auto_mode_enabled: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
     enable_ask_user: bool = True,
@@ -1467,7 +1704,9 @@ def create_cli_agent(
     Args:
         model: LLM model to use (e.g., `'provider:model'`)
         assistant_id: Agent identifier for memory/state storage
-        tools: Additional tools to provide to agent
+        tools: Additional tools to provide to agent.
+        mcp_tools: Exact MCP tools within `tools`, used to extend approval policy
+            from their protocol annotations.
         sandbox: Optional sandbox backend for remote execution
             (e.g., `ModalSandbox`).
 
@@ -1499,6 +1738,9 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        auto_mode_enabled: Install classifier-backed Auto for the local Textual
+            runtime. Callers must leave this disabled for headless, remote, and
+            sandbox-backed graphs.
         interrupt_shell_only: If `True`, all HITL interrupts are disabled;
             shell commands are validated inline by `ShellAllowListMiddleware`
             against the configured allow-list instead.
@@ -1585,6 +1827,19 @@ def create_cli_agent(
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
     """
     tools = tools or []
+    mcp_tools = tuple(mcp_tools or ())
+    if auto_mode_enabled and not is_env_truthy(EXPERIMENTAL):
+        logger.warning(
+            "Classifier-backed Auto requires %s=1; using Manual HITL",
+            EXPERIMENTAL,
+        )
+        auto_mode_enabled = False
+    if auto_mode_enabled and (not interactive or sandbox is not None):
+        logger.warning(
+            "Classifier-backed Auto is unavailable outside the local interactive "
+            "runtime; using Manual HITL"
+        )
+        auto_mode_enabled = False
     effective_cwd = (
         Path(cwd)
         if cwd is not None
@@ -1639,6 +1894,16 @@ def create_cli_agent(
                 "available; falling back to standard HITL interrupts"
             )
 
+    hitl_active = not auto_approve and restrictive_shell_allow_list is None
+    resolved_interrupt_on = (
+        _add_interrupt_on(
+            mcp_tools=mcp_tools,
+            auto_mode_enabled=auto_mode_enabled,
+        )
+        if hitl_active
+        else None
+    )
+
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
@@ -1646,11 +1911,15 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
-    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
-        middleware: list[AgentMiddleware] = []
+    def _subagent_cli_middleware(
+        *, has_explicit_model: bool
+    ) -> list[AgentMiddleware[Any, Any]]:
+        middleware: list[AgentMiddleware[Any, Any]] = []
         # Experimental: mirror the main agent and drop TodoListMiddleware /
         # write_todos from subagent stacks too. No-op unless the flag is set.
         middleware.extend(_todo_list_middleware_override())
+        if resolved_interrupt_on is not None:
+            middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
@@ -1690,6 +1959,13 @@ def create_cli_agent(
         )
         if subagent_middleware:
             subagent["middleware"] = subagent_middleware
+        if resolved_interrupt_on is not None:
+            # The async-aware stock-compatible middleware above owns approval
+            # routing. A declarative subagent with no `interrupt_on` inherits
+            # the parent's top-level map (`spec.get("interrupt_on", ...)` in
+            # deepagents graph assembly), which would wrap its tools in a second
+            # synchronous stock HITL. An explicit empty (falsy) map opts out.
+            subagent["interrupt_on"] = {}
         custom_subagents.append(subagent)
 
     from deepagents.middleware.subagents import (
@@ -1707,6 +1983,8 @@ def create_cli_agent(
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
             "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
+        if resolved_interrupt_on is not None:
+            general_purpose_subagent["interrupt_on"] = {}
         custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
@@ -1716,6 +1994,14 @@ def create_cli_agent(
         # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
         *_todo_list_middleware_override(),
     ]
+    if not interactive and mcp_tools:
+        from deepagents_code.auto_mode import (
+            HeadlessMCPGuardMiddleware,
+            gated_mcp_tool_names,
+        )
+
+        if gated_names := gated_mcp_tool_names(mcp_tools):
+            agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
@@ -1916,10 +2202,8 @@ def create_cli_agent(
         )
 
     # Add shell allow-list middleware when interrupt_shell_only is active.
-    shell_middleware_added = False
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
-        shell_middleware_added = True
 
     # For the auto-generated prompt, overwrite the SDK's built-in base prompt
     # (via the `base` key) so its content isn't duplicated on top of ours. A
@@ -1938,18 +2222,31 @@ def create_cli_agent(
     else:
         resolved_system_prompt = system_prompt
 
-    # Configure interrupt_on based on auto_approve / shell_middleware_added
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve or shell_middleware_added:  # noqa: SIM108  # if-else clearer than ternary for dual-path config
-        # No HITL interrupts — tools run automatically.
-        # When shell_middleware_added is True, shell validation is handled by
-        # ShellAllowListMiddleware (added above) which rejects disallowed
-        # commands inline as error ToolMessages, keeping the entire run in
-        # a single LangSmith trace.
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None
+    if resolved_interrupt_on is None:
         interrupt_on = {}
     else:
-        # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
+        interrupt_on = resolved_interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
+        if auto_mode_enabled:
+            from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+            configured_allow_list = shell_allow_list or settings.shell_allow_list
+            narrow_allow_list = (
+                configured_allow_list if isinstance(configured_allow_list, list) else []
+            )
+            trusted_root = (
+                project_context.project_root
+                if project_context is not None
+                and project_context.project_root is not None
+                else effective_cwd or Path.cwd()
+            )
+            agent_middleware.append(
+                AutoModeHITLMiddleware(
+                    resolved_interrupt_on,
+                    worktree_root=trusted_root,
+                    shell_allow_list=narrow_allow_list,
+                )
+            )
 
     # Set up composite backend with routing.
     if sandbox is None:
@@ -1994,7 +2291,7 @@ def create_cli_agent(
     if goal_criteria_tools is not None:
         from deepagents_code.goal_rubric import (
             GoalCriteriaMiddleware,
-            create_goal_criteria_agent,
+            _create_goal_criteria_agent,
             create_goal_criteria_fallback_agent,
         )
 
@@ -2014,11 +2311,12 @@ def create_cli_agent(
         else:
             criteria_backend = None
             criteria_root = "/"
-        criteria_agent = create_goal_criteria_agent(
+        criteria_agent = _create_goal_criteria_agent(
             model=model,
             repository_backend=criteria_backend,
             repository_root=criteria_root,
             context_tools=goal_criteria_tools,
+            auto_mode_enabled=auto_mode_enabled,
         )
         criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
         agent_middleware.append(

@@ -133,6 +133,8 @@ def total_job_guard(total_jobs: int) -> None:
     unreliable well before an unbounded count, so cap it and point at the worker-pool
     escalation instead of silently launching a firehose.
     """
+    if total_jobs <= 0:
+        raise SystemExit("Flat matrix would generate no jobs; select at least one task.")
     if total_jobs > TOTAL_JOB_BUDGET:
         raise SystemExit(
             f"Flat matrix would generate {total_jobs} jobs, over "
@@ -389,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
                 "full profile requires UNIFIED_TASKS_JSON (enumerated tasks)."
             )
         tasks_by_cat = _load_tasks_json(tasks_json)
+
+    empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
+    if empty_categories:
+        raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
 
     n_models = len(model_specs)
 

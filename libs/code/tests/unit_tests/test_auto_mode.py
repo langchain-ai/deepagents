@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
@@ -41,8 +43,6 @@ from deepagents_code.auto_mode import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
     from langchain_core.language_models import BaseChatModel
@@ -414,6 +414,95 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
     )
 
     assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+
+
+async def test_absolute_outside_write_resolves_path_off_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside_path = Path("/tmp/langchain-groq-reasoning-model-pr.md")
+    event_loop_thread = threading.get_ident()
+    resolution_threads: list[int] = []
+    real_resolve = Path.resolve
+
+    def tracked_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == outside_path:
+            resolution_threads.append(threading.get_ident())
+        return real_resolve(path, strict=strict)
+
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="deny",
+                category=AutoDecisionCategory.TRUST_BOUNDARY,
+                reason="The target crosses the repository trust boundary.",
+            )
+        ]
+    )
+    middleware = _middleware(tmp_path)
+    monkeypatch.setattr(Path, "resolve", tracked_resolve)
+    model = _StructuredModel(result)
+    args: dict[str, object] = {
+        "file_path": str(outside_path),
+        "content": "content",
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="write_file",
+        args=args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert len(model.calls) == 1
+    assert resolution_threads
+    assert all(thread_id != event_loop_thread for thread_id in resolution_threads)
+
+
+async def test_symlink_escape_requires_classifier(tmp_path: Path) -> None:
+    outside = tmp_path.with_name(f"{tmp_path.name}-outside")
+    outside.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(outside, target_is_directory=True)
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="deny",
+                category=AutoDecisionCategory.TRUST_BOUNDARY,
+                reason="The target crosses the repository trust boundary.",
+            )
+        ]
+    )
+    middleware = _middleware(tmp_path)
+    model = _StructuredModel(result)
+    args: dict[str, object] = {
+        "file_path": str(link / "module.py"),
+        "content": "content",
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="write_file",
+        args=args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert len(model.calls) == 1
 
 
 async def test_auto_uses_async_graph_store_apis(tmp_path: Path) -> None:

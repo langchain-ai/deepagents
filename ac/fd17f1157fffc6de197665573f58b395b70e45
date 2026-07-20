@@ -1,0 +1,23 @@
+libs/evals/harbor_adapters/contextbench/templates/judge.py
+  s_172bca4d3f2099::t_18aaa6b9e8171d 12-15
+  s_172bca4d3f2099::t_ffe65f31bd3246 107
+  s_172bca4d3f2099::t_f3701ab083a032 38
+  s_172bca4d3f2099::t_e1c100839ea10a 80-86
+  s_172bca4d3f2099::t_369162fd0b2ac3 122-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "acfd17f1157fffc6de197665573f58b395b70e45",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

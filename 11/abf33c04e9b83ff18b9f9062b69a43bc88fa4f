@@ -1,0 +1,26 @@
+libs/evals/UNIFIED_SCORECARD.md
+  s_8c6fdd805af4d8::t_76e94fbe79960c 105
+  s_8c6fdd805af4d8::t_242dab5bf393ab 86
+  s_8c6fdd805af4d8::t_cb04644f51f590 85
+  s_8c6fdd805af4d8::t_011e96b2038f89 67
+  s_8c6fdd805af4d8::t_c18c7666de2263 87
+  s_8c6fdd805af4d8::t_6b440193f689c8 83,103,121,137
+  s_8c6fdd805af4d8::t_a70f1421a6de13 84
+  s_8c6fdd805af4d8::t_394b3609827987 104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "11abf33c04e9b83ff18b9f9062b69a43bc88fa4f",
+  "prompts": {},
+  "sessions": {
+    "s_8c6fdd805af4d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4c18d69-cf23-4969-87fe-0a818c296f34",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

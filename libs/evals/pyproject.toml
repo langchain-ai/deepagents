@@ -186,6 +186,11 @@ ban-relative-imports = "all"
 "deepagents_harbor/langsmith.py" = [
     "T201",    # `print` found — CI-facing integration layer, print is the expected output
 ]
+"harbor_adapters/contextbench/templates/*" = [
+    "INP001",  # Standalone script copied into each task's sandbox, not an importable module
+    "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
+    "D",       # Docstring conventions — a copied-into-sandbox script, not library API
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false

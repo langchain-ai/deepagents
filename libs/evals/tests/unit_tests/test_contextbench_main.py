@@ -54,6 +54,10 @@ def _write_vendor_fixture(vendor_dir: Path) -> None:
     vendor_dir.mkdir(parents=True)
     lines = [json.dumps(record) for record in _FIXTURE_RECORDS]
     (vendor_dir / "filesystem_cloud.jsonl").write_text("\n".join(lines) + "\n")
+    # The verifier ships the upstream grading rubric into each task.
+    (vendor_dir / "rubric.txt").write_text(
+        "Question: {input}\nExpected: {ground_truth}\nSubmission: {submission}\n"
+    )
     files_dir = vendor_dir / "files"
     files_dir.mkdir()
     for filename in (
@@ -91,11 +95,15 @@ def test_populate_restores_corpus_from_vendor(
     output_dir = tmp_path / "dataset"
     main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
 
-    # Simulate the git-ignored corpus being absent (fresh checkout).
+    # Simulate the git-ignored corpus AND single-sourced verifier files being
+    # absent (fresh checkout): only the committed tests/case.json survives.
     files_dir = output_dir / "cb-cloud-1" / "environment" / "files"
     for corpus_file in files_dir.iterdir():
         corpus_file.unlink()
     files_dir.rmdir()
+    tests_dir = output_dir / "cb-cloud-1" / "tests"
+    for invariant in ("test.sh", "judge.py", "rubric.txt"):
+        (tests_dir / invariant).unlink()
 
     # A non-contextbench sibling dir must be left untouched.
     other = output_dir / "not-a-cb-task"
@@ -113,6 +121,11 @@ def test_populate_restores_corpus_from_vendor(
         "vehicles.txt",
     ]
     assert (files_dir / "people.txt").read_text() == "people.txt source data\n"
+    # The invariant verifier files are restored; the committed case.json stays.
+    assert (tests_dir / "test.sh").read_text().endswith("python3 /tests/judge.py\n")
+    assert (tests_dir / "judge.py").is_file()
+    assert "{submission}" in (tests_dir / "rubric.txt").read_text()
+    assert json.loads((tests_dir / "case.json").read_text())["ground_truth"] == "Tammy Roberts"
     assert not (other / "environment").exists()
 
 

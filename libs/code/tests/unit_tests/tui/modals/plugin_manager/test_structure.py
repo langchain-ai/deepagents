@@ -1297,7 +1297,9 @@ async def test_plugin_manager_overlays_underlying_content() -> None:
         await pilot.pause()
 
         # Inherit the default ModalScreen dim backdrop instead of a fully
-        # transparent one, matching the other modals.
+        # transparent one. The alpha is in (0, 1) only under a non-ansi theme
+        # (hence the "textual-dark" pin above); it degrades to transparent
+        # under ansi themes.
         assert 0 < app.screen.styles.background.a < 1
         plain = re.sub(r"<[^>]+>", " ", app.export_screenshot())
         assert "TOP_MARKER_VISIBLE" in plain

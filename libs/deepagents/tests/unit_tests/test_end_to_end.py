@@ -27,7 +27,7 @@ from langgraph.types import Command
 from pydantic import Field
 
 import deepagents.middleware.filesystem as filesystem_middleware
-from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
@@ -3094,6 +3094,53 @@ class TestStateBackendConfigKeys:
         assert "not found" in tool_msgs["c2"]
         # The deleted file is gone; the untouched file remains.
         assert set(result["files"].keys()) == {"/other.txt"}
+
+
+class TestFilesystemRoutingPrompt:
+    """Routing survives prose suppression; filesystem usage prose does not.
+
+    The host-path routing section is essential per-backend config, so it is
+    emitted even on the lean default where the usage prose is suppressed.
+    """
+
+    def _capture_system_prompt(self, backend: BackendProtocol, **create_kwargs: Any) -> str:
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        capturing = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing], **create_kwargs)
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+        return str(capturing.captured_system_messages[0].content)
+
+    def _routed_backend(self) -> CompositeBackend:
+        # LocalShellBackend default + FilesystemBackend route => the routing
+        # section maps `/common/` to the route's host path for the `execute` shell.
+        return CompositeBackend(
+            default=LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True),
+            routes={"/common/": FilesystemBackend(root_dir="/work/app", virtual_mode=True)},
+        )
+
+    def test_routing_survives_lean_default(self) -> None:
+        """The routing section is emitted on the lean default.
+
+        The filesystem usage prose and base prose are suppressed.
+        """
+        content = self._capture_system_prompt(self._routed_backend())
+        assert "Shell paths vs. virtual paths" in content, "routing section must survive suppression"
+        assert "## Following Conventions" not in content, "filesystem usage prose should be suppressed"
+        assert "You are a deep agent" not in content, "base prose should be suppressed"
+
+    def test_routing_still_present_when_flag_true(self) -> None:
+        content = self._capture_system_prompt(self._routed_backend(), _builtin_middleware_prompts=True)
+        assert "Shell paths vs. virtual paths" in content
+        # With the flag on, the filesystem usage prose returns alongside routing.
+        assert "## Following Conventions" in content
+
+    def test_no_routing_section_for_non_composite_backend(self) -> None:
+        """A single backend has no routes, so no routing section is added.
+
+        The model still gets a functional (prose-suppressed) agent.
+        """
+        content = self._capture_system_prompt(LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True))
+        assert "Shell paths vs. virtual paths" not in content
 
 
 class TestArtifactsRoot:

@@ -2792,9 +2792,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if described_tools is not visible_tools:
             request = request.override(tools=described_tools)
 
-        # Use custom system prompt if provided, otherwise generate dynamically
+        # A `system_prompt` override (including `""` suppression) replaces only the
+        # usage-guidance prose. The host-path routing section is essential
+        # per-backend config (virtual->host path mapping for the `execute` shell),
+        # not prose, so it is still appended when the execute tool is active — even
+        # when the prose is overridden or suppressed.
         if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
+            prompt_parts = [self._custom_system_prompt] if self._custom_system_prompt else []
+            if execution_active:
+                route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+            system_prompt = "\n\n".join(prompt_parts).strip()
         else:
             # Build dynamic system prompt reflecting only the tools that survived filtering
             visible_fs = {n for n in (tool_names - unsupported) if n is not None}

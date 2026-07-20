@@ -34,6 +34,7 @@ from deepagents_code.auto_mode import (
     _batch_id,
     _default_counters,
     _fixed_repo_command_allowed,
+    _is_deterministically_destructive,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
     sanitize_auto_reason,
@@ -392,6 +393,73 @@ async def test_project_command_requires_classifier(tmp_path: Path) -> None:
 
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
     assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf build",
+        "rm -fr build",
+        "rm -r -f build",
+        "rm -f -r build",
+        "git clean -fd",
+        "git reset --hard HEAD~1",
+        "dd if=/dev/zero of=/dev/sda",
+        "mkfs.ext4 /dev/sda1",
+        "truncate -s 0 important.log",
+    ],
+)
+def test_destructive_shell_commands_are_flagged(command: str) -> None:
+    assert _is_deterministically_destructive("execute", {"command": command})
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm build.log",
+        "rm -r cache",
+        "rm -f cache",
+        "rm -r a; rm -f b",
+        "git status",
+        "pytest tests",
+        "ls -la",
+    ],
+)
+def test_benign_shell_commands_are_not_flagged(command: str) -> None:
+    assert not _is_deterministically_destructive("execute", {"command": command})
+
+
+def test_destructive_check_only_applies_to_execute() -> None:
+    assert not _is_deterministically_destructive(
+        "write_file", {"command": "rm -rf build"}
+    )
+
+
+async def test_destructive_rm_forces_human_despite_without_asking_text(
+    tmp_path: Path,
+) -> None:
+    """`rm -rf` in Auto forces human review even when the user says not to ask."""
+    model = _FailIfClassifiedModel()
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={"command": "rm -rf build"},
+        raw_user_text="clean build with rm -rf, without asking for confirmation",
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm -rf build"},
+    )
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "require_human"
+    assert decision["path"] == "deterministic"
+    assert decision["category"] == AutoDecisionCategory.DESTRUCTIVE_ACTION.value
 
 
 async def test_routine_in_worktree_write_is_deterministically_allowed(

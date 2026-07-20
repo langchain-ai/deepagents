@@ -953,6 +953,33 @@ def _deterministic_allow(
     return False
 
 
+_RM_FORCE_RECURSIVE_RE = re.compile(r"(?i)\brm\b(?P<flags>(?:\s+-[a-z]+)+)")
+_DESTRUCTIVE_SHELL_RE = re.compile(
+    r"(?i)"
+    r"\bgit\s+clean\b(?:\s+\S+)*\s+-[a-z]*f"
+    r"|\bgit\s+reset\b(?:\s+\S+)*\s+--hard\b"
+    r"|\bdd\s+if="
+    r"|\bmkfs(?:\.\S+)?\b"
+    r"|\btruncate\s+-s\s*0\b"
+    r"|>\s*/dev/(?:sd[a-z]|nvme\d|disk\d)"
+)
+
+
+def _is_destructive_rm(command: str) -> bool:
+    for match in _RM_FORCE_RECURSIVE_RE.finditer(command):
+        flags = match.group("flags").replace("-", "").replace(" ", "").lower()
+        if "r" in flags and "f" in flags:
+            return True
+    return False
+
+
+def _is_deterministically_destructive(tool_name: str, args: Mapping[str, Any]) -> bool:
+    if tool_name != "execute":
+        return False
+    command = str(args.get("command", ""))
+    return _is_destructive_rm(command) or bool(_DESTRUCTIVE_SHELL_RE.search(command))
+
+
 def _extract_model_name(model: object) -> str:
     for attr in ("model_name", "model"):
         value = getattr(model, attr, None)
@@ -1179,7 +1206,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         review_calls: list[ToolCall] = []
         deterministic_dispositions: dict[str, str] = {}
         for call in gated_calls:
-            if _deterministic_allow(
+            if _is_deterministically_destructive(call["name"], call.get("args", {})):
+                deterministic_dispositions[_tool_call_id(call)] = "require_human"
+                plan["decisions"].append(
+                    {
+                        "tool_call_id": _tool_call_id(call),
+                        "disposition": "require_human",
+                        "category": AutoDecisionCategory.DESTRUCTIVE_ACTION.value,
+                        "reason": (
+                            "Irreversible filesystem command requires human "
+                            "approval and cannot be auto-approved."
+                        ),
+                        "path": "deterministic",
+                    }
+                )
+            elif _deterministic_allow(
                 self._worktree_root,
                 call,
                 tools.get(call["name"]),

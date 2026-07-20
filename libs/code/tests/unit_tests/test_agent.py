@@ -3515,6 +3515,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         clobber the pinned model.
         """
         from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.blocking_guard import BlockingCallGuardMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
@@ -3577,6 +3578,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 type(mw) for mw in subagents_by_name[name]["middleware"]
             ]
             assert middleware_types == [
+                BlockingCallGuardMiddleware,
                 ConfigurableModelMiddleware,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"

@@ -67,6 +67,7 @@ from deepagents_code.approval_mode import (
     coerce_approval_mode,
     read_approval_mode_from_store,
 )
+from deepagents_code.blocking_guard import BlockingCallGuardMiddleware
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -1914,7 +1915,9 @@ def create_cli_agent(
     def _subagent_cli_middleware(
         *, has_explicit_model: bool
     ) -> list[AgentMiddleware[Any, Any]]:
-        middleware: list[AgentMiddleware[Any, Any]] = []
+        # Outermost model-call wrapper: same BlockingError recovery as the main
+        # agent so a subagent turn is not aborted by a stray blocking call.
+        middleware: list[AgentMiddleware[Any, Any]] = [BlockingCallGuardMiddleware()]
         # Experimental: mirror the main agent and drop TodoListMiddleware /
         # write_todos from subagent stacks too. No-op unless the flag is set.
         middleware.extend(_todo_list_middleware_override())
@@ -1989,6 +1992,10 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
+        # Outermost model-call wrapper: catches a stray BlockingError from any
+        # inner middleware so a blocking filesystem call cannot abort the turn
+        # and discard completed tool work.
+        BlockingCallGuardMiddleware(),
         ConfigurableModelMiddleware(),
         # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
         # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.

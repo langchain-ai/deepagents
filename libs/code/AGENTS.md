@@ -62,7 +62,7 @@ Apply these rules to new UI; do not treat them as a mandate to refactor existing
 - Co-locate a screen's `.tcss` file with its root component and set `CSS_PATH` relative to that module. Its styles may target sibling and small nested components, but a large nested component should generally own its own stylesheet.
 - Widgets cannot use `CSS_PATH`; put intrinsic, auto-scoped defaults in `DEFAULT_CSS`. The mounting screen owns the widget's sizing and placement.
 - Children must not import parent components. They may import shared utilities and data models; send events up and pass state/data down.
-- Never set `background: transparent` on a `ModalScreen` root. That override removes Textual's default `background: $background 60%` dim backdrop and makes the modal fully see-through instead of dimming the content behind it. Leave the default in place so the modal matches the others (it already degrades to transparent under ansi themes via `&:ansi`).
+- Never set `background: transparent` on a `ModalScreen` root. That override removes Textual's default.
 
 ### Testing Textual apps
 

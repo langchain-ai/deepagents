@@ -9,7 +9,7 @@ GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k =
   <img alt="Grouped bar chart of lite pass@k (top panel) and avg@k (bottom panel) by category (autonomous, conversation, context) across GPT-5.6 terra, sol, luna, Claude Opus 4.8, Claude Sonnet 5, and GLM-5.2, sorted by macro pass@k" src="assets/lite-scorecard-light.svg">
 </picture>
 
-pass@k (top) and avg@k (bottom), sorted by macro pass@k. Context is graded by exact string match on the answer file (output-format-sensitive).
+pass@k (top) and avg@k (bottom), sorted by macro pass@k. Context is graded by **exact string match** on `/app/answer.txt`, and each task instructs the agent to write *only* the final answer there ("and nothing else"). The low context scores — GPT-5.6 sol (0.000) and Claude Opus 4.8 (0.125) most notably — are an **instruction-following / output-format gap, not a retrieval gap**: these models reach the correct answer but write it as a full explanatory sentence, which the exact-match check rejects.
 
 ## GPT-5.6 terra
 

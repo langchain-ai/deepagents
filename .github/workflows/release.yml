@@ -304,9 +304,13 @@ jobs:
           if PULLS=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" 2>&1); then
+            # sort_by(.number) makes the pick deterministic when a commit is
+            # associated with more than one merged PR (e.g. a merge to main plus a
+            # later backport that cherry-picked it): the lowest number is the
+            # original merge, since backports are opened afterwards.
             if ! RELEASE_PR_NUMBER=$(printf '%s' "$PULLS" | jq -r \
-              'map(select(.merged_at != null)) | .[0].number // empty'); then
-              echo "::warning::Could not parse the pull request associated with release SHA $SHA."
+              'map(select(.merged_at != null)) | sort_by(.number) | .[0].number // empty'); then
+              echo "::warning::Could not parse the pull request associated with release SHA $SHA: $PULLS"
               RELEASE_PR_NUMBER=""
             fi
           else

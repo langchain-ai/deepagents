@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -49,12 +50,17 @@ def _initialize_repository(repository: Path) -> str:
     return _git(repository, "rev-parse", "HEAD")
 
 
-def _write_fake_gh(directory: Path) -> Path:
+def _write_fake_gh(directory: Path, requests: Path) -> Path:
     bin_dir = directory / "bin"
     bin_dir.mkdir()
     executable = bin_dir / "gh"
+    # Record the args of every invocation so tests can assert the API is called
+    # with the right endpoint and resolved SHA, then emit the canned response.
     executable.write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' "$GH_API_RESPONSE"\nexit "$GH_API_EXIT"\n'
+        "#!/bin/sh\n"
+        f'printf \'%s\\n\' "$*" >> "{requests}"\n'
+        'printf \'%s\\n\' "$GH_API_RESPONSE"\n'
+        'exit "$GH_API_EXIT"\n'
     )
     executable.chmod(0o755)
     return bin_dir
@@ -65,11 +71,13 @@ def _run_resolve_sha_step(
     *,
     api_response: str,
     api_exit: int = 0,
-) -> tuple[str, subprocess.CompletedProcess[str]]:
+) -> tuple[str, subprocess.CompletedProcess[str], str]:
     release_sha = _initialize_repository(repository)
     output = repository / "github-output.txt"
     summary = repository / "github-summary.md"
-    bin_dir = _write_fake_gh(repository)
+    requests = repository / "gh-requests.txt"
+    requests.touch()
+    bin_dir = _write_fake_gh(repository, requests)
     env = {
         **os.environ,
         "GH_API_EXIT": str(api_exit),
@@ -95,7 +103,7 @@ def _run_resolve_sha_step(
         capture_output=True,
         text=True,
     )
-    return summary.read_text(), result
+    return summary.read_text(), result, requests.read_text()
 
 
 def test_setup_job_can_read_pull_requests() -> None:
@@ -110,7 +118,7 @@ def test_summary_links_merged_pr_associated_with_release_sha(tmp_path: Path) -> 
         {"number": 4857, "merged_at": "2026-07-20T18:53:15Z"},
     ]
 
-    summary, _ = _run_resolve_sha_step(
+    summary, _, requests = _run_resolve_sha_step(
         tmp_path,
         api_response=json.dumps(pulls),
     )
@@ -121,9 +129,69 @@ def test_summary_links_merged_pr_associated_with_release_sha(tmp_path: Path) -> 
     )
     assert "#9999" not in summary
 
+    # The lookup must query the resolved release SHA's commit-pulls endpoint,
+    # not the pre-resolution input or some other commit.
+    resolved_sha = re.search(r"/commit/([0-9a-f]{40})", summary).group(1)
+    assert (
+        f"/repos/langchain-ai/deepagents/commits/{resolved_sha}/pulls" in requests
+    )
+
+
+def test_summary_omits_pr_row_when_no_merged_pr(tmp_path: Path) -> None:
+    # A commit with no associated PR (direct push, or the github.sha fallback)
+    # returns an empty array; unmerged PRs are filtered out. Either way the
+    # jq filter must yield empty (never the string "null") so no row is written.
+    responses = ("[]", json.dumps([{"number": 9999, "merged_at": None}]))
+    for index, api_response in enumerate(responses):
+        repository = tmp_path / f"case{index}"
+        repository.mkdir()
+        summary, result, _ = _run_resolve_sha_step(
+            repository,
+            api_response=api_response,
+        )
+
+        assert "Associated PR" not in summary
+        assert "null" not in summary
+        assert "### Resolved release target" in summary
+        assert result.returncode == 0
+
+
+def test_summary_links_lowest_numbered_merged_pr(tmp_path: Path) -> None:
+    # When several merged PRs are associated with the commit (e.g. a merge to
+    # main plus a later backport), the pick is deterministic: lowest number.
+    pulls = [
+        {"number": 5200, "merged_at": "2026-08-01T00:00:00Z"},
+        {"number": 4857, "merged_at": "2026-07-20T18:53:15Z"},
+    ]
+
+    summary, _, _ = _run_resolve_sha_step(
+        tmp_path,
+        api_response=json.dumps(pulls),
+    )
+
+    assert (
+        "| Associated PR | "
+        "[#4857](https://github.com/langchain-ai/deepagents/pull/4857) |" in summary
+    )
+    assert "#5200" not in summary
+
+
+def test_pr_parse_failure_does_not_block_release(tmp_path: Path) -> None:
+    # gh exits 0 but returns non-JSON: the `if !` guard around jq must keep the
+    # parse error from tripping `set -e` and aborting the release.
+    summary, result, _ = _run_resolve_sha_step(
+        tmp_path,
+        api_response="not json {",
+    )
+
+    assert "Associated PR" not in summary
+    assert "::warning::Could not parse the pull request" in result.stdout
+    assert "### Resolved release target" in summary
+    assert result.returncode == 0
+
 
 def test_pr_lookup_failure_does_not_block_release(tmp_path: Path) -> None:
-    summary, result = _run_resolve_sha_step(
+    summary, result, _ = _run_resolve_sha_step(
         tmp_path,
         api_response="GitHub API unavailable",
         api_exit=1,

@@ -9,7 +9,12 @@ GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k =
   <img alt="Grouped bar chart of lite micro and macro avg@k across GPT-5.6 sol, GPT-5.6 terra, Claude Opus 4.8, GPT-5.6 luna, Claude Sonnet 5, and GLM-5.2, sorted by micro avg@k" src="assets/lite-scorecard-light.svg">
 </picture>
 
-Context is graded by the faithful Letta **`model_judge`** (rubric-based, phrasing/name/number tolerant) matching upstream Context-Bench. The lite context set is the difficulty frontier by combined terra+luna performance. luna is judged by `gpt-5.6-terra` (independent), all others by `gpt-5.6-luna`. Lite order by **micro avg@k**: **sol 0.481 > terra 0.363 > opus 0.323 > luna 0.314 > Sonnet 5 0.235 > GLM-5.2 0.167**. Per-model tables below also carry pass@k.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/lite-scorecard-categories-dark.svg">
+  <img alt="Grouped bar chart of lite avg@k by category (autonomous, conversation, context) per model, sorted by micro avg@k" src="assets/lite-scorecard-categories-light.svg">
+</picture>
+
+Lite, by **micro avg@k**: **sol 0.481 > terra 0.363 > opus 0.323 > luna 0.314 > Sonnet 5 0.235 > GLM-5.2 0.167**.
 
 ## GPT-5.6 terra
 

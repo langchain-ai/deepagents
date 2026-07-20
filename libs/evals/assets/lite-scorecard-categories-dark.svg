@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 506" width="720" height="506" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" role="img" aria-label="Lite avg@k by category per model, sorted by micro avg@k">
+<rect x="0.5" y="0.5" width="719" height="505" rx="12" fill="#161514" stroke="rgba(255,255,255,0.09)"/>
+<text x="24" y="34" font-size="15" font-weight="600" fill="#e8e7e4">Lite — avg@k by category</text>
+<rect x="24" y="48" width="11" height="11" rx="3" fill="#5a9be0"/><text x="41" y="58" font-size="12.5" fill="#a4a3a0">autonomous</text>
+<rect x="134" y="48" width="11" height="11" rx="3" fill="#3fae5a"/><text x="151" y="58" font-size="12.5" fill="#a4a3a0">conversation</text>
+<rect x="258" y="48" width="11" height="11" rx="3" fill="#f090b4"/><text x="275" y="58" font-size="12.5" fill="#a4a3a0">context</text>
+<line x1="263.0" y1="70" x2="263.0" y2="476" stroke="rgba(255,255,255,0.09)"/>
+<text x="263.0" y="492" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.25</text>
+<line x1="394.0" y1="70" x2="394.0" y2="476" stroke="rgba(255,255,255,0.09)"/>
+<text x="394.0" y="492" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.5</text>
+<line x1="525.0" y1="70" x2="525.0" y2="476" stroke="rgba(255,255,255,0.09)"/>
+<text x="525.0" y="492" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.75</text>
+<line x1="656.0" y1="70" x2="656.0" y2="476" stroke="rgba(255,255,255,0.09)"/>
+<text x="656.0" y="492" font-size="10.5" fill="#a4a3a0" text-anchor="middle">1</text>
+<text x="122" y="113" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 sol</text>
+<rect x="132" y="80" width="139.9" height="15" rx="3" fill="#5a9be0"/>
+<text x="277.9" y="91" font-size="10.5" fill="#a4a3a0">0.267</text>
+<rect x="132" y="98" width="254.1" height="15" rx="3" fill="#3fae5a"/>
+<text x="392.1" y="109" font-size="10.5" fill="#a4a3a0">0.485</text>
+<rect x="132" y="116" width="458.5" height="15" rx="3" fill="#f090b4"/>
+<text x="596.5" y="127" font-size="10.5" fill="#a4a3a0">0.875</text>
+<text x="122" y="179" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 terra</text>
+<rect x="132" y="146" width="139.9" height="15" rx="3" fill="#5a9be0"/>
+<text x="277.9" y="157" font-size="10.5" fill="#a4a3a0">0.267</text>
+<rect x="132" y="164" width="238.4" height="15" rx="3" fill="#3fae5a"/>
+<text x="376.4" y="175" font-size="10.5" fill="#a4a3a0">0.455</text>
+<rect x="132" y="182" width="218.5" height="15" rx="3" fill="#f090b4"/>
+<text x="356.5" y="193" font-size="10.5" fill="#a4a3a0">0.417</text>
+<text x="122" y="245" font-size="12.5" fill="#e8e7e4" text-anchor="end">Claude Opus 4.8</text>
+<rect x="132" y="212" width="151.4" height="15" rx="3" fill="#5a9be0"/>
+<text x="289.4" y="223" font-size="10.5" fill="#a4a3a0">0.289</text>
+<rect x="132" y="230" width="126.8" height="15" rx="3" fill="#3fae5a"/>
+<text x="264.8" y="241" font-size="10.5" fill="#a4a3a0">0.242</text>
+<rect x="132" y="248" width="262.0" height="15" rx="3" fill="#f090b4"/>
+<text x="400.0" y="259" font-size="10.5" fill="#a4a3a0">0.500</text>
+<text x="122" y="311" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 luna</text>
+<rect x="132" y="278" width="93.3" height="15" rx="3" fill="#5a9be0"/>
+<text x="231.3" y="289" font-size="10.5" fill="#a4a3a0">0.178</text>
+<rect x="132" y="296" width="95.4" height="15" rx="3" fill="#3fae5a"/>
+<text x="233.4" y="307" font-size="10.5" fill="#a4a3a0">0.182</text>
+<rect x="132" y="314" width="393.0" height="15" rx="3" fill="#f090b4"/>
+<text x="531.0" y="325" font-size="10.5" fill="#a4a3a0">0.750</text>
+<text x="122" y="377" font-size="12.5" fill="#e8e7e4" text-anchor="end">Claude Sonnet 5</text>
+<rect x="132" y="344" width="69.7" height="15" rx="3" fill="#5a9be0"/>
+<text x="207.7" y="355" font-size="10.5" fill="#a4a3a0">0.133</text>
+<rect x="132" y="362" width="47.7" height="15" rx="3" fill="#3fae5a"/>
+<text x="185.7" y="373" font-size="10.5" fill="#a4a3a0">0.091</text>
+<rect x="132" y="380" width="327.5" height="15" rx="3" fill="#f090b4"/>
+<text x="465.5" y="391" font-size="10.5" fill="#a4a3a0">0.625</text>
+<text x="122" y="443" font-size="12.5" fill="#e8e7e4" text-anchor="end">GLM-5.2</text>
+<rect x="132" y="410" width="35.1" height="15" rx="3" fill="#5a9be0"/>
+<text x="173.1" y="421" font-size="10.5" fill="#a4a3a0">0.067</text>
+<rect x="132" y="428" width="0.0" height="15" rx="3" fill="#3fae5a"/>
+<text x="138.0" y="439" font-size="10.5" fill="#a4a3a0">0.000</text>
+<rect x="132" y="446" width="305.5" height="15" rx="3" fill="#f090b4"/>
+<text x="443.5" y="457" font-size="10.5" fill="#a4a3a0">0.583</text>
+</svg>

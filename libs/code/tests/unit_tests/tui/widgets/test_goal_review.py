@@ -220,9 +220,12 @@ class TestGoalReviewMenu:
         `newline_shortcut` returns `Ctrl+J`/`Option+Enter`; the goal editor must
         advertise that key rather than a Shift+Enter that would submit instead.
         """
-        from deepagents_code.tui.widgets import goal_review as goal_review_module
+        from deepagents_code import config as config_module
 
-        monkeypatch.setattr(goal_review_module, "newline_shortcut", lambda: "Ctrl+J")
+        # `newline_hint` resolves `newline_shortcut` via a call-time
+        # `from deepagents_code.config import newline_shortcut`, so patch the
+        # name on the config module it actually looks up.
+        monkeypatch.setattr(config_module, "newline_shortcut", lambda: "Ctrl+J")
         app = _GoalReviewTestApp()
 
         async with app.run_test() as pilot:

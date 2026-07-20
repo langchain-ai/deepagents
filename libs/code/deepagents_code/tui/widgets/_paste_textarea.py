@@ -17,8 +17,9 @@ on top, keeping the full content off-screen until submission.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from textual.binding import Binding
 from textual.widgets import TextArea
 
 from deepagents_code.paste_collapse import (
@@ -61,6 +62,16 @@ Keeps multi-line pastes grouped as one input even when newlines arrive as
 terminal read boundaries), instead of submitting mid-paste.
 """
 
+_BACKSLASH_ENTER_GAP_SECONDS = 0.15
+"""Maximum gap between a `\\` key and a following `enter` key to treat the
+pair as a terminal-emitted shift+enter sequence.
+
+Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
+followed by enter when the user presses shift+enter.  The gap is
+generous (150 ms) because the terminal emits both characters nearly
+simultaneously; a human deliberately typing `\\` then pressing Enter would
+have a much larger gap."""
+
 
 class PasteBurstTextArea(TextArea):
     """`TextArea` that detects paste-like keystroke bursts.
@@ -72,6 +83,36 @@ class PasteBurstTextArea(TextArea):
     by `CollapsingPasteTextArea`.
     """
 
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding(
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
+            "insert_newline",
+            "New Line",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
+        ),
+    ]
+    """Shared key bindings for every paste-aware text area.
+
+    These are the single source of truth for shortcut keys, inherited by both
+    the chat input and inline prompts (Textual aggregates BINDINGS across the
+    MRO). `_NEWLINE_KEYS` is derived from this list so `_on_key` stays in sync.
+    """
+
+    _NEWLINE_KEYS: ClassVar[frozenset[str]] = frozenset(
+        key
+        for b in BINDINGS
+        if b.action == "insert_newline"
+        for key in b.key.split(",")
+    )
+    """Flattened set of keys that insert a newline, derived from `BINDINGS`."""
+
     _paste_burst_buffer: str
     _paste_burst_last_char_time: float | None
     _paste_burst_timer: Timer | None
@@ -80,6 +121,7 @@ class PasteBurstTextArea(TextArea):
     _paste_burst_last_key_time: float | None
     _paste_burst_last_suppressed_enter_time: float | None
     _paste_burst_window_until: float | None
+    _backslash_pending_time: float | None
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the text area and its paste-burst state."""
@@ -102,6 +144,9 @@ class PasteBurstTextArea(TextArea):
         # Deadline until which `enter` inserts a newline rather than submitting,
         # keeping multi-line pastes grouped across read boundaries.
         self._paste_burst_window_until = None
+        # Timestamp of a `\` keypress awaiting a fast `enter` to be treated as a
+        # terminal-emitted shift+enter. See `_BACKSLASH_ENTER_GAP_SECONDS`.
+        self._backslash_pending_time = None
 
     # -- Policy hooks (override in subclasses) --------------------------------
 
@@ -345,6 +390,65 @@ class PasteBurstTextArea(TextArea):
         self._paste_burst_last_suppressed_enter_time = now
         self.action_insert_newline()
         return True
+
+    # -- Newline affordances (shared by concrete text areas) ------------------
+
+    def _delete_preceding_backslash(self) -> bool:
+        """Delete the backslash character immediately before the cursor.
+
+        Caller must ensure a backslash is expected at this position. The
+        method verifies the character before deleting it.
+
+        Returns:
+            `True` if a backslash was found and deleted, `False` otherwise.
+        """
+        row, col = self.cursor_location
+        if col > 0:
+            start = (row, col - 1)
+            if self.document.get_text_range(start, self.cursor_location) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        elif row > 0:
+            prev_line = self.document.get_line(row - 1)
+            start = (row - 1, len(prev_line) - 1)
+            end = (row - 1, len(prev_line))
+            if self.document.get_text_range(start, end) == "\\":
+                self.delete(start, self.cursor_location)
+                return True
+        return False
+
+    def _consume_backslash_enter_newline(
+        self, event: events.Key, now: float, *, enabled: bool = True
+    ) -> bool:
+        """Return whether a terminal-emitted backslash+Enter became a newline."""
+        if (
+            event.key == "enter"
+            and enabled
+            and self._backslash_pending_time is not None
+            and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+        ):
+            self._backslash_pending_time = None
+            if self._delete_preceding_backslash():
+                event.prevent_default()
+                event.stop()
+                self.action_insert_newline()
+                return True
+        self._backslash_pending_time = None
+        return False
+
+    def _track_backslash_pending(self, event: events.Key, now: float) -> None:
+        """Record a backslash keypress so a fast following Enter becomes a newline."""
+        if event.key == "backslash" and event.character == "\\":
+            self._backslash_pending_time = now
+
+    def _consume_modifier_newline(self, event: events.Key) -> bool:
+        """Return whether a modifier-Enter key was consumed as an inserted newline."""
+        if event.key in self._NEWLINE_KEYS:
+            event.prevent_default()
+            event.stop()
+            self.action_insert_newline()
+            return True
+        return False
 
 
 class CollapsingPasteTextArea(PasteBurstTextArea):

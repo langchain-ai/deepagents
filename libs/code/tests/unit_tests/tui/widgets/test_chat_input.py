@@ -3647,7 +3647,7 @@ class TestBackslashEnterNewline:
         # Widen the gap so wall-clock timing between pilot.press calls on slow
         # CI runners cannot push the enter past the 150ms default and trip the
         # submit path.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3685,7 +3685,7 @@ class TestBackslashEnterNewline:
         `call_after_refresh(scroll_cursor_visible)` keeps the cursor visible.
         """
         # Widen the backslash+enter gap so the fallback test isn't racy on CI.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
@@ -3743,7 +3743,7 @@ class TestBackslashEnterNewline:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Backslash + enter on empty prompt should not submit."""
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3764,7 +3764,7 @@ class TestBackslashEnterNewline:
     ) -> None:
         """Backslash + enter beyond the timing gap should submit normally."""
         # Set gap to 0 so any real delay exceeds it.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:

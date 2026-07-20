@@ -205,6 +205,35 @@ class TestInlinePromptPaste:
 
             assert app.submissions == ["hello"]
 
+    async def test_backslash_then_enter_inserts_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rapid backslash + enter inserts a newline instead of submitting.
+
+        Some terminals (e.g. VSCode built-in) emit a literal backslash followed
+        by enter for shift+enter; the inline prompt must collapse that pair into
+        a newline like the chat input does.
+        """
+        # Widen the gap so wall-clock timing between pilot.press calls on slow
+        # CI runners cannot trip the submit path.
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert "\n" in ta.text
+            assert "\\" not in ta.text
+            assert app.submissions == []
+
     async def test_identical_second_paste_expands_placeholder(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

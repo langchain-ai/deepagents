@@ -103,6 +103,15 @@ def _is_fireworks_model(model: object) -> bool:
     return _get_ls_provider(model) == "fireworks"
 
 
+def _is_google_genai_model(model: object) -> bool:
+    """Check whether a resolved model reports `'google_genai'` (Gemini) as its provider.
+
+    Returns:
+        `True` if the model's `ls_provider` is `'google_genai'`.
+    """
+    return _get_ls_provider(model) == "google_genai"
+
+
 def _is_openai_model(model: object) -> bool:
     """Check whether a resolved model targets OpenAI's official API.
 
@@ -534,6 +543,130 @@ def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
     return Command(update=update)
 
 
+_GOOGLE_GENAI_MIN_TEMPERATURE = 0.0
+"""Lowest `temperature` the Google GenAI API accepts."""
+
+_GOOGLE_GENAI_MAX_TEMPERATURE = 2.0
+"""Highest `temperature` the Google GenAI API accepts."""
+
+_GOOGLE_GENAI_EMPTY_CONTENT_PLACEHOLDER = " "
+"""Single space substituted for empty message text.
+
+The Google GenAI (Gemini) API rejects requests whose message `parts` carry an
+empty string with an HTTP 400 `ChatGoogleGenerativeAIError` before generation.
+A non-empty placeholder keeps a trivial turn (e.g. a bare "hi" whose content
+normalizes to empty) shaped validly instead of crashing.
+"""
+
+
+def _message_text_is_empty(content: object) -> bool:
+    """Return whether a message's content carries no non-whitespace text."""
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str) and block.strip():
+                return False
+            if isinstance(block, Mapping):
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    return False
+                if block.get("type") not in {None, "text"}:
+                    # Non-text parts (images, tool calls, etc.) are valid content.
+                    return False
+        return True
+    return False
+
+
+def _normalize_google_genai_request(request: ModelRequest) -> ModelRequest:
+    """Normalize a Gemini request so minimal/empty messages are valid.
+
+    Google GenAI rejects empty-content message `parts` with an HTTP 400 before
+    generating, so any message whose text normalizes to empty gets a
+    single-space placeholder. Invalid generation-config values that Gemini
+    rejects (a negative `max_tokens`, a `temperature` outside `[0, 2]`) are
+    dropped from `model_settings` rather than forwarded verbatim.
+
+    Returns:
+        A normalized request, or the original when nothing needed changing.
+    """
+    overrides: dict[str, Any] = {}
+
+    messages = list(request.messages)
+    changed = False
+    for index, message in enumerate(messages):
+        if _message_text_is_empty(getattr(message, "content", None)):
+            messages[index] = message.model_copy(
+                update={"content": _GOOGLE_GENAI_EMPTY_CONTENT_PLACEHOLDER}
+            )
+            changed = True
+    if changed:
+        overrides["messages"] = messages
+
+    settings = request.model_settings
+    if isinstance(settings, Mapping):
+        cleaned = dict(settings)
+        dropped: list[str] = []
+        max_tokens = cleaned.get("max_tokens")
+        if (
+            isinstance(max_tokens, int)
+            and not isinstance(max_tokens, bool)
+            and max_tokens <= 0
+        ):
+            cleaned.pop("max_tokens", None)
+            dropped.append("max_tokens")
+        temperature = cleaned.get("temperature")
+        if (
+            isinstance(temperature, (int, float))
+            and not isinstance(temperature, bool)
+            and not (
+                _GOOGLE_GENAI_MIN_TEMPERATURE
+                <= temperature
+                <= _GOOGLE_GENAI_MAX_TEMPERATURE
+            )
+        ):
+            cleaned.pop("temperature", None)
+            dropped.append("temperature")
+        if dropped:
+            logger.debug(
+                "Dropped invalid Gemini generation-config field(s): %s", dropped
+            )
+            overrides["model_settings"] = cleaned
+
+    if not overrides:
+        return request
+    return request.override(**overrides)
+
+
+def _raise_google_genai_bad_request(model: object, exc: Exception) -> None:
+    """Re-raise a Gemini HTTP 400 as an actionable `ModelConfigError`.
+
+    Only fires for `google_genai` models when the provider raised a 400 Bad
+    Request; other errors propagate unchanged so their own handling still runs.
+
+    Raises:
+        ModelConfigError: When *exc* is a Gemini 400, naming the model.
+    """
+    if not _is_google_genai_model(model):
+        return
+    text = str(exc)
+    if "400" not in text and "Bad Request" not in text:
+        return
+    from deepagents_code.model_config import ModelConfigError
+
+    model_name = get_model_identifier(model) or "google_genai"
+    msg = (
+        f"Gemini model '{model_name}' rejected the request with an HTTP 400 "
+        f"Bad Request: {exc}. The request payload was invalid for the Google "
+        f"GenAI API (e.g. an empty message, an unsupported role, or an "
+        f"out-of-range generation-config value). Adjust the message/params or "
+        f"switch to a known-good model with `/model`."
+    )
+    raise ModelConfigError(msg) from exc
+
+
 class ConfigurableModelMiddleware(AgentMiddleware):
     """Swap the model or per-call settings from `runtime.context`.
 
@@ -573,7 +706,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        downstream = resolved.request
+        if _is_google_genai_model(downstream.model):
+            downstream = _normalize_google_genai_request(downstream)
+        try:
+            response = handler(downstream)
+        except Exception as exc:
+            _raise_google_genai_bad_request(downstream.model, exc)
+            raise
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -591,7 +731,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        downstream = resolved.request
+        if _is_google_genai_model(downstream.model):
+            downstream = _normalize_google_genai_request(downstream)
+        try:
+            response = await handler(downstream)
+        except Exception as exc:
+            _raise_google_genai_bad_request(downstream.model, exc)
+            raise
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

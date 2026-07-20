@@ -23,8 +23,10 @@ from deepagents_code.configurable_model import (
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
+    _is_google_genai_model,
     _is_openai_model,
 )
+from deepagents_code.model_config import ModelConfigError
 
 
 def _make_model(name: str) -> MagicMock:
@@ -1345,3 +1347,84 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+def _make_gemini_model(name: str = "gemini-3.1-pro-preview") -> MagicMock:
+    """Create a mock BaseChatModel reporting the google_genai provider."""
+    model = _make_model(name)
+    model._get_ls_params.return_value = {"ls_provider": "google_genai"}
+    return model
+
+
+class TestGoogleGenAINormalization:
+    """Gemini requests are normalized so trivial turns don't 400."""
+
+    def test_single_word_message_produces_valid_request(self) -> None:
+        """A bare 'hi' turn reaches the provider with a non-empty content part."""
+        request = _make_request(_make_gemini_model())
+        request.messages[0].content = "hi"
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].messages[0].content == "hi"
+
+    def test_empty_content_message_gets_placeholder(self) -> None:
+        """An empty-content message is padded so Gemini does not reject it."""
+        request = _make_request(_make_gemini_model())
+        request.messages[0].content = ""
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].messages[0].content == " "
+
+    def test_invalid_generation_config_dropped(self) -> None:
+        """Out-of-range generation-config values are stripped before dispatch."""
+        request = _make_request(
+            _make_gemini_model(),
+            model_settings={"temperature": 5, "max_tokens": -1, "top_p": 0.9},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        settings = captured[0].model_settings
+        assert settings is not None
+        assert "temperature" not in settings
+        assert "max_tokens" not in settings
+        assert settings["top_p"] == pytest.approx(0.9)
+
+    def test_http_400_surfaced_as_model_config_error(self) -> None:
+        """A Gemini 400 becomes an actionable ModelConfigError naming the model."""
+        request = _make_request(_make_gemini_model("gemini-3.1-pro-preview"))
+
+        def _raise(_request: ModelRequest) -> ModelResponse[Any]:
+            msg = "ChatGoogleGenerativeAIError: 400 Bad Request"
+            raise RuntimeError(msg)
+
+        with pytest.raises(ModelConfigError) as excinfo:
+            _mw.wrap_model_call(request, _raise)
+
+        assert "gemini-3.1-pro-preview" in str(excinfo.value)
+
+    def test_non_gemini_400_propagates_unchanged(self) -> None:
+        """A 400 from a non-Gemini model is not rewrapped."""
+        request = _make_request(_make_model("gpt-5.5"))
+
+        def _raise(_request: ModelRequest) -> ModelResponse[Any]:
+            msg = "400 Bad Request"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError):
+            _mw.wrap_model_call(request, _raise)
+
+    def test_is_google_genai_model_detection(self) -> None:
+        assert _is_google_genai_model(_make_gemini_model()) is True
+        assert _is_google_genai_model(_make_model("gpt-5.5")) is False

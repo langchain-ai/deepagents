@@ -487,3 +487,24 @@ jobs:
               done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🔀 Compare active branches and configs"
+        if: ${{ always() && needs.prep.result == 'success' }}
+        env:
+          SOURCES: ${{ needs.prep.outputs.sources }}
+          EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+        run: |
+          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+            --sources-json "$SOURCES" \
+            --expected-leaves-json "$EXPECTED_LEAVES" \
+            --categories-json "$EXPECTED_CATEGORIES" \
+            --rollouts "$ROLLOUTS" \
+            --out-dir _comparison
+
+      - name: "📤 Upload deterministic comparisons"
+        if: ${{ always() && hashFiles('_comparison/comparison_summary.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-comparison
+          path: _comparison/

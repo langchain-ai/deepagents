@@ -213,6 +213,30 @@ def test_combine_receives_expected_leaves() -> None:
     assert "expected_leaves: ${{ steps.p.outputs.expected_leaves }}" in reusable
 
 
+def test_combine_generates_allocation_driven_comparison_report() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(workflow, "  combine:")
+    compare = _indented_block(
+        combine, '      - name: "🔀 Compare active branches and configs"'
+    )
+
+    assert "if: ${{ always() && needs.prep.result == 'success' }}" in compare
+    assert "SOURCES: ${{ needs.prep.outputs.sources }}" in compare
+    assert "EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}" in compare
+    assert "EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}" in compare
+    assert "aggregate_unified_compare.py _leaves" in compare
+    assert '--sources-json "$SOURCES"' in compare
+    assert '--expected-leaves-json "$EXPECTED_LEAVES"' in compare
+    assert '--categories-json "$EXPECTED_CATEGORIES"' in compare
+
+    upload = _indented_block(
+        combine, '      - name: "📤 Upload deterministic comparisons"'
+    )
+    assert "hashFiles('_comparison/comparison_summary.json') != ''" in upload
+    assert "name: unified-comparison" in upload
+    assert "path: _comparison/" in upload
+
+
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:
     """Only a genuine empty-artifact response may let combine continue."""
     workflow = UNIFIED_WORKFLOW.read_text()

@@ -21,13 +21,20 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 from unified_types import LeafKey, RowKey
 
 
 class _LeafSummaryError(ValueError):
     """Raised when a leaf summary cannot safely participate in aggregation."""
+
+
+class LeafRecord(NamedTuple):
+    """Validated leaf summary paired with its artifact directory."""
+
+    path: Path
+    leaf: dict[str, object]
 
 
 def _require_object(value: object, field: str) -> dict[str, object]:
@@ -337,8 +344,11 @@ def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str 
             )
 
 
-def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> list[dict]:
-    leaves: list[dict] = []
+def discover_leaf_records(
+    root: Path, *, expected_rollouts: int | None = None
+) -> list[LeafRecord]:
+    """Discover validated leaf summaries while retaining their artifact paths."""
+    records: list[LeafRecord] = []
     if (root / "summary.json").exists():
         candidates = [root]
     else:
@@ -349,7 +359,8 @@ def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> lis
         ]
     for leaf_dir in candidates:
         try:
-            leaves.append(read_leaf(leaf_dir, expected_rollouts=expected_rollouts))
+            leaf = read_leaf(leaf_dir, expected_rollouts=expected_rollouts)
+            records.append(LeafRecord(leaf_dir, leaf))
         except (OSError, UnicodeError, _LeafSummaryError) as exc:
             # Catch only genuine bad-data signals: an unreadable file (OSError /
             # UnicodeError) or a schema/parse violation, which read_leaf always
@@ -359,7 +370,15 @@ def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> lis
             print(
                 f"::warning::Skipping malformed eval summary at {leaf_dir / 'summary.json'}: {exc}"
             )
-    return leaves
+    return records
+
+
+def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> list[dict]:
+    """Discover validated leaf summaries for the unified scorecard."""
+    return [
+        record.leaf
+        for record in discover_leaf_records(root, expected_rollouts=expected_rollouts)
+    ]
 
 
 def _load_list_env(name: str) -> list[str] | None:
@@ -417,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     expected_leaves = _load_leaves_env("EXPECTED_LEAVES")
     combined = combine(
         leaves,
-        expected_leaves,
+        cast(list[LeafKey | dict[str, str]] | None, expected_leaves),
         _load_list_env("EXPECTED_CATEGORIES"),
     )
     write_outputs(combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY"))

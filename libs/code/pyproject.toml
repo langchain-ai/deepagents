@@ -172,6 +172,9 @@ test = [
     "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.26.1,<1.0.0",
     "twine>=6.2.0,<7.0.0",
+    # Detect blocking calls on the event loop in startup smoke tests; mirrors the
+    # Blockbuster instance langgraph-runtime-inmem activates at runtime.
+    "blockbuster>=1.5.26,<1.6",
 ]
 
 [tool.hatch.build.hooks.custom]

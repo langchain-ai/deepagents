@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -34,6 +35,7 @@ from deepagents_code.mcp_tools import (
     _json_error_snippet,
     _load_tools_from_config,
     _normalize_mcp_arguments,
+    _warm_mcp_adapter_imports,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_project_server_summaries,
@@ -3203,8 +3205,32 @@ class TestLoadToolsConcurrency:
         assert manager is not None
         await manager.cleanup()
 
+    def test_warmup_imports_adapter_and_auth_modules(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Warmup eagerly imports every module used later on the event loop."""
+        import langchain_mcp_adapters
+
+        import deepagents_code
+
+        module_names = {
+            "deepagents_code.mcp_auth",
+            "langchain_mcp_adapters.sessions",
+            "langchain_mcp_adapters.tools",
+        }
+        for module_name in module_names:
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+        monkeypatch.delattr(deepagents_code, "mcp_auth", raising=False)
+        monkeypatch.delattr(langchain_mcp_adapters, "sessions", raising=False)
+        monkeypatch.delattr(langchain_mcp_adapters, "tools", raising=False)
+
+        _warm_mcp_adapter_imports()
+
+        assert module_names <= sys.modules.keys()
+
     async def test_warmup_runs_off_loop_before_discovery(self) -> None:
-        """Adapter warmup runs, off the event loop, before any discovery."""
+        """MCP warmup runs, off the event loop, before any discovery."""
         loop_thread_id = threading.get_ident()
         events: list[tuple[str, int]] = []
 

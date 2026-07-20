@@ -1767,18 +1767,20 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP adapter modules whose first import may block.
+    """Eagerly import MCP modules whose first import may block.
 
-    Run via `asyncio.to_thread` before adapter symbols are used, so the initial
-    (potentially blocking) package-resource scan stays off the server event
-    loop. Because this runs inside `_load_tools_from_config`, it happens only
-    when at least one active MCP server exists — a config with no MCP servers
-    never imports the adapters.
+    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
+    blocking import side effect (package-resource scans, or a dependency that
+    does file I/O at import time — e.g. `filelock`, pulled in by `mcp_auth`)
+    happens off the server event loop where Blockbuster would otherwise reject
+    it. Runs only when at least one active MCP server exists.
     """
     from langchain_mcp_adapters import (
         sessions as _sessions,  # noqa: F401
         tools as _tools,  # noqa: F401
     )
+
+    from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
 
 
 async def _gather_bounded(

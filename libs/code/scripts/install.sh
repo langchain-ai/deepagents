@@ -407,15 +407,25 @@ if [ "$(id -u)" -eq 0 ]; then
     log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
     log_warn "  After install, run: sudo chown -R YOUR_USERNAME ~/.local"
     fix_owner() { :; }
+    fix_file_owner() { :; }
   else
     fix_owner() {
       if ! chown -R "$TARGET_USER" "$@" 2>&1; then
         log_warn "Could not fix ownership of $* for user ${TARGET_USER}."
       fi
     }
+    fix_file_owner() {
+      local path
+      for path in "$@"; do
+        if { [ -e "$path" ] || [ -L "$path" ]; } && ! chown -h "$TARGET_USER" "$path" 2>&1; then
+          log_warn "Could not fix ownership of $path for user ${TARGET_USER}."
+        fi
+      done
+    }
   fi
 else
   fix_owner() { :; }
+  fix_file_owner() { :; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -895,13 +905,31 @@ is_snap_curl() {
 # working downloader is available.
 download_to_stdout() {
   local url="$1" ua="${2:-deepagents-code-install}"
-  if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
-    curl -fsSL -H "User-Agent: ${ua}" "$url" 2>/dev/null || return $?
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO- --header="User-Agent: ${ua}" "$url" 2>/dev/null || return $?
-  else
-    return 1
-  fi
+  local attempt=1 body="" download_rc=1
+  while [ "$attempt" -le 3 ]; do
+    if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
+      if body=$(curl -fsSL -H "User-Agent: ${ua}" "$url" 2>/dev/null); then
+        printf '%s' "$body"
+        return 0
+      else
+        download_rc=$?
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if body=$(wget -qO- --header="User-Agent: ${ua}" "$url" 2>/dev/null); then
+        printf '%s' "$body"
+        return 0
+      else
+        download_rc=$?
+      fi
+    else
+      return 1
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      sleep "$attempt"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return "$download_rc"
 }
 
 install_uv() {
@@ -934,10 +962,35 @@ install_uv() {
   # it: on failure it holds the actionable cause (curl: (6) Could not resolve
   # host, SSL errors, HTTP status), which the failure branch below surfaces.
   # curl -sS and wget -nv stay quiet on success, so this adds no noise then.
+  local attempt
   if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
-    curl -fsSL https://astral.sh/uv/install.sh -o "$uv_script" 2>"$uv_install_out" || uv_install_rc=$?
+    uv_install_rc=1
+    for attempt in 1 2 3; do
+      : >"$uv_install_out"
+      if curl -fsSL https://astral.sh/uv/install.sh -o "$uv_script" 2>"$uv_install_out"; then
+        uv_install_rc=0
+        break
+      else
+        uv_install_rc=$?
+      fi
+      if [ "$attempt" -lt 3 ]; then
+        sleep "$attempt"
+      fi
+    done
   elif command -v wget >/dev/null 2>&1; then
-    wget -nv -O "$uv_script" https://astral.sh/uv/install.sh 2>"$uv_install_out" || uv_install_rc=$?
+    uv_install_rc=1
+    for attempt in 1 2 3; do
+      : >"$uv_install_out"
+      if wget -nv -O "$uv_script" https://astral.sh/uv/install.sh 2>"$uv_install_out"; then
+        uv_install_rc=0
+        break
+      else
+        uv_install_rc=$?
+      fi
+      if [ "$attempt" -lt 3 ]; then
+        sleep "$attempt"
+      fi
+    done
   elif is_snap_curl; then
     rm -f "$uv_install_out" "$uv_script"
     log_error "curl is installed as a snap and cannot download files due to sandbox permissions."
@@ -1039,13 +1092,48 @@ if ! resolve_uv_bin; then
     exit 1
   fi
   acquire_install_lock
+  UV_BIN_DIR_PREEXISTED=false
+  if [ -d "${HOME}/.local/bin" ]; then
+    UV_BIN_DIR_PREEXISTED=true
+  fi
   log_info "uv not found — installing..."
   install_uv
-  fix_owner "${HOME}/.local/bin"  # root installs: restore user ownership
+  if [ "$UV_BIN_DIR_PREEXISTED" = false ]; then
+    fix_file_owner "${HOME}/.local/bin"
+  fi
+  fix_file_owner "${HOME}/.local/bin/uv" "${HOME}/.local/bin/uvx" "${HOME}/.local/bin/env"
   if ! resolve_uv_bin; then
     log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
     exit 1
   fi
+fi
+
+resolve_tool_bin_dir() {
+  local dir=""
+  if dir=$("$UV_BIN" tool dir --bin 2>/dev/null) && [ -n "$dir" ]; then
+    :
+  elif [ -n "${XDG_BIN_HOME:-}" ]; then
+    dir="$XDG_BIN_HOME"
+  elif [ -n "${XDG_DATA_HOME:-}" ]; then
+    dir="${XDG_DATA_HOME}/../bin"
+  else
+    dir="${HOME}/.local/bin"
+  fi
+  case "$dir" in
+    /*) ;;
+    *) dir="$(pwd -P)/${dir}" ;;
+  esac
+  printf '%s\n' "$dir"
+}
+
+TOOL_BIN_DIR="$(resolve_tool_bin_dir)"
+TOOL_BIN_DIR_DISPLAY="$TOOL_BIN_DIR"
+case "$TOOL_BIN_DIR" in
+  "$HOME"/*) TOOL_BIN_DIR_DISPLAY="~${TOOL_BIN_DIR#"$HOME"}" ;;
+esac
+TOOL_BIN_DIR_PREEXISTED=false
+if [ -d "$TOOL_BIN_DIR" ]; then
+  TOOL_BIN_DIR_PREEXISTED=true
 fi
 
 # ---------------------------------------------------------------------------
@@ -1081,15 +1169,30 @@ PACKAGE="deepagents-code${EXTRAS}${VERSION_SPEC}"
 
 # Capture pre-install version (if any) for messaging
 PRE_VERSION=""
-for candidate in dcode deepagents-code; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    PRE_VERSION=$("$candidate" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
-    break
-  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
-    PRE_VERSION=$("${HOME}/.local/bin/${candidate}" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
-    break
+PRE_INSTALL_IS_TOOL=false
+PRE_INSTALL_ON_PATH=false
+if [ "$(id -u)" -ne 0 ]; then
+  for candidate in dcode deepagents-code; do
+    if [ -x "${TOOL_BIN_DIR}/${candidate}" ]; then
+      PRE_VERSION=$("${TOOL_BIN_DIR}/${candidate}" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+      PRE_INSTALL_IS_TOOL=true
+      original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
+      if [ -n "$original" ] && \
+        { [ "$original" = "${TOOL_BIN_DIR}/${candidate}" ] || [ "$original" -ef "${TOOL_BIN_DIR}/${candidate}" ]; }; then
+        PRE_INSTALL_ON_PATH=true
+      fi
+      break
+    fi
+  done
+  if [ "$PRE_INSTALL_IS_TOOL" = false ]; then
+    for candidate in dcode deepagents-code; do
+      if command -v "$candidate" >/dev/null 2>&1; then
+        PRE_VERSION=$("$candidate" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+        break
+      fi
+    done
   fi
-done
+fi
 
 # Detect editable installs (uv tool install -e <path>) so we can tell the user
 # why the environment will be rebuilt instead of upgraded in place.
@@ -1144,9 +1247,13 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
-  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_ON_PATH" = true ]; then
     log_success "Already up to date!"
     exit 0
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_IS_TOOL" = true ]; then
+    log_info "deepagents-code ${PRE_VERSION} is current but is not selected on PATH — repairing its install."
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+    log_info "deepagents-code ${PRE_VERSION} is current but is outside uv's configured tool bin — installing it there."
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
   elif can_prompt; then
@@ -1189,7 +1296,10 @@ fi
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
 # status, don't race the warning past later log lines, and can re-scan the
 # raw output for (4) after the awk pass above has already reformatted it.
-uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
+uv_stderr=$(mktemp 2>/dev/null) || {
+  log_error "mktemp is required to create a secure temp file."
+  exit 1
+}
 register_temp "$uv_stderr"
 uv_rc=0
 UV_REPORTED_PACKAGE_CHANGES=false
@@ -1324,7 +1434,17 @@ if [ "$uv_rc" -ne 0 ]; then
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit "$uv_rc"
 fi
-fix_owner "${HOME}/.local/bin" "${HOME}/.local/share/uv"  # uv binaries + tool data
+if path_is_under_home "$TOOL_BIN_DIR"; then
+  if [ "$TOOL_BIN_DIR_PREEXISTED" = false ]; then
+    fix_file_owner "$TOOL_BIN_DIR"
+  fi
+  fix_file_owner "${TOOL_BIN_DIR}/dcode" "${TOOL_BIN_DIR}/deepagents-code"
+fi
+if [ -n "$UV_TOOL_DIR" ] && path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
+  fix_owner "${UV_TOOL_DIR}/deepagents-code"
+elif [ -d "${HOME}/.local/share/uv" ]; then
+  fix_owner "${HOME}/.local/share/uv"
+fi
 if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
   fix_owner "${HOME}/Library/Caches/uv"
 elif [ -d "${HOME}/.cache/uv" ]; then
@@ -1337,10 +1457,9 @@ fix_install_log_owner
 # ---------------------------------------------------------------------------
 # PATH setup — make dcode immediately findable in a new shell
 # ---------------------------------------------------------------------------
-# After `uv tool install`, dcode lands in ~/.local/bin. If that directory is
-# already in the user's PATH (via ~/.local/bin/env or a shell profile), dcode
-# just works after a shell restart. If it isn't, the user is stuck with a
-# successful install but no callable binary.
+# After `uv tool install`, dcode lands in uv's configured tool bin directory.
+# If that directory is not already in PATH, expose the installed binary through
+# one of the user's conventional bin directories.
 #
 # Strategy (adapted from Amp's installer, https://ampcode.com/install.sh):
 #   1. If a common bin dir (~/.local/bin, ~/bin, ~/.bin) is already in PATH,
@@ -1363,6 +1482,10 @@ dir_in_path() {
   esac
 }
 
+paths_are_same_file() {
+  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
+}
+
 # Try to symlink the dcode binary into a directory already in PATH. Tries
 # ~/.local/bin, ~/bin, and ~/.bin in order. Returns 0 on success.
 try_symlink_in_path() {
@@ -1374,15 +1497,18 @@ try_symlink_in_path() {
     if dir_in_path "$dir"; then
       mkdir -p "$dir" 2>/dev/null || continue
       symlink_path="$dir/$binary_name"
-      if [ "$binary_path" = "$symlink_path" ]; then
+      if paths_are_same_file "$binary_path" "$symlink_path"; then
         return 0
+      fi
+      if [ -e "$symlink_path" ] && [ ! -L "$symlink_path" ]; then
+        continue
       fi
       # Remove existing symlink if it points elsewhere or is stale
       if [ -L "$symlink_path" ]; then
         rm -f "$symlink_path"
       fi
-      if ln -sf "$binary_path" "$symlink_path" 2>/dev/null; then
-        fix_owner "$symlink_path" 2>/dev/null || true
+      if ln -s "$binary_path" "$symlink_path" 2>/dev/null; then
+        fix_file_owner "$symlink_path" 2>/dev/null || true
         return 0
       fi
     fi
@@ -1530,16 +1656,23 @@ rewrite_managed_path_block() {
 # Returns: 0 = PATH is fixed for the current shell (symlink in an on-PATH dir),
 #          1 = failure (a specific warning was already printed),
 #          2 = no changes needed, but the current shell still must be reloaded
-#              or sourced before dcode will resolve.
+#              or sourced before dcode will resolve,
+#          3 = root install to a custom bin; PATH changes are left to MDM policy.
 ensure_path_setup() {
   local binary_name="$1"
   local binary_path="$2"
 
-  # uv's env file already handles PATH setup for new shells — no profile
-  # change needed. But the current shell still lacks ~/.local/bin on PATH, so
-  # return 2 to let the caller emit a reload/source hint.
-  if [ -f "$HOME/.local/bin/env" ]; then
+  # uv's env file only exposes binaries that are actually under ~/.local/bin.
+  # A custom uv tool bin still needs a symlink or its own PATH entry.
+  local binary_dir="${binary_path%/*}"
+  if [ -f "$HOME/.local/bin/env" ] && \
+    paths_are_same_file "$binary_dir" "$HOME/.local/bin"; then
     return 2
+  fi
+  if [ "$(id -u)" -eq 0 ] && ! paths_are_same_file "$binary_dir" "$HOME/.local/bin"; then
+    log_warn "${binary_name} installed to ${TOOL_BIN_DIR_DISPLAY}, which is not on the target user's PATH."
+    log_warn "  Add that directory through the user's shell configuration or MDM policy."
+    return 3
   fi
 
   # Step 1: try symlinking into a dir already in PATH (no profile change).
@@ -1551,21 +1684,31 @@ ensure_path_setup() {
   fi
 
   # Step 2: create ~/.local/bin, symlink there, then add to shell profile.
+  local local_bin_preexisted=false
+  if [ -d "$HOME/.local/bin" ]; then
+    local_bin_preexisted=true
+  fi
   mkdir -p "$HOME/.local/bin" 2>/dev/null || {
     log_warn "Could not create ~/.local/bin."
     return 1
   }
-  fix_owner "$HOME/.local/bin"
+  if [ "$local_bin_preexisted" = false ]; then
+    fix_file_owner "$HOME/.local/bin"
+  fi
   local symlink_path="$HOME/.local/bin/$binary_name"
-  if [ "$binary_path" != "$symlink_path" ]; then
+  if ! paths_are_same_file "$binary_path" "$symlink_path"; then
+    if [ -e "$symlink_path" ] && [ ! -L "$symlink_path" ]; then
+      log_warn "Refusing to replace existing file at ${symlink_path}."
+      return 1
+    fi
     if [ -L "$symlink_path" ]; then
       rm -f "$symlink_path"
     fi
-    if ! ln -sf "$binary_path" "$symlink_path" 2>/dev/null; then
+    if ! ln -s "$binary_path" "$symlink_path" 2>/dev/null; then
       log_warn "Could not create symlink at ${symlink_path}."
       return 1
     fi
-    fix_owner "$symlink_path"
+    fix_file_owner "$symlink_path"
   fi
 
   # Step 3: detect shell and add ~/.local/bin to profile if needed.
@@ -1656,7 +1799,7 @@ classify_shadowing_command() {
 detect_shadowing_install() {
   local candidate expected original manager
   for candidate in dcode deepagents-code; do
-    expected="${HOME}/.local/bin/${candidate}"
+    expected="${TOOL_BIN_DIR}/${candidate}"
     [ -x "$expected" ] || continue
     original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
     [ -n "$original" ] || continue
@@ -1677,16 +1820,15 @@ detect_shadowing_install() {
 DCODE_BIN=""
 DCODE_NAME=""
 # Tracks whether the binary would have resolved via the user's original PATH,
-# not the installer-mutated PATH. A fresh `uv tool install` drops the binary in
-# ~/.local/bin, and this script may have sourced ~/.local/bin/env earlier to
-# find uv; the parent shell still won't have dcode on PATH until it is
-# restarted or the env file is sourced.
+# not the installer-mutated PATH.
 DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
-  if [ -x "${HOME}/.local/bin/${candidate}" ]; then
-    DCODE_BIN="${HOME}/.local/bin/${candidate}"
+  if [ -x "${TOOL_BIN_DIR}/${candidate}" ]; then
+    DCODE_BIN="${TOOL_BIN_DIR}/${candidate}"
     DCODE_NAME="$candidate"
-    if [ "$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)" = "$DCODE_BIN" ]; then
+    original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
+    if [ -n "$original" ] && \
+      { [ "$original" = "$DCODE_BIN" ] || [ "$original" -ef "$DCODE_BIN" ]; }; then
       DCODE_ON_PATH=true
     fi
     break
@@ -1697,7 +1839,9 @@ if [ -z "$DCODE_BIN" ]; then
     if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
       DCODE_BIN="$resolved"
       DCODE_NAME="$candidate"
-      if [ "$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)" = "$DCODE_BIN" ]; then
+      original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
+      if [ -n "$original" ] && \
+        { [ "$original" = "$DCODE_BIN" ] || [ "$original" -ef "$DCODE_BIN" ]; }; then
         DCODE_ON_PATH=true
       fi
       break
@@ -1771,7 +1915,7 @@ elif [ -n "$DCODE_BIN" ]; then
   log_warn "  ${VERIFY_OUTPUT}"
   log_warn "The installation may be broken. Try running: ${DCODE_NAME} -v"
 else
-  log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
+  log_warn "dcode (or deepagents-code) command not found in ${TOOL_BIN_DIR_DISPLAY} or PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
 fi
 
@@ -1784,7 +1928,7 @@ fi
 if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" ]; then
   path_setup_rc=0
   ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
-  if [ "$path_setup_rc" -ne 0 ]; then
+  if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ]; then
     # rc=1: ensure_path_setup printed a specific warning; add the fallback.
     # rc=2: no profile change needed, but the current shell still lacks
     #   ~/.local/bin on PATH — emit the same reload/source hint.
@@ -1917,16 +2061,20 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
     else
       # Quiet path: capture setup output and surface it only on failure, so a
       # broken install stays debuggable without noise in the common case.
-      ripgrep_setup_out=$(mktemp 2>/dev/null) || ripgrep_setup_out="/tmp/deepagents-ripgrep-setup.$$.out"
-      register_temp "$ripgrep_setup_out"
-      if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-        fix_owner "${HOME}/.deepagents/bin"
+      if ripgrep_setup_out=$(mktemp 2>/dev/null); then
+        register_temp "$ripgrep_setup_out"
+        if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
+          fix_owner "${HOME}/.deepagents/bin"
+        else
+          echo ""
+          cat "$ripgrep_setup_out" >&2 2>/dev/null || true
+          ripgrep_managed_failed
+        fi
+        rm -f "$ripgrep_setup_out"
       else
-        echo ""
-        cat "$ripgrep_setup_out" >&2 2>/dev/null || true
+        log_warn "Could not create a secure temp file; skipping managed ripgrep setup."
         ripgrep_managed_failed
       fi
-      rm -f "$ripgrep_setup_out"
     fi
   elif command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then

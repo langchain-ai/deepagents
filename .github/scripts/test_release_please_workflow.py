@@ -15,6 +15,6 @@ def test_trigger_releases_can_comment_on_release_pr() -> None:
 
     assert workflow["jobs"]["trigger-releases"]["permissions"] == {
         "actions": "write",
-        "issues": "write",
+        "issues": "read",
         "pull-requests": "write",
     }

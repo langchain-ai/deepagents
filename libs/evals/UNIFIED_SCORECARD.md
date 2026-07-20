@@ -2,6 +2,15 @@
 
 GH aggregate pass@k / avg@k from `.github/workflows/unified_evals.yml`. pass@k = fraction of tasks solved in ≥1 of k rollouts; avg@k = mean reward across rollouts; rewards are binary (0/1).
 
+## Lite — pass@k by model and category
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/lite-scorecard-dark.svg">
+  <img alt="Grouped bar chart of lite pass@k by category (autonomous, conversation, context) across GPT-5.6 terra, GPT-5.6 sol, GPT-5.6 luna, Claude Opus 4.8, Claude Sonnet 5, and GLM-5.2, sorted by macro pass@k" src="assets/lite-scorecard-light.svg">
+</picture>
+
+Sorted by macro pass@k. Context is graded by exact string match on the answer file (output-format-sensitive). avg@k for every cell is in the per-model tables below.
+
 ## GPT-5.6 terra
 
 ### Full (default)

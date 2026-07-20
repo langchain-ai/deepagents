@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 548" width="860" height="548" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" role="img" aria-label="Lite pass@k by model and category">
+<rect x="0.5" y="0.5" width="859" height="547" rx="12" fill="#fcfcfb" stroke="rgba(11,11,11,0.10)"/>
+<rect x="20" y="21" width="11" height="11" rx="3" fill="#2a78d6"/>
+<text x="38" y="30" font-size="12.5" fill="#52514e">autonomous</text>
+<rect x="123.0" y="21" width="11" height="11" rx="3" fill="#008300"/>
+<text x="141.0" y="30" font-size="12.5" fill="#52514e">conversation</text>
+<rect x="240.6" y="21" width="11" height="11" rx="3" fill="#e87ba4"/>
+<text x="258.6" y="30" font-size="12.5" fill="#52514e">context</text>
+<text x="840" y="30" font-size="11.5" fill="#898781" text-anchor="end">pass@k</text>
+<line x1="234.0" y1="54" x2="234.0" y2="506" stroke="#e1e0d9" stroke-width="1"/>
+<text x="234.0" y="522" font-size="10.5" fill="#898781" text-anchor="middle" style="font-variant-numeric:tabular-nums">0.00</text>
+<line x1="385.5" y1="54" x2="385.5" y2="506" stroke="#e1e0d9" stroke-width="1"/>
+<text x="385.5" y="522" font-size="10.5" fill="#898781" text-anchor="middle" style="font-variant-numeric:tabular-nums">0.25</text>
+<line x1="537.0" y1="54" x2="537.0" y2="506" stroke="#e1e0d9" stroke-width="1"/>
+<text x="537.0" y="522" font-size="10.5" fill="#898781" text-anchor="middle" style="font-variant-numeric:tabular-nums">0.50</text>
+<line x1="688.5" y1="54" x2="688.5" y2="506" stroke="#e1e0d9" stroke-width="1"/>
+<text x="688.5" y="522" font-size="10.5" fill="#898781" text-anchor="middle" style="font-variant-numeric:tabular-nums">0.75</text>
+<line x1="840.0" y1="54" x2="840.0" y2="506" stroke="#e1e0d9" stroke-width="1"/>
+<text x="840.0" y="522" font-size="10.5" fill="#898781" text-anchor="middle" style="font-variant-numeric:tabular-nums">1.00</text>
+<text x="20" y="95.5" font-size="13.5" font-weight="600" fill="#0b0b0b">GPT-5.6 terra</text>
+<text x="20" y="110.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.584</text>
+<text x="226" y="82.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,71.0 H472.4 Q476.4,71.0 476.4,75.0 V80.0 Q476.4,84.0 472.4,84.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="483.4" y="82.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.400</text>
+<text x="226" y="102.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<path d="M234.0,91.0 H670.6 Q674.6,91.0 674.6,95.0 V100.0 Q674.6,104.0 670.6,104.0 H234.0 Z" fill="#008300" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="681.6" y="102.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.727</text>
+<text x="226" y="122.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<path d="M234.0,111.0 H608.8 Q612.8,111.0 612.8,115.0 V120.0 Q612.8,124.0 608.8,124.0 H234.0 Z" fill="#e87ba4" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="619.8" y="122.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.625</text>
+<line x1="20" y1="132" x2="840" y2="132" stroke="#e1e0d9" stroke-width="1"/>
+<text x="20" y="169.5" font-size="13.5" font-weight="600" fill="#0b0b0b">GPT-5.6 sol</text>
+<text x="20" y="184.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.376</text>
+<text x="226" y="156.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,145.0 H472.4 Q476.4,145.0 476.4,149.0 V154.0 Q476.4,158.0 472.4,158.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="483.4" y="156.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.400</text>
+<text x="226" y="176.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<path d="M234.0,165.0 H670.6 Q674.6,165.0 674.6,169.0 V174.0 Q674.6,178.0 670.6,178.0 H234.0 Z" fill="#008300" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="681.6" y="176.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.727</text>
+<text x="226" y="196.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<text x="238" y="196.0" font-size="12" fill="#898781" style="font-variant-numeric:tabular-nums">0.000</text>
+<line x1="20" y1="206" x2="840" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="20" y="243.5" font-size="13.5" font-weight="600" fill="#0b0b0b">GPT-5.6 luna</text>
+<text x="20" y="258.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.369</text>
+<text x="226" y="230.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,219.0 H431.8 Q435.8,219.0 435.8,223.0 V228.0 Q435.8,232.0 431.8,232.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="442.8" y="230.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.333</text>
+<text x="226" y="250.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<path d="M234.0,239.0 H395.4 Q399.4,239.0 399.4,243.0 V248.0 Q399.4,252.0 395.4,252.0 H234.0 Z" fill="#008300" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="406.4" y="250.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.273</text>
+<text x="226" y="270.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<path d="M234.0,259.0 H533.0 Q537.0,259.0 537.0,263.0 V268.0 Q537.0,272.0 533.0,272.0 H234.0 Z" fill="#e87ba4" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="544.0" y="270.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.500</text>
+<line x1="20" y1="280" x2="840" y2="280" stroke="#e1e0d9" stroke-width="1"/>
+<text x="20" y="317.5" font-size="13.5" font-weight="600" fill="#0b0b0b">Claude Opus 4.8</text>
+<text x="20" y="332.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.318</text>
+<text x="226" y="304.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,293.0 H513.0 Q517.0,293.0 517.0,297.0 V302.0 Q517.0,306.0 513.0,306.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="524.0" y="304.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.467</text>
+<text x="226" y="324.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<path d="M234.0,313.0 H450.6 Q454.6,313.0 454.6,317.0 V322.0 Q454.6,326.0 450.6,326.0 H234.0 Z" fill="#008300" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="461.6" y="324.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.364</text>
+<text x="226" y="344.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<path d="M234.0,333.0 H305.8 Q309.8,333.0 309.8,337.0 V342.0 Q309.8,346.0 305.8,346.0 H234.0 Z" fill="#e87ba4" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="316.8" y="344.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.125</text>
+<line x1="20" y1="354" x2="840" y2="354" stroke="#e1e0d9" stroke-width="1"/>
+<text x="20" y="391.5" font-size="13.5" font-weight="600" fill="#0b0b0b">Claude Sonnet 5</text>
+<text x="20" y="406.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.149</text>
+<text x="226" y="378.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,367.0 H391.8 Q395.8,367.0 395.8,371.0 V376.0 Q395.8,380.0 391.8,380.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="402.8" y="378.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.267</text>
+<text x="226" y="398.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<path d="M234.0,387.0 H340.3 Q344.3,387.0 344.3,391.0 V396.0 Q344.3,400.0 340.3,400.0 H234.0 Z" fill="#008300" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="351.3" y="398.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.182</text>
+<text x="226" y="418.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<text x="238" y="418.0" font-size="12" fill="#898781" style="font-variant-numeric:tabular-nums">0.000</text>
+<line x1="20" y1="428" x2="840" y2="428" stroke="#e1e0d9" stroke-width="1"/>
+<text x="20" y="465.5" font-size="13.5" font-weight="600" fill="#0b0b0b">GLM-5.2</text>
+<text x="20" y="480.5" font-size="11" fill="#898781" style="font-variant-numeric:tabular-nums">macro 0.086</text>
+<text x="226" y="452.0" font-size="11.5" fill="#898781" text-anchor="end">autonomous</text>
+<path d="M234.0,441.0 H310.6 Q314.6,441.0 314.6,445.0 V450.0 Q314.6,454.0 310.6,454.0 H234.0 Z" fill="#2a78d6" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="321.6" y="452.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.133</text>
+<text x="226" y="472.0" font-size="11.5" fill="#898781" text-anchor="end">conversation</text>
+<text x="238" y="472.0" font-size="12" fill="#898781" style="font-variant-numeric:tabular-nums">0.000</text>
+<text x="226" y="492.0" font-size="11.5" fill="#898781" text-anchor="end">context</text>
+<path d="M234.0,481.0 H305.8 Q309.8,481.0 309.8,485.0 V490.0 Q309.8,494.0 305.8,494.0 H234.0 Z" fill="#e87ba4" stroke="rgba(11,11,11,0.10)" stroke-width="1"/>
+<text x="316.8" y="492.0" font-size="12" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">0.125</text>
+<line x1="234" y1="506" x2="840" y2="506" stroke="#c3c2b7" stroke-width="1"/>
+</svg>

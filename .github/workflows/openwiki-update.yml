@@ -42,7 +42,7 @@ jobs:
             AGENTS.md
             .github/workflows/openwiki-update.yml
           branch: openwiki/update
-          commit-message: "docs: update OpenWiki"
+          commit-message: "docs(repo): update OpenWiki"
           title: "docs(repo): update OpenWiki"
           body: |
             Automated OpenWiki documentation update.

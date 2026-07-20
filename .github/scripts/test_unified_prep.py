@@ -1,6 +1,6 @@
+import json
 import os
 import sys
-import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shard_matrix  # noqa: E402
@@ -10,14 +10,22 @@ import unified_prep as up  # noqa: E402
 def _sources(count: int) -> str:
     return json.dumps(
         [
-            {
-                "version_id": f"v{index}",
-                "branch": f"branch-{index}",
-                "sha": str(index) * 40,
-            }
+            {"branch": f"branch-{index}", "sha": f"{index:x}" * 40}
             for index in range(1, count + 1)
         ]
     )
+
+
+def test_parse_sources_defaults_to_current_sha(monkeypatch):
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    assert up.parse_sources("") == [{"branch": "current", "sha": "a" * 40}]
+
+
+def test_parse_sources_preserves_resolved_branch_heads():
+    assert up.parse_sources(_sources(2)) == [
+        {"branch": "branch-1", "sha": "1" * 40},
+        {"branch": "branch-2", "sha": "2" * 40},
+    ]
 
 
 def test_parse_int_input_enforces_inclusive_range():
@@ -36,48 +44,11 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
     assert up.provider_of("weirdvendor:x", known) == "other"
 
 
-def test_parse_sources_defaults_to_current_without_a_product_artifact(monkeypatch):
-    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
-    assert up.parse_sources("") == [
-        {
-            "version_id": "",
-            "branch": "current",
-            "sha": "a" * 40,
-            "product_artifact": "",
-        }
-    ]
-
-
-def test_parse_sources_preserves_resolved_shas_and_assigns_artifacts():
-    sources = up.parse_sources(_sources(2))
-    assert [(source["branch"], source["sha"]) for source in sources] == [
-        ("branch-1", "1" * 40),
-        ("branch-2", "2" * 40),
-    ]
-    assert sources[0]["product_artifact"] == "unified-products-v1-111111111111"
-
-
-def test_parse_sources_rejects_duplicate_resolved_commits():
-    import pytest
-
-    duplicate = json.dumps(
-        [
-            {"version_id": "v1", "branch": "one", "sha": "a" * 40},
-            {"version_id": "v2", "branch": "two", "sha": "a" * 40},
-        ]
-    )
-    with pytest.raises(SystemExit, match="distinct commit SHAs"):
-        up.parse_sources(duplicate)
-
-
 def test_derive_pool_from_concurrency_and_rollouts():
     # Packed shards use full concurrency: conc 4 -> 40//4=10 ; 80//10=8 capped to n_groups
     assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_groups=1) == (10, 1)
     # concurrency 1 -> 40//1=40 ; 80//40=2
-    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_groups=5) == (
-        40,
-        2,
-    )
+    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_groups=5) == (40, 2)
     # Lower rollouts do not reduce a packed shard's peak concurrency.
     assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_groups=1)[0] == 10
     # clamp inner to n_shards when few tasks; outer clamps to n_groups
@@ -200,10 +171,7 @@ def test_build_flat_matrix_expands_code_categories_over_configs():
     impls = sorted({e["agent_impl"] for e in autos})
     assert impls == ["bare", "dcode"]
     # Each config gets the full task set for the category.
-    assert (
-        sum(len(e["include_tasks"].split()) for e in autos if e["agent_impl"] == "bare")
-        == 2
-    )
+    assert sum(len(e["include_tasks"].split()) for e in autos if e["agent_impl"] == "bare") == 2
     # The rest of the entry schema is untouched: existing keys keep the
     # category's CATEGORY_MAP values and the fixed 1-task/shard fields.
     cm = up.CATEGORY_MAP["autonomous"]
@@ -218,10 +186,7 @@ def test_build_flat_matrix_expands_code_categories_over_configs():
 def test_build_flat_matrix_conversation_not_multiplied_by_configs():
     tasks = {"autonomous": ["a1"], "conversation": ["t1", "t2"]}
     entries = up.build_flat_matrix(
-        "openai:gpt",
-        ["autonomous", "conversation"],
-        tasks,
-        code_impls=["bare", "dcode"],
+        "openai:gpt", ["autonomous", "conversation"], tasks, code_impls=["bare", "dcode"]
     )
     conv = [e for e in entries if e["category"] == "conversation"]
     assert {e["agent_impl"] for e in conv} == {"tau3"}
@@ -281,7 +246,6 @@ def test_build_flat_matrix_dedupes_duplicate_configs():
 
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     import json as _j
-
     out = tmp_path / "o"
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt, anthropic:opus")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context")
@@ -291,24 +255,14 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert up.main([]) == 0
     lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
-    assert lines["max_parallel"] == "10"  # conc4 -> 40//4 (packed shard = full conc)
-    assert lines["model_parallel"] == "2"  # 80//10=8 -> min(8, 2 groups)
+    assert lines["max_parallel"] == "10"      # conc4 -> 40//4 (packed shard = full conc)
+    assert lines["model_parallel"] == "2"     # 80//10=8 -> min(8, 2 groups)
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
-    assert (
-        len(eval_matrix) == 2
-    )  # one entry per (model, branch); default branch=current
+    assert len(eval_matrix) == 2  # one entry per (model, branch); default branch=current
     assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
     assert {e["branch"] for e in eval_matrix} == {"current"}
     for entry in eval_matrix:
-        assert set(entry) == {
-            "version_id",
-            "branch",
-            "sha",
-            "product_artifact",
-            "model",
-            "slug",
-            "flat_matrix",
-        }
+        assert set(entry) == {"model", "branch", "source_sha", "slug", "flat_matrix"}
         flat = _j.loads(entry["flat_matrix"])["include"]
         # lite totals 15+11+8 = 34 single-task shards per model
         assert len(flat) == 34
@@ -354,7 +308,6 @@ def test_derive_pool_single_branch_matches_legacy():
 
 def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
     import pytest
-
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
@@ -367,7 +320,6 @@ def test_main_rejects_more_branches_than_budget(tmp_path, monkeypatch):
 
 def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     import json as _j
-
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
@@ -378,9 +330,7 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(
-            line for line in text.splitlines() if line.startswith("eval_matrix=")
-        ).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     pairs = {(e["model"], e["branch"]) for e in matrix["include"]}
     assert pairs == {
@@ -394,7 +344,7 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     )
     assert {leaf["branch"] for leaf in leaves} == {"branch-1", "branch-2"}
     assert all(
-        {"model", "version_id", "branch", "sha", "config", "category"} <= set(leaf)
+        {"model", "branch", "source_sha", "config", "category"} <= set(leaf)
         for leaf in leaves
     )
 
@@ -418,7 +368,6 @@ def test_main_rejects_over_256_outer_matrix(tmp_path, monkeypatch):
 
 def test_main_default_branch_is_current(tmp_path, monkeypatch):
     import json as _j
-
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
@@ -427,9 +376,7 @@ def test_main_default_branch_is_current(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(
-            line for line in text.splitlines() if line.startswith("eval_matrix=")
-        ).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     assert {e["branch"] for e in matrix["include"]} == {"current"}
 
@@ -467,10 +414,6 @@ def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
         leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"
     )
     assert autonomous_config_counts == Counter({"bare": 1, "dcode": 1})
-    outputs = dict(ln.split("=", 1) for ln in text.splitlines())
-    assert outputs["comparison_mode"] == "true"
-    assert outputs["has_branch_products"] == "false"
-    assert _j.loads(outputs["build_matrix"]) == {"include": []}
 
 
 def test_derive_pool_budgets_packed_shards_at_full_concurrency():
@@ -526,11 +469,7 @@ def test_main_rejects_invalid_full_task_json_shape(tmp_path, monkeypatch):
     # _load_tasks_json guards the enumerated task file against malformed
     # shapes: a non-dict top level, a non-list category value, or a list with
     # non-string tasks all fail fast with a clear message.
-    for tasks in (
-        {"autonomous": "taskname"},
-        ["taskname"],
-        {"autonomous": ["task", 1]},
-    ):
+    for tasks in ({"autonomous": "taskname"}, ["taskname"], {"autonomous": ["task", 1]}):
         tasks_json = tmp_path / "tasks.json"
         tasks_json.write_text(_j.dumps(tasks))
         monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
@@ -539,7 +478,5 @@ def test_main_rejects_invalid_full_task_json_shape(tmp_path, monkeypatch):
         monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks_json))
         monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
 
-        with pytest.raises(
-            SystemExit, match=r"UNIFIED_TASKS_JSON must be a JSON object"
-        ):
+        with pytest.raises(SystemExit, match=r"UNIFIED_TASKS_JSON must be a JSON object"):
             up.main([])

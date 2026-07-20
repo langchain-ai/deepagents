@@ -24,13 +24,12 @@ import json
 import os
 import re
 import sys
-from typing import TypedDict, cast
+from typing import cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
 import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
-import eval_agent_configs as agent_configs  # noqa: E402
 
 MAX_TASKS_PER_MODEL = 40
 MAX_RUNNERS = 80
@@ -93,26 +92,10 @@ PROFILES = {"full", "lite"}
 TOTAL_JOB_BUDGET = 400
 
 
-class Source(TypedDict):
-    """One immutable product source selected for an evaluation."""
-
-    version_id: str
-    branch: str
-    sha: str
-    product_artifact: str
-
-
-def parse_sources(raw: str) -> list[Source]:
-    """Validate branch heads resolved once by the workflow prep job."""
+def parse_sources(raw: str) -> list[dict[str, str]]:
+    """Validate branch heads resolved once by the workflow."""
     if not raw.strip():
-        return [
-            {
-                "version_id": "",
-                "branch": "current",
-                "sha": os.environ.get("GITHUB_SHA", "0" * 40),
-                "product_artifact": "",
-            }
-        ]
+        return [{"branch": "current", "sha": os.environ.get("GITHUB_SHA", "0" * 40)}]
 
     msg = "UNIFIED_SOURCES_JSON must contain ordered branch/SHA source objects"
     try:
@@ -122,32 +105,20 @@ def parse_sources(raw: str) -> list[Source]:
     if not isinstance(value, list) or not value:
         raise SystemExit(msg)
 
-    comparison = len(value) > 1
-    sources: list[Source] = []
-    for index, item in enumerate(value, start=1):
+    sources: list[dict[str, str]] = []
+    for item in value:
         if not isinstance(item, dict):
             raise SystemExit(msg)
-        expected_id = f"v{index}" if comparison else ""
-        version_id = item.get("version_id")
         branch = item.get("branch")
         sha = item.get("sha")
         if (
-            version_id != expected_id
-            or not isinstance(branch, str)
+            not isinstance(branch, str)
             or not branch
             or not isinstance(sha, str)
             or re.fullmatch(r"[0-9a-f]{40}", sha) is None
         ):
             raise SystemExit(msg)
-        artifact = f"unified-products-{version_id}-{sha[:12]}" if version_id else ""
-        sources.append(
-            {
-                "version_id": version_id,
-                "branch": branch,
-                "sha": sha,
-                "product_artifact": artifact,
-            }
-        )
+        sources.append({"branch": branch, "sha": sha})
     if len({source["sha"] for source in sources}) != len(sources):
         raise SystemExit("comparison branches must resolve to distinct commit SHAs")
     return sources
@@ -374,13 +345,19 @@ def main(argv: list[str] | None = None) -> int:
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
 
+    # Comma list of code harnesses; empty defaults to the bare create_deep_agent
+    # harness. Conversation is always tau3 and is never taken from this input.
     raw_impls = os.environ.get("UNIFIED_AGENT_IMPLS", "").strip()
-    try:
-        code_impls = agent_configs.parse_code_configs(raw_impls)
-    except ValueError as exc:
+    code_impls = list(
+        dict.fromkeys(s.strip() for s in raw_impls.split(",") if s.strip())
+    ) or [DEFAULT_AGENT_IMPL]
+    unknown_impls = [i for i in code_impls if i not in CODE_AGENT_IMPLS]
+    if unknown_impls:
         raise SystemExit(
-            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}: {exc}"
-        ) from exc
+            f"UNIFIED_AGENT_IMPLS entries must be in {sorted(CODE_AGENT_IMPLS)}, "
+            f"got unknown {unknown_impls}"
+        )
+
     sources = parse_sources(os.environ.get("UNIFIED_SOURCES_JSON", ""))
 
     profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
@@ -429,9 +406,7 @@ def main(argv: list[str] | None = None) -> int:
             f"GitHub's {shard_matrix.GITHUB_MATRIX_MAX}-entry matrix cap "
             f"({len(model_specs)} models x {len(sources)} branches). Reduce models or branches."
         )
-    total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(
-        sources
-    )
+    total_jobs = sum(len(entries) for entries in per_model_matrices.values()) * len(sources)
     total_job_guard(total_jobs)
 
     # Pool sizing stays per-model. n_shards is the largest per-model entry count
@@ -458,15 +433,14 @@ def main(argv: list[str] | None = None) -> int:
     for m, entries in per_model_matrices.items():
         for source in sources:
             for e in entries:
-                key = (m, source["sha"], e["agent_impl"], e["category"])
+                key = (m, source["branch"], e["agent_impl"], e["category"])
                 if key not in seen_leaves:
                     seen_leaves.add(key)
                     expected_leaves.append(
                         {
                             "model": m,
-                            "version_id": source["version_id"],
                             "branch": source["branch"],
-                            "sha": source["sha"],
+                            "source_sha": source["sha"],
                             "config": e["agent_impl"],
                             "category": e["category"],
                         }
@@ -478,31 +452,16 @@ def main(argv: list[str] | None = None) -> int:
         "configs": code_impls,
         "branches": [source["branch"] for source in sources],
         "sources": sources,
-        "comparison_mode": "true"
-        if len(sources) > 1 or len(code_impls) > 1
-        else "false",
-        "has_branch_products": "true"
-        if any(s["version_id"] for s in sources)
-        else "false",
         "expected_leaves": expected_leaves,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
-        "build_matrix": {
-            "include": [
-                {
-                    **source,
-                    "packages": agent_configs.required_packages(code_impls),
-                }
-                for source in sources
-                if source["version_id"]
-            ]
-        },
     }
     eval_include = [
         {
-            **source,
             "model": m,
-            "slug": _slug(f"{m}-{source['version_id'] or 'current'}"),
+            "branch": source["branch"],
+            "source_sha": source["sha"],
+            "slug": _slug(f"{m}-{source['branch']}"),
             "flat_matrix": json.dumps(
                 {"include": per_model_matrices[m]}, separators=(",", ":")
             ),

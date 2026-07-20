@@ -65,7 +65,6 @@ jobs:
     environment: evals
     outputs:
       eval_matrix: ${{ steps.p.outputs.eval_matrix }}
-      build_matrix: ${{ steps.p.outputs.build_matrix }}
       max_parallel: ${{ steps.p.outputs.max_parallel }}
       model_parallel: ${{ steps.p.outputs.model_parallel }}
       models: ${{ steps.p.outputs.models }}
@@ -74,8 +73,6 @@ jobs:
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
       sources: ${{ steps.p.outputs.sources }}
-      comparison_mode: ${{ steps.p.outputs.comparison_mode }}
-      has_branch_products: ${{ steps.p.outputs.has_branch_products }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -94,11 +91,7 @@ jobs:
 
           raw = os.environ.get("BRANCHES_TO_COMPARE", "").strip()
           if not raw:
-              sources = [{
-                  "version_id": "",
-                  "branch": "current",
-                  "sha": os.environ["CONTROLLER_SHA"],
-              }]
+              sources = [{"branch": "current", "sha": os.environ["CONTROLLER_SHA"]}]
           else:
               branches = list(dict.fromkeys(
                   branch.strip() for branch in raw.split(",") if branch.strip()
@@ -108,7 +101,7 @@ jobs:
                       "::error::branches_to_compare must contain at least two distinct branches"
                   )
               sources = []
-              for index, branch in enumerate(branches, start=1):
+              for branch in branches:
                   valid = subprocess.run(
                       ["git", "check-ref-format", "--branch", branch],
                       capture_output=True,
@@ -127,11 +120,7 @@ jobs:
                       raise SystemExit(
                           f"::error::Could not resolve branch {branch!r} to a branch-head commit"
                       )
-                  sources.append({
-                      "version_id": f"v{index}",
-                      "branch": branch,
-                      "sha": sha,
-                  })
+                  sources.append({"branch": branch, "sha": sha})
               if len({source["sha"] for source in sources}) != len(sources):
                   raise SystemExit(
                       "::error::Every comparison branch must resolve to a distinct commit"
@@ -264,6 +253,7 @@ jobs:
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
           IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
           IN_BRANCHES: ${{ inputs.branches_to_compare }}
+          RESOLVED_SOURCES: ${{ steps.p.outputs.sources }}
           RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
@@ -305,6 +295,7 @@ jobs:
             echo "| categories | \`${IN_CATEGORIES}\` |"
             echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
             echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
+            echo "| resolved branch commits | \`${RESOLVED_SOURCES:-(prep did not complete)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
@@ -314,66 +305,9 @@ jobs:
             echo "| harbor_package_override | \`${override_status}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  build-products:
-    name: "📦 Build ${{ matrix.version_id }} / ${{ matrix.branch }}"
-    needs: prep
-    if: ${{ needs.prep.outputs.has_branch_products == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.prep.outputs.build_matrix) }}
-    steps:
-      - name: "📋 Checkout comparison controller"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: "📋 Checkout evaluated product"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ matrix.sha }}
-          path: _product_source
-          persist-credentials: false
-          sparse-checkout: |
-            libs/deepagents
-            libs/code
-            libs/partners/quickjs
-
-      - name: "🐍 Set up Python + UV"
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: "3.12"
-          enable-cache: "false"
-
-      - name: "📦 Build immutable product wheels"
-        env:
-          VERSION_ID: ${{ matrix.version_id }}
-          SOURCE_BRANCH: ${{ matrix.branch }}
-          SOURCE_SHA: ${{ matrix.sha }}
-          PACKAGES: ${{ toJson(matrix.packages) }}
-        run: |
-          python3 .github/scripts/eval_product_packages.py build \
-            --source-root _product_source \
-            --out-dir _product_dist/packages \
-            --packages-json "$PACKAGES" \
-            --version-id "$VERSION_ID" \
-            --source-branch "$SOURCE_BRANCH" \
-            --source-sha "$SOURCE_SHA" \
-            --manifest _product_dist/package-manifest.json
-
-      - name: "📤 Upload immutable product wheels"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ matrix.product_artifact }}
-          path: _product_dist/
-          if-no-files-found: error
-          compression-level: 0
-
   eval:
     name: "🚀 Evaluate (${{ matrix.model }} / ${{ matrix.branch }})"
-    needs: [prep, build-products]
-    if: ${{ always() && needs.prep.result == 'success' && (needs.prep.outputs.has_branch_products != 'true' || needs.build-products.result == 'success') }}
+    needs: prep
     strategy:
       fail-fast: false
       # Caps how many models run concurrently so total runners across every
@@ -386,6 +320,7 @@ jobs:
     with:
       model: ${{ matrix.model }}
       branch: ${{ matrix.branch }}
+      source_sha: ${{ matrix.source_sha }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.
@@ -403,10 +338,6 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
-      version_id: ${{ matrix.version_id }}
-      source_branch: ${{ matrix.branch }}
-      source_sha: ${{ matrix.sha }}
-      product_artifact: ${{ matrix.product_artifact }}
 
   combine:
     name: "📊 Combine cross-model results"

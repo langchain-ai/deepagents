@@ -781,30 +781,14 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     out = au.combine(
         leaves,
         expected_leaves=[
-            {
-                "model": "a",
-                "branch": "current",
-                "config": "bare",
-                "category": "autonomous",
-            },
-            {
-                "model": "a",
-                "branch": "current",
-                "config": "bare",
-                "category": "context",
-            },
-            {
-                "model": "b",
-                "branch": "current",
-                "config": "bare",
-                "category": "autonomous",
-            },
-            {
-                "model": "b",
-                "branch": "current",
-                "config": "bare",
-                "category": "context",
-            },
+            {"model": "a", "branch": "current", "config": "bare",
+             "category": "autonomous"},
+            {"model": "a", "branch": "current", "config": "bare",
+             "category": "context"},
+            {"model": "b", "branch": "current", "config": "bare",
+             "category": "autonomous"},
+            {"model": "b", "branch": "current", "config": "bare",
+             "category": "context"},
         ],
         expected_categories=["autonomous", "context"],
     )
@@ -844,7 +828,8 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
     out = au.combine(
         leaves,
         expected_leaves=[
-            {"model": "m", "branch": "current", "config": "bare", "category": "context"}
+            {"model": "m", "branch": "current", "config": "bare",
+             "category": "context"}
         ],
         expected_categories=["context"],
     )
@@ -889,7 +874,8 @@ def test_combine_scores_only_expected_categories(
     (model,) = au.combine(
         leaves,
         expected_leaves=[
-            {"model": "m", "branch": "current", "config": "bare", "category": "context"}
+            {"model": "m", "branch": "current", "config": "bare",
+             "category": "context"}
         ],
         expected_categories=["context"],
     )["rows"]
@@ -969,18 +955,10 @@ def test_combine_rows_are_model_config_pairs():
         _leaf("openai:gpt", "dcode", "autonomous", 0.0),
     ]
     expected_leaves = [
-        {
-            "model": "openai:gpt",
-            "branch": "current",
-            "config": "bare",
-            "category": "autonomous",
-        },
-        {
-            "model": "openai:gpt",
-            "branch": "current",
-            "config": "dcode",
-            "category": "autonomous",
-        },
+        {"model": "openai:gpt", "branch": "current", "config": "bare",
+         "category": "autonomous"},
+        {"model": "openai:gpt", "branch": "current", "config": "dcode",
+         "category": "autonomous"},
     ]
     combined = aggregate_unified.combine(
         leaves, expected_leaves=expected_leaves, expected_categories=["autonomous"]
@@ -1017,42 +995,34 @@ def test_combine_raises_on_true_triple_duplicate():
 # --- Task 2: (model, branch, config, category) rows ---------------------------
 
 
-def test_expected_source_provenance_is_recorded_on_combined_rows():
-    leaves = [_bleaf("model", "feature", "bare", "autonomous", 1.0)]
+def _bleaf(model, branch, config, category, pass_at_k):
+    return {
+        "model": model, "branch": branch, "config": config, "category": category,
+        "pass_at_k": pass_at_k, "avg_at_k": pass_at_k,
+        "tasks": 1, "passed": int(pass_at_k), "incomplete": False,
+    }
+
+
+def test_combined_row_records_expected_source_sha():
     expected = [
         {
-            "model": "model",
-            "version_id": "v1",
+            "model": "openai:gpt",
             "branch": "feature",
-            "sha": "a" * 40,
+            "source_sha": "a" * 40,
             "config": "bare",
             "category": "autonomous",
         }
     ]
-
-    combined = au.combine(leaves, expected, ["autonomous"])
-
-    assert combined["rows"][0]["version_id"] == "v1"
+    combined = au.combine(
+        [_bleaf("openai:gpt", "feature", "bare", "autonomous", 1.0)],
+        expected_leaves=expected,
+        expected_categories=["autonomous"],
+    )
     assert combined["rows"][0]["source_sha"] == "a" * 40
-
-
-def _bleaf(model, branch, config, category, pass_at_k):
-    return {
-        "model": model,
-        "branch": branch,
-        "config": config,
-        "category": category,
-        "pass_at_k": pass_at_k,
-        "avg_at_k": pass_at_k,
-        "tasks": 1,
-        "passed": int(pass_at_k),
-        "incomplete": False,
-    }
 
 
 def test_combine_rows_split_by_branch():
     import aggregate_unified
-
     leaves = [
         _bleaf("openai:gpt", "main", "bare", "autonomous", 1.0),
         _bleaf("openai:gpt", "feature", "bare", "autonomous", 0.0),
@@ -1067,7 +1037,6 @@ def test_combine_rows_split_by_branch():
 
 def test_combine_same_model_config_different_branch_no_collision():
     import aggregate_unified
-
     leaves = [
         _bleaf("openai:gpt", "main", "bare", "autonomous", 1.0),
         _bleaf("openai:gpt", "feature", "bare", "autonomous", 0.5),

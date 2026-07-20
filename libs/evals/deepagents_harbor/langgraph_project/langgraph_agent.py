@@ -936,6 +936,7 @@ class _StrategyGateRecord(TypedDict):
 
     phase: Literal["planning", "approved", "bypassed"]
     task: str
+    evidence_tool_call_id: str | None
     proposal_id: str | None
     current_proposal: dict[str, Any] | None
     recommended_plan: dict[str, Any] | None
@@ -1092,6 +1093,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         task: str,
         *,
         phase: Literal["planning", "approved", "bypassed"],
+        evidence_tool_call_id: str | None = None,
         proposal_id: str | None = None,
         current_proposal: dict[str, Any] | None = None,
         recommended_plan: dict[str, Any] | None = None,
@@ -1122,6 +1124,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
         return {
             "phase": phase,
             "task": task,
+            "evidence_tool_call_id": evidence_tool_call_id,
             "proposal_id": proposal_id,
             "current_proposal": current_proposal,
             "recommended_plan": recommended_plan,
@@ -1516,16 +1519,21 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                 self._run_structured_sync(execution_request, handler), record
             )
         if not isinstance(saved_record, dict) or saved_record.get("phase") == "planning":
+            evidence_tool_call_id = self._latest_tool_call_id(list(request.messages))
             task = (
                 saved_record.get("task", "")
                 if isinstance(saved_record, dict)
                 else _strategy_task(list(request.messages))
             )
-            continuing_revision = (
+            pending_revision = (
                 isinstance(saved_record, dict)
                 and saved_record.get("revision_count") == 1
                 and saved_record.get("evaluator_decision") == "revise"
                 and isinstance(saved_record.get("recommended_plan"), dict)
+            )
+            continuing_revision = (
+                pending_revision
+                and saved_record.get("evidence_tool_call_id") == evidence_tool_call_id
             )
             planning_feedback = (
                 self._saved_revision_feedback(cast("_StrategyGateRecord", saved_record))
@@ -1539,6 +1547,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     record = self._strategy_record(
                         task,
                         phase="planning",
+                        evidence_tool_call_id=evidence_tool_call_id,
                         proposal_id=previous["proposal_id"],
                         current_proposal=previous["current_proposal"],
                         recommended_plan=previous["recommended_plan"],
@@ -1551,7 +1560,11 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     )
                     feedback = self._saved_revision_feedback(record)
                 else:
-                    record = self._strategy_record(task, phase="planning")
+                    record = self._strategy_record(
+                        task,
+                        phase="planning",
+                        evidence_tool_call_id=evidence_tool_call_id,
+                    )
                     feedback = None
                 return self._with_strategy_state(
                     self._reconnaissance_response(planning, planning_usage, feedback=feedback),
@@ -1596,6 +1609,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     record = self._strategy_record(
                         task,
                         phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
                         proposal_id=proposal_id,
                         current_proposal=proposal_json,
                         recommended_plan=previous["recommended_plan"],
@@ -1618,6 +1632,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     record = self._strategy_record(
                         task,
                         phase="bypassed",
+                        evidence_tool_call_id=evidence_tool_call_id,
                         proposal_id=proposal_id,
                         current_proposal=proposal_json,
                         selected_plan=proposal_json,
@@ -1636,6 +1651,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     record = self._strategy_record(
                         task,
                         phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
                         proposal_id=proposal_id,
                         current_proposal=proposal_json,
                         evaluator_decision="approve",
@@ -1665,6 +1681,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                         record = self._strategy_record(
                             task,
                             phase="planning",
+                            evidence_tool_call_id=evidence_tool_call_id,
                             proposal_id=proposal_id,
                             current_proposal=proposal_json,
                             recommended_plan=review.recommended_plan.model_dump(mode="json"),
@@ -1693,6 +1710,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                             record = self._strategy_record(
                                 task,
                                 phase="approved",
+                                evidence_tool_call_id=evidence_tool_call_id,
                                 proposal_id=revised_id,
                                 current_proposal=revised_json,
                                 evaluator_decision="revise",
@@ -1727,6 +1745,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                             record = self._strategy_record(
                                 task,
                                 phase="approved",
+                                evidence_tool_call_id=evidence_tool_call_id,
                                 proposal_id=revised_id,
                                 current_proposal=revised_json,
                                 evaluator_decision=decision,
@@ -1748,6 +1767,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                         record = self._strategy_record(
                             task,
                             phase="approved",
+                            evidence_tool_call_id=evidence_tool_call_id,
                             proposal_id=proposal_id,
                             current_proposal=proposal_json,
                             evaluator_decision="revise",
@@ -1772,6 +1792,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                     record = self._strategy_record(
                         task,
                         phase="approved",
+                        evidence_tool_call_id=evidence_tool_call_id,
                         proposal_id=previous["proposal_id"],
                         current_proposal=previous["current_proposal"],
                         recommended_plan=selected_plan,
@@ -1797,6 +1818,7 @@ class _StructuredTurnMiddleware(AgentMiddleware):
                 record = self._strategy_record(
                     task,
                     phase="bypassed",
+                    evidence_tool_call_id=evidence_tool_call_id,
                     bypass_reason="planning_failure",
                 )
                 return self._with_strategy_state(

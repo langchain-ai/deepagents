@@ -1273,6 +1273,125 @@ def test_strategy_post_recon_revision_uses_saved_task_and_second_review_bound() 
     assert updated["revision_count"] == 2
 
 
+def test_strategy_new_recon_evidence_resets_to_fresh_two_review_negotiation() -> None:
+    original = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Rejected plan before reconnaissance.")
+    )
+    stale_recommendation = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Recommendation before new evidence.")
+    )
+    evidence_based = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="New plan based on packaged dependency evidence.")
+    )
+    fresh_recommendation = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Fresh evaluator replacement.")
+    )
+    revised = langgraph_agent._StrategyPlan.model_validate(
+        _strategy_plan_payload(objective="Actor revision in the fresh negotiation.")
+    )
+    record = langgraph_agent._StructuredTurnMiddleware._strategy_record(
+        "SAVED_ORIGINAL_TASK",
+        phase="planning",
+        evidence_tool_call_id="structured_action_old",
+        proposal_id="strategy_proposal_before_recon",
+        current_proposal=original.model_dump(mode="json"),
+        recommended_plan=stale_recommendation.model_dump(mode="json"),
+        evaluator_decision="revise",
+        critique="Gather package evidence first.",
+        revision_count=1,
+    )
+    planning = langgraph_agent._PlanningTurn.model_validate(
+        {"control": {"kind": "propose_plan", "proposal": evidence_based.model_dump()}}
+    )
+    first_revision = langgraph_agent._PlanVerdict.model_validate(
+        {
+            "result": {
+                "decision": "revise",
+                "critique": "Use all newly discovered packaged dependencies.",
+                "recommended_plan": fresh_recommendation.model_dump(),
+            }
+        }
+    )
+    revision_planning = langgraph_agent._PlanningTurn.model_validate(
+        {"control": {"kind": "propose_plan", "proposal": revised.model_dump()}}
+    )
+    second_approval = langgraph_agent._PlanVerdict.model_validate(
+        {"result": {"decision": "approve", "critique": "The revision uses the evidence."}}
+    )
+    turn = langgraph_agent._Turn.model_validate(
+        {
+            "control": {
+                "kind": "continue",
+                "actions": [{"action": "execute", "command": "./configure"}],
+            }
+        }
+    )
+    one_token: UsageMetadata = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    model = _StructuredSequenceModel(
+        [
+            (langgraph_agent._PlanningTurn, _raw_result(planning, one_token)),
+            (langgraph_agent._PlanVerdict, _raw_result(first_revision, one_token)),
+            (langgraph_agent._PlanningTurn, _raw_result(revision_planning, one_token)),
+            (langgraph_agent._PlanVerdict, _raw_result(second_approval, one_token)),
+            (langgraph_agent._Turn, _raw_result(turn, one_token)),
+        ]
+    )
+    new_tool_call_id = "structured_action_new"
+    request = ModelRequest(
+        model=cast("Any", model),
+        messages=[
+            HumanMessage(
+                content="SUMMARY_REPLACED_TASK",
+                additional_kwargs={"lc_source": "summarization"},
+            ),
+            ToolMessage(
+                content="Coq and Menhir packages are available.",
+                tool_call_id=new_tool_call_id,
+                response_metadata={
+                    "structured_action": {
+                        "name": "execute",
+                        "args": {"command": "apt-cache policy coq menhir"},
+                        "tool_call_id": new_tool_call_id,
+                    }
+                },
+            ),
+        ],
+        state=cast("Any", {"messages": [], "_strategy_gate": record}),
+    )
+
+    response = langgraph_agent._StructuredTurnMiddleware().wrap_model_call(
+        request,
+        lambda _request: ModelResponse(result=[AIMessage(content="UNEXPECTED_FALLBACK")]),
+    )
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert [call["schema"] for call in model.calls] == [
+        langgraph_agent._PlanningTurn,
+        langgraph_agent._PlanVerdict,
+        langgraph_agent._PlanningTurn,
+        langgraph_agent._PlanVerdict,
+        langgraph_agent._Turn,
+    ]
+    for call_index in (1, 3):
+        evaluator_messages = cast("list[AnyMessage]", model.calls[call_index]["messages"])
+        payload = evaluator_messages[1].text
+        assert "SAVED_ORIGINAL_TASK" in payload
+        assert "SUMMARY_REPLACED_TASK" not in payload
+    first_evaluator_messages = cast("list[AnyMessage]", model.calls[1]["messages"])
+    assert "Coq and Menhir packages are available." in first_evaluator_messages[1].text
+
+    updated = _response_strategy_record(response)
+    assert updated["selected_plan"] == revised.model_dump(mode="json")
+    assert updated["selected_source"] == "actor"
+    assert updated["revision_count"] == 1
+    assert updated["evidence_tool_call_id"] == new_tool_call_id
+    message = response.model_response.result[0]
+    assert isinstance(message, AIMessage)
+    gate_metadata = message.response_metadata["strategy_gate"]
+    assert "task" not in gate_metadata
+    assert "evidence_tool_call_id" not in gate_metadata
+
+
 def test_strategy_post_recon_revision_failure_uses_saved_recommendation() -> None:
     original = langgraph_agent._StrategyPlan.model_validate(
         _strategy_plan_payload(objective="Rejected original plan.")
@@ -1723,6 +1842,7 @@ def test_strategy_gate_state_is_private() -> None:
     private_hint = get_args(hints["_strategy_gate"])[0]
     metadata = getattr(private_hint, "__metadata__", ())
     assert gate_hints["task"] is str
+    assert gate_hints["evidence_tool_call_id"] == str | None
     assert langgraph_agent.PrivateStateAttr in metadata
 
 

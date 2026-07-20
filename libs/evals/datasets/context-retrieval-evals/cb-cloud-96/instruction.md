@@ -1,0 +1,3 @@
+Who owns more vehicles: the oldest person (by date of birth) among holders of the same credit card provider as the owner of pet 'Kristina', OR the oldest person among holders of the same credit card provider as the owner of pet 'Marilyn'?
+
+Use only the files under `/app/files`. Write your final answer (and nothing else) to `/app/answer.txt`.

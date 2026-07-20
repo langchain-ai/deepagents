@@ -1,0 +1,3 @@
+Who owns more vehicles: the person with the most credit cards among Mastercard holders who live in the same state as the owner of pet 'Betty' (using total bank balance as tiebreaker if tied), OR the person with the most credit cards among Discover cardholders who live in the same state as the owner of pet 'Mackenzie' (using the same tiebreaker)? If tied on vehicles, return the person with the higher total bank balance.
+
+Use only the files under `/app/files`. Write your final answer (and nothing else) to `/app/answer.txt`.

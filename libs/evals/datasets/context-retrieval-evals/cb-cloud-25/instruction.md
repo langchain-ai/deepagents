@@ -1,0 +1,3 @@
+Among all people who live in the same state as the owner of the pet named 'Jose', who has the most pets? If there's a tie, who among them has the most insurance policies? If still tied, who has the most vehicles?
+
+Use only the files under `/app/files`. Write your final answer (and nothing else) to `/app/answer.txt`.

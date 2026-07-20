@@ -670,14 +670,18 @@ _ABSENT = object()
 
 
 class TestBuiltinMiddlewarePrompts:
-    """`create_deep_agent` toggles built-in middleware system-prompt fragments.
+    """`create_deep_agent` toggles built-in middleware tool-usage guidance prose.
 
-    Suppressed by default; restored when `_builtin_middleware_prompts=True`.
-    Suppression is passed to each middleware constructor as `system_prompt=""`
-    for those that always append (Todo, Filesystem) and `system_prompt=None` for
-    those whose `None` already means "no fragment" (Skills, SubAgent,
-    AsyncSubAgent, Memory). Restoration omits the kwarg (or passes `None` to
-    Filesystem, whose built-in prose is its `None` default).
+    The usage-guidance middleware (Todo, Filesystem, SubAgent, AsyncSubAgent)
+    are suppressed by default and restored when `_builtin_middleware_prompts=True`:
+    `system_prompt=""` for those that always append (Todo, Filesystem) and
+    `system_prompt=None` for those whose `None` means "no fragment" (SubAgent,
+    AsyncSubAgent). Restoration omits the kwarg (or passes `None` to Filesystem,
+    whose built-in prose is its `None` default).
+
+    Skills and Memory are never suppressed: their fragment is the only channel
+    that surfaces the loaded skill index / memory content, so they always emit
+    it (kwarg omitted) regardless of the flag.
     """
 
     def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
@@ -723,32 +727,45 @@ class TestBuiltinMiddlewarePrompts:
             "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
         }
 
-    def test_suppressed_by_default(self) -> None:
+    def test_usage_prose_suppressed_by_default(self) -> None:
         captured = self._capture_middleware_kwargs(**self._create_kwargs())
 
         assert captured["TodoListMiddleware"], "expected TodoListMiddleware to be built"
         assert all(v == "" for v in captured["TodoListMiddleware"])
         assert all(v == "" for v in captured["FilesystemMiddleware"])
-        assert all(v is None for v in captured["SkillsMiddleware"])
         assert all(v is None for v in captured["SubAgentMiddleware"])
         assert all(v is None for v in captured["AsyncSubAgentMiddleware"])
-        assert all(v is None for v in captured["MemoryMiddleware"])
 
-    def test_restored_when_flag_true(self) -> None:
+    def test_usage_prose_restored_when_flag_true(self) -> None:
         captured = self._capture_middleware_kwargs(
             _builtin_middleware_prompts=True,
             **self._create_kwargs(),
         )
 
         # Filesystem's built-in prose is its `system_prompt=None` default, so it
-        # is passed `None` explicitly; every other middleware omits the kwarg and
-        # falls back to its own default.
+        # is passed `None` explicitly; the others omit the kwarg entirely.
         assert captured["FilesystemMiddleware"], "expected FilesystemMiddleware to be built"
         assert all(v is None for v in captured["FilesystemMiddleware"])
-        for name in ("TodoListMiddleware", "SkillsMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware", "MemoryMiddleware"):
+        for name in ("TodoListMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
             values = captured[name]
             assert values, f"expected {name} to be built"
             assert all(v is _ABSENT for v in values), f"{name} should not receive system_prompt"
+
+    def test_skills_and_memory_never_suppressed(self) -> None:
+        """Regression guard for the skills/memory content channel.
+
+        Their fragments carry the feature's only content, so they must emit even
+        on the lean default (kwarg omitted, never `None`).
+        """
+        for flag in (False, True):
+            captured = self._capture_middleware_kwargs(
+                _builtin_middleware_prompts=flag,
+                **self._create_kwargs(),
+            )
+            for name in ("SkillsMiddleware", "MemoryMiddleware"):
+                values = captured[name]
+                assert values, f"expected {name} to be built (flag={flag})"
+                assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be suppressed (flag={flag})"
 
 
 class TestToolExclusionMiddleware:

@@ -481,14 +481,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
         _builtin_middleware_prompts: Whether the built-in middleware contribute
-            their own system-prompt guidance (how to use the todo, filesystem,
-            skills, subagent, and memory tools).
+            their own tool-usage guidance prose (how to use the todo, filesystem,
+            and subagent tools).
 
-            `False` (default): the guidance prose is suppressed on every
+            `False` (default): that guidance prose is suppressed on every
             middleware stack (main agent, subagents, and the general-purpose
             subagent). The tools and their own descriptions are unaffected, so
             the agent stays functional; only the prose is removed. Set this to
-            `True` to restore the middleware's built-in guidance.
+            `True` to restore it.
+
+            This does not affect the skills or memory middleware: their fragment
+            is the only channel that surfaces the loaded skill index / memory
+            content, so `create_deep_agent(skills=...)` / `memory=...` always
+            emit it regardless of this flag.
 
             Marked private because it is internal wiring for first-party
             harnesses (e.g. the Deep Agents CLI) that want the full built-in
@@ -762,18 +767,26 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
-    # System-prompt suppression for the built-in middleware. Unless the caller
-    # opts back in via `_builtin_middleware_prompts=True`, each middleware is
-    # constructed with its guidance prose suppressed, on every stack below (main
-    # agent, subagents, general-purpose subagent). The suppression value depends
-    # on how the middleware treats `system_prompt`:
+    # System-prompt suppression for the built-in middleware whose fragment is
+    # pure usage guidance. Unless the caller opts back in via
+    # `_builtin_middleware_prompts=True`, todo / filesystem / subagent /
+    # async-subagent are constructed with their guidance prose suppressed, on
+    # every stack below (main agent, subagents, general-purpose subagent). The
+    # suppression value depends on how the middleware treats `system_prompt`:
     #   - `TodoListMiddleware` always appends, so `""` suppresses; omitting the
     #     kwarg (empty dict) restores its built-in prose.
     #   - `FilesystemMiddleware` builds its prose when `system_prompt is None`,
     #     so it is passed explicitly at each call site (`None` to restore, `""`
     #     to suppress).
-    #   - skills / subagent / async-subagent / memory middleware treat `None` as
-    #     "no fragment", so `None` suppresses; omitting the kwarg restores.
+    #   - subagent / async-subagent treat `None` as "no fragment", so `None`
+    #     suppresses; omitting the kwarg restores. The available-agent list still
+    #     reaches the model through the `task` tool / async tools, so only the
+    #     usage prose is dropped.
+    # Skills and Memory are intentionally NOT suppressed: their fragment is the
+    # only channel that surfaces the loaded skill index / memory content (no tool
+    # carries it), and both are built only when the caller explicitly passes
+    # `skills=` / `memory=`. Suppressing them would silently disable an
+    # opted-into feature, so they always emit their built-in fragment.
     _empty_prompt_kwargs: dict[str, str] = {} if _builtin_middleware_prompts else {"system_prompt": ""}
     _none_prompt_kwargs: dict[str, None] = {} if _builtin_middleware_prompts else {"system_prompt": None}
 
@@ -816,7 +829,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills, **_none_prompt_kwargs))
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             # Core names captured before the tail so new spec middleware splices in ahead of it.
             _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
@@ -902,7 +915,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             PatchToolCallsMiddleware(),
         ]
         if skills is not None:
-            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills, **_none_prompt_kwargs))
+            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
@@ -961,7 +974,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         TodoListMiddleware(**_empty_prompt_kwargs),
     ]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, **_none_prompt_kwargs))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.append(
         FilesystemMiddleware(
             backend=backend,
@@ -1013,7 +1026,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 sources=memory,
                 add_cache_control=True,
-                **_none_prompt_kwargs,
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(

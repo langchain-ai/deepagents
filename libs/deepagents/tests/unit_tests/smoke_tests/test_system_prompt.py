@@ -351,11 +351,13 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = _smoke_model()
 
-    # This snapshot documents the memory and skills guidance, which the SDK
-    # suppresses by default; opt back in so the sections are present to assert on.
+    # Skills and memory are opt-in features whose fragments are the only channel
+    # for their content, so they emit even on the lean default (no
+    # `_builtin_middleware_prompts`). This snapshot guards that: the skill index
+    # and memory content appear, while the suppressed todo/filesystem usage prose
+    # does not.
     agent = create_deep_agent(
         model=model,
-        _builtin_middleware_prompts=True,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],
         skills=["/skills/user/", "/skills/project/"],
     )

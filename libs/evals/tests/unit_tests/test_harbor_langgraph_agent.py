@@ -271,7 +271,15 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
             "kwargs": {"temperature": 0.0},
         }
     ]
-    assert captured_backend == [{"root_dir": tmp_path, "inherit_env": False}]
+    assert captured_backend == [
+        {
+            "root_dir": tmp_path,
+            "inherit_env": False,
+            "env": {
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            },
+        }
+    ]
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend

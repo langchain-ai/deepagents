@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import AnyMessage
 
 _DEFAULT_WORKDIR = Path("/app")
+_SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -141,6 +142,15 @@ def _workdir(configurable: dict[str, object]) -> Path:
         msg = "`configurable.cwd` must be a string path"
         raise TypeError(msg)
     return Path(value)
+
+
+def _local_shell_backend(workdir: Path) -> LocalShellBackend:
+    """Create a credential-isolated shell with a child-visible executable path."""
+    return LocalShellBackend(
+        root_dir=workdir,
+        inherit_env=False,
+        env={"PATH": _SANDBOX_PATH},
+    )
 
 
 def _apply_model_identity(model_spec: str, model: object) -> None:
@@ -266,7 +276,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
-    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    backend = _local_shell_backend(_workdir(configurable))
     return create_deep_agent(
         model=model,
         backend=backend,
@@ -346,7 +356,7 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     workdir = _workdir(configurable)
-    backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
+    backend = _local_shell_backend(workdir)
     manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     tools = [_make_execute_tool(backend), *_make_background_tools(manager)]
     # Context management: terminus-2-style retention summarization. It fires proactively
@@ -384,7 +394,7 @@ def make_structured_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     workdir = _workdir(configurable)
-    backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
+    backend = _local_shell_backend(workdir)
     manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     return create_agent(
         model=model,

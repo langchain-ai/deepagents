@@ -391,7 +391,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
-    builtin_middleware_prompts: bool = False,
+    _builtin_middleware_prompts: bool = False,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -480,7 +480,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             profile suffix, joined by blank lines. Any part may be a
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
-        builtin_middleware_prompts: Whether the built-in middleware contribute
+        _builtin_middleware_prompts: Whether the built-in middleware contribute
             their own system-prompt guidance (how to use the todo, filesystem,
             skills, subagent, and memory tools).
 
@@ -489,6 +489,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent). The tools and their own descriptions are unaffected, so
             the agent stays functional; only the prose is removed. Set this to
             `True` to restore the middleware's built-in guidance.
+
+            Marked private because it is internal wiring for first-party
+            harnesses (e.g. the Deep Agents CLI) that want the full built-in
+            behavior; most callers should leave it at the default.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -759,7 +763,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend = backend if backend is not None else StateBackend()
 
     # System-prompt suppression for the built-in middleware. Unless the caller
-    # opts back in via `builtin_middleware_prompts=True`, each middleware is
+    # opts back in via `_builtin_middleware_prompts=True`, each middleware is
     # constructed with its guidance prose suppressed, on every stack below (main
     # agent, subagents, general-purpose subagent). The suppression value depends
     # on how the middleware treats `system_prompt`:
@@ -770,8 +774,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     #     to suppress).
     #   - skills / subagent / async-subagent / memory middleware treat `None` as
     #     "no fragment", so `None` suppresses; omitting the kwarg restores.
-    _empty_prompt_kwargs: dict[str, str] = {} if builtin_middleware_prompts else {"system_prompt": ""}
-    _none_prompt_kwargs: dict[str, None] = {} if builtin_middleware_prompts else {"system_prompt": None}
+    _empty_prompt_kwargs: dict[str, str] = {} if _builtin_middleware_prompts else {"system_prompt": ""}
+    _none_prompt_kwargs: dict[str, None] = {} if _builtin_middleware_prompts else {"system_prompt": None}
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -805,7 +809,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
-                    system_prompt=None if builtin_middleware_prompts else "",
+                    system_prompt=None if _builtin_middleware_prompts else "",
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -892,7 +896,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
-                system_prompt=None if builtin_middleware_prompts else "",
+                system_prompt=None if _builtin_middleware_prompts else "",
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -963,7 +967,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
-            system_prompt=None if builtin_middleware_prompts else "",
+            system_prompt=None if _builtin_middleware_prompts else "",
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None

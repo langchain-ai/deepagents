@@ -3142,7 +3142,7 @@ class TestArtifactsRoot:
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
             # suppressed by default; opt in so this test can assert on it.
-            builtin_middleware_prompts=True,
+            _builtin_middleware_prompts=True,
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
@@ -3279,7 +3279,7 @@ class TestArtifactsRoot:
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
             # suppressed by default; opt in so this test can assert on it.
-            builtin_middleware_prompts=True,
+            _builtin_middleware_prompts=True,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)
@@ -3297,7 +3297,7 @@ class TestArtifactsRoot:
             middleware=[capturing_middleware],
             # The filesystem guidance (which references artifacts_root) is
             # suppressed by default; opt in so this test can assert on it.
-            builtin_middleware_prompts=True,
+            _builtin_middleware_prompts=True,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)

@@ -672,7 +672,7 @@ _ABSENT = object()
 class TestBuiltinMiddlewarePrompts:
     """`create_deep_agent` toggles built-in middleware system-prompt fragments.
 
-    Suppressed by default; restored when `builtin_middleware_prompts=True`.
+    Suppressed by default; restored when `_builtin_middleware_prompts=True`.
     Suppression is passed to each middleware constructor as `system_prompt=""`
     for those that always append (Todo, Filesystem) and `system_prompt=None` for
     those whose `None` already means "no fragment" (Skills, SubAgent,
@@ -736,7 +736,7 @@ class TestBuiltinMiddlewarePrompts:
 
     def test_restored_when_flag_true(self) -> None:
         captured = self._capture_middleware_kwargs(
-            builtin_middleware_prompts=True,
+            _builtin_middleware_prompts=True,
             **self._create_kwargs(),
         )
 

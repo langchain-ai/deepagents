@@ -168,7 +168,7 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
     )
     # This snapshot documents the filesystem routing guidance, which the SDK
     # suppresses by default; opt back in so the section is present to assert on.
-    agent = create_deep_agent(model=model, backend=backend, builtin_middleware_prompts=True)
+    agent = create_deep_agent(model=model, backend=backend, _builtin_middleware_prompts=True)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -213,7 +213,7 @@ def test_system_prompt_snapshot_with_sandbox_default(snapshots_dir: Path, *, upd
     )
     # This snapshot documents the filesystem mount guidance, which the SDK
     # suppresses by default; opt back in so the section is present to assert on.
-    agent = create_deep_agent(model=model, backend=backend, builtin_middleware_prompts=True)
+    agent = create_deep_agent(model=model, backend=backend, _builtin_middleware_prompts=True)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -302,7 +302,7 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
     agent = create_deep_agent(
         model=model,
         backend=backend,
-        builtin_middleware_prompts=True,
+        _builtin_middleware_prompts=True,
         subagents=[
             {
                 "name": "code-reviewer",
@@ -355,7 +355,7 @@ def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_sna
     # suppresses by default; opt back in so the sections are present to assert on.
     agent = create_deep_agent(
         model=model,
-        builtin_middleware_prompts=True,
+        _builtin_middleware_prompts=True,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],
         skills=["/skills/user/", "/skills/project/"],
     )

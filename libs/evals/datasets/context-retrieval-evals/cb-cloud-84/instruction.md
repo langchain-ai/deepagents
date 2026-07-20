@@ -1,3 +1,0 @@
-Who has more insurance policies: the person with the highest salary among holders of the same credit card provider as the owner of vehicle with license plate '699 0026', OR the person with the highest salary among holders of the same credit card provider as the owner of vehicle with license plate 'UOP 980'?
-
-Use only the files under `/app/files`. Write your final answer (and nothing else) to `/app/answer.txt`.

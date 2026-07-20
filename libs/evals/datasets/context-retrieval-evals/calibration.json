@@ -1,109 +1,43 @@
 {
   "description": "Calibration record for context-retrieval-evals. `tier` is the authoritative difficulty bucket (stamped into each task.toml by `contextbench --stamp-tiers`); `pass_at_bare` is the measured fraction solved; `source_difficulty` is the original Context-Bench label.",
-  "model": "anthropic:claude-opus-4-8",
+  "model": "openai:gpt-5.6-terra",
   "harness": "bare (create_deep_agent)",
-  "sandbox": "langsmith",
+  "grader": "faithful Letta model_judge (rubric.txt, judge gpt-5.6-luna)",
+  "sandbox": "docker",
   "rollouts_per_task": 3,
   "runs": [
-    "29106461133",
-    "29109367820"
+    "29781251542"
   ],
   "tasks": {
-    "cb-cloud-1": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 0.6667,
-      "n": 3,
-      "tier": "medium"
-    },
-    "cb-cloud-11": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 1.0,
-      "n": 3,
-      "tier": "easy"
-    },
-    "cb-cloud-22": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 1.0,
-      "n": 3,
-      "tier": "easy"
-    },
-    "cb-cloud-37": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 1.0,
-      "n": 3,
-      "tier": "easy"
-    },
-    "cb-cloud-50": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 1.0,
-      "n": 3,
-      "tier": "easy"
-    },
-    "cb-cloud-64": {
-      "source_difficulty": "easy",
-      "pass_at_bare": 1.0,
-      "n": 2,
-      "tier": "easy"
-    },
-    "cb-cloud-2": {
+    "cb-cloud-3": {
       "source_difficulty": "medium",
-      "pass_at_bare": 0.6667,
+      "pass_at_bare": 1.0,
       "n": 3,
-      "tier": "medium"
+      "tier": "easy"
     },
-    "cb-cloud-7": {
+    "cb-cloud-4": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.6667,
+      "pass_at_bare": 1.0,
       "n": 3,
-      "tier": "medium"
+      "tier": "easy"
     },
-    "cb-cloud-36": {
+    "cb-cloud-6": {
       "source_difficulty": "medium",
-      "pass_at_bare": 0.6667,
+      "pass_at_bare": 1.0,
       "n": 3,
-      "tier": "medium"
+      "tier": "easy"
     },
-    "cb-cloud-48": {
-      "source_difficulty": "medium",
-      "pass_at_bare": 0.6667,
-      "n": 3,
-      "tier": "medium"
-    },
-    "cb-cloud-56": {
-      "source_difficulty": "medium",
-      "pass_at_bare": 0.6667,
-      "n": 3,
-      "tier": "medium"
-    },
-    "cb-cloud-31": {
-      "source_difficulty": "medium",
-      "pass_at_bare": 0.3333,
-      "n": 3,
-      "tier": "medium"
-    },
-    "cb-cloud-35": {
+    "cb-cloud-8": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.3333,
+      "pass_at_bare": 1.0,
       "n": 3,
-      "tier": "medium"
+      "tier": "easy"
     },
-    "cb-cloud-55": {
-      "source_difficulty": "hard",
-      "pass_at_bare": 0.3333,
-      "n": 3,
-      "tier": "medium"
-    },
-    "cb-cloud-0": {
-      "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
-      "n": 3,
-      "tier": "hard"
-    },
-    "cb-cloud-5": {
+    "cb-cloud-9": {
       "source_difficulty": "medium",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 1.0,
       "n": 3,
-      "tier": "hard"
+      "tier": "easy"
     },
     "cb-cloud-10": {
       "source_difficulty": "hard",
@@ -113,78 +47,144 @@
     },
     "cb-cloud-13": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.3333,
       "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
     "cb-cloud-15": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.3333,
       "n": 3,
-      "tier": "hard"
-    },
-    "cb-cloud-16": {
-      "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
-      "n": 3,
-      "tier": "hard"
-    },
-    "cb-cloud-18": {
-      "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
-      "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
     "cb-cloud-24": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.6667,
       "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
-    "cb-cloud-26": {
+    "cb-cloud-35": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.6667,
       "n": 3,
-      "tier": "hard"
-    },
-    "cb-cloud-32": {
-      "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
-      "n": 3,
-      "tier": "hard"
-    },
-    "cb-cloud-38": {
-      "source_difficulty": "medium",
-      "pass_at_bare": 0.0,
-      "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
     "cb-cloud-41": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.6667,
       "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
     "cb-cloud-42": {
       "source_difficulty": "medium",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.3333,
       "n": 3,
-      "tier": "hard"
+      "tier": "medium"
+    },
+    "cb-cloud-45": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
     },
     "cb-cloud-47": {
       "source_difficulty": "hard",
-      "pass_at_bare": 0.0,
+      "pass_at_bare": 0.3333,
       "n": 3,
-      "tier": "hard"
+      "tier": "medium"
     },
     "cb-cloud-49": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-55": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-57": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-62": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-65": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-66": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-67": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-68": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-69": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-71": {
       "source_difficulty": "hard",
       "pass_at_bare": 0.0,
       "n": 3,
       "tier": "hard"
     },
-    "cb-cloud-78": {
-      "source_difficulty": "medium",
+    "cb-cloud-73": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-74": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-79": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-81": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-83": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-90": {
+      "source_difficulty": "hard",
       "pass_at_bare": 0.0,
       "n": 3,
       "tier": "hard"

@@ -3,7 +3,7 @@ version = "1.3"
 [metadata]
 source = "contextbench"
 suite = "cloud"
-difficulty = "hard"
+difficulty = "medium"
 source_difficulty = "medium"
 question_type = "negation"
 

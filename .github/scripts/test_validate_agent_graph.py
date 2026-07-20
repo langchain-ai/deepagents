@@ -23,3 +23,14 @@ def test_unknown_impl_returns_one(tmp_path, monkeypatch, capsys):
 def test_missing_registry_returns_two(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_IMPL", "bare")
     assert validate_agent_graph.main([str(tmp_path / "absent.json")]) == 2
+
+
+def test_missing_graphs_object_returns_two(tmp_path, monkeypatch, capsys):
+    # A registry with no (or an empty/non-dict) "graphs" object is a broken
+    # registry, not a bad impl choice; it must not degrade to the "unknown
+    # impl ... (have: [])" exit-1 path (see test_unknown_impl_returns_one).
+    p = tmp_path / "langgraph.json"
+    p.write_text('{"nograph": {}}')
+    monkeypatch.setenv("AGENT_IMPL", "bare")
+    assert validate_agent_graph.main([str(p)]) == 2
+    assert "has no 'graphs' object" in capsys.readouterr().out

@@ -21,9 +21,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     impl = os.environ.get("AGENT_IMPL", "")
     try:
-        graphs = json.loads(Path(argv[0]).read_text()).get("graphs", {})
+        data = json.loads(Path(argv[0]).read_text())
     except (OSError, ValueError) as exc:
         print(f"::error::cannot read agent registry {argv[0]}: {exc}")
+        return 2
+    graphs = data.get("graphs")
+    if not isinstance(graphs, dict) or not graphs:
+        # A broken registry (no/empty/non-dict "graphs") is a distinct failure
+        # from a bad impl choice; keep it out of the exit-1 "unknown impl" path
+        # below, where it would otherwise misattribute as "have: []".
+        print(f"::error::agent registry {argv[0]} has no 'graphs' object")
         return 2
     if impl not in graphs:
         print(

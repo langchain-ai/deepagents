@@ -106,9 +106,29 @@ def derive_impl_sets(
     pinned_non_code = {
         cm["agent_impl"] for cm in category_map.values() if not cm["fan_out"]
     }
+    # Subtractive, not additive: a graph pinned by a non-fan-out category is
+    # excluded from the selectable code set even if a fan-out category also uses
+    # it. Not reachable with the current CATEGORY_MAP, but it is the defined
+    # invariant.
     return all_graphs, all_graphs - pinned_non_code
 
 
+def _validate_category_map_keys(category_map: dict[str, dict]) -> None:
+    """Fail fast, naming the offending category, if a CATEGORY_MAP entry is
+    missing `agent_impl` or `fan_out`.
+
+    `derive_impl_sets` reads `cm["fan_out"]` for every entry unconditionally, so
+    a missing key would otherwise surface as a bare `KeyError('fan_out')`
+    instead of identifying which category is malformed.
+    """
+    for cat, cm in category_map.items():
+        if "agent_impl" not in cm or "fan_out" not in cm:
+            raise RuntimeError(
+                f"CATEGORY_MAP[{cat!r}] must define both 'agent_impl' and 'fan_out'"
+            )
+
+
+_validate_category_map_keys(CATEGORY_MAP)
 ALL_GRAPHS = _load_registry_graphs(_LANGGRAPH_JSON)
 KNOWN_AGENT_IMPLS, CODE_AGENT_IMPLS = derive_impl_sets(ALL_GRAPHS, CATEGORY_MAP)
 

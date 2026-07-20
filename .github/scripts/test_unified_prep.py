@@ -69,6 +69,17 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
         up.main()
 
 
+def test_category_map_guard_rejects_entry_missing_fan_out():
+    import pytest
+
+    malformed = {
+        "autonomous": {"agent_impl": "bare", "fan_out": True},
+        "broken": {"agent_impl": "bare"},  # missing "fan_out"
+    }
+    with pytest.raises(RuntimeError, match=r"'broken'.*agent_impl.*fan_out"):
+        up._validate_category_map_keys(malformed)
+
+
 def test_derive_impl_sets_new_graph_is_selectable():
     cats = {
         "autonomous": {"agent_impl": "bare", "fan_out": True},

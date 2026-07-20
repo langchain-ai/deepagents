@@ -891,6 +891,41 @@ def test_marketplace_options_omit_divider_when_empty() -> None:
     assert [option.id for option in options] == ["add-marketplace"]
 
 
+def test_marketplace_options_pad_between_entries() -> None:
+    """Marketplace entries are separated by disabled spacers, like the plugins list."""
+    screen = PluginManagerScreen()
+    screen._tab = "marketplaces"
+    screen._state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(),
+        marketplaces=(
+            _MarketplaceRow("first", "owner/first", 1, 0),
+            _MarketplaceRow("second", "owner/second", 1, 0),
+            _MarketplaceRow("third", "owner/third", 1, 0),
+        ),
+        errors=(),
+    )
+
+    options = screen._current_options()
+
+    ids = [option.id for option in options]
+    assert ids == [
+        "add-marketplace",
+        "marketplace-divider",
+        "marketplace:first",
+        "marketplace-spacer:1",
+        "marketplace:second",
+        "marketplace-spacer:2",
+        "marketplace:third",
+    ]
+    spacers = [
+        option
+        for option in options
+        if option.id is not None and option.id.startswith("marketplace-spacer:")
+    ]
+    assert all(spacer.disabled for spacer in spacers)
+
+
 def test_healthy_marketplace_label_shows_available_plugins() -> None:
     row = _MarketplaceRow("healthy", "owner/healthy", 3, 0)
 

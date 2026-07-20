@@ -7,7 +7,7 @@ This repository is structured as a monorepo, with each package independently ver
 
 ## New here? Start with Deep Agents Code (`dcode`)
 
-The fastest way to try Deep Agents is [`deepagents-code`](code/) — the pre-built coding agent for your terminal, launched with the `dcode` command (`dcode` is the short alias for `deepagents-code`). It's similar to Claude Code or Cursor, powered by any LLM that supports tool calling, with no code required:
+The fastest way to try Deep Agents is [`deepagents-code`](code/) — the pre-built coding agent for your terminal. It's similar to Claude Code or Cursor, powered by any LLM that supports tool calling, with no code required:
 
 ```bash
 curl -LsSf https://langch.in/dcode | bash

@@ -1280,7 +1280,7 @@ async def test_marketplace_divider_refits_on_resize() -> None:
 
 
 async def test_plugin_manager_overlays_underlying_content() -> None:
-    """Transparent modal backdrop must composite the screen underneath."""
+    """Dimmed modal backdrop must composite the screen underneath."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1296,7 +1296,9 @@ async def test_plugin_manager_overlays_underlying_content() -> None:
         app.push_screen(PluginManagerScreen())
         await pilot.pause()
 
-        assert app.screen.styles.background.a == 0
+        # Inherit the default ModalScreen dim backdrop instead of a fully
+        # transparent one, matching the other modals.
+        assert 0 < app.screen.styles.background.a < 1
         plain = re.sub(r"<[^>]+>", " ", app.export_screenshot())
         assert "TOP_MARKER_VISIBLE" in plain
         assert "Plugins" in plain

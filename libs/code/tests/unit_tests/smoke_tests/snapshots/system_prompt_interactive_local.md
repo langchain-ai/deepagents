@@ -133,6 +133,19 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - When staging, prefer specific files over `git add -A` or `git add .`
 - NEVER commit unless the user explicitly asks
 
+## Git signing failures
+
+A `git commit` can fail because the signing layer — not your code — is broken. Recognize this when the commit exits 128 (or otherwise fails) *after* pre-commit/lint/format hooks have already passed and stderr matches a signing-infrastructure signature: `1Password`, `op-ssh-sign`, `gpg failed`, `error: ... signer`, `failed to write commit object`, or `failed to fill whole buffer`. This is a transient signer problem, not a problem with the change.
+
+When you hit it on a commit/push request, close the loop — never merely propose a workaround and end the turn with no commit landed:
+
+1. Treat it as a transient signing-infrastructure failure, not a code problem.
+2. Retry the commit once with `--no-gpg-sign`, respecting the normal approval boundary. If approval is required, request it — and when approved, actually execute the retry instead of stopping.
+3. Proceed to the originally requested push.
+4. If the retry also fails, surface the exact error and the manual remediation (unlock 1Password / restart the signer daemon) and wait for the user.
+
+This is the one sanctioned exception to the "NEVER skip `--no-gpg-sign`" rule above: a signing-layer failure on an already-approved commit is itself the explicit signal to retry unsigned. Always finish by either landing the commit and push or explicitly handing off — never leave the request with no commit and empty output.
+
 ## Security
 
 - Be careful not to introduce XSS, SQL injection, command injection, or other OWASP top 10 vulnerabilities

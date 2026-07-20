@@ -189,7 +189,7 @@ on:
         default: "10"
         type: string
       harbor_package_override:
-        description: "Optional: install Harbor from the trusted harbor-framework/harbor repository instead of the locked version. One spec per line. Only `harbor`, `harbor[langsmith]`, and `harbor-langsmith` refs from `git+https://github.com/harbor-framework/harbor.git@<40-char-sha>` are accepted; `harbor-langsmith` must include `#subdirectory=packages/harbor-langsmith`. Branches, tags, arbitrary hosts, and embedded credentials are rejected. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from a trusted package source instead of the locked version. One spec per line. Only `harbor`, `harbor[langsmith]`, and `harbor-langsmith` refs from `git+https://github.com/harbor-framework/harbor.git@<40-char-sha>` are accepted; `harbor-langsmith` must include `#subdirectory=packages/harbor-langsmith`. Prefer an immutable commit SHA, and never embed credentials in the package spec. Branches, tags, and arbitrary hosts are rejected. Leave empty to use the pinned Harbor."
         required: false
         default: ""
         type: string

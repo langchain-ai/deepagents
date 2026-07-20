@@ -384,10 +384,28 @@ jobs:
           # so newline is the only safe delimiter. Collect into an array and pass
           # as separate args — never re-split or eval'd, preserving injection
           # safety — so a single install covers e.g. harbor + harbor-langsmith.
+          #
+          # This step runs before Harbor receives model/LangSmith secrets. Keep
+          # the override narrowly scoped to the trusted Harbor repository and an
+          # immutable commit SHA; arbitrary package specs would execute attacker
+          # code in the following secret-bearing `uv run harbor run` step.
+          harbor_ref_re='^harbor(\[langsmith\])? @ git\+https://github\.com/harbor-framework/harbor\.git@[0-9a-fA-F]{40}$'
+          harbor_langsmith_ref_re='^harbor-langsmith @ git\+https://github\.com/harbor-framework/harbor\.git@[0-9a-fA-F]{40}#subdirectory=packages/harbor-langsmith$'
           specs=()
           while IFS= read -r line; do
-            [ -n "$line" ] && specs+=("$line")
+            [ -z "$line" ] && continue
+            if [[ "$line" =~ $harbor_ref_re || "$line" =~ $harbor_langsmith_ref_re ]]; then
+              specs+=("$line")
+              continue
+            fi
+            echo "::error::Invalid harbor_package_override line: $line"
+            echo "::error::Allowed overrides are harbor or harbor[langsmith] from github.com/harbor-framework/harbor.git pinned to a 40-character commit SHA. harbor-langsmith must use #subdirectory=packages/harbor-langsmith."
+            exit 1
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          if [ "${#specs[@]}" -eq 0 ]; then
+            echo "::error::harbor_package_override was provided but contained no package specs"
+            exit 1
+          fi
           uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"

@@ -2352,6 +2352,9 @@ def create_cli_agent(
     agent = create_deep_agent(
         model=model,
         system_prompt=resolved_system_prompt,
+        # The SDK suppresses the built-in middleware tool-usage guidance by
+        # default; the CLI opts back in to keep its shipped behavior.
+        builtin_middleware_prompts=True,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

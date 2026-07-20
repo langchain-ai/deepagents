@@ -25,6 +25,7 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
+    DEFAULT_AGENT_PROMPT,
     DeepAgentState,
     _apply_custom_middleware,
     _create_bedrock_prompt_caching_middleware,
@@ -557,17 +558,13 @@ class TestSystemPromptAssembly:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_default_uses_base_agent_prompt(self) -> None:
-        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
-        assert prompt == BASE_AGENT_PROMPT
-
     def test_profile_base_system_prompt_replaces_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
             HarnessProfile(base_system_prompt="You are a custom agent."),
         )
         assert prompt == "You are a custom agent."
-        assert BASE_AGENT_PROMPT not in prompt
+        assert DEFAULT_AGENT_PROMPT not in prompt
 
     def test_profile_base_system_prompt_with_suffix(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -578,7 +575,7 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "You are a custom agent.\n\nBe concise."
-        assert BASE_AGENT_PROMPT not in prompt
+        assert DEFAULT_AGENT_PROMPT not in prompt
 
     def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -594,7 +591,7 @@ class TestSystemPromptAssembly:
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base."
-        assert BASE_AGENT_PROMPT not in prompt
+        assert DEFAULT_AGENT_PROMPT not in prompt
 
     def test_user_system_prompt_prepended_before_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -614,7 +611,7 @@ class TestSystemPromptAssembly:
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base.\n\nExtra."
-        assert BASE_AGENT_PROMPT not in prompt
+        assert DEFAULT_AGENT_PROMPT not in prompt
 
     def test_system_message_with_profile_base(self) -> None:
         msg = SystemMessage(content="User content.")
@@ -627,7 +624,7 @@ class TestSystemPromptAssembly:
         # Last content block should contain the custom base, not BASE_AGENT_PROMPT
         last_block = result.content_blocks[-1]
         assert "Custom base." in last_block["text"]
-        assert BASE_AGENT_PROMPT not in last_block["text"]
+        assert DEFAULT_AGENT_PROMPT not in last_block["text"]
 
     def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -635,7 +632,7 @@ class TestSystemPromptAssembly:
             HarnessProfile(base_system_prompt=""),
         )
         assert prompt == ""
-        assert BASE_AGENT_PROMPT not in prompt
+        assert DEFAULT_AGENT_PROMPT not in prompt
 
     def test_empty_string_suffix_still_appended(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -646,6 +643,112 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+    def test_default_base_is_empty(self) -> None:
+        """With no profile base and no caller base, the assembled base is empty."""
+        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
+        assert prompt == ""
+        assert DEFAULT_AGENT_PROMPT not in prompt
+
+    def test_default_agent_prompt_restores_base(self) -> None:
+        """Callers opt the authored prose back in via `system_prompt={"base": ...}`."""
+        prompt = self._build_and_capture_system_prompt(
+            "defprov",
+            HarnessProfile(),
+            system_prompt={"base": DEFAULT_AGENT_PROMPT},
+        )
+        assert prompt == DEFAULT_AGENT_PROMPT
+
+    def test_default_agent_prompt_holds_authored_prose(self) -> None:
+        """The authored prose is preserved (not deleted) so it can be restored."""
+        assert BASE_AGENT_PROMPT == ""
+        assert "You are a deep agent" in DEFAULT_AGENT_PROMPT
+        assert "Professional Objectivity" in DEFAULT_AGENT_PROMPT
+
+
+_ABSENT = object()
+
+
+class TestBuiltinMiddlewarePrompts:
+    """`create_deep_agent` toggles built-in middleware system-prompt fragments.
+
+    Suppressed by default; restored when `builtin_middleware_prompts=True`.
+    Suppression is passed to each middleware constructor as `system_prompt=""`
+    for those that always append (Todo, Filesystem) and `system_prompt=None` for
+    those whose `None` already means "no fragment" (Skills, SubAgent,
+    AsyncSubAgent, Memory). Restoration omits the kwarg (or passes `None` to
+    Filesystem, whose built-in prose is its `None` default).
+    """
+
+    def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
+        """Capture the `system_prompt` each built-in middleware is built with.
+
+        Patches the middleware, calls `create_deep_agent`, and returns, per
+        middleware class name, the `system_prompt` value each was constructed
+        with (`_ABSENT` when the kwarg was omitted).
+        """
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        patched = {
+            "TodoListMiddleware": MagicMock(),
+            "FilesystemMiddleware": MagicMock(),
+            "SkillsMiddleware": MagicMock(),
+            "SubAgentMiddleware": MagicMock(),
+            "AsyncSubAgentMiddleware": MagicMock(),
+            "MemoryMiddleware": MagicMock(),
+        }
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+            patch("deepagents.graph.TodoListMiddleware", patched["TodoListMiddleware"]),
+            patch("deepagents.graph.FilesystemMiddleware", patched["FilesystemMiddleware"]),
+            patch("deepagents.graph.SkillsMiddleware", patched["SkillsMiddleware"]),
+            patch("deepagents.graph.SubAgentMiddleware", patched["SubAgentMiddleware"]),
+            patch("deepagents.graph.AsyncSubAgentMiddleware", patched["AsyncSubAgentMiddleware"]),
+            patch("deepagents.graph.MemoryMiddleware", patched["MemoryMiddleware"]),
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", **create_kwargs)
+
+        return {name: [call.kwargs.get("system_prompt", _ABSENT) for call in mock.call_args_list] for name, mock in patched.items()}
+
+    def _create_kwargs(self) -> dict[str, Any]:
+        """Args that force every built-in middleware to be constructed."""
+        return {
+            "skills": ["skill-a"],
+            "memory": ["memory-a"],
+            "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
+        }
+
+    def test_suppressed_by_default(self) -> None:
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+
+        assert captured["TodoListMiddleware"], "expected TodoListMiddleware to be built"
+        assert all(v == "" for v in captured["TodoListMiddleware"])
+        assert all(v == "" for v in captured["FilesystemMiddleware"])
+        assert all(v is None for v in captured["SkillsMiddleware"])
+        assert all(v is None for v in captured["SubAgentMiddleware"])
+        assert all(v is None for v in captured["AsyncSubAgentMiddleware"])
+        assert all(v is None for v in captured["MemoryMiddleware"])
+
+    def test_restored_when_flag_true(self) -> None:
+        captured = self._capture_middleware_kwargs(
+            builtin_middleware_prompts=True,
+            **self._create_kwargs(),
+        )
+
+        # Filesystem's built-in prose is its `system_prompt=None` default, so it
+        # is passed `None` explicitly; every other middleware omits the kwarg and
+        # falls back to its own default.
+        assert captured["FilesystemMiddleware"], "expected FilesystemMiddleware to be built"
+        assert all(v is None for v in captured["FilesystemMiddleware"])
+        for name in ("TodoListMiddleware", "SkillsMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware", "MemoryMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} should not receive system_prompt"
 
 
 class TestToolExclusionMiddleware:

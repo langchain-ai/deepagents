@@ -74,7 +74,7 @@ class DeepAgentState(AgentState):
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
 
-BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+DEFAULT_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
 ## Core Behavior
 
@@ -117,16 +117,29 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default base system prompt for every deep agent.
+"""Authored base prompt (persona + task guidance), available for opt-in.
+
+Not injected by default. `BASE_AGENT_PROMPT` — the base the prompt assembler
+uses — is empty, so a deep agent ships with no authored base prompt. Callers who
+want this built-in persona and task guidance back pass it explicitly, e.g.
+`create_deep_agent(system_prompt={"base": DEFAULT_AGENT_PROMPT})`, or set it as a
+`HarnessProfile.base_system_prompt`.
+"""
+
+
+BASE_AGENT_PROMPT = ""
+"""Default base system prompt for every deep agent (empty by default).
 
 The final system prompt sent to the model is assembled, in order, from:
 
 1. `prefix` — caller text placed before the base (the `system_prompt=`
     argument, or its `prefix` key). Always first, so caller instructions
     take precedence.
-2. `base` — this constant by default; replaced by the `system_prompt`
+2. `base` — this constant by default (empty); replaced by the `system_prompt`
     config's `base` key, or (when that key is absent) by
     `HarnessProfile.base_system_prompt`. Setting `base` to `None` drops it.
+    Pass [`DEFAULT_AGENT_PROMPT`][deepagents.DEFAULT_AGENT_PROMPT] as the `base`
+    to restore the built-in authored prompt.
 3. `suffix` — caller text placed after the base (the `system_prompt`
     config's `suffix` key).
 4. `HarnessProfile.system_prompt_suffix` — model-tuning guidance appended
@@ -378,6 +391,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
+    builtin_middleware_prompts: bool = False,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -449,22 +463,32 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         system_prompt: Custom system instructions.
 
             A `str` or `SystemMessage` is placed at the front of the system
-            prompt, before the SDK's default base prompt and any model-tuning
-            suffix from a registered `HarnessProfile` (`system_prompt=None`
-            uses the default base on its own).
+            prompt, before the base prompt (empty by default) and any
+            model-tuning suffix from a registered `HarnessProfile`.
 
             For more control, pass a
             [`SystemPromptConfig`][deepagents.SystemPromptConfig] with any of:
 
             - `prefix`: text before the base (same as passing a bare string).
-            - `base`: replace the built-in base prompt; omit the key to keep
-                it, or set it to `None` to drop the base entirely.
+            - `base`: replace the base prompt; omit the key to keep the default
+                (empty), or set it to `None` to drop the base entirely. Pass
+                [`DEFAULT_AGENT_PROMPT`][deepagents.DEFAULT_AGENT_PROMPT] to
+                restore the built-in authored prompt.
             - `suffix`: text after the base (before any profile suffix).
 
             The assembly order is `prefix` -> `base` -> `suffix` ->
             profile suffix, joined by blank lines. Any part may be a
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
+        builtin_middleware_prompts: Whether the built-in middleware contribute
+            their own system-prompt guidance (how to use the todo, filesystem,
+            skills, subagent, and memory tools).
+
+            `False` (default): the guidance prose is suppressed on every
+            middleware stack (main agent, subagents, and the general-purpose
+            subagent). The tools and their own descriptions are unaffected, so
+            the agent stays functional; only the prose is removed. Set this to
+            `True` to restore the middleware's built-in guidance.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -734,6 +758,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
+    # System-prompt suppression for the built-in middleware. Unless the caller
+    # opts back in via `builtin_middleware_prompts=True`, each middleware is
+    # constructed with its guidance prose suppressed, on every stack below (main
+    # agent, subagents, general-purpose subagent). The suppression value depends
+    # on how the middleware treats `system_prompt`:
+    #   - `TodoListMiddleware` always appends, so `""` suppresses; omitting the
+    #     kwarg (empty dict) restores its built-in prose.
+    #   - `FilesystemMiddleware` builds its prose when `system_prompt is None`,
+    #     so it is passed explicitly at each call site (`None` to restore, `""`
+    #     to suppress).
+    #   - skills / subagent / async-subagent / memory middleware treat `None` as
+    #     "no fragment", so `None` suppresses; omitting the kwarg restores.
+    _empty_prompt_kwargs: dict[str, str] = {} if builtin_middleware_prompts else {"system_prompt": ""}
+    _none_prompt_kwargs: dict[str, None] = {} if builtin_middleware_prompts else {"system_prompt": None}
+
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
     # override, and so its middleware stack (including any factory-based
@@ -761,18 +800,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
+                TodoListMiddleware(**_empty_prompt_kwargs),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
+                    system_prompt=None if builtin_middleware_prompts else "",
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills, **_none_prompt_kwargs))
             # Core names captured before the tail so new spec middleware splices in ahead of it.
             _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
@@ -847,17 +887,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(),
+            TodoListMiddleware(**_empty_prompt_kwargs),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
+                system_prompt=None if builtin_middleware_prompts else "",
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
         if skills is not None:
-            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills, **_none_prompt_kwargs))
 
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
@@ -913,15 +954,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
+        TodoListMiddleware(**_empty_prompt_kwargs),
     ]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, **_none_prompt_kwargs))
     deepagent_middleware.append(
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
+            system_prompt=None if builtin_middleware_prompts else "",
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
@@ -936,6 +978,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
+            **_none_prompt_kwargs,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
@@ -948,7 +991,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, **_none_prompt_kwargs))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.
@@ -966,6 +1009,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 sources=memory,
                 add_cache_control=True,
+                **_none_prompt_kwargs,
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(

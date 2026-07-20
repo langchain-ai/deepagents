@@ -166,7 +166,9 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
         routes={"/common/": route, "/legacy/": legacy, "/notes/": StateBackend()},
     )
-    agent = create_deep_agent(model=model, backend=backend)
+    # This snapshot documents the filesystem routing guidance, which the SDK
+    # suppresses by default; opt back in so the section is present to assert on.
+    agent = create_deep_agent(model=model, backend=backend, builtin_middleware_prompts=True)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -209,7 +211,9 @@ def test_system_prompt_snapshot_with_sandbox_default(snapshots_dir: Path, *, upd
         default=_SnapshotSandbox(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
         routes={"/common/": route},
     )
-    agent = create_deep_agent(model=model, backend=backend)
+    # This snapshot documents the filesystem mount guidance, which the SDK
+    # suppresses by default; opt back in so the section is present to assert on.
+    agent = create_deep_agent(model=model, backend=backend, builtin_middleware_prompts=True)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -293,9 +297,12 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
     model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
+    # This snapshot documents the subagent (`task` tool) guidance, which the SDK
+    # suppresses by default; opt back in so the section is present to assert on.
     agent = create_deep_agent(
         model=model,
         backend=backend,
+        builtin_middleware_prompts=True,
         subagents=[
             {
                 "name": "code-reviewer",
@@ -344,8 +351,11 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = _smoke_model()
 
+    # This snapshot documents the memory and skills guidance, which the SDK
+    # suppresses by default; opt back in so the sections are present to assert on.
     agent = create_deep_agent(
         model=model,
+        builtin_middleware_prompts=True,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],
         skills=["/skills/user/", "/skills/project/"],
     )

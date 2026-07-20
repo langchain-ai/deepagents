@@ -562,7 +562,8 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        assert "You are a deep agent" in content
+        # The default base prompt is empty, so no authored base prose is added.
+        assert "You are a deep agent" not in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -582,7 +583,8 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        assert "You are a deep agent" in content
+        # The default base prompt is empty, so no authored base prose is added.
+        assert "You are a deep agent" not in content
 
     @pytest.mark.parametrize(
         ("system_prompt", "ordered", "absent"),
@@ -594,18 +596,18 @@ class TestDeepAgentEndToEnd:
                 ["You are a deep agent"],
                 id="base-replaces-default",
             ),
-            # `prefix` sits before the retained default base.
+            # `prefix` is emitted; the default base is empty.
             pytest.param(
                 {"prefix": "__pre__"},
-                ["__pre__", "You are a deep agent"],
-                [],
+                ["__pre__"],
+                ["You are a deep agent"],
                 id="prefix-before-default-base",
             ),
-            # `suffix` sits after the retained default base.
+            # `suffix` is emitted; the default base is empty.
             pytest.param(
                 {"suffix": "__suf__"},
-                ["You are a deep agent", "__suf__"],
-                [],
+                ["__suf__"],
+                ["You are a deep agent"],
                 id="suffix-after-default-base",
             ),
             # All three slots, in order, with the default base replaced.
@@ -622,11 +624,11 @@ class TestDeepAgentEndToEnd:
                 ["You are a deep agent"],
                 id="base-none-drops-base",
             ),
-            # Back-compat: a bare string still prepends before the default base.
+            # Back-compat: a bare string is treated as a prefix (before the empty base).
             pytest.param(
                 "__bare__",
-                ["__bare__", "You are a deep agent"],
-                [],
+                ["__bare__"],
+                ["You are a deep agent"],
                 id="bare-str-prepends",
             ),
         ],
@@ -683,8 +685,8 @@ class TestDeepAgentEndToEnd:
         cached = [b for b in blocks if b.get("text") == "__cached_prefix__"]
         assert cached, f"cached prefix block missing: {blocks}"
         assert cached[0].get("cache_control") == {"type": "ephemeral"}
-        # Default base still follows the caller's cached prefix block.
-        assert any("You are a deep agent" in (b.get("text") or "") for b in blocks)
+        # The default base prompt is empty, so no authored base prose is added.
+        assert not any("You are a deep agent" in (b.get("text") or "") for b in blocks)
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -3138,6 +3140,9 @@ class TestArtifactsRoot:
             tools=[big_tool],
             backend=backend,
             middleware=[capturing_middleware],
+            # The filesystem guidance (which references artifacts_root) is
+            # suppressed by default; opt in so this test can assert on it.
+            builtin_middleware_prompts=True,
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
@@ -3272,6 +3277,9 @@ class TestArtifactsRoot:
             model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
             backend=backend,
             middleware=[capturing_middleware],
+            # The filesystem guidance (which references artifacts_root) is
+            # suppressed by default; opt in so this test can assert on it.
+            builtin_middleware_prompts=True,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)
@@ -3287,6 +3295,9 @@ class TestArtifactsRoot:
             model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
             backend=backend,
             middleware=[capturing_middleware],
+            # The filesystem guidance (which references artifacts_root) is
+            # suppressed by default; opt in so this test can assert on it.
+            builtin_middleware_prompts=True,
         )
         agent.invoke({"messages": [HumanMessage(content="Hi")]})
         system_content = str(capturing_middleware.captured_system_messages[0].content)

@@ -21,11 +21,11 @@ Context is now graded by the faithful Letta **`model_judge`** (rubric-based LLM 
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.268 | 0.183 | 82 |
 | conversation (tau3-subset) | 0.467 | 0.389 | 30 |
-| context (context-retrieval) | 0.667 | 0.567 | 30 |
-| **macro** | **0.467** | **0.379** |  |
-| **micro** | **0.394** | **0.308** |  |
+| context (context-retrieval) | 0.967 | 0.811 | 30 |
+| **macro** | **0.567** | **0.461** |  |
+| **micro** | **0.458** | **0.359** |  |
 
-Run [29430259116](https://github.com/langchain-ai/deepagents/actions/runs/29430259116) · 2026-07-15 · `agent_impl=bare` · `profile=full` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~4h
+Autonomous and conversation from run [29430259116](https://github.com/langchain-ai/deepagents/actions/runs/29430259116) · 2026-07-15 · `agent_impl=bare` · `profile=full` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`27a6eac` · wall ~4h. Context re-graded on the recalibrated 30-task set via run [29785826811](https://github.com/langchain-ai/deepagents/actions/runs/29785826811) (faithful `model_judge`, judge `gpt-5.6-luna`).
 
 autonomous includes 14 of 246 trials that errored (agent/verifier timeouts and one OOM) and are scored as failures. Aggregated from the run's artifacts (one shard recovered from the retry attempt); no tasks were re-run.
 
@@ -53,11 +53,11 @@ One conversation shard hit a transient Docker-daemon failure; recovered from the
 | --- | --- | --- | --- |
 | autonomous (harbor-index) | 0.159 | 0.114 | 82 |
 | conversation (tau3-subset) | 0.367 | 0.322 | 30 |
-| context (context-retrieval) | 0.733 | 0.411 | 30 |
-| **macro** | **0.420** | **0.282** |  |
-| **micro** | **0.324** | **0.221** |  |
+| context (context-retrieval) | 0.933 | 0.900 | 30 |
+| **macro** | **0.486** | **0.445** |  |
+| **micro** | **0.366** | **0.324** |  |
 
-Run [29272737912](https://github.com/langchain-ai/deepagents/actions/runs/29272737912) · 2026-07-13 · `agent_impl=bare` · `profile=full` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`af2e862`
+Autonomous and conversation from run [29272737912](https://github.com/langchain-ai/deepagents/actions/runs/29272737912) · 2026-07-13 · `agent_impl=bare` · `profile=full` · rollouts=3 · `sandbox=docker` · `judge=gpt-5.6-luna` · harbor@`af2e862`. Context re-graded on the recalibrated 30-task set via run [29785840733](https://github.com/langchain-ai/deepagents/actions/runs/29785840733) (faithful `model_judge`, judged by `gpt-5.6-terra`, independent of luna).
 
 ### Lite
 

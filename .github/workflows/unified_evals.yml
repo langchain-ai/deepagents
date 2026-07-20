@@ -16,7 +16,7 @@ on:
         type: string
         default: "bare"
       branches_to_compare:
-        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs + the harness graph factory) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
+        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
         type: string
         default: ""
       profile:
@@ -76,58 +76,6 @@ jobs:
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: "🔖 Resolve comparison branches"
-        id: sources
-        env:
-          BRANCHES_TO_COMPARE: ${{ inputs.branches_to_compare }}
-          CONTROLLER_SHA: ${{ github.sha }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-
-          raw = os.environ.get("BRANCHES_TO_COMPARE", "").strip()
-          if not raw:
-              sources = [{"branch": "current", "sha": os.environ["CONTROLLER_SHA"]}]
-          else:
-              branches = list(dict.fromkeys(
-                  branch.strip() for branch in raw.split(",") if branch.strip()
-              ))
-              if len(branches) < 2:
-                  raise SystemExit(
-                      "::error::branches_to_compare must contain at least two distinct branches"
-                  )
-              sources = []
-              for branch in branches:
-                  valid = subprocess.run(
-                      ["git", "check-ref-format", "--branch", branch],
-                      capture_output=True,
-                      text=True,
-                  )
-                  if valid.returncode:
-                      raise SystemExit(f"::error::Invalid comparison branch: {branch!r}")
-                  resolved = subprocess.run(
-                      ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
-                      capture_output=True,
-                      text=True,
-                  )
-                  fields = resolved.stdout.split()
-                  sha = fields[0] if resolved.returncode == 0 and fields else ""
-                  if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
-                      raise SystemExit(
-                          f"::error::Could not resolve branch {branch!r} to a branch-head commit"
-                      )
-                  sources.append({"branch": branch, "sha": sha})
-              if len({source["sha"] for source in sources}) != len(sources):
-                  raise SystemExit(
-                      "::error::Every comparison branch must resolve to a distinct commit"
-                  )
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write("sources=" + json.dumps(sources, separators=(",", ":")) + "\n")
-          PY
 
       - name: "🐍 Set up Python + UV"
         if: ${{ inputs.profile == 'full' }}
@@ -230,7 +178,7 @@ jobs:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
           UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
-          UNIFIED_SOURCES_JSON: ${{ steps.sources.outputs.sources }}
+          UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
@@ -320,7 +268,7 @@ jobs:
     with:
       model: ${{ matrix.model }}
       branch: ${{ matrix.branch }}
-      source_sha: ${{ matrix.source_sha }}
+      branch_sha: ${{ matrix.branch_sha }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.

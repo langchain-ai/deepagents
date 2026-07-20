@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ToolCallRequest,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from deepagents_code.approval_mode import (
@@ -793,6 +794,99 @@ async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> Non
     classifier_config = cast("dict[str, object]", model.call_kwargs[0]["config"])
     classifier_metadata = cast("dict[str, object]", classifier_config["metadata"])
     assert classifier_metadata["lc_source"] == "auto_mode_classifier"
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_classifier_receives_scratch_lifecycle_and_narrow_cleanup_policy(
+    tmp_path: Path,
+) -> None:
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path)
+    scratch_path = tmp_path / ".pr-4855-body.md"
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": str(scratch_path)},
+        raw_user_text="make this pull request description friendlier",
+    )
+    request.messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write_file",
+                        "args": {
+                            "file_path": str(scratch_path),
+                            "content": "updated pull request body",
+                        },
+                        "id": "write-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content=f"Updated file {scratch_path}",
+                tool_call_id="write-call",
+                status="success",
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute",
+                        "args": {
+                            "command": (f'gh pr edit 4855 --body-file "{scratch_path}"')
+                        },
+                        "id": "consume-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="Command succeeded",
+                tool_call_id="consume-call",
+                status="success",
+            ),
+        ]
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": str(scratch_path)},
+    )
+
+    policy_message = cast("SystemMessage", model.calls[0][0])
+    policy = cast("str", policy_message.content)
+    assert "without separate user consent" in policy
+    assert "temporary-looking name alone is insufficient" in policy
+    assert "may predate the request" in policy
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    prior_calls = cast(
+        "list[dict[str, Any]]", payload["prior_tool_calls_for_current_request"]
+    )
+    assert [call["tool_name"] for call in prior_calls] == ["write_file", "execute"]
+    assert prior_calls[0]["arguments"]["file_path"] == str(scratch_path)
+    assert prior_calls[1]["arguments"]["command"].endswith(f'"{scratch_path}"')
+    assert payload["current_actions"][0]["tool_name"] == "delete"
+    assert payload["current_actions"][0]["arguments"]["file_path"] == str(scratch_path)
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 

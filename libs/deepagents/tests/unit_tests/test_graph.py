@@ -558,7 +558,7 @@ class TestSystemPromptAssembly:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.DefaultSubAgentMiddleware", return_value=subagent_middleware),
+                patch("deepagents.graph._create_default_subagent_middleware", return_value=subagent_middleware),
                 patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),

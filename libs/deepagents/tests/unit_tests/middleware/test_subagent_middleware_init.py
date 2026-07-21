@@ -20,9 +20,9 @@ from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     TASK_SYSTEM_PROMPT,
-    DefaultSubAgentMiddleware,
     SubAgentMiddleware,
     _build_task_tool,
+    _create_default_subagent_middleware,
     create_sub_agent,
 )
 from deepagents.profiles import HarnessProfile
@@ -101,8 +101,8 @@ class TestSubagentMiddlewareInit:
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
 
-    def test_public_middleware_replaces_default_subagent_middleware(self) -> None:
-        """The public dispatcher retains the built-in middleware replacement slot."""
+    def test_public_middleware_replaces_factory_built_subagent_middleware(self) -> None:
+        """The factory returns a public dispatcher that users can replace by name."""
         backend = StateBackend()
         custom = SubAgentMiddleware(
             backend=backend,
@@ -115,7 +115,7 @@ class TestSubagentMiddlewareInit:
             ],
         )
         model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
-        built_in = DefaultSubAgentMiddleware(
+        default = _create_default_subagent_middleware(
             backend=backend,
             subagents=[],
             base_model=model,
@@ -125,10 +125,12 @@ class TestSubagentMiddlewareInit:
             base_profile=HarnessProfile(),
             base_skills=None,
             base_middleware=[],
+            profile_matched_classes=set(),
+            profile_matched_names=set(),
         )
 
-        assert built_in.name == custom.name == "SubAgentMiddleware"
-        assert apply_custom_middleware([built_in], [custom]) == [custom]
+        assert default.name == custom.name == "SubAgentMiddleware"
+        assert apply_custom_middleware([default], [custom]) == [custom]
 
     def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
         """Public constructor annotations should support runtime introspection."""

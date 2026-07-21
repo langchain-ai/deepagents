@@ -56,8 +56,8 @@ from deepagents.middleware.subagents import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     CompiledSubAgent,
-    DefaultSubAgentMiddleware,
     SubAgent,
+    _create_default_subagent_middleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
@@ -649,7 +649,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
-    sub_agent_middleware = DefaultSubAgentMiddleware(
+    sub_agent_middleware = _create_default_subagent_middleware(
         backend=backend,
         subagents=inline_subagent_specs,
         base_model=model,
@@ -659,6 +659,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         base_profile=_profile,
         base_skills=skills,
         base_middleware=middleware,
+        profile_matched_classes=_main_matched_classes,
+        profile_matched_names=_main_matched_names,
         # Overrides the task tool description. Value should include
         # {available_agents} — a format placeholder replaced with the
         # subagent name/description list. Without it the model can't
@@ -667,9 +669,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         task_description=_profile.tool_description_overrides.get("task"),
         state_schema=state_schema,
     )
-    gp_matched_classes, gp_matched_names = sub_agent_middleware.profile_exclusion_matches
-    _main_matched_classes.update(gp_matched_classes)
-    _main_matched_names.update(gp_matched_names)
     deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [

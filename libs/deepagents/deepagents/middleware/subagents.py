@@ -903,303 +903,267 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return await handler(request)
 
 
-class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
-    """Construct Deep Agents' default subagent configuration.
+def _create_default_subagent_middleware(
+    *,
+    backend: BackendProtocol | BackendFactory,
+    subagents: Sequence[SubAgent | CompiledSubAgent],
+    base_model: BaseChatModel,
+    base_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+    base_permissions: list[FilesystemPermission] | None,
+    base_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    base_profile: HarnessProfile,
+    base_skills: list[str] | None,
+    base_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+    profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]],
+    profile_matched_names: set[str],
+    system_prompt: str | None = TASK_SYSTEM_PROMPT,
+    task_description: str | None = None,
+    state_schema: type | None = None,
+) -> SubAgentMiddleware[Any, Any]:
+    """Construct Deep Agents' default synchronous subagent middleware.
 
-    ``create_deep_agent`` installs this middleware to turn raw declarative
-    subagent specs into fully specified ``SubAgent`` configs. Compiled specs
-    are preserved unchanged. The public ``SubAgentMiddleware`` remains the
-    lower-level dispatcher for callers that already have fully specified specs.
-
-    An implicit ``general-purpose`` subagent is prepended unless the parent
-    profile disables it or a supplied spec already uses that name. If neither
-    an implicit nor a supplied synchronous subagent is available, construction
-    raises ``ValueError``.
+    Declarative specs are normalized with the main agent's base configuration;
+    compiled specs are preserved. The implicit ``general-purpose`` spec is
+    prepended unless the base profile disables it or a supplied spec uses that
+    name. The returned object is the public ``SubAgentMiddleware``, so callers
+    can replace its standard middleware slot with their own fully specified
+    ``SubAgentMiddleware`` instance.
 
     Args:
-        backend: Backend used by filesystem, summarization, and skills
-            middleware installed on normalized subagents.
-        subagents: Declarative or compiled synchronous subagent specs. A
-            declarative spec inherits the parent values below only for fields it
-            omits; a compiled spec is used unchanged.
-        base_model: Main-agent model used as the fallback model for declarative
-            specs and by the implicit general-purpose subagent.
-        base_tools: Main-agent tool sequence. Declarative specs that omit
-            ``tools`` inherit it; explicitly setting ``tools=[]`` opts out of
-            tool inheritance. The general-purpose subagent receives these tools
-            with base-profile description overrides applied.
-        base_permissions: Main-agent filesystem permission rules. Declarative
-            specs that omit ``permissions`` inherit these rules; a supplied value
-            replaces them for that spec. The general-purpose subagent always uses
-            the base rules.
-        base_interrupt_on: Main-agent human-in-the-loop tool configuration.
-            Declarative specs inherit it unless they provide their own mapping.
-            Generated filesystem approval rules are merged with either mapping.
-        base_profile: Resolved main-agent harness profile. It controls implicit
-            general-purpose enablement, description and prompt overrides,
-            profile middleware, middleware/tool exclusions, and tool-description
-            overrides.
-        base_skills: Main-agent skill sources installed only on the implicit
-            general-purpose subagent. Declarative specs use their own ``skills``
-            field and do not inherit this value.
+        backend: Backend used by middleware installed on normalized subagents.
+        subagents: Declarative or compiled synchronous subagent specs.
+        base_model: Main-agent model used when a declarative spec omits ``model``
+            and by the implicit general-purpose subagent.
+        base_tools: Main-agent tools inherited when a declarative spec omits
+            ``tools``. An explicit ``tools=[]`` opts out of inheritance.
+        base_permissions: Main-agent filesystem rules inherited when a
+            declarative spec omits ``permissions``.
+        base_interrupt_on: Main-agent approval configuration inherited when a
+            declarative spec omits ``interrupt_on``.
+        base_profile: Resolved main-agent harness profile governing profile
+            middleware, tool descriptions, exclusions, and GP configuration.
+        base_skills: Skill sources installed on the implicit general-purpose
+            subagent. Declarative specs use only their own ``skills`` field.
         base_middleware: Main-agent middleware eligible to replace matching
-            default slots on the implicit general-purpose stack. Middleware that
-            does not match a default slot is not inherited.
-        system_prompt: Task-tool guidance appended to the parent agent's system
-            prompt. It lists the normalized subagents that may be dispatched.
-        task_description: Optional replacement description for the task tool.
-            The ``{available_agents}`` placeholder, when present, is expanded
-            with the normalized name/description list.
+            default slots on the implicit general-purpose stack.
+        profile_matched_classes: Root-profile class exclusions matched while
+            constructing the general-purpose stack. Shared with graph's final
+            exclusion-coverage validation.
+        profile_matched_names: Root-profile name exclusions matched while
+            constructing the general-purpose stack. Shared with graph's final
+            exclusion-coverage validation.
+        system_prompt: Task-tool guidance appended to the main agent prompt.
+        task_description: Optional task-tool description; ``{available_agents}``
+            is expanded with normalized subagent descriptions.
         state_schema: Parent graph state schema forwarded while compiling
-            declarative specs. Compiled specs retain their own schema.
+            declarative specs.
     """
-
-    @property
-    def name(self) -> str:
-        """Share the public middleware replacement slot."""
-        return SubAgentMiddleware.__name__
-
-    def __init__(
-        self,
-        *,
-        backend: BackendProtocol | BackendFactory,
-        subagents: Sequence[SubAgent | CompiledSubAgent],
-        base_model: BaseChatModel,
-        base_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-        base_permissions: list[FilesystemPermission] | None,
-        base_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-        base_profile: HarnessProfile,
-        base_skills: list[str] | None,
-        base_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
-        system_prompt: str | None = TASK_SYSTEM_PROMPT,
-        task_description: str | None = None,
-        state_schema: type | None = None,
-    ) -> None:
-        """Normalize parent-derived subagents before initializing the dispatcher."""
-        self._profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-        self._profile_matched_names: set[str] = set()
-        normalized_subagents = [
-            spec
-            if "runnable" in spec
-            else self._normalize_subagent(
-                spec,
-                backend=backend,
-                default_model=base_model,
-                default_tools=base_tools,
-                default_permissions=base_permissions,
-                default_interrupt_on=base_interrupt_on,
-            )
-            for spec in subagents
-        ]
-        general_purpose = self._build_general_purpose_subagent(
-            normalized_subagents,
+    normalized_subagents = [
+        spec
+        if "runnable" in spec
+        else _normalize_subagent(
+            spec,
             backend=backend,
-            model=base_model,
-            tools=base_tools,
-            permissions=base_permissions,
-            interrupt_on=base_interrupt_on,
-            profile=base_profile,
-            skills=base_skills,
-            inherited_middleware=base_middleware,
+            base_model=base_model,
+            base_tools=base_tools,
+            base_permissions=base_permissions,
+            base_interrupt_on=base_interrupt_on,
         )
-        if general_purpose is not None:
-            normalized_subagents.insert(0, general_purpose)
-        super().__init__(
+        for spec in subagents
+    ]
+    general_purpose = _build_general_purpose_subagent(
+        normalized_subagents,
+        backend=backend,
+        base_model=base_model,
+        base_tools=base_tools,
+        base_permissions=base_permissions,
+        base_interrupt_on=base_interrupt_on,
+        base_profile=base_profile,
+        base_skills=base_skills,
+        base_middleware=base_middleware,
+        profile_matched_classes=profile_matched_classes,
+        profile_matched_names=profile_matched_names,
+    )
+    if general_purpose is not None:
+        normalized_subagents.insert(0, general_purpose)
+    return SubAgentMiddleware(
+        backend=backend,
+        subagents=normalized_subagents,
+        system_prompt=system_prompt,
+        task_description=task_description,
+        state_schema=state_schema,
+    )
+
+
+def _normalize_subagent(
+    spec: SubAgent,
+    *,
+    backend: BackendProtocol | BackendFactory,
+    base_model: BaseChatModel,
+    base_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+    base_permissions: list[FilesystemPermission] | None,
+    base_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+) -> SubAgent:
+    """Fill a declarative spec with Deep Agents defaults and profile policy."""
+    raw_subagent_model = spec.get("model", base_model)
+    subagent_model = resolve_model(raw_subagent_model)
+    subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
+    subagent_profile = _harness_profile_for_model(subagent_model, subagent_spec)
+    subagent_permissions = spec.get("permissions", base_permissions)
+
+    subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(
             backend=backend,
-            subagents=normalized_subagents,
-            system_prompt=system_prompt,
-            task_description=task_description,
-            state_schema=state_schema,
-        )
+            custom_tool_descriptions=subagent_profile.tool_description_overrides,
+            _permissions=subagent_permissions,
+        ),
+        create_summarization_middleware(subagent_model, backend),
+        PatchToolCallsMiddleware(),
+    ]
+    subagent_skills = spec.get("skills")
+    if subagent_skills:
+        subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+    subagent_core_names = {middleware.name for middleware in subagent_middleware}
+    subagent_middleware.extend(subagent_profile.materialize_extra_middleware())
+    append_prompt_caching_middleware(subagent_middleware)
 
-    def _normalize_subagent(
-        self,
-        spec: SubAgent,
-        *,
-        backend: BackendProtocol | BackendFactory,
-        default_model: BaseChatModel,
-        default_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-        default_permissions: list[FilesystemPermission] | None,
-        default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    ) -> SubAgent:
-        raw_subagent_model = spec.get("model", default_model)
-        subagent_model = resolve_model(raw_subagent_model)
+    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    matched_names: set[str] = set()
+    _validate_excluded_middleware_config(
+        subagent_profile,
+        required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+        required_names=_REQUIRED_MIDDLEWARE_NAMES,
+    )
+    subagent_middleware = _apply_excluded_middleware(
+        subagent_middleware,
+        subagent_profile,
+        matched_classes=matched_classes,
+        matched_names=matched_names,
+    )
+    subagent_middleware = apply_custom_middleware(
+        subagent_middleware,
+        spec.get("middleware", []),
+        core_names=subagent_core_names,
+    )
+    subagent_middleware = _apply_excluded_middleware(
+        subagent_middleware,
+        subagent_profile,
+        matched_classes=matched_classes,
+        matched_names=matched_names,
+    )
+    _verify_excluded_middleware_coverage(
+        subagent_profile,
+        matched_classes,
+        matched_names,
+        required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+        required_names=_REQUIRED_MIDDLEWARE_NAMES,
+    )
+    if subagent_profile.excluded_tools:
+        subagent_middleware.append(_ToolExclusionMiddleware(excluded=subagent_profile.excluded_tools))
 
-        _subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
-        _subagent_profile = _harness_profile_for_model(subagent_model, _subagent_spec)
+    subagent_interrupt_on = _merge_fs_interrupt_on(
+        _build_interrupt_on_from_permissions(subagent_permissions or []),
+        spec.get("interrupt_on", base_interrupt_on),
+    )
+    raw_subagent_tools = spec.get("tools") if "tools" in spec else base_tools
+    subagent_tools = _apply_tool_description_overrides(
+        raw_subagent_tools,
+        subagent_profile.tool_description_overrides,
+    )
+    processed_spec: SubAgent = {
+        **spec,
+        "model": subagent_model,
+        "tools": subagent_tools or [],
+        "middleware": subagent_middleware,
+        "system_prompt": _apply_profile_prompt(subagent_profile, spec["system_prompt"]),
+    }
+    if subagent_interrupt_on is not None:
+        processed_spec["interrupt_on"] = subagent_interrupt_on
+    return processed_spec
 
-        # Resolve permissions: subagent's own rules take priority, else inherit parent's
-        subagent_permissions = spec.get("permissions", default_permissions)
 
-        # Build middleware: base stack + skills (if specified) + user's middleware
-        subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(),
-            FilesystemMiddleware(
-                backend=backend,
-                custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                _permissions=subagent_permissions,
-            ),
-            create_summarization_middleware(subagent_model, backend),
-            PatchToolCallsMiddleware(),
-        ]
+def _build_general_purpose_subagent(
+    declared_subagents: Sequence[SubAgent | CompiledSubAgent],
+    *,
+    backend: BackendProtocol | BackendFactory,
+    base_model: BaseChatModel,
+    base_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+    base_permissions: list[FilesystemPermission] | None,
+    base_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    base_profile: HarnessProfile,
+    base_skills: list[str] | None,
+    base_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+    profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]],
+    profile_matched_names: set[str],
+) -> SubAgent | None:
+    """Build the implicit general-purpose spec from the base agent context."""
+    general_purpose_profile = base_profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
+    if general_purpose_profile.enabled is False or any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in declared_subagents):
+        return None
 
-        subagent_skills = spec.get("skills")
-        if subagent_skills:
-            subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-        # Core names captured before the tail so new spec middleware splices in ahead of it.
-        _subagent_core_names = {m.name for m in subagent_middleware}
-        # Harness-profile middleware for this subagent's model
-        subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(
+            backend=backend,
+            custom_tool_descriptions=base_profile.tool_description_overrides,
+            _permissions=base_permissions,
+        ),
+        create_summarization_middleware(base_model, backend),
+        PatchToolCallsMiddleware(),
+    ]
+    if base_skills is not None:
+        middleware.append(SkillsMiddleware(backend=backend, sources=base_skills))
+    middleware.extend(base_profile.materialize_extra_middleware())
+    append_prompt_caching_middleware(middleware)
 
-        append_prompt_caching_middleware(subagent_middleware)
+    original_name_to_index = {item.name: index for index, item in enumerate(middleware)}
+    middleware = _apply_excluded_middleware(
+        middleware,
+        base_profile,
+        matched_classes=profile_matched_classes,
+        matched_names=profile_matched_names,
+    )
+    inheritable = [item for item in base_middleware if item.name in original_name_to_index]
+    middleware = apply_custom_middleware(middleware, inheritable)
+    middleware = _apply_excluded_middleware(
+        middleware,
+        base_profile,
+        matched_classes=profile_matched_classes,
+        matched_names=profile_matched_names,
+    )
+    if base_profile.excluded_tools:
+        middleware.append(_ToolExclusionMiddleware(excluded=base_profile.excluded_tools))
 
-        _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-        _subagent_matched_names: set[str] = set()
-        _validate_excluded_middleware_config(
-            _subagent_profile,
-            required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
-            required_names=_REQUIRED_MIDDLEWARE_NAMES,
-        )
-        subagent_middleware = _apply_excluded_middleware(
-            subagent_middleware,
-            _subagent_profile,
-            matched_classes=_subagent_matched_classes,
-            matched_names=_subagent_matched_names,
-        )
-        subagent_middleware = apply_custom_middleware(
-            subagent_middleware,
-            spec.get("middleware", []),
-            core_names=_subagent_core_names,
-        )
-        subagent_middleware = _apply_excluded_middleware(
-            subagent_middleware,
-            _subagent_profile,
-            matched_classes=_subagent_matched_classes,
-            matched_names=_subagent_matched_names,
-        )
-        _verify_excluded_middleware_coverage(
-            _subagent_profile,
-            _subagent_matched_classes,
-            _subagent_matched_names,
-            required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
-            required_names=_REQUIRED_MIDDLEWARE_NAMES,
-        )
-        if _subagent_profile.excluded_tools:
-            subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+    system_prompt = GENERAL_PURPOSE_SUBAGENT["system_prompt"]
+    if general_purpose_profile.system_prompt is not None:
+        system_prompt = general_purpose_profile.system_prompt
+        if base_profile.system_prompt_suffix is not None:
+            system_prompt += "\n\n" + base_profile.system_prompt_suffix
+    else:
+        system_prompt = _apply_profile_prompt(base_profile, system_prompt)
 
-        subagent_interrupt_on = spec.get("interrupt_on", default_interrupt_on)
-        subagent_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(subagent_permissions or []),
-            subagent_interrupt_on,
-        )
-
-        # Inherit parent tools unless the subagent declares its own.
-        # Descriptions are rewritten; exclusion is handled by middleware.
-        raw_subagent_tools = spec.get("tools") if "tools" in spec else default_tools
-        subagent_tools = _apply_tool_description_overrides(
-            raw_subagent_tools,
-            _subagent_profile.tool_description_overrides,
-        )
-
-        processed_spec: SubAgent = {
-            **spec,
-            "model": subagent_model,
-            "tools": subagent_tools or [],
-            "middleware": subagent_middleware,
-        }
-        processed_spec["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec["system_prompt"])
-        if subagent_interrupt_on is not None:
-            processed_spec["interrupt_on"] = subagent_interrupt_on
-        return processed_spec
-
-    def _build_general_purpose_subagent(
-        self,
-        declared_subagents: Sequence[SubAgent | CompiledSubAgent],
-        *,
-        backend: BackendProtocol | BackendFactory,
-        model: BaseChatModel,
-        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-        permissions: list[FilesystemPermission] | None,
-        interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-        profile: HarnessProfile,
-        skills: list[str] | None,
-        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
-    ) -> SubAgent | None:
-        """Build the implicit general-purpose subagent when the profile enables it."""
-        general_purpose_profile = profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-        if general_purpose_profile.enabled is False or any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in declared_subagents):
-            return None
-
-        middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(),
-            FilesystemMiddleware(
-                backend=backend,
-                custom_tool_descriptions=profile.tool_description_overrides,
-                _permissions=permissions,
-            ),
-            create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
-        ]
-        if skills is not None:
-            middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-        middleware.extend(profile.materialize_extra_middleware())
-        append_prompt_caching_middleware(middleware)
-
-        original_name_to_index = {item.name: index for index, item in enumerate(middleware)}
-        middleware = _apply_excluded_middleware(
-            middleware,
-            profile,
-            matched_classes=self._profile_matched_classes,
-            matched_names=self._profile_matched_names,
-        )
-        inheritable = [item for item in inherited_middleware if item.name in original_name_to_index]
-        middleware = apply_custom_middleware(middleware, inheritable)
-        middleware = _apply_excluded_middleware(
-            middleware,
-            profile,
-            matched_classes=self._profile_matched_classes,
-            matched_names=self._profile_matched_names,
-        )
-        if profile.excluded_tools:
-            middleware.append(_ToolExclusionMiddleware(excluded=profile.excluded_tools))
-
-        system_prompt = GENERAL_PURPOSE_SUBAGENT["system_prompt"]
-        if general_purpose_profile.system_prompt is not None:
-            system_prompt = general_purpose_profile.system_prompt
-            if profile.system_prompt_suffix is not None:
-                system_prompt += "\n\n" + profile.system_prompt_suffix
-        else:
-            system_prompt = _apply_profile_prompt(profile, system_prompt)
-
-        result: SubAgent = {
-            **GENERAL_PURPOSE_SUBAGENT,
-            "model": model,
-            "tools": _apply_tool_description_overrides(tools, profile.tool_description_overrides) or [],
-            "middleware": middleware,
-            "system_prompt": system_prompt,
-        }
-        if general_purpose_profile.description is not None:
-            result["description"] = general_purpose_profile.description
-        general_purpose_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or []),
-            interrupt_on,
-        )
-        if general_purpose_interrupt_on is not None:
-            result["interrupt_on"] = general_purpose_interrupt_on
-        return result
-
-    @property
-    def profile_exclusion_matches(
-        self,
-    ) -> tuple[set[type[AgentMiddleware[Any, Any, Any]]], set[str]]:
-        """Return root-profile exclusions matched while building the GP subagent."""
-        return self._profile_matched_classes, self._profile_matched_names
+    result: SubAgent = {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "model": base_model,
+        "tools": _apply_tool_description_overrides(base_tools, base_profile.tool_description_overrides) or [],
+        "middleware": middleware,
+        "system_prompt": system_prompt,
+    }
+    if general_purpose_profile.description is not None:
+        result["description"] = general_purpose_profile.description
+    general_purpose_interrupt_on = _merge_fs_interrupt_on(
+        _build_interrupt_on_from_permissions(base_permissions or []),
+        base_interrupt_on,
+    )
+    if general_purpose_interrupt_on is not None:
+        result["interrupt_on"] = general_purpose_interrupt_on
+    return result
 
 
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
-    (DefaultSubAgentMiddleware, (SubAgentMiddleware.__name__,)),
 )
 """Scaffolding middleware that core deep agent features depend on.
 

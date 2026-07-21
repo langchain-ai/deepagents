@@ -29,6 +29,13 @@ from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from deepagents_code._repository_bounds import (
+    REPOSITORY_DIRECTORY_ENTRY_LIMIT as _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
+    REPOSITORY_GLOB_MATCH_LIMIT as _REPOSITORY_GLOB_MATCH_LIMIT,
+    REPOSITORY_READ_BYTE_LIMIT as _REPOSITORY_READ_BYTE_LIMIT,
+    REPOSITORY_READ_LINE_LIMIT as _REPOSITORY_READ_LINE_LIMIT,
+    REPOSITORY_TOOL_RESULT_LIMIT as _REPOSITORY_TOOL_RESULT_LIMIT,
+)
 from deepagents_code._testing_models import GoalCriteriaIntegrationChatModel
 from deepagents_code.goal_rubric import (
     _CONVERSATION_CONTEXT_MESSAGE_LIMIT,
@@ -36,14 +43,9 @@ from deepagents_code.goal_rubric import (
     _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT,
     _CRITERIA_OBJECTIVE_DISPLAY_LIMIT,
     _CRITERIA_RESULT_LOG_LIMIT,
-    _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
-    _REPOSITORY_GLOB_MATCH_LIMIT,
     _REPOSITORY_GREP_MATCH_LIMIT,
     _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT,
-    _REPOSITORY_READ_BYTE_LIMIT,
-    _REPOSITORY_READ_LINE_LIMIT,
     _REPOSITORY_TOOL_CALL_LIMIT,
-    _REPOSITORY_TOOL_RESULT_LIMIT,
     _WEB_SEARCH_CALL_LIMIT,
     GOAL_RUBRIC_SYSTEM_PROMPT,
     GoalCriteriaAgentState,
@@ -51,6 +53,7 @@ from deepagents_code.goal_rubric import (
     GoalCriteriaRequest,
     GoalCriteriaState,
     _coerce_goal_proposal,
+    _ContextToolCallBudgetMiddleware,
     _conversation_context,
     _create_goal_criteria_agent,
     _criteria_interrupt_on,
@@ -63,6 +66,7 @@ from deepagents_code.goal_rubric import (
     _prompt_with_conversation_context,
     _proposal_from_result,
     _RepositoryToolBudgetMiddleware,
+    _rubric_interrupt_on,
     _summarize_criteria_result,
     _WebSearchBudgetMiddleware,
     create_goal_criteria_agent,
@@ -355,6 +359,46 @@ class TestCriteriaContextBudgetMiddleware:
         assert "Criteria context limit reached" in result.text
 
 
+class TestContextToolCallBudgetMiddleware:
+    """Rubric verification tools share an atomic per-evaluation call budget."""
+
+    @staticmethod
+    def _request(call_id: str, operation_id: str) -> ToolCallRequest:
+        return ToolCallRequest(
+            tool_call={
+                "name": "notion_fetch",
+                "args": {"page_id": "page"},
+                "id": call_id,
+                "type": "tool_call",
+            },
+            tool=None,
+            state={"rubric_grading_operation_id": operation_id},
+            runtime=MagicMock(),
+        )
+
+    def test_budget_is_scoped_to_rubric_evaluation(self) -> None:
+        middleware = _ContextToolCallBudgetMiddleware(
+            {"notion_fetch"},
+            limit=2,
+        )
+        handler = MagicMock(
+            return_value=ToolMessage(content="page", tool_call_id="call")
+        )
+
+        first = middleware.wrap_tool_call(self._request("1", "run:0"), handler)
+        second = middleware.wrap_tool_call(self._request("2", "run:0"), handler)
+        exhausted = middleware.wrap_tool_call(self._request("3", "run:0"), handler)
+        next_iteration = middleware.wrap_tool_call(self._request("4", "run:1"), handler)
+
+        assert isinstance(first, ToolMessage)
+        assert isinstance(second, ToolMessage)
+        assert isinstance(exhausted, ToolMessage)
+        assert "Verification context limit reached" in exhausted.text
+        assert isinstance(next_iteration, ToolMessage)
+        assert next_iteration.text == "page"
+        assert handler.call_count == 3
+
+
 class TestWebSearchBudgetMiddleware:
     """Repeated searches are bounded per criteria operation."""
 
@@ -382,7 +426,11 @@ class TestWebSearchBudgetMiddleware:
         )
 
         assert isinstance(exhausted, ToolMessage)
-        assert "Web search limit reached" in exhausted.text
+        assert exhausted.text == (
+            "Web search limit reached. Continue using the available evidence "
+            "and context already gathered."
+        )
+        assert "acceptance criteria" not in exhausted.text
         assert isinstance(independent, ToolMessage)
         assert independent.text == "result"
 
@@ -417,7 +465,7 @@ class TestRepositoryToolBudgetMiddleware:
         call_id: str,
         name: str = "read_file",
         limit: object = 999,
-        path: str = "/src.py",
+        path: str | None = "/src.py",
         operation_id: str = "operation-1",
         max_count: object = 999,
         search_glob: object = None,
@@ -662,6 +710,20 @@ class TestCriteriaHitlPolicy:
         assert "Search the documentation server." in rendered
         displayed = rendered.split("\u201c", 1)[1].split("\u201d", 1)[0]
         assert len(displayed) <= _CRITERIA_OBJECTIVE_DISPLAY_LIMIT
+
+    def test_rubric_context_tool_uses_grading_approval_description(self) -> None:
+        tool = self._tool("notion_fetch", "Read the current Notion page.")
+        policy = _rubric_interrupt_on([tool])
+        description = cast("Callable[..., str]", policy["notion_fetch"]["description"])
+
+        rendered = description(
+            {"name": "notion_fetch", "args": {}, "id": "call"},
+            {},
+            SimpleNamespace(context={}),
+        )
+
+        assert "while verifying the completed work" in rendered
+        assert "Read the current Notion page." in rendered
 
 
 class TestGoalCriteriaMiddleware:
@@ -995,7 +1057,7 @@ class TestCreateGoalCriteriaAgent:
             for item in kwargs["middleware"]
             if isinstance(item, _RepositoryToolBudgetMiddleware)
         )
-        assert budget._root == "/workspace"
+        assert budget._bounds.root == "/workspace"
         assert any(
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]
@@ -1365,6 +1427,40 @@ class TestRepositoryPathGuards:
         backend.ls.return_value = LsResult(entries=[])
         backend.als = AsyncMock(return_value=LsResult(entries=[]))
         return backend
+
+    @pytest.mark.parametrize("name", ["glob", "grep"])
+    def test_sync_replaces_none_search_path_with_root(self, name: str) -> None:
+        middleware = _RepositoryToolBudgetMiddleware(self._backend(), root="/workspace")
+        handler = MagicMock(
+            return_value=ToolMessage(content="ok", tool_call_id="search")
+        )
+
+        middleware.wrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="search", name=name, path=None
+            ),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["path"] == "/workspace"
+
+    @pytest.mark.parametrize("name", ["glob", "grep"])
+    async def test_async_replaces_none_search_path_with_root(self, name: str) -> None:
+        middleware = _RepositoryToolBudgetMiddleware(self._backend(), root="/workspace")
+        handler = AsyncMock(
+            return_value=ToolMessage(content="ok", tool_call_id="search")
+        )
+
+        await middleware.awrap_tool_call(
+            TestRepositoryToolBudgetMiddleware._request(
+                call_id="search", name=name, path=None
+            ),
+            handler,
+        )
+
+        request = handler.call_args.args[0]
+        assert request.tool_call["args"]["path"] == "/workspace"
 
     @pytest.mark.parametrize("name", ["read_file", "ls", "glob", "grep"])
     @pytest.mark.parametrize(

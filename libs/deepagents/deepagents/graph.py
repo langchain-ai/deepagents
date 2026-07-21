@@ -652,13 +652,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     sub_agent_middleware = DefaultSubAgentMiddleware(
         backend=backend,
         subagents=inline_subagent_specs,
-        model=model,
-        tools=tools,
-        permissions=permissions,
-        interrupt_on=interrupt_on,
-        profile=_profile,
-        skills=skills,
-        inherited_middleware=middleware,
+        base_model=model,
+        base_tools=tools,
+        base_permissions=permissions,
+        base_interrupt_on=interrupt_on,
+        base_profile=_profile,
+        base_skills=skills,
+        base_middleware=middleware,
         # Overrides the task tool description. Value should include
         # {available_agents} — a format placeholder replaced with the
         # subagent name/description list. Without it the model can't

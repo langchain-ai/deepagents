@@ -904,7 +904,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
 
 class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
-    """Construct Deep Agents' default synchronous subagent configuration.
+    """Construct Deep Agents' default subagent configuration.
 
     ``create_deep_agent`` installs this middleware to turn raw declarative
     subagent specs into fully specified ``SubAgent`` configs. Compiled specs
@@ -922,27 +922,27 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
         subagents: Declarative or compiled synchronous subagent specs. A
             declarative spec inherits the parent values below only for fields it
             omits; a compiled spec is used unchanged.
-        model: Parent model. Used as the fallback model for declarative specs
-            and by the implicit general-purpose subagent.
-        tools: Parent tool sequence. Declarative specs that omit ``tools``
-            inherit it; explicitly setting ``tools=[]`` opts out of tool
-            inheritance. The general-purpose subagent receives these tools with
-            parent-profile description overrides applied.
-        permissions: Parent filesystem permission rules. Declarative specs that
-            omit ``permissions`` inherit these rules; a supplied value replaces
-            them for that spec. The general-purpose subagent always uses the
-            parent rules.
-        interrupt_on: Parent human-in-the-loop tool configuration. Declarative
-            specs inherit it unless they provide their own mapping. Generated
-            filesystem approval rules are merged with either mapping.
-        profile: Resolved parent harness profile. It controls implicit
+        base_model: Main-agent model used as the fallback model for declarative
+            specs and by the implicit general-purpose subagent.
+        base_tools: Main-agent tool sequence. Declarative specs that omit
+            ``tools`` inherit it; explicitly setting ``tools=[]`` opts out of
+            tool inheritance. The general-purpose subagent receives these tools
+            with base-profile description overrides applied.
+        base_permissions: Main-agent filesystem permission rules. Declarative
+            specs that omit ``permissions`` inherit these rules; a supplied value
+            replaces them for that spec. The general-purpose subagent always uses
+            the base rules.
+        base_interrupt_on: Main-agent human-in-the-loop tool configuration.
+            Declarative specs inherit it unless they provide their own mapping.
+            Generated filesystem approval rules are merged with either mapping.
+        base_profile: Resolved main-agent harness profile. It controls implicit
             general-purpose enablement, description and prompt overrides,
             profile middleware, middleware/tool exclusions, and tool-description
             overrides.
-        skills: Parent skill sources installed only on the implicit
+        base_skills: Main-agent skill sources installed only on the implicit
             general-purpose subagent. Declarative specs use their own ``skills``
             field and do not inherit this value.
-        inherited_middleware: Parent middleware eligible to replace matching
+        base_middleware: Main-agent middleware eligible to replace matching
             default slots on the implicit general-purpose stack. Middleware that
             does not match a default slot is not inherited.
         system_prompt: Task-tool guidance appended to the parent agent's system
@@ -964,13 +964,13 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
         *,
         backend: BackendProtocol | BackendFactory,
         subagents: Sequence[SubAgent | CompiledSubAgent],
-        model: BaseChatModel,
-        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-        permissions: list[FilesystemPermission] | None,
-        interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-        profile: HarnessProfile,
-        skills: list[str] | None,
-        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+        base_model: BaseChatModel,
+        base_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+        base_permissions: list[FilesystemPermission] | None,
+        base_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+        base_profile: HarnessProfile,
+        base_skills: list[str] | None,
+        base_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
         state_schema: type | None = None,
@@ -984,23 +984,23 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
             else self._normalize_subagent(
                 spec,
                 backend=backend,
-                default_model=model,
-                default_tools=tools,
-                default_permissions=permissions,
-                default_interrupt_on=interrupt_on,
+                default_model=base_model,
+                default_tools=base_tools,
+                default_permissions=base_permissions,
+                default_interrupt_on=base_interrupt_on,
             )
             for spec in subagents
         ]
         general_purpose = self._build_general_purpose_subagent(
             normalized_subagents,
             backend=backend,
-            model=model,
-            tools=tools,
-            permissions=permissions,
-            interrupt_on=interrupt_on,
-            profile=profile,
-            skills=skills,
-            inherited_middleware=inherited_middleware,
+            model=base_model,
+            tools=base_tools,
+            permissions=base_permissions,
+            interrupt_on=base_interrupt_on,
+            profile=base_profile,
+            skills=base_skills,
+            inherited_middleware=base_middleware,
         )
         if general_purpose is not None:
             normalized_subagents.insert(0, general_purpose)

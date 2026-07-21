@@ -118,13 +118,13 @@ class TestSubagentMiddlewareInit:
         built_in = DefaultSubAgentMiddleware(
             backend=backend,
             subagents=[],
-            model=model,
-            tools=[],
-            permissions=None,
-            interrupt_on=None,
-            profile=HarnessProfile(),
-            skills=None,
-            inherited_middleware=[],
+            base_model=model,
+            base_tools=[],
+            base_permissions=None,
+            base_interrupt_on=None,
+            base_profile=HarnessProfile(),
+            base_skills=None,
+            base_middleware=[],
         )
 
         assert built_in.name == custom.name == "SubAgentMiddleware"

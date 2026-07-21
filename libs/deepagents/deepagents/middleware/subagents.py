@@ -950,7 +950,6 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
         task_description: Optional replacement description for the task tool.
             The ``{available_agents}`` placeholder, when present, is expanded
             with the normalized name/description list.
-        private_state_keys: Parent state fields removed before task dispatch.
         state_schema: Parent graph state schema forwarded while compiling
             declarative specs. Compiled specs retain their own schema.
     """
@@ -974,7 +973,6 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
         inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
-        private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
     ) -> None:
         """Normalize parent-derived subagents before initializing the dispatcher."""
@@ -1011,7 +1009,6 @@ class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
             subagents=normalized_subagents,
             system_prompt=system_prompt,
             task_description=task_description,
-            private_state_keys=private_state_keys,
             state_schema=state_schema,
         )
 

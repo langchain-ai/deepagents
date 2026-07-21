@@ -1,0 +1,24 @@
+libs/evals/UNIFIED_SCORECARD.md
+  s_172bca4d3f2099::t_822770a70c0bb1 138-140,142
+  s_172bca4d3f2099::t_66abad59205f52 122-124,126
+  s_172bca4d3f2099::t_c9732648700beb 78
+  s_172bca4d3f2099::t_95d696a15e82c5 12-14
+  s_172bca4d3f2099::t_630964cf160602 40-42,44
+  s_172bca4d3f2099::t_2afeec8e73df56 70-72,74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "86aa452102dea673eb2fe62c013c289820e0afa5",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

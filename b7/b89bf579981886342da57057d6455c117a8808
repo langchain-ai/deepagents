@@ -1,0 +1,19 @@
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_829befdd343105::t_10dcdc65a13edf 566-578,581,585-587
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b7b89bf579981886342da57057d6455c117a8808",
+  "prompts": {},
+  "sessions": {
+    "s_829befdd343105": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6cdc-fe6d-7793-8fd7-f5c454b44a40",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

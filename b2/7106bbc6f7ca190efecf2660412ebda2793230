@@ -1,0 +1,21 @@
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_31a9bb0229feef::t_cdc9858dddfc0d 27
+libs/evals/Makefile
+  s_31a9bb0229feef::t_214165c9be2734 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b27106bbc6f7ca190efecf2660412ebda2793230",
+  "prompts": {},
+  "sessions": {
+    "s_31a9bb0229feef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53cb959b-b42a-4eee-bd82-4240177a9503",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

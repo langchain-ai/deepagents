@@ -1,0 +1,22 @@
+.github/scripts/lite_tasks.py
+  s_172bca4d3f2099::t_74761e54e56ab1 59,61-68
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_172bca4d3f2099::t_54b9a5f185d53b 12
+  s_172bca4d3f2099::t_beaa206de58bd4 35-36,39-40,42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8dcea5080b74b084c87188bb1889a158abfc0bbe",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

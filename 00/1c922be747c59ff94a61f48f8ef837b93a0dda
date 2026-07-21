@@ -1,0 +1,25 @@
+.github/scripts/validate_agent_graph.py
+  s_31a9bb0229feef::t_adce85eeeb136a 1-38
+.github/scripts/test_validate_agent_graph.py
+  s_31a9bb0229feef::t_678f90b8e59832 1-25
+.github/workflows/_harbor_run.yml
+  s_31a9bb0229feef::t_d40711997e264c 827
+  s_31a9bb0229feef::t_1f604ac37074eb 904
+  s_31a9bb0229feef::t_74eb644dc909c4 756-763
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "001c922be747c59ff94a61f48f8ef837b93a0dda",
+  "prompts": {},
+  "sessions": {
+    "s_31a9bb0229feef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53cb959b-b42a-4eee-bd82-4240177a9503",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

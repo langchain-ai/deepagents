@@ -1,0 +1,14 @@
+.github/workflows/openwiki-update.yml
+  h_33f63fd75d0bd5 30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "92577d983ab4958a76d39809baaa80fc2d1c45f9",
+  "prompts": {},
+  "humans": {
+    "h_33f63fd75d0bd5": {
+      "author": "bracesproul <braceasproul@gmail.com>"
+    }
+  }
+}

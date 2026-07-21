@@ -1,0 +1,32 @@
+libs/evals/UNIFIED_SCORECARD.md
+  s_172bca4d3f2099::t_c9b986a91fd33b 98-100,102
+  s_172bca4d3f2099::t_a6d1ffcc1328e3 9
+  s_172bca4d3f2099::t_7a2b39eda1d5d0 38-40,42
+  s_172bca4d3f2099::t_a421c459d5dc0a 66-68,70
+  s_172bca4d3f2099::t_189d22fa2e9bf3 130-132,134
+  s_172bca4d3f2099::t_afc7d16479c552 114-116,118
+  s_172bca4d3f2099::t_b3fb5b9a6659ff 5,12
+  s_172bca4d3f2099::t_ec9f97fffee188 82-84,86
+libs/evals/assets/lite-scorecard-light.svg
+  s_172bca4d3f2099::t_a6d1ffcc1328e3 1,4-5,15-18,20-23,25-28,30-33,35-38,40-43
+  s_172bca4d3f2099::t_904aa7ad4bc236 2-3,6-14,19,24,29,34,39,44
+libs/evals/assets/lite-scorecard-dark.svg
+  s_172bca4d3f2099::t_a6d1ffcc1328e3 1,4-5,15-18,20-23,25-28,30-33,35-38,40-43
+  s_172bca4d3f2099::t_904aa7ad4bc236 2-3,6-14,19,24,29,34,39,44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2c3d8ff6dc4fac3828bab1a1aedd1c288e4166b2",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

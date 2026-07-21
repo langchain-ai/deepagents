@@ -15631,35 +15631,108 @@ class TestExitGracefulWorkerHandoff:
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
 
-    async def test_exit_cancels_restart_before_stopping_server(self) -> None:
-        """Shutdown waits for detached restart cleanup before server stop."""
-        restart_started = asyncio.Event()
-        cleanup_started = asyncio.Event()
-        release_cleanup = asyncio.Event()
+    async def test_force_quit_can_drop_pending_session_end(self) -> None:
+        """A force-quit second exit() can drop an in-flight `session.end`.
 
-        async def respawn() -> None:
-            restart_started.set()
+        Delivery is at-most-once: a normal exit awaits the off-loop dispatch in
+        the teardown `finally`, but a force-quit second exit() runs the
+        loop-stopping `super().exit()` immediately, while the dispatch is still
+        in flight — which in production orphans it.
+        """
+        release = threading.Event()
+        dispatch_started = threading.Event()
+        dispatch_completed = threading.Event()
+
+        def blocking_session_end(*_args: object) -> None:
+            dispatch_started.set()
+            release.wait(timeout=5.0)
+            dispatch_completed.set()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.hooks._load_hooks",
+                    return_value=[{"command": ["x"]}],
+                ),
+                patch(
+                    "deepagents_code.hooks._dispatch_hook_sync",
+                    side_effect=blocking_session_end,
+                ),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                pending = app._graceful_exit_task
+                assert pending is not None
+                # session.end is dispatched off-loop at the start of teardown
+                # and is still blocked here.
+                await asyncio.wait_for(
+                    asyncio.to_thread(dispatch_started.wait, 2.0), timeout=3.0
+                )
+                super_exit.assert_not_called()
+
+                # Force-quit: the loop-stopping call fires while session.end is
+                # still in flight, so in production it would be dropped.
+                app.exit()
+                super_exit.assert_called_once()
+                assert not dispatch_completed.is_set()
+
+                release.set()
+                await asyncio.wait_for(pending, timeout=2.0)
+
+    async def test_exit_cancels_restart_before_stopping_server(self) -> None:
+        """Shutdown waits for every restart cleanup before server stop."""
+        restart_started = asyncio.Event()
+        other_restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        other_cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        release_other_cleanup = asyncio.Event()
+
+        async def respawn(
+            started: asyncio.Event,
+            cleaning: asyncio.Event,
+            release: asyncio.Event,
+        ) -> None:
+            started.set()
             try:
                 await asyncio.Event().wait()
             finally:
-                cleanup_started.set()
-                await release_cleanup.wait()
+                cleaning.set()
+                await release.wait()
 
         server_proc = MagicMock()
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._server_proc = server_proc
-            app._restart_respawn_task = asyncio.create_task(respawn())
+            app._restart_respawn_task = asyncio.create_task(
+                respawn(restart_started, cleanup_started, release_cleanup)
+            )
+            other_restart = asyncio.create_task(
+                respawn(
+                    other_restart_started,
+                    other_cleanup_started,
+                    release_other_cleanup,
+                )
+            )
+            app._track_server_restart_task(other_restart)
             await restart_started.wait()
+            await other_restart_started.wait()
 
             with patch.object(App, "exit") as super_exit:
                 app.exit()
                 assert app._graceful_exit_task is not None
                 await cleanup_started.wait()
+                await other_cleanup_started.wait()
 
                 server_proc.stop.assert_not_called()
                 release_cleanup.set()
+                await asyncio.sleep(0)
+                server_proc.stop.assert_not_called()
+                release_other_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
 
             server_proc.stop.assert_called_once_with()
@@ -15702,6 +15775,26 @@ class TestExitGracefulWorkerHandoff:
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
 
             super_exit.assert_called_once()
+
+    async def test_queue_drain_is_rejected_during_graceful_exit(self) -> None:
+        """A queued-message drain must not resume once teardown has begun.
+
+        `on_chat_input_submitted` is one entry point; the queue drain is a
+        distinct one, so it carries its own `_exiting` guard.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(MagicMock())
+            app._exiting = True
+
+            with patch.object(
+                app, "_process_message", new_callable=AsyncMock
+            ) as process:
+                await app._process_next_from_queue()
+
+            process.assert_not_awaited()
+            assert len(app._pending_messages) == 1
 
     async def test_server_stop_failure_does_not_abort_teardown(
         self, caplog: pytest.LogCaptureFixture
@@ -25823,6 +25916,39 @@ class TestRestartCommand:
 
 class TestRespawnServer:
     """Direct coverage of `_respawn_server` — invoked via `_restart_server_manual`."""
+
+    async def test_restart_is_registered_until_cleanup_finishes(self) -> None:
+        """Every caller is visible to shutdown for the full restart await."""
+        started = asyncio.Event()
+
+        async def blocked_restart() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        server_proc = MagicMock()
+        server_proc.restart = AsyncMock(side_effect=blocked_restart)
+        app = DeepAgentsApp()
+
+        task = asyncio.create_task(app._restart_server_process(server_proc))
+        await started.wait()
+        assert task in app._server_restart_tasks
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task not in app._server_restart_tasks
+
+    async def test_restart_is_rejected_once_exiting(self) -> None:
+        """A restart requested after teardown begins is cancelled, not run."""
+        server_proc = MagicMock()
+        server_proc.restart = AsyncMock()
+        app = DeepAgentsApp()
+        app._exiting = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await app._restart_server_process(server_proc)
+
+        server_proc.restart.assert_not_called()
 
     async def _prepare(self, app: DeepAgentsApp) -> MagicMock:
         """Wire up the minimal preconditions for `_respawn_server` to run."""

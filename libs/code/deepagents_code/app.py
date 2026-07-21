@@ -15206,11 +15206,13 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
-        # The startup `-m` placeholder is a queued widget too; drop it here so
-        # discarding the queue can't leave the count (or the widget) orphaned
-        # when no `_clear_messages` follows.
+        # The startup `-m` placeholder represents a pending submission even
+        # though it is not stored in `_pending_messages`. Cancel the backing
+        # prompt along with the widget so a later `ServerReady` cannot submit
+        # work the user already discarded.
         placeholder = self._initial_prompt_queued_widget
         if placeholder is not None:
+            self._initial_prompt = None
             self._initial_prompt_queued_widget = None
             placeholder.remove()
         self._deferred_actions.clear()

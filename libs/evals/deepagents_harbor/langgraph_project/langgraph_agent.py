@@ -17,6 +17,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain_core.language_models import BaseChatModel
+
 _DEFAULT_WORKDIR = Path("/app")
 
 _SHELL_ENV_DENYLIST = frozenset(
@@ -100,6 +102,23 @@ def _model_name(configurable: dict[str, object]) -> str:
     return value
 
 
+def _build_model(configurable: dict[str, object]) -> BaseChatModel:
+    """Build the chat model, defaulting OpenAI to the Responses API.
+
+    OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for
+    gpt-5.x, and its model profile defaults ``reasoning_effort``. The model is
+    built here directly via ``init_chat_model``, which bypasses the Deep Agents
+    OpenAI provider profile that would set ``use_responses_api=True``, so set it
+    explicitly for ``openai:`` models. A caller-supplied ``model_kwargs`` value
+    still wins.
+    """
+    name = _model_name(configurable)
+    kwargs = _model_kwargs(configurable)
+    if name.startswith("openai:") and "use_responses_api" not in kwargs:
+        kwargs["use_responses_api"] = True
+    return init_chat_model(name, **kwargs)
+
+
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
@@ -130,7 +149,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
     with _scrub_shell_env():
         graph, _backend = create_cli_agent(
@@ -169,35 +188,19 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # No `system_prompt`: left unset, `create_deep_agent` builds the prompt from
+    # the library's own `BASE_AGENT_PROMPT` — the value this benchmark varies
+    # across branches. A harness override is normalized to a prepended
+    # `{"prefix": ...}` that would sit ahead of that base on every arm, masking
+    # the difference and giving the no-system-prompt arm a prompt it should not
+    # have. The sandbox workdir is already enforced by the shell backend's
+    # `root_dir`.
     return create_deep_agent(
         model=model,
         backend=backend,
-        system_prompt=_SYSTEM_PROMPT,
     )
-
-
-_TAU3_SYSTEM_PROMPT = """You are a customer-service agent in a Harbor benchmark, \
-talking with a simulated user through the `tau3-runtime` MCP tools. Follow the \
-task's policy exactly.
-
-Protocol:
-- Call `start_conversation` exactly once at the very start to begin (or resume) the
-  conversation and read the user's first message.
-- Call `send_message_to_user` to say anything to the user; it returns their next
-  message.
-- Use the domain tools (also on the `tau3-runtime` server) to inspect or modify the
-  environment.
-- In each step, either talk to the user OR call one domain tool — never both, and
-  only one tool call at a time.
-- When you are confident the case is resolved, end the conversation by calling
-  `end_conversation` (or, if your agent emits stop tokens directly, reply
-  `###STOP###`).
-
-Unlike terminal tasks, there IS a user to talk to here: do not try to finish
-silently. Keep working with the user until the case is resolved.
-"""
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
@@ -290,11 +293,15 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name or MCP servers are provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     client = MultiServerMCPClient(_mcp_connections(configurable))
     tools = await client.get_tools()
+    # No `system_prompt`: the agent uses the overlaid branch's own
+    # BASE_AGENT_PROMPT (the value this benchmark varies) and learns the
+    # tau3-runtime conversation protocol from the MCP tools' server-advertised
+    # descriptions, keeping the conversation category a fair, base-prompt-only
+    # comparison parallel to the bare path.
     return create_deep_agent(
         model=model,
         tools=tools,
-        system_prompt=_TAU3_SYSTEM_PROMPT,
     )

@@ -42,8 +42,6 @@ _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 _SHELL_COMMAND_TRUNCATE_LINES: int = 5
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
-# Must match the "reject" entry in `_handle_selection`'s decision map.
-_REJECT_OPTION_INDEX: int = 2
 
 
 def _is_command_too_long(command: str) -> bool:
@@ -109,11 +107,11 @@ class ApprovalMenu(Container):
         Binding("down", "move_down", "Down", show=False),
         Binding("j", "move_down", "Down", show=False),
         Binding("enter", "select", "Select", show=False),
-        Binding("1", "select_approve", "Approve", show=False),
+        Binding("1", "select_position(0)", "Select first", show=False),
+        Binding("2", "select_position(1)", "Select second", show=False),
+        Binding("3", "select_position(2)", "Select third", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
-        Binding("3", "select_reject", "Reject", show=False),
         Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
         Binding("tab", "reject_with_reason", "Reject with reason", show=False),
@@ -140,6 +138,8 @@ class ApprovalMenu(Container):
         action_requests: list[dict[str, Any]] | dict[str, Any],
         assistant_id: str | None = None,
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
+        *,
+        auto_mode_eligible: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.
@@ -151,6 +151,9 @@ class ApprovalMenu(Container):
             assistant_id: Optional assistant ID for resolving virtual paths in
                 file-operation previews.
             id: Optional widget ID. Defaults to 'approval-menu'.
+            auto_mode_eligible: Whether Auto mode can be enabled in this session.
+                When `False` (e.g. the experimental opt-in is off), the "Enable
+                Auto for this thread" option is not offered.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
@@ -163,6 +166,21 @@ class ApprovalMenu(Container):
         self._assistant_id = assistant_id
         # For display purposes, get tool names
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
+        self._is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback ")
+            for request in self._action_requests
+        )
+        # Only offer the Auto option when it can actually be enabled. A live
+        # Auto fallback implies Auto is already active, so its "Switch to
+        # Manual" affordance is always shown regardless of eligibility.
+        self._show_auto_option = self._is_auto_fallback or auto_mode_eligible
+        # Built once: every input to `_build_options` is fixed for the widget's
+        # lifetime, so caching keeps `_num_options`/`_reject_index` from ever
+        # disagreeing with the option list they describe.
+        self._options = self._build_options()
+        self._num_options = len(self._options)
+        self._reject_index = self._num_options - 1
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
@@ -307,8 +325,8 @@ class ApprovalMenu(Container):
 
         # Options container at bottom
         with Container(classes="approval-options-container"):
-            # Options - create 3 Static widgets
-            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
+            # Options - one Static widget per visible option
+            for i in range(self._num_options):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -338,13 +356,14 @@ class ApprovalMenu(Container):
                 f"Enter submit {glyphs.bullet} Esc cancel {glyphs.bullet} "
                 "leave blank to reject without a reason"
             )
+        quick_keys = "y/a/n" if self._show_auto_option else "y/n"
         help_parts = [
             (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
-                f"{glyphs.bullet} Enter select {glyphs.bullet} y/a/n quick keys"
+                f"{glyphs.bullet} Enter select {glyphs.bullet} {quick_keys} quick keys"
             ),
         ]
-        if self._selected == _REJECT_OPTION_INDEX:
+        if self._selected == self._reject_index:
             help_parts.append("Tab amend")
         help_parts.append("Esc reject")
         help_text = f" {glyphs.bullet} ".join(help_parts)
@@ -404,27 +423,36 @@ class ApprovalMenu(Container):
             approval_widget = widget_class(data)
             await self._tool_info_container.mount(approval_widget)
 
+    def _build_options(self) -> list[tuple[str, str]]:
+        """Build the visible options as `(label, decision_type)` pairs.
+
+        The Auto option is omitted unless Auto can actually be enabled
+        (`_show_auto_option`), so it is never suggested outside the
+        experimental opt-in. Labels are unnumbered; `_update_options`
+        prefixes the display number.
+
+        Returns:
+            Ordered `(label, decision_type)` pairs for the visible options.
+        """
+        count = len(self._action_requests)
+        approve = "Approve (y)" if count == 1 else f"Approve all {count} (y)"
+        reject = "Reject (n)" if count == 1 else f"Reject all {count} (n)"
+        options: list[tuple[str, str]] = [(approve, "approve")]
+        if self._show_auto_option:
+            if self._is_auto_fallback:
+                options.append(("Switch to Manual (a)", "switch_manual"))
+            else:
+                options.append(("Enable Auto for this thread (a)", "auto_approve_all"))
+        options.append((reject, "reject"))
+        return options
+
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
-        count = len(self._action_requests)
-        if count == 1:
-            options = [
-                "1. Approve (y)",
-                "2. Auto-approve for this thread (a)",
-                "3. Reject (n)",
-            ]
-        else:
-            options = [
-                f"1. Approve all {count} (y)",
-                "2. Auto-approve for this thread (a)",
-                f"3. Reject all {count} (n)",
-            ]
-
-        for i, (text, widget) in enumerate(
-            zip(options, self._option_widgets, strict=True)
+        for i, ((text, _decision), widget) in enumerate(
+            zip(self._options, self._option_widgets, strict=True)
         ):
             cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
-            widget.update(f"{cursor}{text}")
+            widget.update(f"{cursor}{i + 1}. {text}")
 
             # Update classes
             widget.remove_class("approval-option-selected")
@@ -437,26 +465,49 @@ class ApprovalMenu(Container):
         """Move selection up."""
         if self._reason_input_active:
             return
-        self._selected = (self._selected - 1) % 3
+        self._selected = (self._selected - 1) % self._num_options
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
         if self._reason_input_active:
             return
-        self._selected = (self._selected + 1) % 3
+        self._selected = (self._selected + 1) % self._num_options
         self._update_options()
 
     def action_select(self) -> None:
         """Select current option."""
         self._handle_selection(self._selected)
 
+    def action_select_position(self, position: int) -> None:
+        """Submit the option at a display position (0-indexed).
+
+        Backs the numeric quick keys, which map key `1`/`2`/`3` to position
+        `0`/`1`/`2`. Positions outside the visible options are ignored, so
+        when the Auto option is hidden (only positions 0-1 exist) the `3` key
+        (position 2) is a no-op and key `2` (position 1) selects Reject rather
+        than Auto.
+
+        Args:
+            position: Zero-based index of the visible option to submit.
+        """
+        if not 0 <= position < self._num_options:
+            return
+        self._handle_selection(position)
+
     def action_select_approve(self) -> None:
         """Submit approve option."""
         self._handle_selection(0)
 
     def action_select_auto(self) -> None:
-        """Submit auto-approve option."""
+        """Submit the middle option (Auto, or Switch to Manual in a fallback).
+
+        No-op when the option is hidden, since Auto cannot be enabled. When
+        shown it is always the second option (index 1): "Enable Auto" normally,
+        or "Switch to Manual" during a live Auto fallback.
+        """
+        if not self._show_auto_option:
+            return
         self._handle_selection(1)
 
     def action_select_reject(self) -> None:
@@ -469,7 +520,7 @@ class ApprovalMenu(Container):
         if self._reason_input_active:
             self._exit_reason_input_mode()
             return
-        self._handle_selection(2)
+        self._handle_selection(self._reject_index)
 
     def action_toggle_expand(self) -> None:
         """Toggle shell command expansion."""
@@ -486,17 +537,15 @@ class ApprovalMenu(Container):
         """Handle the selected option.
 
         Args:
-            option: Index of the chosen option (0 approve, 1 auto-approve, 2 reject).
-            reject_message: Optional free-text reason. Only attached when the
-                user rejects with a non-empty message via `action_reject_with_reason`.
+            option: Index of the chosen visible option. Maps to a decision type
+                via the current option layout (which omits Auto when hidden).
+            reject_message: Optional free-text reason. Only attached when a
+                non-empty reason is submitted via `on_input_submitted` (the
+                free-text reject flow opened by `action_reject_with_reason`).
         """
-        decision_map = {
-            0: "approve",
-            1: "auto_approve_all",
-            2: "reject",
-        }
-        decision: dict[str, str] = {"type": decision_map[option]}
-        if option == _REJECT_OPTION_INDEX and reject_message:
+        decision_type = self._options[option][1]
+        decision: dict[str, str] = {"type": decision_type}
+        if decision_type == "reject" and reject_message:
             decision["message"] = reject_message
 
         self.display = False
@@ -516,7 +565,7 @@ class ApprovalMenu(Container):
         """
         if self._reason_input_active:
             return
-        if self._selected != _REJECT_OPTION_INDEX:
+        if self._selected != self._reject_index:
             return
         if self._reason_input is None:
             # Lifecycle bug: Tab fired before `compose()` populated the Input ref.
@@ -558,7 +607,7 @@ class ApprovalMenu(Container):
             return
         reason = event.value.strip()
         self._reason_input_active = False
-        self._handle_selection(2, reject_message=reason or None)
+        self._handle_selection(self._reject_index, reject_message=reason or None)
 
     def _collect_security_warnings(self) -> list[str]:
         """Collect warning strings for suspicious Unicode and URL values.

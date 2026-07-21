@@ -13,10 +13,12 @@ from time import time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual import on
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import Click
 from textual.geometry import Offset
+from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
@@ -1126,6 +1128,14 @@ class ToolCallMessage(Vertical):
     Inline rendering uses `result: value` rather than a standalone labeled block.
     """
 
+    _TASK_DESC_MAX_LENGTH = 120
+    """Maximum `task` description length shown before it is truncated.
+
+    A longer description collapses to at most this many characters (trailing
+    whitespace trimmed) with a trailing ellipsis and becomes expandable via
+    click or Ctrl+O.
+    """
+
     _RUNNING_TIMER_THRESHOLD_SECS = 10
     """Seconds a tool must run before the elapsed-time counter appears.
 
@@ -1154,11 +1164,14 @@ class ToolCallMessage(Vertical):
         self._output: str = ""
         self._expanded: bool = False
         self._args_expanded: bool = False
+        self._task_desc_expanded: bool = False
         # User-provided reason attached to a HITL reject decision (if any).
         self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
         self._header_widget: Static | None = None
+        self._task_desc_widget: Static | None = None
+        self._task_desc_hint_widget: Static | None = None
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
@@ -1190,17 +1203,16 @@ class ToolCallMessage(Vertical):
         """
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(tool_label, markup=False, classes="tool-header", id="tool-header")
-        # Task: dedicated description line (dim, truncated)
+        # Task: dedicated description line (dim, truncated). A long description
+        # collapses to a truncated preview that expands on click or Ctrl+O.
         if self._tool_name == "task":
-            desc = self._args.get("description", "")
-            if desc:
-                max_len = 120
-                suffix = "..." if len(desc) > max_len else ""
-                truncated = desc[:max_len].rstrip() + suffix
+            if self._task_description():
                 yield Static(
-                    Content.styled(truncated, "dim"),
+                    self._task_desc_content(),
                     classes="tool-task-desc",
+                    id="task-desc",
                 )
+                yield Static("", classes="tool-output-hint", id="task-desc-hint")
         # Only show args for tools where header doesn't capture the key info
         elif self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
@@ -1247,6 +1259,13 @@ class ToolCallMessage(Vertical):
 
         self._status_widget = self.query_one("#status", Static)
         self._header_widget = self.query_one("#tool-header", Static)
+        try:
+            self._task_desc_widget = self.query_one("#task-desc", Static)
+            self._task_desc_hint_widget = self.query_one("#task-desc-hint", Static)
+        except NoMatches:
+            # Only mounted for `task` calls that carry a description.
+            self._task_desc_widget = None
+            self._task_desc_hint_widget = None
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -1264,6 +1283,7 @@ class ToolCallMessage(Vertical):
         self._full_row.display = False
         self._reject_reason_widget.display = False
         self._update_args_display()
+        self._update_task_desc_display()
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
@@ -1594,25 +1614,40 @@ class ToolCallMessage(Vertical):
         self._args_expanded = not self._args_expanded
         self._update_args_display()
 
+    def toggle_task_desc(self) -> None:
+        """Toggle between the truncated and full `task` description."""
+        if not self.has_expandable_task_desc:
+            return
+        self._task_desc_expanded = not self._task_desc_expanded
+        self._update_task_desc_display()
+
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion.
+        """Toggle output/argument/description expansion.
 
         A click on the header/args region (the truncated command or code line
         and its hint) toggles the collapsible args/code block directly, so an
         `execute` command or `js_eval` program can be expanded even when the
-        output below it is *also* expandable. Otherwise prefer toggling output,
-        falling through to the args/code block only when the output can't
-        expand — `js_eval` commonly has a short, unexpandable result sitting
-        below a multi-line, collapsible code block, and the old
-        "output wins whenever it exists" rule left that code block stuck.
+        output below it is *also* expandable. A `task` row routes clicks on its
+        description region to the description toggle for the same reason.
+        Otherwise prefer toggling output, falling through to the args/code block
+        only when the output can't expand — `js_eval` commonly has a short,
+        unexpandable result sitting below a multi-line, collapsible code block,
+        and the old "output wins whenever it exists" rule left that code block
+        stuck.
         """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self.has_expandable_args and self._click_targets_args_region(event.widget):
+        if self.has_expandable_task_desc and self._click_targets_task_desc_region(
+            event.widget
+        ):
+            self.toggle_task_desc()
+        elif self.has_expandable_args and self._click_targets_args_region(event.widget):
             self.toggle_args()
         elif self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
+        elif self.has_expandable_task_desc:
+            self.toggle_task_desc()
 
     def _click_targets_args_region(self, widget: object) -> bool:
         """Whether a click landed on the header/args block (not the output).
@@ -1646,6 +1681,37 @@ class ToolCallMessage(Vertical):
         # rendered text reports a descendant, so the real match depth is 0-1).
         # 8 is generous headroom that also bounds the walk for a detached or mock
         # node, whose `.parent` chain never reaches `self`.
+        node = widget
+        for _ in range(8):
+            if node is None or node is self:
+                return False
+            if any(node is target for target in targets):
+                return True
+            node = getattr(node, "parent", None)
+        return False
+
+    def _click_targets_task_desc_region(self, widget: object) -> bool:
+        """Whether a click landed on the `task` header/description block.
+
+        Mirrors `_click_targets_args_region` but matches the cached header,
+        description, and description-hint widgets so a `task` row expands its
+        description when clicked, even when its output below is also expandable.
+
+        Returns:
+            `True` if the click landed on the header/description region.
+        """
+        targets = tuple(
+            target
+            for target in (
+                self._header_widget,
+                self._task_desc_widget,
+                self._task_desc_hint_widget,
+            )
+            if target is not None
+        )
+        if not targets:
+            logger.debug("_click_targets_task_desc_region: header/desc refs not cached")
+            return False
         node = widget
         for _ in range(8):
             if node is None or node is self:
@@ -1797,7 +1863,7 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content(output))
 
         if not items:
-            return FormattedOutput(content=Content.styled("    No todos", "dim"))
+            return FormattedOutput(content=Content.styled("No todos", "dim"))
 
         lines: list[Content] = []
         max_items = 4 if is_preview else len(items)
@@ -1805,7 +1871,7 @@ class ToolCallMessage(Vertical):
         # Build stats header
         stats = self._build_todo_stats(items)
         if stats:
-            lines.extend([Content.assemble("    ", stats), Content("")])
+            lines.extend([stats, Content("")])
 
         # Format each item
         lines.extend(
@@ -1971,19 +2037,19 @@ class ToolCallMessage(Vertical):
         glyphs = get_glyphs()
         if status == "completed":
             return self._format_todo_line(
-                Content.styled(f"    {glyphs.checkmark} done   ", colors.success),
+                Content.styled(f"{glyphs.checkmark} done   ", colors.success),
                 text,
                 is_preview=is_preview,
                 text_style="dim",
             )
         if status == "in_progress":
             return self._format_todo_line(
-                Content.styled(f"    {glyphs.circle_filled} active ", colors.warning),
+                Content.styled(f"{glyphs.circle_filled} active ", colors.warning),
                 text,
                 is_preview=is_preview,
             )
         return self._format_todo_line(
-            Content.styled(f"    {glyphs.circle_empty} todo   ", "dim"),
+            Content.styled(f"{glyphs.circle_empty} todo   ", "dim"),
             text,
             is_preview=is_preview,
         )
@@ -2006,13 +2072,13 @@ class ToolCallMessage(Vertical):
                     path = Path(str(item))
                     name = path.name
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
+                        lines.append(Content.styled(name, theme.FILE_PYTHON))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
+                        lines.append(Content.styled(name, theme.FILE_CONFIG))
                     elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
+                        lines.append(Content.styled(f"{name}/", theme.FILE_DIR))
                     else:
-                        lines.append(Content(f"    {name}"))
+                        lines.append(Content(name))
 
                 truncation = None
                 if is_preview and len(items) > max_items:
@@ -2697,16 +2763,19 @@ class ToolCallMessage(Vertical):
         """Affordances to advertise in the output expand/collapse hint.
 
         Ctrl+O routes to the collapsible command/code block whenever this row
-        has one (see `action_toggle_tool_output`), so the output hint only
+        has one (see `action_toggle_tool_output`), and to a truncated `task`
+        description when the row is a `task` call, so the output hint only
         advertises Ctrl+O when Ctrl+O would actually toggle the *output*. When a
-        command/code block is present the output is reachable by clicking its
-        own region instead.
+        command/code block or expandable `task` description owns Ctrl+O the
+        output is reachable by clicking its own region instead.
 
         Returns:
-            `"click"` when an expandable command/code block owns Ctrl+O,
-                otherwise `"click or Ctrl+O"`.
+            `"click"` when an expandable command/code block or `task`
+                description owns Ctrl+O, otherwise `"click or Ctrl+O"`.
         """
-        return "click" if self.has_expandable_args else "click or Ctrl+O"
+        if self.has_expandable_args or self.has_expandable_task_desc:
+            return "click"
+        return "click or Ctrl+O"
 
     @property
     def has_output(self) -> bool:
@@ -2780,6 +2849,72 @@ class ToolCallMessage(Vertical):
             if isinstance(command, str) and command.strip():
                 return len(command.strip()) > EXECUTE_HEADER_MAX_LENGTH
         return False
+
+    @property
+    def has_expandable_task_desc(self) -> bool:
+        """Whether the `task` description is long enough to be truncated.
+
+        A `task` row renders its description on a dedicated dim line, truncated
+        at `_TASK_DESC_MAX_LENGTH`. When the full description exceeds that, the
+        truncated preview becomes expandable via click or Ctrl+O.
+        """
+        return len(self._task_description()) > self._TASK_DESC_MAX_LENGTH
+
+    def _task_description(self) -> str:
+        """Return the `task` call's description string, or empty when absent.
+
+        A non-string `description` (schema-typed as a string) is coerced to
+        `""` so downstream length/slice logic stays safe; the anomaly is logged.
+        """
+        if self._tool_name != "task":
+            return ""
+        desc = self._args.get("description", "")
+        if isinstance(desc, str):
+            return desc
+        if desc is not None:
+            logger.debug("task description is not a string: %r", type(desc))
+        return ""
+
+    def _task_desc_content(self) -> Content:
+        """Render the `task` description, truncated unless expanded.
+
+        Returns:
+            Dim `Content`: the full description when expanded or when it already
+            fits within `_TASK_DESC_MAX_LENGTH`; otherwise the preview truncated
+            to that length (trailing whitespace trimmed) with a trailing
+            ellipsis.
+        """
+        desc = self._task_description()
+        if self._task_desc_expanded or len(desc) <= self._TASK_DESC_MAX_LENGTH:
+            text = desc
+        else:
+            ellipsis = get_glyphs().ellipsis
+            text = desc[: self._TASK_DESC_MAX_LENGTH].rstrip() + ellipsis
+        return Content.styled(text, "dim")
+
+    def _update_task_desc_display(self) -> None:
+        """Update the truncated/expanded `task` description and its hint."""
+        if self._task_desc_widget is None or self._task_desc_hint_widget is None:
+            # Refs are legitimately None for non-`task` rows (never mounted). Log
+            # only when a `task` row that carries a description is missing them,
+            # so a regression that nulls them post-mount isn't a silent no-op.
+            if self._task_description():
+                logger.debug("_update_task_desc_display: task-desc refs not cached")
+            return
+        if not self._task_description():
+            self._task_desc_widget.display = False
+            self._task_desc_hint_widget.display = False
+            return
+        self._task_desc_widget.update(self._task_desc_content())
+        self._task_desc_widget.display = True
+        if not self.has_expandable_task_desc:
+            self._task_desc_hint_widget.display = False
+            return
+        verb = "collapse" if self._task_desc_expanded else "expand"
+        self._task_desc_hint_widget.update(
+            Content.styled(f"click or Ctrl+O to {verb}", "dim italic")
+        )
+        self._task_desc_hint_widget.display = True
 
     def _format_code_detail(self) -> Content:
         """Render the `js_eval` program for the collapsible code block.
@@ -2992,8 +3127,12 @@ class ToolGroupSummary(Static):
 
     Tools are hidden from the moment they start; this single line shows live
     progress ("Running 1 shell command…") and flips to the past tense
-    ("Ran 1 shell command") once every tool finishes. Clicking the line or
-    pressing Ctrl+O expands the underlying tool rows (and their diffs).
+    ("Ran 1 shell command") once every tool finishes. The live line counts only
+    the tools still in progress, so finished calls drop out of it as they
+    complete; the past-tense line summarizes the tools that succeeded — failed,
+    rejected, and skipped tools are evicted to standalone rows (see
+    `_evict_failed`) so errors stay visible. Clicking the line or pressing
+    Ctrl+O expands the underlying tool rows (and their diffs).
 
     Two modes:
 
@@ -3047,6 +3186,7 @@ class ToolGroupSummary(Static):
         super().__init__("", **kwargs)
         self._tools = list(tools or [])
         self._collapsible = list(collapsible or [])
+        self._accepting_members = live
         self._finalized = not live
         self._spinner_pos = 0
         self._timer: Timer | None = None
@@ -3054,6 +3194,10 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
+        # The tuple of in-progress tool names the cached present line was built
+        # from. The live line counts only in-progress tools, so it must be
+        # rebuilt whenever a member finishes, not just when membership grows.
+        self._present_key: tuple[str, ...] | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -3069,10 +3213,10 @@ class ToolGroupSummary(Static):
         for widget in extra:
             widget.add_class("-grouped")
             self._collapsible.append(widget)
-        self._present_text = self._past_text = None
+        self._present_text = self._past_text = self._present_key = None
         self._apply_visibility()
-        self._render_line()
-        self._sync_timer()
+        in_progress = self._sync_lifecycle()
+        self._render_line(in_progress=in_progress)
 
     def add_collapsible(self, widget: Widget) -> None:
         """Attach a non-tool widget (e.g. a diff) to be folded with the group."""
@@ -3082,16 +3226,47 @@ class ToolGroupSummary(Static):
             widget.display = not self._collapsed
 
     def close(self) -> None:
-        """Mark the group complete; no further members will join."""
-        self._finalized = True
+        """Stop accepting members and finalize after every tool settles.
+
+        A non-tool stream event can close a group before middleware-generated
+        terminal results arrive. Keep the live timer running in that case so a
+        later error or rejection is evicted instead of being summarized in the
+        past tense as though the tool ran successfully.
+        """
+        self._accepting_members = False
         self._evict_failed()
-        self._stop_timer()
+        in_progress = self._sync_lifecycle()
         if not self.is_attached:
             return
         if self._tools:
-            self._render_line()
+            self._render_line(in_progress=in_progress)
         else:
             # Every tool failed and was ejected — nothing left to summarize.
+            self.remove()
+
+    def reveal_pending(self) -> None:
+        """Remove unfinished tool calls from the collapsed group."""
+        pending = [tool for tool in self._tools if tool.is_pending]
+        if not pending:
+            return
+        for tool in pending:
+            self._tools.remove(tool)
+            if tool in self._collapsible:
+                self._collapsible.remove(tool)
+            tool.remove_class("-grouped")
+            if tool.is_attached and not tool._awaiting_approval:
+                tool.display = True
+        self._present_text = self._past_text = self._present_key = None
+        in_progress = self._sync_lifecycle()
+        if self._tools:
+            self._render_line(in_progress=in_progress)
+            return
+        for widget in self._collapsible:
+            widget.remove_class("-grouped")
+            if widget.is_attached:
+                widget.display = True
+        self._collapsible.clear()
+        if self.is_attached:
             self.remove()
 
     @property
@@ -3130,6 +3305,18 @@ class ToolGroupSummary(Static):
         """
         return any(tool.is_pending for tool in self._tools)
 
+    def _sync_lifecycle(self, *, in_progress: bool | None = None) -> bool:
+        """Finalize only once a closed group's retained tools have settled.
+
+        Returns:
+            Whether any retained tool is still in progress.
+        """
+        if in_progress is None:
+            in_progress = self._in_progress()
+        self._finalized = not self._accepting_members and not in_progress
+        self._sync_timer()
+        return in_progress
+
     def _evict_failed(self) -> None:
         """Un-fold errored/rejected/skipped tools so non-successes stay visible."""
         failed = [t for t in self._tools if t.is_failed]
@@ -3142,7 +3329,7 @@ class ToolGroupSummary(Static):
             tool.remove_class("-grouped")
             if tool.is_attached:
                 tool.display = True
-        self._present_text = self._past_text = None
+        self._present_text = self._past_text = self._present_key = None
 
     def _sync_timer(self) -> None:
         """Run the spinner timer only while live members are in progress."""
@@ -3169,15 +3356,13 @@ class ToolGroupSummary(Static):
                 # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
                 self._apply_visibility()
             if not self._tools:
-                self._stop_timer()
+                self._sync_lifecycle(in_progress=False)
                 if self.is_attached:
                     self.remove()
                 return
-            in_progress = self._in_progress()
-            if not in_progress:
-                self._stop_timer()
-            # A bare spinner advance keeps the line height; only relayout when
-            # membership changed (eviction) or the line flips to past tense.
+            in_progress = self._sync_lifecycle()
+            # A bare spinner advance keeps the line height. `_render_line`
+            # promotes this to a layout update if the pending summary changed.
             self._render_line(
                 in_progress=in_progress, layout=evicted or not in_progress
             )
@@ -3204,9 +3389,9 @@ class ToolGroupSummary(Static):
         Args:
             in_progress: Pre-computed progress state to avoid re-scanning members
                 on the spinner hot path; recomputed when omitted.
-            layout: Whether the update may change the line's height. The spinner
-                hot path passes False so a bare glyph swap doesn't relayout the
-                whole transcript 10x/second.
+            layout: Whether to force a layout update. A changed summary always
+                triggers layout; the spinner hot path passes False so a bare
+                glyph swap doesn't relayout the whole transcript 10x/second.
         """
         if not self.is_attached:
             return
@@ -3217,15 +3402,17 @@ class ToolGroupSummary(Static):
         if in_progress is None:
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
-            if self._present_text is None:
-                self._present_text = summarize_tool_group(
-                    [tool.tool_name for tool in self._tools], tense="present"
-                )
+            pending = [tool.tool_name for tool in self._tools if tool.is_pending]
+            key = tuple(pending)
+            summary_changed = self._present_text is None or key != self._present_key
+            if summary_changed:
+                self._present_text = summarize_tool_group(pending, tense="present")
+                self._present_key = key
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
             self.update(
                 Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"),
-                layout=layout,
+                layout=layout or summary_changed,
             )
         else:
             mark = (
@@ -3380,6 +3567,159 @@ class ErrorMessage(Static):
             open_style_link(event)
 
 
+class _RubricResultToggle(Static):
+    """Clickable summary or hint for a rubric result."""
+
+
+class RubricResultMessage(Vertical):
+    """Compact grader result with complete, scrollable details on demand."""
+
+    class ExpansionChanged(Message):
+        """Posted when the grader-details expansion state changes."""
+
+        def __init__(self, widget: RubricResultMessage, expanded: bool) -> None:
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The rubric result whose expansion state changed.
+                expanded: Whether the grader details are now expanded.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    RubricResultMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+        border-left: wide $warning;
+    }
+
+    RubricResultMessage .rubric-result-summary {
+        height: auto;
+    }
+
+    RubricResultMessage .rubric-result-details-scroll {
+        display: none;
+        height: auto;
+        max-height: 16;
+        margin: 1 0 0 2;
+        overflow-y: auto;
+        scrollbar-size-vertical: 1;
+    }
+
+    RubricResultMessage .rubric-result-details {
+        height: auto;
+        padding: 0;
+    }
+
+    RubricResultMessage .rubric-result-hint {
+        height: auto;
+        margin-left: 2;
+        color: $text-muted;
+    }
+
+    RubricResultMessage.-expanded .rubric-result-details-scroll {
+        display: block;
+    }
+    """
+
+    _expanded: var[bool] = var(False, toggle_class="-expanded")
+
+    def __init__(
+        self,
+        summary: str,
+        details: str,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a grader result.
+
+        Args:
+            summary: Concise default transcript line.
+            details: Complete user-facing grader explanation and criteria gaps.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._summary = summary
+        self._details = details
+        self._hint_widget: _RubricResultToggle | None = None
+        self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against it
+        # keeps the reactive's initialization watcher and the deferred restore from
+        # re-emitting a value the store already holds.
+        self._published_expanded = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the compact summary, details viewport, and expansion hint.
+
+        Yields:
+            Summary, scrollable details, and toggle hint widgets.
+        """
+        yield _RubricResultToggle(
+            Content.styled(self._summary, "dim italic"),
+            classes="rubric-result-summary",
+        )
+        with VerticalScroll(classes="rubric-result-details-scroll"):
+            yield Static(
+                Content(self._details),
+                classes="rubric-result-details",
+            )
+        yield _RubricResultToggle("", classes="rubric-result-hint")
+
+    def on_mount(self) -> None:
+        """Initialize the expansion hint and restore deferred state."""
+        self._hint_widget = self.query_one(
+            ".rubric-result-hint",
+            _RubricResultToggle,
+        )
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.warning)
+        if not self._details:
+            self._hint_widget.display = False
+            return
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
+        self._update_hint()
+
+    def toggle_details(self) -> None:
+        """Toggle the complete grader details."""
+        if self._details:
+            self._expanded = not self._expanded
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Refresh the hint and publish user-driven expansion for virtualization."""
+        self._update_hint()
+        # Publish only genuine changes: dedupe against the store's known value to
+        # drop the reactive's initialization watcher and the deferred restore, and
+        # require `is_attached` so `_expanded` set in pre-mount test setup does not
+        # `post_message` on a detached widget (NoActiveAppError).
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    def _update_hint(self) -> None:
+        """Render the current expansion hint."""
+        if self._hint_widget is None or not self._details:
+            return
+        action = "hide" if self._expanded else "show"
+        self._hint_widget.update(
+            Content.styled(f"click or Ctrl+O to {action} details", "dim italic")
+        )
+
+    @on(Click, "_RubricResultToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        """Toggle details from the summary or hint."""
+        event.stop()
+        self.toggle_details()
+
+
 class _MutedRichMarkdown:
     """Render Rich markdown to match `AppMessage`'s muted-italic base.
 
@@ -3433,6 +3773,87 @@ class _MutedRichMarkdown:
             )
 
 
+# Floor for markdown layout width so a not-yet-sized widget still renders a
+# readable table instead of collapsing to a single column.
+_MARKDOWN_MIN_RENDER_WIDTH = 20
+
+# One-shot flag (mutable holder to avoid a `global` statement) set once the first
+# markdown style conversion fails, so a systematic breakage (e.g. a Rich/Textual
+# version drift) surfaces at `warning` once instead of staying invisible at
+# `debug`, without spamming a line per unconvertible span.
+_markdown_style_conversion_warned = [False]
+
+
+def _markdown_to_content(
+    markup: str, width: int, console: RichConsole | None = None
+) -> Content:
+    """Render muted markdown to selectable `Content` at a fixed width.
+
+    Textual's mouse text-selection only works over widgets whose rendered
+    visual is `Content` or Rich `Text`; a raw Rich renderable (such as
+    `_MutedRichMarkdown`) renders as a `RichVisual`, which carries none of the
+    per-cell offset metadata selection relies on, so its text can be neither
+    highlighted nor copied. Rendering the markdown to segments and rebuilding
+    them as `Content` preserves the visual (tables, rules, emphasis) while
+    making the text selectable.
+
+    Args:
+        markup: The markdown source to render.
+        width: Target render width in cells; the markdown is laid out to fit.
+        console: Console used to render segments; a default is created when
+            `None`.
+
+    Returns:
+        `Content` visually equivalent to the rendered markdown, with trailing
+            whitespace trimmed from each line so copies stay clean.
+    """
+    from rich.console import Console
+    from rich.segment import Segment
+    from textual.content import Span
+    from textual.style import Style
+
+    render_width = max(width, 1)
+    if console is None:
+        console = Console(width=render_width)
+    segments = console.render(
+        _MutedRichMarkdown(markup), console.options.update_width(render_width)
+    )
+    content_lines: list[Content] = []
+    for line in Segment.split_lines(segments):
+        text = "".join(segment.text for segment in line)
+        stripped = text.rstrip()
+        spans: list[Span] = []
+        position = 0
+        for segment in line:
+            start = position
+            position += len(segment.text)
+            if start >= len(stripped):
+                break
+            end = min(position, len(stripped))
+            if segment.style is not None and end > start:
+                try:
+                    style = Style.from_rich_style(segment.style)
+                except Exception:  # style conversion is best-effort
+                    if not _markdown_style_conversion_warned[0]:
+                        _markdown_style_conversion_warned[0] = True
+                        logger.warning(
+                            "Failed to convert a markdown style; markdown will "
+                            "render without some styling (later occurrences log "
+                            "at debug)",
+                            exc_info=True,
+                        )
+                    else:
+                        logger.debug(
+                            "Skipping unconvertible markdown style", exc_info=True
+                        )
+                else:
+                    spans.append(Span(start, end, style))
+        content_lines.append(Content(stripped, spans))
+    while content_lines and not content_lines[-1].plain:
+        content_lines.pop()
+    return Content("\n").join(content_lines)
+
+
 class AppMessage(Static):
     """Widget displaying an app message."""
 
@@ -3464,8 +3885,8 @@ class AppMessage(Static):
 
         Args:
             message: The system message as a string or pre-styled `Content`.
-            markdown: When `True`, render `message` as markdown via Rich's
-                markdown renderer (tables, headings, bold, etc.).
+            markdown: When `True`, render `message` as markdown (tables,
+                headings, bold, etc.).
 
                 Requires a string message — `Content` objects already carry
                 their own structure.
@@ -3477,16 +3898,65 @@ class AppMessage(Static):
         """
         self._content = message
         self._is_markdown = markdown
+        # Markdown is rendered lazily in `render()` so it can be laid out to the
+        # widget's current width and rebuilt as selectable `Content`.
+        self._markdown_cache: tuple[int, Content] | None = None
         if markdown:
             if not isinstance(message, str):
                 msg = "AppMessage(markdown=True) requires a string message"
                 raise TypeError(msg)
-            rendered = _MutedRichMarkdown(message)
+            rendered: Content = Content("")
         elif isinstance(message, Content):
             rendered = message
         else:
             rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
+
+    def render(self) -> Content:
+        """Render the message, laying out markdown to the current width.
+
+        Returns:
+            The message `Content`. Markdown is rendered to selectable `Content`
+                sized to the widget's current render width so it can be
+                highlighted and copied.
+        """
+        if not self._is_markdown:
+            return super().render()  # ty: ignore[invalid-return-type]
+        width = self._markdown_render_width()
+        # The cache is keyed on width only: captured spans are late-bound styles
+        # (`dim`, `bold`, ANSI colors) that Textual resolves against the active
+        # theme at display time, so cached `Content` still recolors on a theme
+        # switch and does not need re-rendering.
+        if self._markdown_cache is None or self._markdown_cache[0] != width:
+            try:
+                console = self.app.console
+            except NoActiveAppError:
+                console = None
+            content = _markdown_to_content(str(self._content), width, console)
+            self._markdown_cache = (width, content)
+        return self._markdown_cache[1]
+
+    def _markdown_render_width(self) -> int:
+        """Best-known content width for laying out markdown, with fallbacks.
+
+        Returns:
+            The widget's content width, falling back to the container or app
+                width, and never below `_MARKDOWN_MIN_RENDER_WIDTH`.
+        """
+        width = self.content_size.width
+        if width <= 0:
+            # `content_size` is not known yet; fall back to the container (then
+            # app) width and subtract this widget's own horizontal padding,
+            # which those outer widths — unlike `content_size` — don't exclude.
+            outer = self.container_size.width
+            if outer <= 0:
+                try:
+                    outer = self.app.size.width
+                except NoActiveAppError:
+                    outer = 0
+            padding = self.styles.padding
+            width = outer - padding.left - padding.right
+        return max(width, _MARKDOWN_MIN_RENDER_WIDTH)
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""

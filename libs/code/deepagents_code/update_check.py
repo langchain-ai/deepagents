@@ -25,8 +25,9 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from contextlib import suppress
+import uuid
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,8 +77,44 @@ INSTALLED_STALE_NOTICE_DAYS = 14
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
 
-_RELEASE_PRERELEASE_DEPS_KEY = "release_requires_prereleases"
-"""`CACHE_FILE` key for release versions that require pre-release dependencies."""
+_RELEASE_PRERELEASE_PINS_KEY = "release_prerelease_pins"
+"""`CACHE_FILE` key mapping a release version to its targeted pre-release pins.
+
+Values are lists of exact pin strings (e.g. `["deepagents==0.7.0a7"]`) that a
+stable `deepagents-code` release mandates as direct, unconditional dependencies.
+An empty list means the release needs no pre-release admission.
+
+This intentionally replaces (rather than reuses) the older
+`"release_requires_prereleases"` cache key, whose values were marker-agnostic
+booleans: an old `True` said only that *some* specifier named a pre-release
+(including upper bounds like `pydantic<2.14.0a0` or exclusions like
+`package!=1.0rc1`), never *which* requirement to pin. Those booleans are not
+authoritative under the targeted-constraint semantics, so the new code never
+reads that legacy key.
+"""
+
+UvPrereleaseStrategy = Literal["if-necessary-or-explicit"]
+"""Type of the targeted uv `--prerelease` strategy.
+
+A one-member `Literal` rather than a bare `str`: the only non-`None` strategy
+the targeted-constraints path ever emits is `_UV_TARGETED_PRERELEASE_STRATEGY`,
+so the type says exactly that and rejects arbitrary strings at the boundary.
+"""
+
+_UV_TARGETED_PRERELEASE_STRATEGY: UvPrereleaseStrategy = "if-necessary-or-explicit"
+"""uv `--prerelease` strategy paired with targeted first-party constraints.
+
+Unlike the global `allow` strategy, `if-necessary-or-explicit` only admits a
+pre-release when a constraint pins it exactly (explicit) or no stable release
+can satisfy the requirement (if-necessary). Combined with a constraints file
+listing the exact SDK pin, it lets a stable dcode target install its required
+pre-release dependency without widening the candidate set for unrelated
+optional providers — the bug behind #4524, where a global `allow` pulled in an
+unbuildable `litellm` RC.
+"""
+
+_PRERELEASE_CONSTRAINTS_FILE_PREFIX = "dcode-prereleases-"
+"""Temp-file prefix for the targeted pre-release uv constraints file."""
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
@@ -295,7 +332,7 @@ def get_last_update_check_time() -> float | None:
 
     Reads the `checked_at` stamp recorded in `CACHE_FILE` when the update cache
     is written (primarily by `get_latest_version`; also seeded by
-    `_write_release_requires_prereleases`). Missing, corrupt, or non-numeric
+    `_write_release_prerelease_pins`). Missing, corrupt, or non-numeric
     data fail-soft to `None` so callers can render an "unknown" state without
     contacting the network.
     """
@@ -312,44 +349,103 @@ def get_last_update_check_time() -> float | None:
     return _coerce_checked_at(checked_at)
 
 
-def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
-    """Return whether any requirement specifier names a pre-release version.
+def _canonical_prerelease_pin(raw: object) -> str | None:
+    """Return the canonical targeted pre-release pin for `raw`, or `None`.
+
+    `raw` is a single `Requires-Dist`-style requirement string (from PyPI
+    metadata or a round-tripped cache entry, which may be non-string or
+    non-PEP-508 junk). It qualifies as a *targeted pre-release constraint* — safe
+    to hand uv as a first-party constraint that admits exactly one pre-release
+    without widening the candidate set for anything else — only when it is:
+
+    - **mandatory** — no environment marker at all, so it is neither gated behind
+        an optional `extra` (`; extra == "litellm"`) nor conditioned on
+        the target interpreter/platform (`; python_version >= "3.10"`);
+    - a **positive exact pin** — the specifier set is a single `==`/`===` clause;
+    - whose pinned version is a **pre-release** (`0.7.0a7`, `1.2.0rc1`, ...).
+
+    Everything else returns `None`, matching the constraints uv would actually
+    need:
+
+    - upper bounds such as `pydantic<2.14.0a0` (not a positive pin);
+    - exclusions such as `package!=1.0rc1` (not a positive pin);
+    - extra-gated pins such as `package==1.0rc1; extra == "x"` (not mandatory);
+    - interpreter/platform-gated pins such as `pkg==1a1; python_version < "3.0"`.
+
+    Marker-bearing pins are intentionally out of the supported contract: the uv
+    tool receipt may target a different interpreter than the one currently
+    running dcode, so evaluating `python_version`/`sys_platform` markers here
+    could resolve them against the wrong environment. Rather than guess, the
+    initial contract is limited to unconditional exact pins (which covers the
+    real-world `deepagents==0.7.0a7` SDK pin); widening it later must evaluate
+    markers against the *target* environment, not the running one.
+
+    Returns:
+        The canonical pin string (e.g. `"deepagents==0.7.0a7"`), or `None` when
+            `raw` falls outside the contract above.
+    """
+    if not isinstance(raw, str):
+        return None
+    try:
+        requirement = Requirement(raw)
+    except InvalidRequirement:
+        logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
+        return None
+    specifiers = list(requirement.specifier)
+    if len(specifiers) != 1:
+        return None
+    specifier = specifiers[0]
+    if specifier.operator not in {"==", "==="}:
+        return None
+    try:
+        version = Version(specifier.version)
+    except InvalidVersion:
+        logger.debug(
+            "Skipping unparseable requirement version: %r",
+            specifier.version,
+        )
+        return None
+    if not version.is_prerelease:
+        return None
+    # Only reached for a single positive `==`/`===` pin to a pre-release — the
+    # one shape inside the contract. A marker still disqualifies it (see the
+    # docstring), but because it would *otherwise* qualify, log the drop so a
+    # future marker-gated SDK pin that silently resolves to no admission is
+    # greppable. Checking the marker here (rather than first) keeps this quiet
+    # for ordinary extra-gated optional deps, which never reach this point.
+    if requirement.marker is not None:
+        logger.debug(
+            "Skipping marker-gated pre-release pin outside the targeted "
+            "contract (marker %r): %r",
+            str(requirement.marker),
+            raw,
+        )
+        return None
+    return f"{canonicalize_name(requirement.name)}=={version}"
+
+
+def _prerelease_pin_requirements(
+    requirements: Sequence[object] | None,
+) -> list[str]:
+    """Return the mandatory, unconditional, exact pre-release pins in a metadata list.
 
     Accepts the raw `Requires-Dist` list from PyPI metadata, which may contain
     non-string or non-PEP-508 junk; such entries are skipped rather than raising
-    so one malformed line cannot poison the whole check.
+    so one malformed line cannot poison the whole check. Each entry is classified
+    by `_canonical_prerelease_pin`; see it for the supported contract.
 
-    The check is intentionally operator- and marker-agnostic: it returns `True`
-    if *any* specifier across *any* requirement pins a pre-release version,
-    regardless of the operator (`==`, `>=`, even `!=`) or environment markers
-    (extras, `python_version`). This errs toward `True`, which is the safe
-    direction — opting `uv` into `--prerelease allow` still resolves stable
-    releases correctly, so a false positive only widens the candidate set and
-    never strands a user. Do not "tighten" this to the dangerous direction
-    without revisiting the fallback asymmetry in `release_requires_prereleases`.
+    Returns:
+        A sorted list of canonical pin strings (e.g. `["deepagents==0.7.0a7"]`).
+            Empty when the release needs no targeted pre-release admission.
     """
     if not requirements:
-        return False
+        return []
+    pins: set[str] = set()
     for raw in requirements:
-        if not isinstance(raw, str):
-            continue
-        try:
-            requirement = Requirement(raw)
-        except InvalidRequirement:
-            logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
-            continue
-        for specifier in requirement.specifier:
-            try:
-                version = Version(specifier.version)
-            except InvalidVersion:
-                logger.debug(
-                    "Skipping unparseable requirement version: %r",
-                    specifier.version,
-                )
-                continue
-            if version.is_prerelease:
-                return True
-    return False
+        pin = _canonical_prerelease_pin(raw)
+        if pin is not None:
+            pins.add(pin)
+    return sorted(pins)
 
 
 def _atomic_write_cache(data: dict[str, Any]) -> None:
@@ -379,8 +475,8 @@ def _atomic_write_cache(data: dict[str, Any]) -> None:
         raise
 
 
-def _write_release_requires_prereleases(version: str, requires: bool) -> None:
-    """Cache whether a release needs uv's pre-release resolver opt-in."""
+def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
+    """Cache the targeted pre-release pins a release requires (versioned cache)."""
     try:
         data: dict[str, Any]
         if CACHE_FILE.exists():
@@ -388,18 +484,46 @@ def _write_release_requires_prereleases(version: str, requires: bool) -> None:
             data = loaded if isinstance(loaded, dict) else {}
         else:
             data = {}
-        values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+        values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
         if not isinstance(values, dict):
             values = {}
-        values[version] = requires
-        data[_RELEASE_PRERELEASE_DEPS_KEY] = values
+        values[version] = list(pins)
+        data[_RELEASE_PRERELEASE_PINS_KEY] = values
         data.setdefault("checked_at", time.time())
         _atomic_write_cache(data)
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug(
-            "Failed to write release pre-release dependency cache",
+            "Failed to write release pre-release pins cache",
             exc_info=True,
         )
+
+
+def _pypi_request_kwargs(*, bypass_cache: bool) -> dict[str, Any]:
+    """Build `requests.get` keyword arguments for a PyPI metadata request.
+
+    PyPI's JSON API is served through a CDN (Fastly). Bypassing only the local
+    on-disk cache is not enough immediately after a release: an edge node can
+    keep serving a stale copy for a few seconds until the purge propagates, so
+    a forced check may still report "already on the latest version" until a
+    retry. When `bypass_cache` is set, send no-cache request headers and a
+    unique cache-busting query parameter so the CDN cache key misses and the
+    response is fetched fresh from origin.
+
+    Args:
+        bypass_cache: When `True`, defeat CDN edge caching as well as the local
+            cache.
+
+    Returns:
+        Keyword arguments to pass to `requests.get`. Callers still pass
+        `timeout` explicitly so the timeout lint rule can see it.
+    """
+    headers = {"User-Agent": USER_AGENT}
+    kwargs: dict[str, Any] = {"headers": headers}
+    if bypass_cache:
+        headers["Cache-Control"] = "no-cache"
+        headers["Pragma"] = "no-cache"
+        kwargs["params"] = {"_": uuid.uuid4().hex}
+    return kwargs
 
 
 def get_latest_version(
@@ -453,8 +577,8 @@ def get_latest_version(
     try:
         resp = requests.get(
             PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -471,9 +595,7 @@ def get_latest_version(
         if not releases:
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
-        stable_requires_prereleases = _requires_prerelease_dependency(
-            info.get("requires_dist")
-        )
+        stable_prerelease_pins = _prerelease_pin_requirements(info.get("requires_dist"))
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
@@ -482,22 +604,24 @@ def get_latest_version(
         payload, stable=stable, prerelease=prerelease, installed=__version__
     )
 
-    # Preserve per-version pre-release-dependency entries written by
-    # `_write_release_requires_prereleases` for *other* versions; this refresh
-    # only knows the answer for `stable`, so merge rather than overwrite the map
+    # Preserve per-version pre-release-pin entries written by
+    # `_write_release_prerelease_pins` for *other* versions; this refresh only
+    # knows the pins for `stable`, so merge rather than overwrite the map
     # (otherwise a routine check would evict a cached answer and force a re-fetch
-    # that, on a PyPI hiccup, falls back to the unsafe stable-only default).
-    prerelease_deps: dict[str, Any] = {}
+    # that, on a PyPI hiccup, falls back to the conservative empty-pins default).
+    prerelease_pins: dict[str, Any] = {}
     try:
         if CACHE_FILE.exists():
             existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
-                cached_deps = existing.get(_RELEASE_PRERELEASE_DEPS_KEY)
-                if isinstance(cached_deps, dict):
-                    prerelease_deps = cached_deps
+                cached_pins = existing.get(_RELEASE_PRERELEASE_PINS_KEY)
+                if isinstance(cached_pins, dict):
+                    prerelease_pins = cached_pins
     except (OSError, json.JSONDecodeError, TypeError):
-        logger.debug("Failed to read cached pre-release deps before refresh")
-    prerelease_deps[stable] = stable_requires_prereleases
+        logger.debug(
+            "Failed to read cached pre-release pins before refresh", exc_info=True
+        )
+    prerelease_pins[stable] = stable_prerelease_pins
 
     try:
         _atomic_write_cache(
@@ -505,7 +629,7 @@ def get_latest_version(
                 "version": stable,
                 "version_prerelease": prerelease,
                 "release_times": release_times,
-                _RELEASE_PRERELEASE_DEPS_KEY: prerelease_deps,
+                _RELEASE_PRERELEASE_PINS_KEY: prerelease_pins,
                 "checked_at": time.time(),
             }
         )
@@ -515,44 +639,69 @@ def get_latest_version(
     return prerelease if include_prereleases else stable
 
 
-def release_requires_prereleases(
+def release_prerelease_pins(
     version: str | None,
     *,
     bypass_cache: bool = False,
-) -> bool:
-    """Return whether installing `version` needs uv pre-release resolution.
+) -> list[str]:
+    """Return the targeted pre-release pins installing `version` requires.
+
+    A stable `deepagents-code` release may mandate an exact pre-release
+    dependency (for example `deepagents==0.7.0a7`). This resolves those pins from
+    the release's PyPI metadata so command builders can pass them to uv as
+    first-party constraints — admitting *only* the named pre-release rather than
+    opting the whole resolution into pre-releases with a global `--prerelease
+    allow`.
 
     Args:
         version: `deepagents-code` version to inspect.
         bypass_cache: Skip cached release metadata and fetch PyPI directly.
 
     Returns:
-        `True` when the release metadata pins or bounds a pre-release dependency.
+        A sorted list of exact pin strings (e.g. `["deepagents==0.7.0a7"]`), or
+            an empty list when the release needs no targeted pre-release
+            admission.
 
     Note:
         On any lookup failure (no `requests`, network/parse error) this returns
-        `False` — i.e. "stable-only resolution". That is deliberately
-        conservative rather than fail-safe: the truly safe default would be to
-        allow pre-releases, but a spurious `True` would make
+        `[]` — "no pre-release admission". That is deliberately conservative
+        rather than fail-safe: the truly safe default would be to admit
+        pre-releases, but a spurious non-empty result would make
         `prerelease_upgrade_supported` *refuse* the upgrade outright on non-uv
-        installs (Homebrew/other), regressing the common case. `False` keeps
-        those installs upgradable; the cost is that, during a PyPI outage, a
-        stable release that genuinely pins a pre-release dependency may be
-        installed stable-only. Failures are logged at `warning` so the blind
-        decision is at least visible.
+        installs (Homebrew/other), regressing the common case. `[]` keeps those
+        installs upgradable; the cost is that, during a PyPI outage, a stable
+        release that genuinely pins a pre-release dependency may be installed
+        stable-only (and may then fail to resolve). Failures are logged at
+        `warning` so the blind decision is at least visible.
     """
     if not version:
-        return False
+        return []
     try:
         if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
-                if isinstance(values, dict) and isinstance(values.get(version), bool):
-                    return values[version]
+                values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
+                if isinstance(values, dict):
+                    cached = values.get(version)
+                    if isinstance(cached, list):
+                        # Re-validate every stored entry against the current
+                        # contract rather than trusting the raw JSON: these
+                        # strings are written verbatim into a uv constraints
+                        # file, which honors directives like `-r`/`-c`/`--hash`.
+                        # A dropped or altered entry means the value drifted or
+                        # was tampered with (CACHE_FILE is user-local state), so
+                        # fall through to a fresh fetch rather than feed a
+                        # partial or mutated constraint set to uv.
+                        revalidated: set[str] = set()
+                        for raw_pin in cached:
+                            pin = _canonical_prerelease_pin(raw_pin)
+                            if pin is not None:
+                                revalidated.add(pin)
+                        if len(revalidated) == len(cached):
+                            return sorted(revalidated)
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug(
-            "Failed to read release pre-release dependency cache",
+            "Failed to read release pre-release pins cache",
             exc_info=True,
         )
 
@@ -561,34 +710,53 @@ def release_requires_prereleases(
     except ImportError:
         logger.warning(
             "requests package not installed — cannot check whether v%s pins a "
-            "pre-release dependency; assuming stable-only resolution",
+            "pre-release dependency; assuming no pre-release admission",
             version,
         )
-        return False
+        return []
 
     try:
         url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
         resp = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
         info = payload.get("info")
         requires = info.get("requires_dist") if isinstance(info, dict) else None
-        result = _requires_prerelease_dependency(requires)
+        pins = _prerelease_pin_requirements(requires)
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.warning(
             "Failed to fetch dependency metadata for v%s from PyPI; assuming "
-            "stable-only resolution",
+            "no pre-release admission",
             version,
             exc_info=True,
         )
-        return False
+        return []
 
-    _write_release_requires_prereleases(version, result)
-    return result
+    _write_release_prerelease_pins(version, pins)
+    return pins
+
+
+def release_requires_prereleases(
+    version: str | None,
+    *,
+    bypass_cache: bool = False,
+) -> bool:
+    """Return whether installing `version` needs uv pre-release admission.
+
+    Boolean view over `release_prerelease_pins`, kept for display-only callers
+    that only decide *whether* to show a pre-release-aware upgrade hint, not
+    which pins to constrain. `True` iff the release mandates at least one exact
+    pre-release dependency.
+
+    Args:
+        version: `deepagents-code` version to inspect.
+        bypass_cache: Skip cached release metadata and fetch PyPI directly.
+    """
+    return bool(release_prerelease_pins(version, bypass_cache=bypass_cache))
 
 
 def _extract_release_times(
@@ -816,8 +984,8 @@ def get_sdk_release_time(
     try:
         resp = requests.get(
             SDK_PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -1649,6 +1817,18 @@ async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
             proc.kill()
     with suppress(OSError, TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+    # Reaping the process is not enough: when this cleanup runs after we stopped
+    # draining stdout/stderr (timeout/cancellation), those pipes never reach EOF,
+    # so the pipe transports — and the parent subprocess transport — stay open
+    # until garbage collection. If the event loop has closed by then,
+    # `BaseSubprocessTransport.__del__` retries the close on a dead loop and
+    # raises "Event loop is closed" (surfaced as PytestUnraisableExceptionWarning
+    # under pytest). Close it eagerly while the loop is still alive. `_transport`
+    # is the only handle asyncio exposes, and close() must not break teardown.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        with suppress(Exception):
+            transport.close()
 
 
 async def _run_install_subprocess(
@@ -1798,6 +1978,12 @@ async def perform_upgrade(
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
+
+    Raises:
+        OSError: Propagated from building the upgrade command or running the
+            install subprocess (e.g. unreadable distribution metadata). An
+            `OSError` from *staging* the pre-release constraints file is handled
+            internally and reported as a `(False, output)` failure instead.
     """
     method = detect_install_method()
     if method == "unknown":
@@ -1810,62 +1996,115 @@ async def perform_upgrade(
             "manager originally used for this install."
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    # Targeted pre-release admission: a *stable* dcode target that mandates an
+    # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt
+    # the whole resolution into pre-releases with a global `--prerelease allow`
+    # — which let an unrelated optional provider float to an unbuildable RC in
+    # #4524 — pin that dependency in a uv constraints file and use the scoped
+    # `if-necessary-or-explicit` strategy so only the named pre-release is
+    # admitted. Kept separate from the explicit pre-release *channel* below,
+    # where the user deliberately follows dcode's own pre-release feed.
+    targeted_pins: list[str] = []
     pin_target_version: str | None = None
-    if (
-        not resolved_include_prereleases
-        and include_prereleases is None
-        and release_requires_prereleases(target_version)
-    ):
-        resolved_include_prereleases = True
-        pin_target_version = target_version
-    if resolved_include_prereleases:
+    if not resolved_include_prereleases and include_prereleases is None:
+        targeted_pins = release_prerelease_pins(target_version)
+        if targeted_pins:
+            pin_target_version = target_version
+
+    if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
             return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
 
-    fell_back_to_bare_command = False
-    if method == "uv":
-        # Prefer the receipt-aware `uv tool install -U` builder so installed
-        # extras / `--with` packages survive the upgrade and any stale
-        # `==<version>` pin in the receipt is cleared. Fall back to the bare
-        # display command when extras or receipt introspection fails — the
-        # fallback might drop extras, but a successful unpinned upgrade is
-        # still strictly better than a pinned "upgrade" that quietly stays
-        # on the old version.
-        from deepagents_code.extras_info import ExtrasIntrospectionError
-
-        try:
-            cmd = upgrade_install_command(
-                include_prereleases=resolved_include_prereleases,
-                version=pin_target_version,
-            )
-        except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
-            logger.warning(
-                "Could not build receipt-aware uv upgrade command (%s: %s); "
-                "falling back to the bare command. Installed extras may be "
-                "dropped.",
-                type(exc).__name__,
-                exc,
-            )
-            fell_back_to_bare_command = True
-            cmd = upgrade_command(
-                method,
-                include_prereleases=resolved_include_prereleases,
-                version=pin_target_version,
-            )
-    else:
-        cmd = upgrade_command(
-            method,
-            include_prereleases=resolved_include_prereleases,
-        )
-
-    # Skip brew if binary not on PATH
+    # Skip brew if binary not on PATH (before touching temp files).
     if method == "brew" and not shutil.which("brew"):
         return False, "brew not found on PATH."
 
-    success, output = await _run_install_subprocess(
-        cmd, progress=progress, log_path=log_path
-    )
+    prerelease_strategy = _UV_TARGETED_PRERELEASE_STRATEGY if targeted_pins else None
+    constraints_staged = False
+    try:
+        with _prerelease_constraints_file(targeted_pins) as constraints_path:
+            # The constraints file (if any) is now written; any OSError past
+            # this point originates in command-building or the subprocess
+            # wrapper, not constraint staging.
+            constraints_staged = True
+            fell_back_to_bare_command = False
+            if method == "uv":
+                # Prefer the receipt-aware `uv tool install -U` builder so
+                # installed extras / `--with` packages survive the upgrade and
+                # any stale `==<version>` pin in the receipt is cleared. Fall
+                # back to the bare display command when extras or receipt
+                # introspection fails — the fallback might drop extras, but a
+                # successful unpinned upgrade is still strictly better than a
+                # pinned "upgrade" that quietly stays on the old version.
+                from deepagents_code.extras_info import ExtrasIntrospectionError
+
+                try:
+                    cmd = upgrade_install_command(
+                        include_prereleases=resolved_include_prereleases,
+                        version=pin_target_version,
+                        constraints_path=constraints_path,
+                        prerelease_strategy=prerelease_strategy,
+                    )
+                except (
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
+                    logger.warning(
+                        "Could not build receipt-aware uv upgrade command "
+                        "(%s: %s); falling back to the bare command. Installed "
+                        "extras may be dropped.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    fell_back_to_bare_command = True
+                    cmd = upgrade_command(
+                        method,
+                        include_prereleases=resolved_include_prereleases,
+                        version=pin_target_version,
+                    )
+                    # The bare display command has no constraints knob, so add
+                    # the targeted flags here too — the fallback must not revert
+                    # to a global `--prerelease allow`.
+                    cmd = _append_uv_prerelease_flags(
+                        cmd,
+                        constraints_path=constraints_path,
+                        prerelease_strategy=prerelease_strategy,
+                    )
+            else:
+                cmd = upgrade_command(
+                    method,
+                    include_prereleases=resolved_include_prereleases,
+                )
+
+            success, output = await _run_install_subprocess(
+                cmd, progress=progress, log_path=log_path
+            )
+    except OSError as exc:
+        if constraints_staged:
+            # The constraints file was written successfully, so this OSError
+            # came from command-building or the subprocess wrapper — not from
+            # staging. Don't misreport it as a constraints-generation failure
+            # (which, on the common non-targeted path, would even claim to
+            # "install vNone"). Re-raise to surface the real error, matching the
+            # pre-targeted-constraints behavior where these propagated.
+            raise
+        # Constraint-generation failure: we know the target needs a pinned
+        # pre-release but could not stage the constraints file, so refuse rather
+        # than fall back to a global `--prerelease allow`. Staging happens before
+        # the install subprocess, so no subprocess ran and the existing install
+        # is untouched.
+        logger.warning(
+            "Could not create pre-release constraints file for v%s",
+            target_version,
+            exc_info=True,
+        )
+        return False, (
+            "Could not prepare the pre-release dependency constraints required "
+            f"to install v{target_version}; the existing installation was left "
+            f"unchanged.\n{type(exc).__name__}: {exc}"
+        )
+
     if success and fell_back_to_bare_command:
         # Surface the dropped-extras caveat only now that the bare upgrade has
         # actually succeeded. Emitting it before `_run_install_subprocess` ran
@@ -2305,13 +2544,17 @@ def _uv_tool_install_command(
     extras_to_add: Iterable[str] = (),
     with_packages_to_add: Iterable[str] = (),
     reinstall: bool = False,
+    constraints_path: Path | None = None,
+    prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
     """Return the receipt-preserving `uv tool install -U` command.
 
     Args:
         version: Optional exact `deepagents-code` version pin.
         include_prereleases: Whether to include alpha/beta/rc releases. When
-            `None`, follows the installed version's channel.
+            `None`, follows the installed version's channel. Ignored when
+            `constraints_path` or `prerelease_strategy` is set (targeted
+            constraints drive the resolver instead of the global channel).
         distribution_name: Name of the installed distribution to inspect.
         extras_to_add: Extra names to merge with already-installed extras.
         with_packages_to_add: Package names to merge with the receipt's existing
@@ -2327,6 +2570,16 @@ def _uv_tool_install_command(
             an `ImportError`; the preserved `--python` interpreter and `--with`
             packages still apply, so the rebuild keeps the existing tool
             context.
+        constraints_path: Optional path to a uv constraints file, appended as
+            `--constraints <path>`. Used to pin an exact pre-release dependency
+            as a first-party constraint rather than admitting pre-releases
+            globally. Callers own the file's lifecycle (see
+            `_prerelease_constraints_file`); the builder only references it.
+        prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
+            `if-necessary-or-explicit`). When set, it is emitted verbatim and
+            takes precedence over the `include_prereleases`-driven global
+            `allow`, so a stable target can admit exactly its constrained
+            pre-release pins without widening the candidate set.
 
     Raises:
         ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
@@ -2364,9 +2617,92 @@ def _uv_tool_install_command(
             known.add(canonicalize_name(package))
     for package in with_packages:
         cmd += f" --with {shlex.quote(package)}"
+    if constraints_path is not None or prerelease_strategy is not None:
+        return _append_uv_prerelease_flags(
+            cmd,
+            constraints_path=constraints_path,
+            prerelease_strategy=prerelease_strategy,
+        )
     if _resolve_include_prereleases(include_prereleases):
         cmd += " --prerelease allow"
     return cmd
+
+
+def _append_uv_prerelease_flags(
+    cmd: str,
+    *,
+    constraints_path: Path | None,
+    prerelease_strategy: UvPrereleaseStrategy | None,
+) -> str:
+    """Append targeted `--constraints`/`--prerelease` flags to a uv command.
+
+    Shared by the receipt-aware builder and `perform_upgrade`'s bare-command
+    fallback so both emit the scoped pre-release form identically: a constraints
+    file pinning the exact pre-release dependency plus a non-`allow` strategy
+    (e.g. `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
+    the strategy is a fixed internal literal.
+
+    Returns:
+        `cmd` with any `--constraints`/`--prerelease` flags appended.
+    """
+    if constraints_path is not None:
+        cmd += f" --constraints {shlex.quote(str(constraints_path))}"
+    if prerelease_strategy is not None:
+        cmd += f" --prerelease {prerelease_strategy}"
+    return cmd
+
+
+@contextmanager
+def _prerelease_constraints_file(pins: Sequence[str]) -> Iterator[Path | None]:
+    """Yield a temp uv constraints file listing `pins`, removed on exit.
+
+    Writes one pin per line (e.g. `deepagents==0.7.0a7`) to a `mkstemp` file so
+    the exact pre-release dependency can be handed to uv as a first-party
+    constraint. Yields `None` when `pins` is empty so callers can use one code
+    path regardless of whether targeted constraints are needed.
+
+    The file is created with `mkstemp` (mode `0600`) and unlinked in `finally`,
+    so it stays alive for the full subprocess invocation and is cleaned up even
+    when the install raises. Cleanup errors are logged but never raised, so a
+    failed unlink cannot mask the install's own result.
+
+    Raises:
+        OSError: If the constraints file cannot be created or written. Callers
+            treat this as a constraint-generation failure and must not run the
+            install (the alternative — a global `--prerelease allow` fallback —
+            is exactly the behavior this strategy exists to avoid).
+    """
+    if not pins:
+        yield None
+        return
+    fd, name = tempfile.mkstemp(
+        prefix=_PRERELEASE_CONSTRAINTS_FILE_PREFIX, suffix=".txt"
+    )
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(pins) + "\n")
+    except OSError:
+        # If `os.fdopen` itself raised, it never took ownership of `fd`, so the
+        # raw descriptor would leak — close it explicitly. When `fdopen`
+        # succeeded and `write` failed, the `with` already closed `fd`, so this
+        # `os.close` raises `OSError` (bad fd) and the `suppress` absorbs it.
+        with suppress(OSError):
+            os.close(fd)
+        with suppress(OSError):
+            path.unlink()
+        raise
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            logger.debug(
+                "Failed to remove temporary pre-release constraints file %s",
+                path,
+                exc_info=True,
+            )
 
 
 def upgrade_install_command(
@@ -2374,6 +2710,8 @@ def upgrade_install_command(
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
     version: str | None = None,
+    constraints_path: Path | None = None,
+    prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
     """Return the uv command that upgrades dcode while clearing stale pins.
 
@@ -2397,6 +2735,11 @@ def upgrade_install_command(
             already-installed extras.
         version: Optional exact target version. Use only when pre-release
             dependency resolution must not also select a root app pre-release.
+        constraints_path: Optional uv constraints file pinning the exact
+            pre-release dependency, forwarded as `--constraints <path>`.
+        prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
+            `if-necessary-or-explicit`) that admits only the constrained
+            pre-release instead of a global `allow`.
 
     Returns:
         Shell command string suitable for execution via the shell.
@@ -2413,6 +2756,8 @@ def upgrade_install_command(
         version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
+        constraints_path=constraints_path,
+        prerelease_strategy=prerelease_strategy,
     )
 
 
@@ -2997,6 +3342,9 @@ def _read_update_config_strict() -> dict[str, bool]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise _ConfigReadError from exc
     section = data.get("update", {})
+    if not isinstance(section, dict):
+        msg = "[update] config must be a table"
+        raise _ConfigReadError(msg)
     return {k: v for k, v in section.items() if isinstance(v, bool)}
 
 

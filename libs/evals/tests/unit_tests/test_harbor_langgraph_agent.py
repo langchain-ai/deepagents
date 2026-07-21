@@ -17,9 +17,9 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     config = json.loads(config_path.read_text())
 
     assert config["graphs"] == {
-        "deepagent": "./langgraph_agent.py:make_graph",
-        "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
-        "tau3_deepagent": "./langgraph_agent.py:make_tau3_graph",
+        "dcode": "./langgraph_agent.py:make_graph",
+        "bare": "./langgraph_agent.py:make_bare_graph",
+        "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 
@@ -137,6 +137,48 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured_create[0]["assistant_id"]
 
 
+def test_make_graph_openai_defaults_to_responses_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # OpenAI gates reasoning_effort + function tools to /v1/responses for
+    # gpt-5.x; the agent builds the model directly, so it must set
+    # use_responses_api=True itself.
+    captured_init: list[dict[str, object]] = []
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        captured_init.append({"model": model, "kwargs": kwargs})
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
+
+    langgraph_agent.make_graph(
+        {"configurable": {"model": "openai:gpt-5.6-luna", "cwd": str(tmp_path)}}
+    )
+
+    assert captured_init == [
+        {"model": "openai:gpt-5.6-luna", "kwargs": {"use_responses_api": True}}
+    ]
+
+
+def test_build_model_respects_explicit_use_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_init: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        langgraph_agent,
+        "init_chat_model",
+        lambda model, **kwargs: captured_init.append({"model": model, "kwargs": kwargs}),
+    )
+
+    langgraph_agent._build_model(
+        {"model": "openai:gpt-5", "model_kwargs": {"use_responses_api": False}}
+    )
+
+    assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
+
+
 def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -183,8 +225,65 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
-    assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    # The bare path must not inject a harness system prompt; the overlaid
+    # branch's own BASE_AGENT_PROMPT is the variable this benchmark tests.
+    assert "system_prompt" not in captured_create[0]
+
+
+def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
+    import asyncio
+
+    captured_create: list[dict[str, object]] = []
+
+    class FakeMCPClient:
+        def __init__(self, connections: object) -> None:
+            self._connections = connections
+
+        async def get_tools(self) -> list[str]:
+            return ["start_conversation", "send_message_to_user", "end_conversation"]
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        return "chat-model"
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        captured_create.append(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "MultiServerMCPClient", FakeMCPClient)
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
+
+    result = asyncio.run(
+        langgraph_agent.make_tau3_graph(
+            {
+                "configurable": {
+                    "model": "test-provider:test-model",
+                    "mcp_servers": [
+                        {
+                            "name": "tau3-runtime",
+                            "transport": "streamable-http",
+                            "url": "http://tau3-runtime:8000/mcp",
+                            "command": None,
+                            "args": [],
+                        }
+                    ],
+                }
+            }
+        )
+    )
+
+    assert result == "graph"
+    assert captured_create
+    assert captured_create[0]["model"] == "chat-model"
+    # The tau3 conversation protocol comes from the MCP tools' descriptions, not a
+    # harness system prompt; the overlaid branch's BASE_AGENT_PROMPT is the only
+    # injected system-prompt content, parallel to the bare path.
+    assert "system_prompt" not in captured_create[0]
+    assert captured_create[0]["tools"] == [
+        "start_conversation",
+        "send_message_to_user",
+        "end_conversation",
+    ]
 
 
 def test_mcp_connections_maps_streamable_http_server() -> None:

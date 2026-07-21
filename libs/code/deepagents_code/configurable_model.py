@@ -264,6 +264,13 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
         return CLIContextSchema(
             model=ctx.get("model"),
             model_params=ctx.get("model_params") or {},
+            profile_overrides=ctx.get("profile_overrides") or {},
+            model_context_limit=ctx.get("model_context_limit"),
+            approval_mode=(
+                ctx.get("approval_mode")
+                if isinstance(ctx.get("approval_mode"), str)
+                else "manual"
+            ),
             auto_approve=bool(ctx.get("auto_approve", False)),
             approval_mode_key=raw_key if isinstance(raw_key, str) else None,
             thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,
@@ -431,8 +438,13 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
+        model_kwargs = (
+            {"profile_overrides": ctx.profile_overrides}
+            if ctx.profile_overrides
+            else {}
+        )
         try:
-            model_result = create_model(model)
+            model_result = create_model(model, **model_kwargs)
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
@@ -473,8 +485,17 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
+        model_kwargs = (
+            {"profile_overrides": ctx.profile_overrides}
+            if ctx.profile_overrides
+            else {}
+        )
         try:
-            model_result = await asyncio.to_thread(create_model, model)
+            model_result = await asyncio.to_thread(
+                create_model,
+                model,
+                **model_kwargs,
+            )
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "

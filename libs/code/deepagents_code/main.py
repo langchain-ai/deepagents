@@ -21,14 +21,17 @@ import signal
 import sys
 import traceback
 from collections.abc import Callable, Sequence
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code.app import AppResult
-    from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.config import Glyphs
+    from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
@@ -45,6 +48,28 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
     "\n[yellow]Note:[/yellow] this failure could not be recorded, so dcode will "
     "retry this update on the next launch until the state directory becomes writable."
 )
+
+
+class _ProjectMcpTrustAction(Enum):
+    """Actions available in the project MCP trust prompt."""
+
+    ALLOW_ONCE = "allow_once"
+    REMEMBER = "remember"
+    DENY = "deny"
+
+
+class _ProjectMcpTrustPromptOutcome(Enum):
+    """Internal outcomes that are not project MCP trust decisions."""
+
+    INTERRUPTED = "interrupted"
+    """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
+
+    CANCELLED = "cancelled"
+    """The user backed out of the trust prompt (Esc in the action or remember
+    picker, or blank/EOF in the text fallback); the caller aborts the launch."""
+
+
+_PROJECT_MCP_PICKER_VISIBLE_ROWS = 8
 
 
 def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
@@ -95,12 +120,25 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+        format_sdk_version_annotation,
+    )
 
-    sdk_version_value, status = resolve_sdk_version()
-    sdk_version = sdk_version_value if status == "resolved" else "unknown"
+    report = collect_version_report()
+    cli_annotation = format_cli_version_annotation(report.cli)
+    if report.sdk.status == "resolved":
+        sdk_version = report.sdk.primary_version
+        sdk_annotation = format_sdk_version_annotation(report)
+    else:
+        sdk_version = "unknown"
+        sdk_annotation = ""
 
-    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+    text = (
+        f"deepagents-code {__version__}{cli_annotation}\n"
+        f"deepagents (SDK) {sdk_version}{sdk_annotation}"
+    )
 
     editable = False
     try:
@@ -677,26 +715,163 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether the interactive TUI should auto-approve tool calls.
+def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
+    """Resolve explicit flags and `[startup].mode` into a typed mode.
 
-    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
-    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
-    (`args.auto_approve is None`), the persistent `[startup].mode` config
-    default decides — `dangerously-auto` enables auto-approval, anything else
-    (including missing/invalid config) keeps human-in-the-loop approvals on.
+    Args:
+        args: Parsed CLI arguments.
 
-    Extracted from the `cli_main` body so it is unit-testable without
-    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    Returns:
+        Explicit `--yolo`, explicit `-y`/`--auto-approve` as `auto`, or the
+        validated startup config value. Invalid config remains fail-closed.
     """
-    if args.auto_approve is not None:
-        return args.auto_approve
-    from deepagents_code.model_config import (
-        STARTUP_MODE_DANGEROUSLY_AUTO,
-        load_startup_mode,
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+    from deepagents_code.model_config import load_startup_mode
+
+    if getattr(args, "yolo", False):
+        return ApprovalMode.YOLO
+    if args.auto_approve is True:
+        return ApprovalMode.AUTO
+    return coerce_approval_mode(load_startup_mode())
+
+
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return the compatibility Boolean for callers using the old resolver.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Whether startup resolves to either autonomous mode.
+    """
+    from deepagents_code.approval_mode import ApprovalMode
+
+    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
+
+
+def _prompt_yolo_acknowledgement(console: "Console") -> bool:
+    """Show an inline fail-closed selector for unrestricted execution.
+
+    Args:
+        console: Rich console used for warning and fallback text.
+
+    Returns:
+        Whether the user explicitly accepted the warning.
+    """
+    console.print()
+    console.print("[bold red]YOLO mode runs gated actions without review.[/bold red]")
+    console.print(
+        "It can execute arbitrary commands, modify files, call external tools, and "
+        "follow hostile retrieved instructions. Auto does not provide sandbox "
+        "containment either; YOLO removes its action decision boundary entirely."
+    )
+    console.print()
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return False
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+
+        from deepagents_code.config import get_glyphs
+
+        choices = [(False, "Use Manual"), (True, "Acknowledge and enable YOLO")]
+        selected_index = 0
+        glyphs = get_glyphs()
+
+        def rows() -> FormattedText:
+            fragments: list[tuple[str, str]] = [
+                (
+                    "class:prompt.help",
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Enter select · Esc Manual\n"
+                    ),
+                )
+            ]
+            for index, (_value, label) in enumerate(choices):
+                active = index == selected_index
+                cursor = glyphs.cursor if active else " "
+                style = "class:item.current" if active else "class:item"
+                suffix = "\n" if index < len(choices) - 1 else ""
+                fragments.append((style, f"{cursor} {label}{suffix}"))
+            return FormattedText(fragments)
+
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        @bindings.add("s-tab")
+        def move_up(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index - 1) % len(choices)
+
+        @bindings.add("down")
+        @bindings.add("tab")
+        def move_down(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index + 1) % len(choices)
+
+        @bindings.add("enter")
+        def choose(event: KeyPressEvent) -> None:
+            event.app.exit(result=choices[selected_index][0])
+
+        @bindings.add("escape")
+        @bindings.add("c-c")
+        def decline(event: KeyPressEvent) -> None:
+            event.app.exit(result=False)
+
+        app: Application[bool] = Application(
+            layout=Layout(
+                Window(
+                    FormattedTextControl(rows),
+                    height=len(choices) + 1,
+                    dont_extend_height=True,
+                )
+            ),
+            key_bindings=bindings,
+            style=Style.from_dict(
+                {"prompt.help": "ansibrightblack", "item.current": "reverse"}
+            ),
+            full_screen=False,
+            erase_when_done=True,
+            output=create_output(stdout=sys.stderr),
+        )
+        return bool(app.run())
+    except (EOFError, KeyboardInterrupt, OSError, RuntimeError, ImportError):
+        logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
+        return False
+
+
+def _ensure_yolo_acknowledged(console: "Console") -> bool:
+    """Ensure the current local YOLO policy has been accepted and persisted.
+
+    Args:
+        console: Console used for the acknowledgement UI.
+
+    Returns:
+        `True` only when an existing or newly persisted acknowledgement exists.
+    """
+    from deepagents_code.approval_mode import (
+        has_yolo_acknowledgement,
+        save_yolo_acknowledgement,
     )
 
-    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+    if has_yolo_acknowledgement():
+        return True
+    if not _prompt_yolo_acknowledgement(console):
+        return False
+    if save_yolo_acknowledgement():
+        return True
+    console.print(
+        "[yellow]YOLO acknowledgement could not be saved; using Manual.[/yellow]"
+    )
+    return False
 
 
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
@@ -1158,6 +1333,7 @@ async def _preload_session_mcp_server_info(
         return None
 
     from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
     from deepagents_code.project_utils import ProjectContext
 
     session_manager = None
@@ -1167,11 +1343,17 @@ async def _preload_session_mcp_server_info(
         except OSError:
             logger.warning("Could not determine working directory for MCP preload")
             project_context = None
+        project_dir = (
+            project_context.project_root or project_context.user_cwd
+            if project_context is not None
+            else None
+        )
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
         return server_info
     finally:
@@ -1189,9 +1371,10 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "help": (None, "show_help"),
     "agents": ("agents_command", "show_agents_help"),
     "skills": ("skills_command", "show_skills_help"),
+    "plugin": ("plugin_command", "show_plugins_help"),
+    "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
-    "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
 }
@@ -1206,19 +1389,22 @@ Each value is `(subcommand_dest, ui_help_fn_name)`:
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
-When adding a new top-level command group with sub-subparsers, register it
-here and add a corresponding `show_<group>_help` to `ui.py`. The drift
-test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+Command groups whose bare invocation performs an action instead belong in
+`_BARE_ACTION_GROUPS`. The drift test in
+`tests/unit_tests/test_startup_fast_paths.py` requires every group to be in
+exactly one collection.
 """
+
+_BARE_ACTION_GROUPS = frozenset({"config"})
+"""Command groups that perform their primary action without a subcommand."""
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
-    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
-    commands when no subcommand was given.
+    invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
+    this path because their bare invocation has useful behavior.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1229,7 +1415,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
             when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    if not isinstance(command, str):
+    if not isinstance(command, str) or command in _BARE_ACTION_GROUPS:
         return False
     spec = _HELP_SPECS.get(command)
     if spec is None:
@@ -1385,6 +1571,14 @@ def parse_args() -> argparse.Namespace:
     setup_mcp_parsers(
         subparsers,
         make_help_action=_make_help_action,
+    )
+
+    from deepagents_code.plugins.commands_cli import setup_plugin_parser
+
+    setup_plugin_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
     )
 
     setup_config_parser(
@@ -1711,20 +1905,23 @@ def parse_args() -> argparse.Namespace:
 
     add_json_output_arg(parser, default="text")
 
-    parser.add_argument(
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
         "-y",
         "--auto-approve",
         action="store_true",
         default=None,
         help=(
-            "Interactive mode only: auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell execution, file "
-            "writes/edits, web search, and URL fetch. Headless mode approves "
-            "non-shell tools; shell is disabled unless allowed via "
-            "--shell-allow-list. "
-            "Use with caution — the agent can execute arbitrary commands. When "
-            "omitted, the launch default comes from [startup].mode in "
-            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
+            "Interactive local TUI only: enable beta classifier-backed Auto mode. "
+            "Requires DEEPAGENTS_CODE_EXPERIMENTAL=1."
+        ),
+    )
+    approval_group.add_argument(
+        "--yolo",
+        action="store_true",
+        help=(
+            "Interactive mode only: run gated actions without review after the "
+            "one-time local risk acknowledgement."
         ),
     )
 
@@ -1784,7 +1981,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trust-project-mcp",
         action="store_true",
-        help="Trust project-level MCP configs with stdio servers "
+        help="Trust project-level MCP configs with stdio and remote servers "
         "(skip interactive approval prompt)",
     )
     parser.add_argument(
@@ -1955,7 +2152,8 @@ def _resolve_and_validate_sandbox(
 async def run_textual_cli_async(
     assistant_id: str,
     *,
-    auto_approve: bool = False,
+    approval_mode: "ApprovalMode | str" = "manual",
+    auto_approve: bool | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_snapshot_name: str | None = None,
@@ -1983,8 +2181,10 @@ async def run_textual_cli_async(
     `langgraph-sdk` client.
 
     Args:
-        assistant_id: Agent identifier for memory storage
-        auto_approve: Whether to auto-approve tool usage
+        assistant_id: Agent identifier for memory storage.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for callers using the previous Boolean
+            API. `True` maps to unrestricted `yolo`.
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2023,7 +2223,9 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
 
-            `True` to allow, `False` to deny, `None` to check trust store.
+            `True` to allow, `False` to deny, `None` to fall back to the
+            user's per-server scoped approvals (equivalent to `False` for the
+            whole-config decision).
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -2041,6 +2243,7 @@ async def run_textual_cli_async(
     from rich.text import Text
 
     from deepagents_code.app import AppResult, run_textual_app
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
@@ -2052,6 +2255,12 @@ async def run_textual_cli_async(
         NoCredentialsConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
+
+    resolved_approval_mode = coerce_approval_mode(approval_mode)
+    if auto_approve is not None:
+        resolved_approval_mode = (
+            ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+        )
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -2091,15 +2300,13 @@ async def run_textual_cli_async(
             "profile_overrides": profile_override,
         }
 
-    # Build kwargs for deferred server startup (runs inside the TUI).
-    # Never pass auto_approve to the server — the interactive server must
-    # always configure full HITL interrupts so that Shift+Tab can toggle
-    # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in `tui.textual_adapter`.
+    # Build kwargs for deferred server startup. Approval mode remains a live
+    # per-thread Store record, so graph construction is independent of startup mode.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
         "model_params": model_params,
+        "profile_overrides": profile_override,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_snapshot_name": sandbox_snapshot_name,
@@ -2126,7 +2333,7 @@ async def run_textual_cli_async(
         result = await run_textual_app(
             assistant_id=assistant_id,
             backend=None,
-            auto_approve=auto_approve,
+            approval_mode=resolved_approval_mode,
             cwd=Path.cwd(),
             thread_id=thread_id,
             resume_thread=resume_thread,
@@ -2197,6 +2404,8 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
+    from deepagents_code.project_utils import ProjectContext
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
@@ -2210,6 +2419,17 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
     model_result.apply_to_settings()
+
+    try:
+        project_context = ProjectContext.from_user_cwd(Path.cwd())
+    except (OSError, RuntimeError):
+        logger.warning("Could not determine working directory for ACP MCP loading")
+        project_context = None
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
 
     # Persist the resolved model so [models].recent is always populated.
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
@@ -2233,6 +2453,12 @@ async def _run_acp_cli_async(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            project_context=project_context,
+            additional_configs=(
+                discover_plugin_mcp_configs(project_dir=project_dir)
+                if not no_mcp
+                else ()
+            ),
         )
         tools.extend(mcp_tools)
     except FileNotFoundError as exc:
@@ -2486,7 +2712,470 @@ def _debug_mcp_project_trust_enabled() -> bool:
     return is_env_truthy(DEBUG_MCP_PROJECT_TRUST)
 
 
-def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
+def _parse_server_number_selection(raw: str, count: int) -> list[int]:
+    """Parse a `1,3`-style selection into unique, in-range 1-based indices.
+
+    Accepts comma- and/or whitespace-separated tokens. Non-integer or
+    out-of-range tokens are ignored; the result preserves input order and
+    drops duplicates.
+
+    Args:
+        raw: The user's raw selection input.
+        count: The number of choices (valid indices are `1..count`).
+
+    Returns:
+        The selected 1-based indices.
+    """
+    selected: list[int] = []
+    for token in raw.replace(",", " ").split():
+        try:
+            index = int(token)
+        except ValueError:
+            continue
+        if 1 <= index <= count and index not in selected:
+            selected.append(index)
+    return selected
+
+
+def _format_project_mcp_checkbox_rows(
+    prompt_servers: Sequence["ProjectServerSummary"],
+    selected_names: set[str],
+    selected_index: int,
+    glyphs: "Glyphs",
+) -> list[tuple[str, str]]:
+    """Format rows for the inline project MCP checkbox picker.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        selected_names: Server names that are currently checked.
+        selected_index: Zero-based cursor row.
+        glyphs: Terminal-appropriate glyphs.
+
+    Returns:
+        Prompt-toolkit formatted text fragments, one per visible server row.
+    """
+    rows: list[tuple[str, str]] = []
+    for index, (name, kind, summary) in enumerate(prompt_servers):
+        active = index == selected_index
+        checked = name in selected_names
+        cursor = glyphs.cursor if active else " "
+        box = "[x]" if checked else "[ ]"
+        style = "class:item.current" if active else "class:item"
+        suffix = "\n" if index < len(prompt_servers) - 1 else ""
+        rows.append((style, f"{cursor} {box} {name} ({kind}): {summary}{suffix}"))
+    return rows
+
+
+def _project_mcp_picker_has_terminal() -> bool:
+    """Return whether the inline MCP pickers have interactive input and output."""
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _run_project_mcp_trust_action_picker(
+    console: "Console",
+) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
+    """Show the inline project MCP trust action picker.
+
+    Args:
+        console: Console to print fallback notices to (stderr).
+
+    Returns:
+        The chosen action, `CANCELLED` for Esc, `INTERRUPTED` for Ctrl+C, or
+        `None` when the inline picker cannot run and the caller should use the
+        text fallback.
+    """
+    if not _project_mcp_picker_has_terminal():
+        return None
+
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        logger.debug("Project MCP action picker unavailable", exc_info=True)
+        console.print(
+            "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
+            highlight=False,
+        )
+        return None
+
+    from deepagents_code.config import get_glyphs
+
+    glyphs = get_glyphs()
+    actions = [
+        (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
+        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
+        (_ProjectMcpTrustAction.DENY, "Deny"),
+    ]
+    selected_index = len(actions) - 1
+
+    def _rows() -> FormattedText:
+        rows: list[tuple[str, str]] = [
+            (
+                "class:prompt.help",
+                (
+                    f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                    "Enter select · Esc abort\n"
+                ),
+            ),
+        ]
+        for index, (_action, label) in enumerate(actions):
+            active = index == selected_index
+            cursor = glyphs.cursor if active else " "
+            style = "class:item.current" if active else "class:item"
+            suffix = "\n" if index < len(actions) - 1 else ""
+            rows.append((style, f"{cursor} {label}{suffix}"))
+        return FormattedText(rows)
+
+    key_bindings = KeyBindings()
+
+    @key_bindings.add("up")
+    @key_bindings.add("s-tab")
+    @key_bindings.add("k")
+    def _up(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index - 1) % len(actions)
+
+    @key_bindings.add("down")
+    @key_bindings.add("tab")
+    @key_bindings.add("j")
+    def _down(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index + 1) % len(actions)
+
+    @key_bindings.add("enter")
+    def _confirm(event: KeyPressEvent) -> None:
+        event.app.exit(result=actions[selected_index][0])
+
+    @key_bindings.add("escape")
+    def _abort(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
+
+    @key_bindings.add("c-c")
+    def _interrupt(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+
+    app: Application[_ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome] = (
+        Application(
+            layout=Layout(
+                Window(
+                    FormattedTextControl(_rows),
+                    height=len(actions) + 1,
+                    dont_extend_height=True,
+                )
+            ),
+            key_bindings=key_bindings,
+            style=Style.from_dict(
+                {
+                    "prompt.help": "ansibrightblack",
+                    "item.current": "reverse",
+                }
+            ),
+            full_screen=False,
+            erase_when_done=True,
+            output=create_output(stdout=sys.stderr),
+        )
+    )
+    try:
+        return app.run()
+    except (RuntimeError, OSError):
+        logger.debug("Project MCP action picker failed", exc_info=True)
+        console.print(
+            "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
+            highlight=False,
+        )
+        return None
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
+        return None
+
+
+def _select_project_mcp_trust_action(
+    console: "Console",
+) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
+    """Choose whether to allow once, remember selected servers, or deny.
+
+    Args:
+        console: Console used by the text fallback.
+
+    Returns:
+        The selected trust action, `CANCELLED` when the user presses Esc, or
+        `INTERRUPTED` when the user presses Ctrl+C.
+    """
+    selected = _run_project_mcp_trust_action_picker(console)
+    if selected is not None:
+        return selected
+
+    try:
+        answer = (
+            input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
+        )
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
+        return _ProjectMcpTrustAction.DENY
+    if answer in {"y", "yes"}:
+        return _ProjectMcpTrustAction.ALLOW_ONCE
+    if answer in {"r", "remember", "a", "always"}:
+        return _ProjectMcpTrustAction.REMEMBER
+    return _ProjectMcpTrustAction.DENY
+
+
+def _run_project_mcp_server_checkbox_picker(
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
+    """Show an inline checkbox picker for project MCP servers to remember.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print fallback notices to (stderr).
+
+    Returns:
+        Selected server names. Empty means the user confirmed no selections;
+        `CANCELLED` means the user backed out (Esc or Ctrl+D) to abort the launch;
+        `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
+        could not run and the caller should fall back to a simpler prompt.
+    """
+    if not _project_mcp_picker_has_terminal():
+        return None
+
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import HSplit, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        logger.debug("Project MCP checkbox picker unavailable", exc_info=True)
+        console.print(
+            "[dim]Checkbox picker unavailable; falling back to number selection.[/dim]",
+            highlight=False,
+        )
+        return None
+
+    from deepagents_code.config import get_glyphs
+
+    names = [name for name, _kind, _summary in prompt_servers]
+    selected_names: set[str] = set()
+    selected_index = 0
+    visible_count = min(len(names), _PROJECT_MCP_PICKER_VISIBLE_ROWS)
+    glyphs = get_glyphs()
+
+    def _selected_names() -> list[str]:
+        return [name for name in names if name in selected_names]
+
+    def _help_text() -> FormattedText:
+        return FormattedText(
+            [
+                ("class:prompt.title", "Choose servers to remember\n"),
+                (
+                    "class:prompt.help",
+                    (
+                        "Remembered servers are trusted only for this project while "
+                        "their definitions stay unchanged.\n"
+                        f"{selected_index + 1} of {len(names)} · "
+                        f"{len(selected_names)} selected\n"
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Space toggle · a select all · c clear · Enter confirm · "
+                        "Esc abort\n"
+                    ),
+                ),
+            ]
+        )
+
+    def _rows() -> FormattedText:
+        start = min(
+            max(0, selected_index - visible_count + 1),
+            len(prompt_servers) - visible_count,
+        )
+        visible_servers = prompt_servers[start : start + visible_count]
+        return FormattedText(
+            _format_project_mcp_checkbox_rows(
+                visible_servers,
+                selected_names,
+                selected_index - start,
+                glyphs,
+            )
+        )
+
+    key_bindings = KeyBindings()
+
+    @key_bindings.add("up")
+    @key_bindings.add("s-tab")
+    @key_bindings.add("k")
+    def _up(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index - 1) % len(names)
+
+    @key_bindings.add("down")
+    @key_bindings.add("tab")
+    @key_bindings.add("j")
+    def _down(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index + 1) % len(names)
+
+    @key_bindings.add(" ")
+    def _toggle(_event: KeyPressEvent) -> None:
+        name = names[selected_index]
+        if name in selected_names:
+            selected_names.remove(name)
+        else:
+            selected_names.add(name)
+
+    @key_bindings.add("a")
+    def _select_all(_event: KeyPressEvent) -> None:
+        selected_names.update(names)
+
+    @key_bindings.add("c")
+    def _clear(_event: KeyPressEvent) -> None:
+        selected_names.clear()
+
+    @key_bindings.add("enter")
+    def _confirm(event: KeyPressEvent) -> None:
+        event.app.exit(result=_selected_names())
+
+    @key_bindings.add("escape")
+    def _cancel(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
+
+    @key_bindings.add("c-c")
+    def _interrupt(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+
+    app: Application[list[str] | _ProjectMcpTrustPromptOutcome] = Application(
+        layout=Layout(
+            HSplit(
+                [
+                    Window(
+                        FormattedTextControl(_help_text),
+                        height=4,
+                        dont_extend_height=True,
+                    ),
+                    Window(
+                        FormattedTextControl(_rows),
+                        height=visible_count,
+                        dont_extend_height=True,
+                    ),
+                ]
+            )
+        ),
+        key_bindings=key_bindings,
+        style=Style.from_dict(
+            {
+                "prompt.title": "bold",
+                "prompt.help": "ansibrightblack",
+                "item.current": "reverse",
+            }
+        ),
+        full_screen=False,
+        erase_when_done=True,
+        output=create_output(stdout=sys.stderr),
+    )
+    try:
+        return app.run()
+    except (RuntimeError, OSError):
+        logger.debug("Project MCP checkbox picker failed", exc_info=True)
+        console.print(
+            "[dim]Checkbox picker unavailable; falling back to number selection.[/dim]",
+            highlight=False,
+        )
+        return None
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
+        # Ctrl+D backs out of the picker, same as Esc: cancel rather than
+        # silently confirm an empty selection.
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
+
+
+def _select_project_servers_with_numbers(
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome:
+    """Ask which prompted project MCP servers to remember with a text fallback.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print the fallback selection UI to (stderr).
+
+    Returns:
+        The chosen server names. Empty when the user makes no valid selection;
+        `CANCELLED` when the user leaves the input blank or sends EOF; and
+        `INTERRUPTED` when the user presses Ctrl+C.
+    """
+    from rich.markup import escape
+
+    names = [name for name, _kind, _summary in prompt_servers]
+    console.print()
+    for index, (name, kind, summary) in enumerate(prompt_servers, start=1):
+        console.print(
+            f'  [bold]{index}.[/bold] "{escape(name)}" ({escape(kind)}):  '
+            f"{escape(summary)}",
+            highlight=False,
+        )
+    try:
+        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if not raw.strip():
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if raw.strip().lower() in {"a", "all"}:
+        return names
+    return [
+        names[index - 1] for index in _parse_server_number_selection(raw, len(names))
+    ]
+
+
+def _select_project_servers_to_persist(
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome:
+    """Ask which prompted project MCP servers to remember for this project.
+
+    Multiple prompted servers use an arrow-key checkbox picker. A single
+    prompted server skips the picker because there is nothing to choose between.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print the fallback selection UI to (stderr).
+
+    Returns:
+        The chosen server names. Empty when the user confirms no servers or
+        makes no valid fallback selection. `CANCELLED` means the user backed out
+        and the caller should abort the launch. `INTERRUPTED` means the user
+        pressed Ctrl+C.
+    """
+    names = [name for name, _kind, _summary in prompt_servers]
+    if len(names) <= 1:
+        return names
+
+    selected = _run_project_mcp_server_checkbox_picker(prompt_servers, console)
+    if selected is not None:
+        return selected
+    return _select_project_servers_with_numbers(prompt_servers, console)
+
+
+def _check_mcp_project_trust(
+    *, trust_flag: bool = False
+) -> (
+    bool
+    | Literal[
+        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
+        _ProjectMcpTrustPromptOutcome.CANCELLED,
+    ]
+    | None
+):
     """Check whether project-level MCP servers should be trusted.
 
     Both stdio and remote (http/sse) project entries require approval —
@@ -2496,12 +3185,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
     When the project has no servers in project-level configs, returns
     `None` (no gate needed). When `--trust-project-mcp` was passed,
-    returns `True`. Otherwise checks the persistent trust store; if
-    untrusted, shows an interactive approval prompt.
+    returns `True`. Otherwise it shows an inline action selector for unresolved
+    servers: allow once, remember selected servers, or deny. Remembered approvals
+    are scoped to this project and each exact server definition. The remember
+    picker starts with nothing selected; Esc in either picker aborts the launch,
+    and no server loads without an explicit allow action.
 
-    Servers already resolved by the user's `enabled_project_servers` /
-    `disabled_project_servers` lists are shown for transparency but not
-    prompted for (enabled ones load regardless; disabled ones never load).
+    Servers already resolved by the user's scoped approvals, the
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
+    `disabled_project_servers` list are not prompted for (approved ones load when
+    the project/fingerprint still matches; env-enabled ones load by name; disabled
+    ones never load).
     `None` is returned when that leaves nothing to decide. If the user's own
     allow/deny policy cannot be read, returns `False` (fail closed) rather than
     prompting under an unknown deny list.
@@ -2511,15 +3205,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
     Returns:
         `True` to allow project servers, `False` to deny (including when the
-            user's trust policy could not be read), or `None` when there are no
-            project servers whose fate this prompt decides.
+            user's trust policy could not be read), `None` when there are no
+            project servers whose fate this prompt decides, `INTERRUPTED` when
+            the user presses Ctrl+C, or `CANCELLED` when the user presses Esc to
+            abort the launch.
     """
     from deepagents_code.mcp_tools import (
+        ProjectServerSummary,
         classify_discovered_configs,
         discover_mcp_configs,
         extract_project_server_summaries,
-        load_mcp_config_lenient,
-        merge_mcp_configs,
+        load_merged_mcp_configs_lenient,
     )
     from deepagents_code.project_utils import ProjectContext
 
@@ -2529,27 +3225,39 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
         config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
+        logger.debug(
+            "Could not discover MCP configs for project trust check",
+            exc_info=True,
+        )
         return None
 
     _, project_configs = classify_discovered_configs(config_paths)
     if not project_configs and not debug_prompt:
         return None
 
-    # Merge configs by server name (last wins, matching the loader) so that
-    # a server defined in multiple project configs (for example,
-    # `.deepagents/.mcp.json` and higher-precedence `.mcp.json`) only shows
-    # up once in the prompt.
-    loaded_configs = [
-        cfg
-        for cfg in (load_mcp_config_lenient(path) for path in project_configs)
-        if cfg is not None
-    ]
-    merged_config = merge_mcp_configs(loaded_configs)
+    # Read the user's allow/deny policy before parsing project configs. Session
+    # approval grants whole-config trust, so the prompt must be built from the
+    # same server set the runtime would retain under that decision: explicitly
+    # disabled entries are removed before they can invalidate a sibling.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
+
+    # Resolve precedence before per-server validation, matching the runtime
+    # loader. Otherwise one malformed lower-precedence definition can hide its
+    # valid siblings from this prompt even when a higher-precedence config
+    # replaces the malformed entry and runtime would activate those siblings.
+    merged_config = load_merged_mcp_configs_lenient(
+        project_configs, disabled_servers=trust_lists.disabled
+    ) or {"mcpServers": {}}
     all_servers = extract_project_server_summaries(merged_config)
+    raw_server_configs = merged_config.get("mcpServers", {})
+    server_configs = raw_server_configs if isinstance(raw_server_configs, dict) else {}
+    project_root = project_context.project_root or project_context.user_cwd
 
     if not all_servers and debug_prompt:
         all_servers = [
-            (
+            ProjectServerSummary(
                 "debug-project-mcp",
                 "stdio",
                 "uvx deepagents-debug-mcp --sample-project-server",
@@ -2562,71 +3270,32 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if trust_flag:
         return True
 
-    # Check trust store
-    from deepagents_code.mcp_trust import (
-        compute_config_fingerprint,
-        is_project_mcp_trusted,
-        trust_project_mcp,
-    )
-
-    project_root = str(
-        (project_context.project_root or project_context.user_cwd).resolve()
-    )
-    fingerprint = compute_config_fingerprint(project_configs)
-
-    if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
-        return True
-
-    # Partition by the user's own allow/deny lists (read only from home config,
-    # never the repo — the same boundary the loader enforces). Enabled servers
-    # load regardless of the answer here and disabled ones never load, so the
-    # prompt must not *ask* about them. It still *shows* them, though, so the
-    # user sees what their config decided — notably a repo redefining an
-    # allowlisted name, which binds by name rather than by fingerprint.
-    from deepagents_code.model_config import load_mcp_server_trust_lists
-
-    trust_lists = load_mcp_server_trust_lists()
+    # Partition by the user's own allow/deny policy (read only from home config,
+    # never the repo — the same boundary the loader enforces). Scoped approvals
+    # load only while the project root and server fingerprint match; disabled
+    # names never load. The prompt asks only about unresolved servers.
     from rich.console import Console as _Console
     from rich.markup import escape
 
     prompt_console = _Console(stderr=True)
-    prompt_servers: list[tuple[str, str, str]] = []
-    preapproved: list[tuple[str, str, str]] = []
-    blocked: list[tuple[str, str, str]] = []
-    for name, kind, summary in all_servers:
+    prompt_servers: list[ProjectServerSummary] = []
+    for summary_row in all_servers:
+        name, _kind, _summary = summary_row
         # Disabled first: reject precedence (a name in both lists is disabled).
         if name in trust_lists.disabled:
-            blocked.append((name, kind, summary))
-        elif name in trust_lists.enabled:
-            preapproved.append((name, kind, summary))
-        else:
-            prompt_servers.append((name, kind, summary))
-
-    def _print_auto_resolved() -> None:
-        """List servers the config already decided, without asking about them."""
-        if not preapproved and not blocked:
-            return
-        prompt_console.print()
-        prompt_console.print(
-            "[dim]Resolved by your config (not prompted):[/dim]", highlight=False
-        )
-        for name, kind, summary in preapproved:
-            prompt_console.print(
-                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
-                f"(enabled_project_servers):  {escape(summary)}",
-                highlight=False,
-            )
-        for name, kind, summary in blocked:
-            prompt_console.print(
-                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
-                f"(disabled_project_servers):  {escape(summary)}",
-                highlight=False,
-            )
+            continue
+        if trust_lists.is_enabled(
+            name,
+            project_root=project_root,
+            server=server_configs.get(name, {}),
+        ):
+            continue
+        prompt_servers.append(summary_row)
 
     if trust_lists.read_error is not None:
         # The user's allow/deny policy could not be read. Fail closed here too
         # (matching the loader, which forces the config untrusted) instead of
-        # prompting and possibly persisting fingerprint trust under an unknown
+        # prompting and possibly persisting an allow-list entry under an unknown
         # deny list. Any env-enabled names still load — the loader re-applies the
         # lists downstream — but nothing is approved via this prompt.
         prompt_console.print(
@@ -2634,49 +3303,73 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
             "project MCP servers as untrusted.[/yellow]",
             highlight=False,
         )
-        _print_auto_resolved()
         return False
 
     if not prompt_servers:
-        # Nothing left to decide interactively, but surface what the lists
-        # resolved so a load driven purely by config is never fully silent.
-        _print_auto_resolved()
         return None
 
-    docs_url = (
-        "https://docs.langchain.com/oss/python/deepagents/code/"
-        "mcp-tools#project-level-trust"
-    )
     prompt_console.print()
-    prompt_console.print(
-        "[bold yellow]Project MCP servers require approval:[/bold yellow]"
-    )
+    prompt_console.print("[bold yellow]Approve project MCP servers:[/bold yellow]")
     for name, kind, summary in prompt_servers:
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
         )
-    _print_auto_resolved()
     prompt_console.print()
+
+    server_count = len(prompt_servers)
+    noun = "server" if server_count == 1 else "servers"
+    action = _select_project_mcp_trust_action(prompt_console)
+    if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if action is _ProjectMcpTrustAction.DENY:
+        prompt_console.print(
+            f"[dim]Denied {server_count} project MCP {noun}.[/dim]",
+            highlight=False,
+        )
+        return False
+    if action is _ProjectMcpTrustAction.ALLOW_ONCE:
+        prompt_console.print(
+            f"[dim]Allowing {server_count} project MCP {noun} for this "
+            "session; remembering 0.[/dim]",
+            highlight=False,
+        )
+        return True
+
+    from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+    names = _select_project_servers_to_persist(prompt_servers, prompt_console)
+    if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if not names:
+        prompt_console.print(
+            f"[dim]No servers selected; denied {server_count} project MCP "
+            f"{noun}.[/dim]",
+            highlight=False,
+        )
+        return False
+
+    saved = debug_prompt or add_enabled_project_mcp_servers(
+        names,
+        project_root=project_root,
+        server_configs=server_configs,
+    )
+    remembered_count = len(names) if saved else 0
+    if not saved:
+        prompt_console.print(
+            "[yellow]Approved for this session, but the choice could not be "
+            "remembered — you'll be asked again next time.[/yellow]",
+            highlight=False,
+        )
     prompt_console.print(
-        f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
+        f"[dim]Allowing {server_count} project MCP {noun} for this session; "
+        f"remembering {remembered_count} for this project.[/dim]",
         highlight=False,
     )
-    prompt_console.print()
-
-    try:
-        answer = input("Allow? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-
-    if answer == "y":
-        if not debug_prompt and not trust_project_mcp(project_root, fingerprint):
-            prompt_console.print(
-                "[yellow]Approved for this session, but the decision could not be "
-                "saved — you'll be asked again next time.[/yellow]",
-                highlight=False,
-            )
-        return True
-    return False
+    return True
 
 
 def _verify_interpreter_or_exit() -> None:
@@ -2835,6 +3528,12 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
+                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+                sys.stderr.write(
+                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -2888,13 +3587,16 @@ def cli_main() -> None:
         # predicate that selects the headless branch below), so this reliably
         # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
         # leaving interactive launches untouched.
-        if args.auto_approve and args.non_interactive_message:
+        if (
+            args.auto_approve or getattr(args, "yolo", False)
+        ) and args.non_interactive_message:
             from rich.console import Console as _Console
 
+            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-approve is only supported in "
-                "interactive mode. Headless mode already approves non-shell tools; "
-                "use --shell-allow-list to control shell access."
+                f"[bold red]Error:[/bold red] {flag} is only supported in "
+                "interactive mode. Headless mode uses fail-closed MCP routing and "
+                "--shell-allow-list for shell access."
             )
             sys.exit(2)
 
@@ -3540,6 +4242,10 @@ def cli_main() -> None:
             from deepagents_code.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command in {"plugin", "plugins"}:
+            from deepagents_code.plugins.commands_cli import execute_plugin_command
+
+            execute_plugin_command(args)
         elif args.command == "mcp":
             from deepagents_code.client.commands.mcp import (
                 run_mcp_config,
@@ -3798,6 +4504,16 @@ def cli_main() -> None:
             )
             if _debug_mcp_project_trust_enabled():
                 sys.exit(0)
+            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; no project MCP servers loaded.[/dim]",
+                    highlight=False,
+                )
+                return
 
             # Run Textual TUI
             return_code = 0
@@ -3810,14 +4526,33 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                # An explicit -y/--auto-approve wins; otherwise the persistent
-                # [startup].mode config default decides the launch mode.
-                auto_approve = _resolve_auto_approve(args)
+                from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+                from deepagents_code.approval_mode import ApprovalMode
+
+                approval_mode = _resolve_approval_mode(args)
+                if approval_mode is ApprovalMode.AUTO and (
+                    not is_env_truthy(EXPERIMENTAL)
+                    or (args.sandbox and args.sandbox != "none")
+                ):
+                    reason = (
+                        "Auto is unavailable with a sandbox"
+                        if args.sandbox and args.sandbox != "none"
+                        else f"Auto is an opt-in beta; set {EXPERIMENTAL}=1"
+                    )
+                    console.print(f"[yellow]{reason}. Using Manual.[/yellow]")
+                    approval_mode = ApprovalMode.MANUAL
+                if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
+                    console
+                ):
+                    console.print(
+                        "[yellow]YOLO was not enabled; using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
 
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=auto_approve,
+                        approval_mode=approval_mode,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,

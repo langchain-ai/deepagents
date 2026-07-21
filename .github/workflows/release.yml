@@ -89,6 +89,9 @@ jobs:
   setup:
     name: 🧭 Resolve release target
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
@@ -199,7 +202,7 @@ jobs:
             if [ -n "${INPUT_SHA}" ]; then
               echo "| \`release-sha\` | \`$(escape_cell "${INPUT_SHA}")\` |"
             else
-              echo "| \`release-sha\` | (empty) |"
+              echo "| \`release-sha\` | (not provided — resolved to the workflow SHA only when \`dangerous-nonmain-release\` is enabled; otherwise invalid) |"
             fi
             if [ "${IS_DANGEROUS}" = "true" ]; then
               echo "| \`dangerous-nonmain-release\` | ⚠️ enabled |"
@@ -213,6 +216,7 @@ jobs:
       - name: Resolve and validate release SHA
         id: resolve-sha
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_SHA: ${{ inputs.release-sha }}
           INPUT_VERSION: ${{ inputs.version }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
@@ -249,10 +253,12 @@ jobs:
             SHA="$INPUT_SHA"
           fi
 
-          if ! err=$(git cat-file -e "${SHA}^{commit}" 2>&1); then
-            echo "::error::release-sha $SHA does not resolve to a commit in this repository: $err"
+          REQUESTED_SHA="$SHA"
+          if ! RESOLVED_SHA=$(git rev-parse -q --verify "${REQUESTED_SHA}^{commit}"); then
+            echo "::error::release-sha $REQUESTED_SHA does not resolve to a commit in this repository"
             exit 1
           fi
+          SHA="$RESOLVED_SHA"
 
           # Validate that pyproject.toml at this SHA declares the requested version.
           # This is what we actually care about: the wheel built from this SHA must
@@ -287,6 +293,42 @@ jobs:
           fi
 
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$INPUT_SHA" ]; then
+            RELEASE_SHA_SOURCE="explicit release-sha input"
+          else
+            RELEASE_SHA_SOURCE="workflow SHA fallback because dangerous-nonmain-release is enabled"
+          fi
+
+          RELEASE_PR_NUMBER=""
+          if PULLS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" 2>&1); then
+            # sort_by(.number) makes the pick deterministic when a commit is
+            # associated with more than one merged PR (e.g. a merge to main plus a
+            # later backport that cherry-picked it): the lowest number is the
+            # original merge, since backports are opened afterwards.
+            if ! RELEASE_PR_NUMBER=$(printf '%s' "$PULLS" | jq -r \
+              'map(select(.merged_at != null)) | sort_by(.number) | .[0].number // empty'); then
+              echo "::warning::Could not parse the pull request associated with release SHA $SHA: $PULLS"
+              RELEASE_PR_NUMBER=""
+            fi
+          else
+            echo "::warning::Could not look up the pull request associated with release SHA $SHA: $PULLS"
+          fi
+
+          {
+            echo "### Resolved release target"
+            echo ""
+            echo "| Target | Value |"
+            echo "|---|---|"
+            echo "| Release SHA | [\`${SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SHA}) |"
+            if [ -n "$RELEASE_PR_NUMBER" ]; then
+              echo "| Associated PR | [#${RELEASE_PR_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${RELEASE_PR_NUMBER}) |"
+            fi
+            echo "| Resolution | ${RELEASE_SHA_SOURCE} |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
 
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
@@ -451,6 +493,8 @@ jobs:
           RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
+          set -euo pipefail
+
           # Detect PEP 440 pre-release versions:
           #   - Dash separator: 1.0.0-rc.1
           #   - PEP 440 suffixes: 1.0.0a1, 1.0.0b1, 1.0.0rc1, 1.0.0.dev1
@@ -498,8 +542,126 @@ jobs:
               --list "$PKG_NAME==*")
           }
 
-          # Prefer the expected predecessor, then fall back to the highest stable
-          # package tag that is actually in the release commit's history.
+          parse_prerelease() {
+            local version="$1"
+            PRE_BASE=""
+            PRE_RANK=-1
+            PRE_SERIAL=-1
+
+            if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+              PRE_BASE="${BASH_REMATCH[1]}"
+              PRE_RANK=0
+              PRE_SERIAL=$((10#${BASH_REMATCH[2]}))
+            elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+              PRE_BASE="${BASH_REMATCH[1]}"
+              PRE_SERIAL=$((10#${BASH_REMATCH[3]}))
+              case "${BASH_REMATCH[2]}" in
+                a) PRE_RANK=1 ;;
+                b) PRE_RANK=2 ;;
+                rc) PRE_RANK=3 ;;
+              esac
+            elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(dev|a|alpha|b|beta|rc|pre|preview)[.-]?([0-9]+)$ ]]; then
+              PRE_BASE="${BASH_REMATCH[1]}"
+              PRE_SERIAL=$((10#${BASH_REMATCH[3]}))
+              case "${BASH_REMATCH[2]}" in
+                dev) PRE_RANK=0 ;;
+                a|alpha) PRE_RANK=1 ;;
+                b|beta) PRE_RANK=2 ;;
+                rc|pre|preview) PRE_RANK=3 ;;
+              esac
+            else
+              return 1
+            fi
+          }
+
+          latest_earlier_prerelease_tag() {
+            local best_rank=-1
+            local best_serial=-1
+            local candidate_base
+            local candidate_rank
+            local candidate_serial
+            local current_base
+            local current_rank
+            local current_serial
+            local tag
+            local tag_version
+            local tags
+            local ahead_status
+
+            EARLIER_PRERELEASE_TAG=""
+
+            if ! parse_prerelease "$VERSION"; then
+              echo "::warning::VERSION '$VERSION' is treated as a pre-release but does not match a recognized pre-release format; predecessor selection will fall back to the base-version or latest stable tag"
+              return
+            fi
+            current_base="$PRE_BASE"
+            current_rank="$PRE_RANK"
+            current_serial="$PRE_SERIAL"
+
+            # Capture the tag list up front so a `git tag` failure surfaces instead of
+            # being swallowed by process substitution (exempt from `set -e`) and
+            # masquerading as "no earlier pre-release".
+            if ! tags=$(git tag --list "$PKG_NAME==*"); then
+              echo "::warning::git tag --list failed; skipping earlier-prerelease predecessor detection"
+              return
+            fi
+
+            while IFS= read -r tag; do
+              [ -z "$tag" ] && continue
+              [ "$tag" = "$PKG_NAME==$VERSION" ] && continue
+              tag_version="${tag#"$PKG_NAME=="}"
+              if ! parse_prerelease "$tag_version"; then
+                continue
+              fi
+              candidate_base="$PRE_BASE"
+              candidate_rank="$PRE_RANK"
+              candidate_serial="$PRE_SERIAL"
+
+              # Keep only same-base candidates strictly earlier than $VERSION. On equal
+              # rank, `>=` (not `>`) excludes an equal serial: that is either $VERSION
+              # itself under a different tag spelling, or a same-precedence duplicate —
+              # neither is a valid predecessor.
+              if [ "$candidate_base" != "$current_base" ] \
+                || (( candidate_rank > current_rank )) \
+                || (( candidate_rank == current_rank && candidate_serial >= current_serial )); then
+                continue
+              fi
+              # Skip tags that don't resolve, or that share no history with the release
+              # commit (disjoint/grafted history — nearly always false within one repo,
+              # but cheap insurance).
+              if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null \
+                || ! git merge-base "$tag" "$RELEASE_SHA" >/dev/null; then
+                continue
+              fi
+              # Skip "future" siblings: a tag that descends from RELEASE_SHA cannot be a
+              # predecessor. --is-ancestor exits 0 (ancestor -> skip), 1 (not -> keep),
+              # or 128 (error); treat any non-1 as skip so a git error never silently
+              # accepts a bad candidate. Warn on the error case (non-0, non-1) so it is
+              # not silently bucketed with the expected future-sibling skip, matching
+              # the git-tag-list and parse-failure warnings above.
+              ahead_status=0
+              git merge-base --is-ancestor "$RELEASE_SHA" "$tag" || ahead_status=$?
+              if [ "$ahead_status" -ne 1 ]; then
+                if [ "$ahead_status" -ne 0 ]; then
+                  echo "::warning::git merge-base --is-ancestor exited $ahead_status for '$tag'; skipping as a predecessor candidate"
+                fi
+                continue
+              fi
+              # Track the latest earlier sibling: highest rank, then highest serial.
+              if (( candidate_rank > best_rank )) \
+                || (( candidate_rank == best_rank && candidate_serial > best_serial )); then
+                EARLIER_PRERELEASE_TAG="$tag"
+                best_rank="$candidate_rank"
+                best_serial="$candidate_serial"
+              fi
+            done <<< "$tags"
+          }
+
+          # Choose the predecessor tag whose `..RELEASE_SHA` range defines the log.
+          # Pre-releases use a three-tier fallback: (1) the latest earlier sibling
+          # pre-release of the same base version, else (2) the base-version tag if it
+          # is reachable, else (3) the highest stable tag in the release's history.
+          # Stable releases use the immediate previous patch, else the highest stable.
           if [ "$IS_PRERELEASE" = "true" ]; then
             # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
             # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
@@ -510,14 +672,20 @@ jobs:
               echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
             fi
 
-            PREV_TAG="$PKG_NAME==$BASE_VERSION"
+            latest_earlier_prerelease_tag
+            PREV_TAG="$EARLIER_PRERELEASE_TAG"
+            if [ -z "$PREV_TAG" ]; then
+              PREV_TAG="$PKG_NAME==$BASE_VERSION"
+              if ! valid_previous_tag "$PREV_TAG"; then
+                PREV_TAG=$(latest_stable_tag)
+              fi
+            fi
           else
             PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
             [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-          fi
-
-          if ! valid_previous_tag "$PREV_TAG"; then
-            PREV_TAG=$(latest_stable_tag)
+            if ! valid_previous_tag "$PREV_TAG"; then
+              PREV_TAG=$(latest_stable_tag)
+            fi
           fi
 
           # A stable release with no reachable predecessor tag is anomalous unless

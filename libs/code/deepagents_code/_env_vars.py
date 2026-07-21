@@ -51,11 +51,49 @@ Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
 through to the config file and then the default block cursor.
 """
 
+DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS = (
+    "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+)
+"""Comma-separated project MCP server names to dangerously pre-approve by name.
+
+This is an explicit process-wide escape hatch. Servers named here load from an
+otherwise-untrusted project `.mcp.json` without prompting (they are omitted from
+the interactive approval prompt), while non-listed servers still require
+approval (they go through the prompt, and stay dropped only on the
+non-interactive or denied paths). Like
+`DISABLED_PROJECT_MCP_SERVERS`, this is user-controlled process env, not a repo
+file, so it does not weaken the user-level-only trust boundary (a committed
+*project* `.env` cannot set it; see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
+This dangerous contract is name-based: a different project, command change, or
+URL change under the same server name still matches.
+
+This process-wide allowlist and the scoped
+`[mcp].enabled_project_server_approvals` TOML approvals are independent grants.
+Setting this variable, including to an empty value, does not suppress remembered
+project approvals. (`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its
+TOML list, so a deny is never silently emptied.)
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
+DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
+r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
+
+Off by default; toggle the "Click to copy" checkbox in the console or set
+`[ui].debug_console_click_to_copy` in config.toml. A recognized value is parsed
+by `classify_env_bool`; an unrecognized value falls through to the config value.
+An empty/whitespace value is ignored before parsing (rather than being treated
+as falsy) and also falls through, so it never masks the saved preference.
+
+When set, this env var takes precedence over the persisted
+`[ui].debug_console_click_to_copy` config value on launch, so toggling the
+checkbox will not appear to "stick" across restarts while the env var remains
+set.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
@@ -106,34 +144,15 @@ DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
 A user-level equivalent of `[mcp].disabled_project_servers`.
 
 Rejection wins over approval: a name listed here is dropped even when it also
-appears in `ENABLED_PROJECT_MCP_SERVERS` (or `[mcp].enabled_project_servers`)
-and even when the project config is otherwise trusted. Unlike the enabled list,
-this env var *unions* with (rather than replaces)
-`[mcp].disabled_project_servers` — denies accumulate across sources, so neither
-can silently empty a deny set in the other. This is process env the user
-controls, not a repo file, so it does not weaken the user-level-only
-trust boundary: a committed *project* `.env` is blocked from setting it
-(see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's shell,
-launch env, or global `~/.deepagents/.env` can.
-"""
-
-ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
-"""Comma-separated project MCP server names to pre-approve by name.
-
-A user-level equivalent of `[mcp].enabled_project_servers`.
-
-Servers named here load from an otherwise-untrusted project `.mcp.json` without
-prompting (they are omitted from the interactive approval prompt), while
-non-listed servers stay dropped. Like `DISABLED_PROJECT_MCP_SERVERS`, this is
-user-controlled process env, not a repo file, so it does not weaken
-the user-level-only trust boundary (a committed *project* `.env` cannot set it;
-see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). This contract is name-based:
-a project command or URL change under the same server name still matches.
-
-When set, this replaces (takes precedence over) the
-`[mcp].enabled_project_servers` TOML list.
-(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
-is never silently emptied.)
+appears in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` or in a scoped
+`[mcp].enabled_project_server_approvals` entry, and even when the project config
+is otherwise trusted. Unlike the enabled list, this env var *unions* with
+(rather than replaces) `[mcp].disabled_project_servers` — denies accumulate
+across sources, so neither can silently empty a deny set in the other. This is
+process env the user controls, not a repo file, so it does not weaken the
+user-level-only trust boundary: a committed *project* `.env` is blocked from
+setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
+shell, launch env, or global `~/.deepagents/.env` can.
 """
 
 EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
@@ -200,6 +219,13 @@ The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
 """
 
+LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
+"""Removed project MCP allowlist env var retained for migration detection only.
+
+The app no longer honors this value. It detects the old name so users receive a
+migration notice pointing to `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`.
+"""
+
 LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
 """Minimum level for `deepagents_code` runtime logging.
 
@@ -246,6 +272,12 @@ Off by default: onboarding goes straight from the name prompt to the model
 selector, which already surfaces (and installs) uninstalled model providers.
 Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
+PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
+"""Override the plugin install/marketplace cache root.
+
+When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"

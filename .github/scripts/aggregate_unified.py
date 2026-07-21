@@ -1,13 +1,16 @@
-"""Combine per-(model x category) Harbor summary.json files into a cross-model
-comparison (macro + micro overalls), a leaderboard, combined JSON, and radar input.
+"""Combine per-(model x branch x config x category) Harbor summary.json files into
+a cross-row comparison (macro + micro overalls), a leaderboard, combined JSON, and
+radar input, ranking flat (model, branch, config) rows.
 
-Each leaf directory (one per model x category) has a summary.json written by
-aggregate_shards.py, which records the model and category authoritatively (via
---model/--category) plus dynamic pass@{K}/avg@{K} keys.
+Each leaf directory (one per model x branch x config x category) has a summary.json
+written by aggregate_shards.py, which records the model, branch, config, and
+category authoritatively (via --model/--config/--category/--branch)
+plus dynamic pass@{K}/avg@{K} keys.
 
-The combiner is given the expected model x category grid (EXPECTED_MODELS /
-EXPECTED_CATEGORIES) so a model whose leaf failed to upload is still shown and
-flagged incomplete, rather than silently ranking on fewer categories.
+The combiner is given the expected leaf grid (EXPECTED_LEAVES, a list of
+{model, branch, config, category} quads / EXPECTED_CATEGORIES) so a leaf that failed
+to upload is still shown and flagged incomplete, rather than silently ranking on
+fewer categories.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ import os
 import sys
 from pathlib import Path
 from typing import cast
+
+from unified_types import LeafKey, RowKey
 
 
 class _LeafSummaryError(ValueError):
@@ -39,9 +44,7 @@ def _require_integer(value: object, field: str, *, minimum: int) -> int:
     return value
 
 
-def _require_metric(
-    summary: dict[str, object], field: str, *, tasks: int
-) -> float | None:
+def _require_metric(summary: dict[str, object], field: str, *, tasks: int) -> float | None:
     if field not in summary:
         msg = f"{field} is required"
         raise _LeafSummaryError(msg)
@@ -78,9 +81,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         msg = f"summary.json is not valid JSON: {exc}"
         raise _LeafSummaryError(msg) from exc
     summary = _require_object(raw, "summary")
-    k = _require_integer(
-        summary.get("rollouts_per_task"), "rollouts_per_task", minimum=1
-    )
+    k = _require_integer(summary.get("rollouts_per_task"), "rollouts_per_task", minimum=1)
     if expected_rollouts is not None and k != expected_rollouts:
         msg = f"rollouts_per_task is {k}; expected {expected_rollouts}"
         raise _LeafSummaryError(msg)
@@ -98,6 +99,18 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if category is not None and not isinstance(category, str):
         msg = "category must be a string or null"
         raise _LeafSummaryError(msg)
+    config = summary.get("config")
+    if config is not None and not isinstance(config, str):
+        msg = "config must be a string or null"
+        raise _LeafSummaryError(msg)
+    branch = summary.get("branch")
+    if branch is not None and not isinstance(branch, str):
+        msg = "branch must be a string or null"
+        raise _LeafSummaryError(msg)
+    source_sha = summary.get("source_sha")
+    if source_sha is not None and not isinstance(source_sha, str):
+        msg = "source_sha must be a string or null"
+        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -108,6 +121,9 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     return {
         "model": model or "unknown",
         "category": category or "unknown",
+        "config": config or "unknown",
+        "branch": branch or "current",
+        "source_sha": source_sha or "",
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "tasks": tasks,
@@ -123,44 +139,58 @@ def _mean(vals: list[float | None]) -> float | None:
 
 def combine(
     leaves: list[dict],
-    expected_models: list[str] | None = None,
+    expected_leaves: list[LeafKey | dict[str, str]] | None = None,
     expected_categories: list[str] | None = None,
 ) -> dict:
     present_cats = {leaf["category"] for leaf in leaves}
     if expected_categories:
         categories = list(expected_categories)
         categories += sorted(present_cats - set(categories))
-        required_categories = list(expected_categories)
     else:
         categories = sorted(present_cats)
-        required_categories = categories
 
-    by_model: dict[str, list[dict]] = {}
-    seen: set[tuple[str, str]] = set()
+    # Required (model, branch, config) -> {category} grid from the expected quads,
+    # so a missing leaf is flagged without assuming which categories a config ran
+    # (tau3 covers conversation only; code configs cover the code categories).
+    required_by_row: dict[RowKey, set[str]] = {}
+    source_sha_by_row: dict[RowKey, str] = {}
+    row_order: list[RowKey] = []
+    for quad in expected_leaves or []:
+        key = _as_leaf_key(quad)
+        row = RowKey(key.model, key.branch, key.config)
+        if row not in required_by_row:
+            required_by_row[row] = set()
+            row_order.append(row)
+            source_sha_by_row[row] = (
+                quad.get("source_sha", "") if isinstance(quad, dict) else ""
+            )
+        required_by_row[row].add(key.category)
+
+    by_row: dict[RowKey, list[dict]] = {}
+    seen: set[LeafKey] = set()
     for leaf in leaves:
-        model = leaf["model"]
-        category = leaf["category"]
-        identity = (model, category)
+        row = RowKey(leaf["model"], leaf["branch"], leaf["config"])
+        identity = LeafKey(leaf["model"], leaf["branch"], leaf["config"], leaf["category"])
         if identity in seen:
-            msg = f"Duplicate leaf for model {model!r} and category {category!r}"
+            msg = (
+                f"Duplicate leaf for model {leaf['model']!r}, branch "
+                f"{leaf['branch']!r}, config {leaf['config']!r}, category "
+                f"{leaf['category']!r}"
+            )
             raise ValueError(msg)
         seen.add(identity)
-        by_model.setdefault(model, []).append(leaf)
+        by_row.setdefault(row, []).append(leaf)
+        if row not in required_by_row:
+            required_by_row[row] = set()
+            row_order.append(row)
+        source_sha_by_row.setdefault(row, leaf.get("source_sha", ""))
 
-    if expected_models:
-        models = list(expected_models)
-        models += [m for m in by_model if m not in models]
-    else:
-        models = list(by_model)
-
-    models_out: dict[str, dict] = {}
-    for model in models:
-        model_leaves = by_model.get(model, [])
-        scored_leaves = (
-            [leaf for leaf in model_leaves if leaf["category"] in required_categories]
-            if expected_categories
-            else model_leaves
-        )
+    rows_out: list[dict] = []
+    for row in row_order:
+        model, branch, config = row
+        row_leaves = by_row.get(row, [])
+        required = required_by_row.get(row, set())
+        scored = [leaf for leaf in row_leaves if not required or leaf["category"] in required]
         cats = {
             leaf["category"]: {
                 "pass_at_k": leaf["pass_at_k"],
@@ -168,42 +198,44 @@ def combine(
                 "tasks": leaf["tasks"],
                 "incomplete": leaf["incomplete"] or leaf["tasks"] == 0,
             }
-            for leaf in model_leaves
+            for leaf in row_leaves
         }
-        missing = [c for c in required_categories if c not in cats]
+        missing = [c for c in sorted(required) if c not in cats]
         macro = {
-            "pass_at_k": _mean([leaf["pass_at_k"] for leaf in scored_leaves]),
-            "avg_at_k": _mean([leaf["avg_at_k"] for leaf in scored_leaves]),
+            "pass_at_k": _mean([leaf["pass_at_k"] for leaf in scored]),
+            "avg_at_k": _mean([leaf["avg_at_k"] for leaf in scored]),
         }
-        total_tasks = sum(leaf["tasks"] for leaf in scored_leaves) or 0
+        total_tasks = sum(leaf["tasks"] for leaf in scored) or 0
         # Validated None metrics have zero tasks, so None-as-zero is neutral in
         # these task-weighted numerators.
         micro_pass = (
-            sum((leaf["pass_at_k"] or 0.0) * leaf["tasks"] for leaf in scored_leaves)
-            / total_tasks
+            sum((leaf["pass_at_k"] or 0.0) * leaf["tasks"] for leaf in scored) / total_tasks
             if total_tasks
             else None
         )
         micro_avg = (
-            sum((leaf["avg_at_k"] or 0.0) * leaf["tasks"] for leaf in scored_leaves)
-            / total_tasks
+            sum((leaf["avg_at_k"] or 0.0) * leaf["tasks"] for leaf in scored) / total_tasks
             if total_tasks
             else None
         )
-        models_out[model] = {
-            "categories": cats,
-            "macro": macro,
-            "micro": {"pass_at_k": micro_pass, "avg_at_k": micro_avg},
-            "missing_categories": missing,
-            "incomplete": (
-                not model_leaves
-                or bool(missing)
-                or any(
-                    leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored_leaves
-                )
-            ),
-        }
-    return {"models": models_out, "categories": categories}
+        rows_out.append(
+            {
+                "model": model,
+                "branch": branch,
+                "source_sha": source_sha_by_row.get(row, ""),
+                "config": config,
+                "categories": cats,
+                "macro": macro,
+                "micro": {"pass_at_k": micro_pass, "avg_at_k": micro_avg},
+                "missing_categories": missing,
+                "incomplete": (
+                    not row_leaves
+                    or bool(missing)
+                    or any(leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored)
+                ),
+            }
+        )
+    return {"rows": rows_out, "categories": categories}
 
 
 def _fmt(v: float | None) -> str:
@@ -221,7 +253,7 @@ def _incomplete_note(*, has_leaves: bool, missing_categories: list[str]) -> str:
 def render_markdown(combined: dict, k: int) -> str:
     cats = combined["categories"]
     header = (
-        ["Model"]
+        ["Model / branch / config"]
         + [f"{c} pass@{k}/avg@{k}" for c in cats]
         + [
             f"Overall macro pass@{k}",
@@ -231,25 +263,24 @@ def render_markdown(combined: dict, k: int) -> str:
         ]
     )
     ranked = sorted(
-        combined["models"].items(),
-        key=lambda kv: (
-            kv[1]["macro"]["pass_at_k"] is None,
-            -(kv[1]["macro"]["pass_at_k"] or 0.0),
+        combined["rows"],
+        key=lambda r: (
+            r["macro"]["pass_at_k"] is None,
+            -(r["macro"]["pass_at_k"] or 0.0),
         ),
     )
     rows = []
-    for model, m in ranked:
-        cells = [str(model) + (" ⚠️" if m["incomplete"] else "")]
+    for r in ranked:
+        label = f"{r['model']} / {r['branch']} / {r['config']}"
+        cells = [label + (" ⚠️" if r["incomplete"] else "")]
         for c in cats:
-            cat = m["categories"].get(c)
-            cells.append(
-                f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—"
-            )
+            cat = r["categories"].get(c)
+            cells.append(f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—")
         cells += [
-            _fmt(m["macro"]["pass_at_k"]),
-            _fmt(m["macro"]["avg_at_k"]),
-            _fmt(m["micro"]["pass_at_k"]),
-            _fmt(m["micro"]["avg_at_k"]),
+            _fmt(r["macro"]["pass_at_k"]),
+            _fmt(r["macro"]["avg_at_k"]),
+            _fmt(r["micro"]["pass_at_k"]),
+            _fmt(r["micro"]["avg_at_k"]),
         ]
         rows.append(cells)
     lines = [
@@ -259,35 +290,27 @@ def render_markdown(combined: dict, k: int) -> str:
     lines += ["| " + " | ".join(r) + " |" for r in rows]
     md = "\n".join(lines) + "\n"
 
-    incompletes = [
-        (mo, mm) for mo, mm in combined["models"].items() if mm["incomplete"]
-    ]
+    incompletes = [r for r in combined["rows"] if r["incomplete"]]
     if incompletes:
         md += "\n> ⚠️ **Ranked on partial data** — treat these rows with caution:\n"
-        for mo, mm in incompletes:
-            miss = mm.get("missing_categories") or []
-            note = _incomplete_note(
-                has_leaves=bool(mm["categories"]), missing_categories=miss
-            )
-            md += f"> - `{mo}` — {note}\n"
+        for r in incompletes:
+            miss = r.get("missing_categories") or []
+            note = _incomplete_note(has_leaves=bool(r["categories"]), missing_categories=miss)
+            md += f"> - `{r['model']} / {r['branch']} / {r['config']}` — {note}\n"
     return md
 
 
 def radar_results(combined: dict) -> list[dict]:
     out = []
-    for model, m in combined["models"].items():
+    for r in combined["rows"]:
         scores = {
-            c: v["pass_at_k"]
-            for c, v in m["categories"].items()
-            if v.get("pass_at_k") is not None
+            c: v["pass_at_k"] for c, v in r["categories"].items() if v.get("pass_at_k") is not None
         }
-        out.append({"model": model, "scores": scores})
+        out.append({"model": f"{r['model']} / {r['branch']} / {r['config']}", "scores": scores})
     return out
 
 
-def write_outputs(
-    combined: dict, k: int, out_dir: Path, step_summary_path: str | None
-) -> None:
+def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str | None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "unified_summary.json").write_text(json.dumps(combined, indent=2) + "\n")
     # Radar needs >= 3 axes to be meaningful. Emit its input only then; the
@@ -302,14 +325,15 @@ def write_outputs(
             f.write("## Unified evals — cross-model comparison\n\n")
             f.write(md)
     # A machine-visible signal so a partially-covered ranking isn't taken at face value.
-    for model, m in combined["models"].items():
-        if m["incomplete"]:
+    for r in combined["rows"]:
+        if r["incomplete"]:
             note = _incomplete_note(
-                has_leaves=bool(m["categories"]),
-                missing_categories=m.get("missing_categories") or [],
+                has_leaves=bool(r["categories"]),
+                missing_categories=r.get("missing_categories") or [],
             )
             print(
-                f"::warning::Model {model} incomplete ({note}); ranked on partial data."
+                f"::warning::{r['model']} / {r['branch']} / {r['config']} "
+                f"incomplete ({note}); ranked on partial data."
             )
 
 
@@ -333,8 +357,7 @@ def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> lis
             # broad ValueError would also swallow an incidental bug inside
             # read_leaf, silently dropping a valid leaf as "malformed".
             print(
-                f"::warning::Skipping malformed eval summary at "
-                f"{leaf_dir / 'summary.json'}: {exc}"
+                f"::warning::Skipping malformed eval summary at {leaf_dir / 'summary.json'}: {exc}"
             )
     return leaves
 
@@ -353,6 +376,33 @@ def _load_list_env(name: str) -> list[str] | None:
     return cast(list[str], value) or None
 
 
+def _load_leaves_env(name: str) -> list[dict[str, str]] | None:
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    msg = f"{name} must be a JSON list of {{model, branch, config, category}} objects"
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(msg) from exc
+    fields = {"model", "branch", "config", "category"}
+    if not isinstance(value, list) or not all(
+        isinstance(item, dict)
+        and fields <= set(item)
+        and all(isinstance(item[field], str) for field in fields)
+        for item in value
+    ):
+        raise SystemExit(msg)
+    return cast(list[dict[str, str]], value)
+
+
+def _as_leaf_key(value: LeafKey | dict[str, str]) -> LeafKey:
+    """Normalize a typed leaf key or legacy mapping for direct callers."""
+    if isinstance(value, LeafKey):
+        return value
+    return LeafKey(value["model"], value["branch"], value["config"], value["category"])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
@@ -364,24 +414,26 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out_dir or args.root
 
     leaves = _discover_leaves(args.root, expected_rollouts=args.rollouts)
-    expected_models = _load_list_env("EXPECTED_MODELS")
+    expected_leaves = _load_leaves_env("EXPECTED_LEAVES")
     combined = combine(
         leaves,
-        expected_models,
+        expected_leaves,
         _load_list_env("EXPECTED_CATEGORIES"),
     )
-    write_outputs(
-        combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
-    )
-    models = combined["models"]
-    if expected_models and all(
-        models[model]["incomplete"] for model in expected_models
-    ):
-        print(
-            "::error::Every expected model is incomplete; "
-            "no complete unified result is available."
-        )
+    write_outputs(combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY"))
+    if not leaves:
+        print("::error::No usable eval leaf summaries were found; failing the run.")
         return 1
+    rows = combined["rows"]
+    # Incompleteness is surfaced per row in write_outputs (a ::warning:: plus the
+    # ⚠️ markers in the table) and does not fail a run that has usable leaves. A
+    # single errored shard no longer nukes the whole cross-model comparison.
+    if expected_leaves is not None and rows and all(r["incomplete"] for r in rows):
+        print(
+            "::warning::Every expected (model, branch, config) row is incomplete; "
+            "the scorecard below is ranked on partial data — inspect the per-row "
+            "notes above."
+        )
     return 0
 
 

@@ -45,6 +45,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_expanded",
         "tool_reject_reason",
         "skill_expanded",
+        "rubric_expanded",
         "is_streaming",
     }
 )
@@ -75,6 +76,9 @@ class MessageType(StrEnum):
 
     APP = "app"
     """App-status note from the app itself (version info, command feedback)."""
+
+    RUBRIC = "rubric"
+    """Rubric grader result with a compact summary and expandable details."""
 
     SUMMARIZATION = "summarization"
     """Notification that the prior conversation was summarized/offloaded."""
@@ -185,6 +189,12 @@ class MessageData:
     skill_expanded: bool = False
     """Whether the skill body is expanded in the UI."""
 
+    rubric_details: str | None = None
+    """Complete grader details for RUBRIC messages."""
+
+    rubric_expanded: bool = False
+    """Whether the grader details are expanded in the UI."""
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
@@ -213,14 +223,20 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name` or a SKILL
-                message is missing `skill_name`.
+            ValueError: If a TOOL message is missing `tool_name`, a SKILL
+                message is missing `skill_name`, or a RUBRIC message is missing
+                `rubric_details`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
             raise ValueError(msg)
         if self.type == MessageType.SKILL and not self.skill_name:
             msg = "SKILL messages must have a skill_name"
+            raise ValueError(msg)
+        # A summary-only grader result stays an AppMessage; a RUBRIC message
+        # exists precisely to carry expandable details, so require them.
+        if self.type == MessageType.RUBRIC and not self.rubric_details:
+            msg = "RUBRIC messages must have rubric_details"
             raise ValueError(msg)
 
     def to_widget(self) -> Widget:
@@ -235,6 +251,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
@@ -281,6 +298,15 @@ class MessageData:
             case MessageType.APP:
                 return AppMessage(self.content, markdown=self.is_markdown, id=self.id)
 
+            case MessageType.RUBRIC:
+                widget = RubricResultMessage(
+                    self.content,
+                    self.rubric_details or "",
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.rubric_expanded
+                return widget
+
             case MessageType.SUMMARIZATION:
                 return SummarizationMessage(self.content, id=self.id)
 
@@ -317,6 +343,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
@@ -402,6 +429,15 @@ class MessageData:
                 type=MessageType.SUMMARIZATION,
                 content=str(widget._content),
                 id=widget_id,
+            )
+
+        if isinstance(widget, RubricResultMessage):
+            return cls(
+                type=MessageType.RUBRIC,
+                content=widget._summary,
+                id=widget_id,
+                rubric_details=widget._details,
+                rubric_expanded=widget._expanded,
             )
 
         if isinstance(widget, AppMessage):
@@ -857,6 +893,8 @@ class MessageStore:
         scroll_position: float,
         viewport_height: int,
         bottom_spacer_top: int,
+        *,
+        max_scroll: float | None = None,
     ) -> bool:
         """Check if we should hydrate messages below the current view.
 
@@ -864,12 +902,22 @@ class MessageStore:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
             bottom_spacer_top: Estimated row where the bottom spacer begins.
+            max_scroll: Maximum scroll offset of the viewport, when known. When
+                the view is scrolled to this edge but history is still archived
+                below, hydration must run regardless of the spacer-distance
+                heuristic: the user cannot scroll any further, and estimated
+                spacer heights can drift from the real DOM layout enough to
+                leave the distance check just short of its threshold, stranding
+                the tail. Mirrors how scrolling to the top (offset 0) always
+                hydrates above.
 
         Returns:
-            True if the viewport is near the bottom spacer.
+            True if the viewport is near (or at) the bottom spacer.
         """
         if not self.has_messages_below:
             return False
+        if max_scroll is not None and scroll_position >= max_scroll:
+            return True
         viewport_bottom = scroll_position + viewport_height
         distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
         threshold = viewport_height * 2

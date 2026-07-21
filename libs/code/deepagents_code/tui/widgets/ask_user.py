@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
-from textual.content import Content
 from textual.message import Message
-from textual.widgets import Markdown, Static, TextArea
+from textual.widgets import Markdown, Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -24,10 +23,14 @@ if TYPE_CHECKING:
         Question,
     )
 
-from deepagents_code import theme
-from deepagents_code.config import (
-    get_glyphs,
-    is_ascii_mode,
+from deepagents_code.config import get_glyphs
+from deepagents_code.tui.widgets._inline_prompt import (
+    InlinePromptCompletion,
+    InlinePromptOption,
+    InlinePromptTextArea,
+    apply_inline_prompt_border,
+    newline_hint,
+    stop_inline_prompt_blur,
 )
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
@@ -55,54 +58,18 @@ Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
 `required` field, so any LLM-authored duplicate is redundant noise."""
 
 
-class AskUserTextArea(TextArea):
-    """Soft-wrapping text input for free-form ask-user questions.
+class AskUserTextArea(InlinePromptTextArea):
+    """Free-form answer input for ask-user questions.
 
-    Long answers wrap visually and the widget grows up to its CSS `max-height`.
-    Enter submits; Shift/Alt/Ctrl+Enter and Ctrl+J insert a literal newline
-    for users who want to author multi-paragraph answers.
+    Adds one behavior over the shared base: when the cursor is on the first or
+    last line of a `multiple_choice` question, Up/Down are handed back to the
+    enclosing choice list instead of moving the text cursor.
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(
-            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
-            "insert_newline",
-            "New Line",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+backspace,alt+backspace",
-            "delete_word_left",
-            "Delete left to start of word",
-            show=False,
-        ),
-    ]
-
-    class Submitted(Message):
-        """Posted when the user presses Enter to submit the answer."""
-
-        def __init__(self, text_area: AskUserTextArea, value: str) -> None:  # noqa: D107
-            super().__init__()
-            self.text_area = text_area
-            self.value = value
-
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize the ask-user text area."""
-        super().__init__(**kwargs)
-        self.show_line_numbers = False
-        self.soft_wrap = True
-
-    def action_insert_newline(self) -> None:
-        """Insert a newline at the cursor."""
-        self.insert("\n")
+    class Submitted(InlinePromptTextArea.Submitted):
+        """Posted when the user presses Enter to submit an ask-user answer."""
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.Submitted(self, self.text))
-            return
         if event.key in {"up", "down"}:
             cursor_location = self.cursor_location
             at_top = self.get_cursor_up_location() == cursor_location
@@ -117,6 +84,7 @@ class AskUserTextArea(TextArea):
                     else:
                         question.action_move_down()
                     return
+        await super()._on_key(event)
 
     def _find_question_widget(self) -> _QuestionWidget | None:
         """Walk up to find the enclosing `_QuestionWidget`, if any.
@@ -166,18 +134,23 @@ class AskUserMenu(Container):
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:
-        super().__init__(id=id or "ask-user-menu", classes="ask-user-menu", **kwargs)
+        super().__init__(
+            id=id or "ask-user-menu",
+            classes="inline-prompt ask-user-menu",
+            **kwargs,
+        )
         self._questions = questions
         self._answers: list[str] = [""] * len(questions)
         self._current_question = 0
         self._confirmed: list[bool] = [False] * len(questions)
-        self._future: asyncio.Future[AskUserWidgetResult] | None = None
+        self._completion: InlinePromptCompletion[AskUserWidgetResult] = (
+            InlinePromptCompletion()
+        )
         self._question_widgets: list[_QuestionWidget] = []
-        self._submitted = False
 
     def set_future(self, future: asyncio.Future[AskUserWidgetResult]) -> None:
         """Set the future to resolve when user answers."""
-        self._future = future
+        self._completion.set_future(future)
 
     def compose(self) -> ComposeResult:  # noqa: D102
         glyphs = get_glyphs()
@@ -188,7 +161,7 @@ class AskUserMenu(Container):
             title = f"Agent has {count} Questions for you"
         yield Static(
             f"{glyphs.cursor} {title}",
-            classes="ask-user-title",
+            classes="inline-prompt-title ask-user-title",
         )
         yield Static("")
 
@@ -202,19 +175,18 @@ class AskUserMenu(Container):
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
+            newline_hint(),
         ]
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
         yield Static(
             f" {glyphs.bullet} ".join(parts),
-            classes="ask-user-help",
+            classes="inline-prompt-help ask-user-help",
         )
 
     async def on_mount(self) -> None:  # noqa: D102
-        if is_ascii_mode():
-            colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.success)
+        apply_inline_prompt_border(self)
         self._set_active_question(0)
 
     def focus_active(self) -> None:
@@ -279,12 +251,12 @@ class AskUserMenu(Container):
                 qw.add_class("ask-user-question-inactive")
 
     def _submit(self) -> None:
-        if self._submitted:
-            return
-        self._submitted = True
-        if self._future and not self._future.done():
-            self._future.set_result({"type": "answered", "answers": self._answers})
-        self.post_message(self.Answered(self._answers))
+        result: AskUserWidgetResult = {
+            "type": "answered",
+            "answers": self._answers,
+        }
+        if self._completion.resolve(result):
+            self.post_message(self.Answered(self._answers))
 
     def action_next_question(self) -> None:
         """Navigate to the next question without confirming."""
@@ -297,12 +269,8 @@ class AskUserMenu(Container):
             self._set_active_question(self._current_question - 1)
 
     def action_cancel(self) -> None:  # noqa: D102
-        if self._submitted:
-            return
-        self._submitted = True
-        if self._future and not self._future.done():
-            self._future.set_result({"type": "cancelled"})
-        self.post_message(self.Cancelled())
+        if self._completion.resolve({"type": "cancelled"}):
+            self.post_message(self.Cancelled())
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """Keep the active-question highlight in sync with focus.
@@ -323,44 +291,23 @@ class AskUserMenu(Container):
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
         """Prevent blur from propagating and dismissing the menu."""
-        event.stop()
+        stop_inline_prompt_blur(event)
 
 
-class _ChoiceOption(Static):
-    """A single selectable choice option."""
+class _ChoiceOption(InlinePromptOption):
+    """A single selectable ask-user choice option."""
 
     def __init__(
         self, text: str, index: int, *, selected: bool = False, **kwargs: Any
     ) -> None:
-        self.choice_index: int = index
-        self.selected: bool = selected
-        self._text: str = text
-        super().__init__(self._render(), classes="ask-user-choice", **kwargs)
-
-    def toggle(self) -> None:
-        """Toggle the selected state."""
-        self.selected = not self.selected
-        self.update(self._render())
-
-    def select(self) -> None:
-        """Mark this choice as selected."""
-        self.selected = True
-        self.update(self._render())
-
-    def deselect(self) -> None:
-        """Mark this choice as deselected."""
-        self.selected = False
-        self.update(self._render())
-
-    def _render(self) -> Content:
-        """Build display content with cursor prefix.
-
-        Returns:
-            Styled Content with selection cursor and label text.
-        """
-        glyphs = get_glyphs()
-        prefix = f"{glyphs.cursor} " if self.selected else "  "
-        return Content.from_markup("$prefix$text", prefix=prefix, text=self._text)
+        """Initialize an ask-user choice option."""
+        super().__init__(
+            text,
+            index,
+            selected=selected,
+            classes="ask-user-choice",
+            **kwargs,
+        )
 
 
 class _QuestionWidget(Vertical):
@@ -429,12 +376,16 @@ class _QuestionWidget(Vertical):
             self.focus()
 
     def get_answer(self) -> str:
-        """Return the current answer text for this question."""
+        """Return the current answer text for this question.
+
+        Collapsed-paste placeholders are expanded so the agent receives the
+        full pasted content, not the compact `[Pasted text #N]` token.
+        """
         if self._q_type == "text" or not self._choices:
-            return self._text_input.text if self._text_input else ""
+            return self._text_input.submitted_value if self._text_input else ""
 
         if self._is_other_selected and self._other_input:
-            return self._other_input.text
+            return self._other_input.submitted_value
 
         if self._choice_widgets and self._selected_choice < len(self._choices):
             return self._choices[self._selected_choice].get("value", "")

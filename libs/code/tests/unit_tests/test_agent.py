@@ -1,5 +1,6 @@
 """Unit tests for agent formatting functions."""
 
+import asyncio
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ import pytest
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -25,6 +27,7 @@ from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
     _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
+    AsyncApprovalHITLMiddleware,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
     _create_rubric_grader_tools,
@@ -35,6 +38,7 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _interrupt_predicate,
     _reserved_agent_dir_names,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
@@ -47,12 +51,17 @@ from deepagents_code.agent import (
 )
 from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
+from deepagents_code.offload import (
+    _FALLBACK_ARTIFACTS_ROOT,
+    _ArtifactsStorage,
+    _filesystem_tool_path,
+)
 from deepagents_code.project_utils import ProjectContext
 
 
 @dataclass
 class _StoreItem:
-    value: dict[str, Any]
+    value: object
 
 
 class _FakeStore:
@@ -69,6 +78,37 @@ class _FakeStore:
 
     def get(self, namespace: tuple[str, ...], key: str) -> _StoreItem | None:
         return self.items.get((namespace, key))
+
+
+class _LoopBoundAsyncStore:
+    """Model the server Store that forbids sync reads on its event loop."""
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.aget_calls = 0
+        self.get_calls = 0
+        self.error: Exception | None = None
+
+    async def aget(self, namespace: tuple[str, ...], key: str) -> object:
+        from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE
+
+        assert namespace == APPROVAL_MODE_NAMESPACE
+        assert key
+        self.aget_calls += 1
+        if self.error is not None:
+            raise self.error
+        await asyncio.sleep(0)
+        return _StoreItem(self.value)
+
+    def get(self, namespace: tuple[str, ...], key: str) -> object:
+        _ = (namespace, key)
+        self.get_calls += 1
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _StoreItem(self.value)
+        msg = "synchronous Store access is forbidden on the event loop"
+        raise asyncio.InvalidStateError(msg)
 
 
 def _make_fake_chat_model() -> GenericFakeChatModel:
@@ -105,6 +145,205 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
     assert interrupt_on
     for config in interrupt_on.values():
         assert config.get("when") is _should_interrupt_tool_call
+
+
+def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
+    """Local archives use the stable user data directory across server restarts."""
+    history_root = tmp_path / ".deepagents"
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._offload_fallback_root", return_value=history_root
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    # Conversation history is addressed under the backend's `artifacts_root`
+    # (a per-session temp dir in local mode) and routed to persistent storage.
+    result = backend.write(
+        f"{backend.artifacts_root}/conversation_history/thread.md", "archived"
+    )
+
+    assert result.error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "archived"
+
+
+def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> None:
+    """Offloaded large results write to the real default fs, not a virtual mount.
+
+    `<artifacts_root>/large_tool_results/` has no composite route, so writes fall
+    through to the default backend at a real path the agent can inspect with
+    `execute` -- the whole point of the local-mode rewire.
+    """
+    artifacts_root = tmp_path / "artifacts"
+    tool_root = _filesystem_tool_path(artifacts_root)
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._artifacts_root",
+        return_value=_ArtifactsStorage(root=tool_root),
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert backend.artifacts_root == tool_root
+    result = backend.write(f"{tool_root}/large_tool_results/call-1", "payload")
+
+    assert result.error is None
+    # The bytes are on the real filesystem at the advertised path.
+    assert (artifacts_root / "large_tool_results" / "call-1").read_text() == "payload"
+
+
+def test_fallback_artifacts_root_keeps_archive_path_resolvable(
+    tmp_path: Path,
+) -> None:
+    """A resumed archive path keeps matching after fallback storage changes."""
+    history_root = tmp_path / ".deepagents"
+    first_results = tmp_path / "large-results-1"
+    recovered_root = _filesystem_tool_path(tmp_path / "recovered-artifacts")
+    model = _make_fake_chat_model()
+
+    with (
+        patch(
+            "deepagents_code.agent._artifacts_root",
+            side_effect=[
+                _ArtifactsStorage(
+                    root=_FALLBACK_ARTIFACTS_ROOT,
+                    large_results_dir=first_results,
+                ),
+                _ArtifactsStorage(root=recovered_root),
+            ],
+        ),
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=history_root,
+        ),
+    ):
+        _first_agent, first_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+        _second_agent, second_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert second_backend.artifacts_root == recovered_root
+    archive_path = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/thread.md"
+    assert first_backend.write(archive_path, "initial").error is None
+    assert second_backend.write(archive_path, "resumed").error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "resumed"
+
+    result_path = f"{_FALLBACK_ARTIFACTS_ROOT}/large_tool_results/call-1"
+    assert first_backend.write(result_path, "payload").error is None
+    assert (first_results / "call-1").read_text() == "payload"
+
+
+def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> None:
+    """Enabling goal criteria wires a fallback agent and a None repo backend."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock(return_value="criteria-agent")
+    make_fallback = Mock(return_value="fallback-agent")
+    make_middleware = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric._create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+        patch("deepagents_code.goal_rubric.GoalCriteriaMiddleware", make_middleware),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            goal_criteria_tools=[],
+        )
+
+    make_criteria.assert_called_once()
+    assert make_criteria.call_args.kwargs["repository_backend"] is None
+    make_fallback.assert_called_once()
+    # Primary and fallback agents share one model, and the middleware receives
+    # both so graph-level failures can degrade to goal-only generation.
+    assert (
+        make_fallback.call_args.kwargs["model"]
+        is make_criteria.call_args.kwargs["model"]
+    )
+    make_middleware.assert_called_once_with("criteria-agent", "fallback-agent")
+
+
+def test_goal_criteria_disabled_skips_middleware(tmp_path: Path) -> None:
+    """`goal_criteria_tools=None` builds no criteria agents or middleware."""
+    model = _make_fake_chat_model()
+    mock_agent = Mock()
+    mock_agent.with_config.return_value = mock_agent
+    make_criteria = Mock()
+    make_fallback = Mock()
+
+    with (
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=tmp_path / ".deepagents",
+        ),
+        patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+        patch("deepagents_code.goal_rubric._create_goal_criteria_agent", make_criteria),
+        patch(
+            "deepagents_code.goal_rubric.create_goal_criteria_fallback_agent",
+            make_fallback,
+        ),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    make_criteria.assert_not_called()
+    make_fallback.assert_not_called()
 
 
 def _request_with_context(
@@ -258,6 +497,147 @@ def test_should_interrupt_tool_call_fails_closed_without_live_mode_store() -> No
     )
 
 
+def test_typed_autonomous_mode_requires_live_store_key() -> None:
+    """New Auto and YOLO context values cannot bypass Store acknowledgement."""
+    assert _should_interrupt_tool_call(
+        _request_with_context({"approval_mode": "auto", "auto_approve": True})
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context({"approval_mode": "yolo", "auto_approve": True})
+    )
+
+
+def _request_with_state(
+    state: object, context: object, store: object
+) -> "ToolCallRequest":
+    return cast(
+        "ToolCallRequest",
+        SimpleNamespace(
+            state=state,
+            runtime=SimpleNamespace(context=context, store=store),
+        ),
+    )
+
+
+def test_genuine_async_routing_marker_bypasses_interrupt() -> None:
+    """The real in-process routing decision is honored by the sync predicate.
+
+    Positive control for the forgery test below: proves the marker mechanism
+    actually drives a bypass, so a forged marker failing to bypass is meaningful
+    rather than vacuously true.
+    """
+    from deepagents_code.agent import _ASYNC_APPROVAL_ROUTING_KEY, _RoutingDecision
+    from deepagents_code.approval_mode import ApprovalMode
+
+    request = _request_with_state(
+        {_ASYNC_APPROVAL_ROUTING_KEY: _RoutingDecision(ApprovalMode.YOLO)},
+        context={},
+        store=None,
+    )
+    assert not _should_interrupt_tool_call(request)
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        (object(), "yolo"),  # right shape, foreign identity object
+        ("_deepagents_code_async_approval_routing", "yolo"),  # string masquerade
+        ["token", "yolo"],  # JSON list from a checkpoint round-trip
+        {"mode": "yolo"},  # dict payload
+        "yolo",  # bare string
+        SimpleNamespace(mode="yolo"),  # duck-typed lookalike
+    ],
+)
+def test_forged_async_routing_marker_cannot_bypass_interrupt(forged: object) -> None:
+    """Graph-supplied routing state cannot forge an autonomous mode.
+
+    The trust signal is the private `_RoutingDecision` type identity, which no
+    deserialized graph input can reconstruct. Any other value must be ignored so
+    the predicate falls through to context/Store resolution (Manual here).
+    """
+    from deepagents_code.agent import _ASYNC_APPROVAL_ROUTING_KEY
+
+    request = _request_with_state(
+        {_ASYNC_APPROVAL_ROUTING_KEY: forged},
+        context={},
+        store=None,
+    )
+    assert _should_interrupt_tool_call(request)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"approval_mode_key": 123, "auto_approve": True},
+        {"approval_mode_key": "", "auto_approve": True},
+        {"thread_id": "thread-1", "approval_mode_key": 123, "approval_mode": "auto"},
+    ],
+)
+def test_malformed_live_key_fails_closed_ignoring_legacy_auto(
+    context: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed live key fails closed and never honors legacy auto-approve.
+
+    A non-string or empty `approval_mode_key` marks the run as live-mode
+    controlled, so the resolver must ignore the legacy `auto_approve` snapshot
+    (which the pre-typed-mode path would otherwise have honored) and interrupt,
+    surfacing the anomaly rather than silently degrading.
+    """
+    with caplog.at_level("WARNING", logger="deepagents_code.agent"):
+        assert _should_interrupt_tool_call(
+            _request_with_context(context, store=_FakeStore())
+        )
+    assert "Approval-mode Store key is malformed" in caplog.text
+
+
+def test_sync_live_auto_record_respects_classifier_eligibility() -> None:
+    """A live Auto record bypasses only when the classifier is installed.
+
+    The `auto` payload is never produced by the sync context-only path, so this
+    is the one place the sync predicate resolves `ApprovalMode.AUTO` from a live
+    Store record and branches on `auto_mode_enabled`.
+    """
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        ApprovalMode,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(
+        APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(mode=ApprovalMode.AUTO)
+    )
+    request = _request_with_context({"approval_mode_key": key}, store=store)
+
+    # Eligible graph (classifier present): Auto bypasses the stock interrupt.
+    assert not _should_interrupt_tool_call(request, auto_mode_enabled=True)
+    # Ineligible graph: the same live Auto record must interrupt instead.
+    assert _should_interrupt_tool_call(request, auto_mode_enabled=False)
+
+
+def test_interrupt_predicate_binds_auto_eligibility() -> None:
+    """`_interrupt_predicate` threads its eligibility into the shared predicate."""
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        ApprovalMode,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(
+        APPROVAL_MODE_NAMESPACE, key, approval_mode_payload(mode=ApprovalMode.AUTO)
+    )
+    request = _request_with_context({"approval_mode_key": key}, store=store)
+
+    assert not _interrupt_predicate(auto_mode_enabled=True)(request)
+    assert _interrupt_predicate(auto_mode_enabled=False)(request)
+
+
 def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
     """Missing or malformed context must not auto-approve."""
     assert _should_interrupt_tool_call(_request_with_context({}))
@@ -308,6 +688,237 @@ def test_should_interrupt_tool_call_warns_on_unexpected_context_shape(
     assert "unexpected context type" not in caplog.text
 
 
+def _async_hitl_runtime(
+    store: _LoopBoundAsyncStore,
+    *,
+    thread_id: str = "thread-1",
+) -> SimpleNamespace:
+    from deepagents_code.approval_mode import approval_mode_key
+
+    return SimpleNamespace(
+        context={
+            "thread_id": thread_id,
+            "approval_mode_key": approval_mode_key(thread_id),
+            "approval_mode": "auto",
+        },
+        store=store,
+        stream_writer=lambda _event: None,
+        execution_info=None,
+        server_info=None,
+    )
+
+
+def _gated_tool_state(name: str = "write_file") -> dict[str, Any]:
+    return {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": name,
+                        "args": {"file_path": "result.txt", "content": "done"},
+                        "id": "call-gated",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ]
+    }
+
+
+@pytest.mark.parametrize("mode", ["auto", "yolo"])
+async def test_async_hitl_reads_loop_bound_store_for_autonomous_modes(
+    mode: str,
+) -> None:
+    """Async stock routing bypasses approval without touching sync `get()`."""
+    store = _LoopBoundAsyncStore({"mode": mode})
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+
+    update = await middleware.aafter_model(
+        cast("Any", _gated_tool_state()),
+        cast("Any", _async_hitl_runtime(store)),
+    )
+
+    assert update is None
+    assert store.aget_calls == 1
+    assert store.get_calls == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"mode": "manual"},
+        {"mode": "invalid"},
+        {"auto_approve": True},
+        ["not", "a", "mapping"],
+    ],
+)
+async def test_async_hitl_manual_or_malformed_state_interrupts(value: object) -> None:
+    """Manual and malformed live records fail closed through stock HITL."""
+    store = _LoopBoundAsyncStore(value)
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+
+    with (
+        patch(
+            "langchain.agents.middleware.human_in_the_loop.interrupt",
+            side_effect=GraphInterrupt(()),
+        ),
+        pytest.raises(GraphInterrupt),
+    ):
+        await middleware.aafter_model(
+            cast("Any", _gated_tool_state()),
+            cast("Any", _async_hitl_runtime(store)),
+        )
+
+    assert store.aget_calls == 1
+    assert store.get_calls == 0
+
+
+async def test_async_hitl_store_failure_interrupts() -> None:
+    """An unreadable async Store is Manual rather than stale authorization."""
+    store = _LoopBoundAsyncStore({"mode": "auto"})
+    store.error = RuntimeError("store unavailable")
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+
+    with (
+        patch(
+            "langchain.agents.middleware.human_in_the_loop.interrupt",
+            side_effect=GraphInterrupt(()),
+        ),
+        pytest.raises(GraphInterrupt),
+    ):
+        await middleware.aafter_model(
+            cast("Any", _gated_tool_state()),
+            cast("Any", _async_hitl_runtime(store)),
+        )
+
+    assert store.aget_calls == 1
+    assert store.get_calls == 0
+
+
+async def test_async_hitl_auto_is_ineligible_without_classifier_mode() -> None:
+    """A live Auto record cannot bypass stock HITL in an ineligible graph."""
+    store = _LoopBoundAsyncStore({"mode": "auto"})
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on(auto_mode_enabled=False))
+
+    with (
+        patch(
+            "langchain.agents.middleware.human_in_the_loop.interrupt",
+            side_effect=GraphInterrupt(()),
+        ),
+        pytest.raises(GraphInterrupt),
+    ):
+        await middleware.aafter_model(
+            cast("Any", _gated_tool_state()),
+            cast("Any", _async_hitl_runtime(store)),
+        )
+
+
+async def test_async_hitl_revalidates_auto_after_in_flight_model_call() -> None:
+    """An Auto-to-Manual switch while the model runs gates its tool call."""
+    store = _LoopBoundAsyncStore({"mode": "auto"})
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def model_then_route() -> dict[str, Any] | None:
+        started.set()
+        await release.wait()
+        return await middleware.aafter_model(
+            cast("Any", _gated_tool_state()),
+            cast("Any", _async_hitl_runtime(store)),
+        )
+
+    with patch(
+        "langchain.agents.middleware.human_in_the_loop.interrupt",
+        side_effect=GraphInterrupt(()),
+    ):
+        task = asyncio.create_task(model_then_route())
+        await started.wait()
+        store.value = {"mode": "manual"}
+        release.set()
+        with pytest.raises(GraphInterrupt):
+            await task
+
+    assert store.aget_calls == 1
+    assert store.get_calls == 0
+
+
+def _async_runtime_with_context(
+    store: _LoopBoundAsyncStore, context: object
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        context=context,
+        store=store,
+        stream_writer=lambda _event: None,
+        execution_info=None,
+        server_info=None,
+    )
+
+
+async def test_async_hitl_legacy_auto_approve_bypasses_without_store_read() -> None:
+    """A context-only legacy auto-approve resolves YOLO without any async read.
+
+    The non-live branch must short-circuit before `aread_approval_mode_from_store`
+    — never touching `aget` — so a bypass cannot be masked as a store outage.
+    """
+    store = _LoopBoundAsyncStore({"mode": "manual"})
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+
+    update = await middleware.aafter_model(
+        cast("Any", _gated_tool_state()),
+        cast("Any", _async_runtime_with_context(store, {"auto_approve": True})),
+    )
+
+    assert update is None
+    assert store.aget_calls == 0
+    assert store.get_calls == 0
+
+
+async def test_async_hitl_mismatched_key_fails_closed_without_store_read() -> None:
+    """A thread-mismatched key interrupts without consulting the async Store."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    store = _LoopBoundAsyncStore({"mode": "auto"})
+    middleware = AsyncApprovalHITLMiddleware(_add_interrupt_on())
+    context = {
+        "thread_id": "thread-1",
+        "approval_mode_key": approval_mode_key("other-thread"),
+        "approval_mode": "auto",
+    }
+
+    with (
+        patch(
+            "langchain.agents.middleware.human_in_the_loop.interrupt",
+            side_effect=GraphInterrupt(()),
+        ),
+        pytest.raises(GraphInterrupt),
+    ):
+        await middleware.aafter_model(
+            cast("Any", _gated_tool_state()),
+            cast("Any", _async_runtime_with_context(store, context)),
+        )
+
+    assert store.aget_calls == 0
+    assert store.get_calls == 0
+
+
+def test_mismatched_live_key_cannot_fall_back_to_legacy_yolo() -> None:
+    """A mismatched control key fails closed despite a legacy true snapshot."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {
+                "thread_id": "thread-1",
+                "approval_mode_key": approval_mode_key("other-thread"),
+                "auto_approve": True,
+            },
+            store=_FakeStore(),
+        )
+    )
+
+
 def test_cli_context_field_parity() -> None:
     """`CLIContext` and `CLIContextSchema` must declare the same field set.
 
@@ -318,6 +929,33 @@ def test_cli_context_field_parity() -> None:
     typed_dict_keys = set(CLIContext.__annotations__)
     dataclass_keys = {f.name for f in fields(CLIContextSchema)}
     assert typed_dict_keys == dataclass_keys
+
+
+def test_get_context_preserves_compaction_fields_from_dict() -> None:
+    """`_get_context` must carry the compaction fields across the dict boundary.
+
+    On the RemoteGraph path the run context arrives as a dict and
+    `_get_context` reconstructs `CLIContextSchema` field-by-field. The field
+    parity test only guards the *declarations*; this guards the coercion, so
+    `profile_overrides`/`model_context_limit` (which `/offload` reads via the
+    compaction middleware) are not silently dropped on that path.
+    """
+    from deepagents_code.configurable_model import _get_context
+
+    ctx = {
+        "model": "anthropic:claude-haiku-4-5-20251001",
+        "model_params": {"temperature": 0.5},
+        "profile_overrides": {"max_input_tokens": 12345},
+        "model_context_limit": 4096,
+    }
+    request = cast("Any", SimpleNamespace(runtime=SimpleNamespace(context=ctx)))
+
+    resolved = _get_context(request)
+
+    assert resolved is not None
+    assert resolved.profile_overrides == {"max_input_tokens": 12345}
+    assert resolved.model_context_limit == 4096
+    assert resolved.model_params == {"temperature": 0.5}
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
@@ -436,6 +1074,22 @@ def test_format_delete_description() -> None:
     )
 
     assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_only_non_read_only_mcp_tools() -> None:
+    read_only = SimpleNamespace(
+        name="mcp_read",
+        metadata={"readOnlyHint": True, "destructiveHint": False},
+    )
+    mutating = SimpleNamespace(
+        name="mcp_write",
+        metadata={"readOnlyHint": False, "destructiveHint": False},
+    )
+
+    interrupt_map = _add_interrupt_on(mcp_tools=cast("Any", [read_only, mutating]))
+
+    assert "mcp_read" not in interrupt_map
+    assert interrupt_map["mcp_write"]["allowed_decisions"] == ["approve", "reject"]
 
 
 def test_add_interrupt_on_gates_delete() -> None:
@@ -1080,7 +1734,7 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
@@ -1109,9 +1763,13 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
+        # The auto-generated prompt overwrites the SDK base prompt.
+        assert mock_create_deep_agent.call_args.kwargs["system_prompt"] == {
+            "base": "mocked prompt"
+        }
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
-        """Explicit system_prompt should be used verbatim, ignoring interactive."""
+        """Explicit system_prompt is forwarded verbatim, ignoring interactive."""
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -1140,9 +1798,11 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
@@ -1161,6 +1821,11 @@ class TestCreateCliAgentInteractiveForwarding:
 
         # get_system_prompt should NOT be called when system_prompt is provided
         mock_get_prompt.assert_not_called()
+        # A caller-supplied prompt is forwarded verbatim (SDK treats it as a
+        # prefix), unlike the auto-generated prompt which overwrites the base.
+        assert (
+            mock_create_deep_agent.call_args.kwargs["system_prompt"] == "custom prompt"
+        )
 
 
 class TestDefaultAgentName:
@@ -1459,7 +2124,7 @@ class TestCreateCliAgentSkillsSources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
@@ -1513,82 +2178,6 @@ class TestCreateCliAgentSkillsSources:
             assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
         assert rendered.rstrip().endswith("(higher priority)")
 
-    def test_skills_sources_fallback_to_bare_paths_on_old_sdk(
-        self, tmp_path: Path
-    ) -> None:
-        """If the installed SDK lacks `SkillSource`, CLI passes bare paths.
-
-        Backwards-compat: SDKs < 0.5.4 only accept `list[str]`. The CLI
-        detects the missing alias at import time and strips labels
-        before handing sources to `SkillsMiddleware`, so the middleware
-        never receives an unsupported tuple.
-        """
-        agent_dir = tmp_path / "agent"
-        agent_dir.mkdir()
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        user_agent_skills_dir = tmp_path / "user-agent-skills"
-        user_agent_skills_dir.mkdir()
-        built_in_dir = Settings.get_built_in_skills_dir()
-
-        mock_settings = Mock()
-        mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = skills_dir
-        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
-        mock_settings.get_user_claude_skills_dir.return_value = tmp_path / "nonexistent"
-        mock_settings.get_project_claude_skills_dir.return_value = None
-        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = []
-        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
-        mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
-        mock_settings.project_root = None
-
-        captured_sources: list[list[Any]] = []
-
-        class FakeSkillsMiddleware:
-            def __init__(self, **kwargs: Any) -> None:
-                captured_sources.append(kwargs.get("sources", []))
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent._SUPPORTS_SKILL_SOURCE_TUPLES", False),
-            patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-        ):
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=True,
-                enable_shell=False,
-            )
-
-        assert len(captured_sources) == 1
-        sources = captured_sources[0]
-        # Fallback stripped all labels; middleware receives bare strings.
-        assert sources == [
-            str(built_in_dir),
-            str(skills_dir),
-            str(user_agent_skills_dir),
-        ]
-        for source in sources:
-            assert isinstance(source, str), f"expected str, got {type(source)!r}"
-
 
 class TestCreateCliAgentMemorySources:
     """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
@@ -1637,7 +2226,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1704,7 +2293,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1884,7 +2473,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -1964,7 +2553,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -2040,7 +2629,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch(
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
@@ -2166,7 +2755,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch("deepagents._models.init_chat_model", return_value=fake_model),
@@ -2627,7 +3216,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2666,7 +3255,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2712,7 +3301,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2770,7 +3359,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2823,7 +3412,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2876,7 +3465,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2950,7 +3539,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3024,7 +3613,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3077,7 +3666,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3127,7 +3716,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3181,7 +3770,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3256,7 +3845,11 @@ class TestExperimentalTodoMiddlewareWiring:
         return mock_settings
 
     def _capture_create_deep_agent_kwargs(
-        self, tmp_path: Path, *, subagent_model: str | None = None
+        self,
+        tmp_path: Path,
+        *,
+        subagent_model: str | None = None,
+        auto_mode_enabled: bool = False,
     ) -> dict[str, Any]:
         """Build a default agent + custom subagent; capture `create_deep_agent` kwargs.
 
@@ -3279,7 +3872,7 @@ class TestExperimentalTodoMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3300,6 +3893,7 @@ class TestExperimentalTodoMiddlewareWiring:
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=True,
+                auto_mode_enabled=auto_mode_enabled,
             )
 
         _, kwargs = mock_create.call_args
@@ -3369,6 +3963,70 @@ class TestExperimentalTodoMiddlewareWiring:
         assert not self._has_todo_standin(kwargs["middleware"])
         for spec in kwargs["subagents"]:
             assert not self._has_todo_standin(spec.get("middleware", []))
+
+    async def test_async_hitl_covers_declarative_and_general_subagents_in_auto(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both CLI subagent forms bypass stock HITL from the async Store."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(
+            tmp_path,
+            auto_mode_enabled=True,
+        )
+        subagents = {spec["name"]: spec for spec in kwargs["subagents"]}
+
+        for name in ("researcher", "general-purpose"):
+            spec = subagents[name]
+            middleware = next(
+                item
+                for item in spec["middleware"]
+                if isinstance(item, AsyncApprovalHITLMiddleware)
+            )
+            store = _LoopBoundAsyncStore({"mode": "auto"})
+            update = await middleware.aafter_model(
+                cast("Any", _gated_tool_state()),
+                cast("Any", _async_hitl_runtime(store)),
+            )
+
+            assert update is None
+            assert spec["interrupt_on"] == {}
+            assert store.aget_calls == 1
+            assert store.get_calls == 0
+
+    async def test_async_hitl_covers_declarative_and_general_subagents_in_manual(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both CLI subagent forms retain their stock Manual interrupt."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(
+            tmp_path,
+            auto_mode_enabled=True,
+        )
+        subagents = {spec["name"]: spec for spec in kwargs["subagents"]}
+
+        with patch(
+            "langchain.agents.middleware.human_in_the_loop.interrupt",
+            side_effect=GraphInterrupt(()),
+        ):
+            for name in ("researcher", "general-purpose"):
+                middleware = next(
+                    item
+                    for item in subagents[name]["middleware"]
+                    if isinstance(item, AsyncApprovalHITLMiddleware)
+                )
+                store = _LoopBoundAsyncStore({"mode": "manual"})
+                with pytest.raises(GraphInterrupt):
+                    await middleware.aafter_model(
+                        cast("Any", _gated_tool_state()),
+                        cast("Any", _async_hitl_runtime(store)),
+                    )
+
+                assert store.aget_calls == 1
+                assert store.get_calls == 0
 
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:
@@ -3505,6 +4163,58 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
+    @pytest.mark.parametrize(
+        ("experimental", "expected"), [(False, False), (True, True)]
+    )
+    def test_auto_mode_requires_experimental_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        experimental: bool,
+        expected: bool,
+    ) -> None:
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        if experimental:
+            monkeypatch.setenv(EXPERIMENTAL, "1")
+        else:
+            monkeypatch.delenv(EXPERIMENTAL, raising=False)
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                auto_mode_enabled=True,
+                cwd=tmp_path,
+            )
+
+        middleware = mock_create.call_args.kwargs["middleware"]
+        assert (
+            any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+            is expected
+        )
+        assert "hitl_middleware" not in mock_create.call_args.kwargs
+
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
 
@@ -3514,7 +4224,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3552,9 +4262,9 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3613,6 +4323,27 @@ class TestCreateCliAgentInterpreterWiring:
         assert "2  second" in allowed.content
         assert "can only read" in denied
 
+    def test_rubric_grader_prefix_tracks_artifacts_root(self, tmp_path: Path) -> None:
+        """The grader read allow-list follows the backend's `artifacts_root`.
+
+        With a non-default `artifacts_root`, offloaded results live under
+        `<root>/large_tool_results/`, so the grader must allow that prefix and
+        reject the old, unrelated `/large_tool_results/` path.
+        """
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        project = FilesystemBackend(root_dir=tmp_path / "project", virtual_mode=False)
+        backend = CompositeBackend(
+            default=project, routes={}, artifacts_root="/srv/art"
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        denied = read_tool.func(file_path="/large_tool_results/x", runtime=runtime)
+
+        assert "can only read files under /srv/art/large_tool_results/" in denied
+
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
 
@@ -3622,7 +4353,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3656,7 +4387,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3686,7 +4417,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_sandbox = Mock()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -3728,7 +4459,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3772,7 +4503,7 @@ class TestCreateCliAgentInterpreterWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -3821,7 +4552,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",

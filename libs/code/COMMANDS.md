@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (33)
+## Public (34)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -23,13 +23,14 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
-| `/goal` |  | Set a persistent objective by drafting acceptance criteria |
+| `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
 | `/notifications` |  | Configure startup warnings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
+| `/plugins` |  | Manage plugins |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |

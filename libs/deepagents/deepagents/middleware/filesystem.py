@@ -1524,16 +1524,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
         self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
 
-        self.tools = [
-            self._create_ls_tool(),
-            self._create_read_file_tool(),
-            self._create_write_file_tool(),
-            self._create_edit_file_tool(),
-            self._create_delete_tool(),
-            self._create_glob_tool(),
-            self._create_grep_tool(),
-            self._create_execute_tool(),
-        ]
+        tool_factories: tuple[tuple[str, Callable[[], BaseTool]], ...] = (
+            ("ls", self._create_ls_tool),
+            ("read_file", self._create_read_file_tool),
+            ("write_file", self._create_write_file_tool),
+            ("edit_file", self._create_edit_file_tool),
+            ("delete", self._create_delete_tool),
+            ("glob", self._create_glob_tool),
+            ("grep", self._create_grep_tool),
+            ("execute", self._create_execute_tool),
+        )
+        # Excluded tools are omitted here entirely, not just hidden from the
+        # model's schema, so a tool name outside `tools=` never reaches the
+        # dispatchable tool node
+        self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
 
     def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
         """Build (and memoize) the dynamic system prompt.
@@ -2448,11 +2452,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         runtime: Runtime[ContextT],
     ) -> tuple[set[str | None], bool, BackendProtocol | None]:
         """Return unsupported filesystem tools and whether execute remains active."""
-        unsupported: set[str | None] = (
-            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
-            if self._enabled_tools is not None
-            else set()
-        )
+        # `tools=` exclusions are enforced at `__init__` (absent from
+        # `self.tools` entirely), so only backend-capability gating
+        # `execute`/`delete` on a backend that doesn't support them is
+        # computed here.
+        unsupported: set[str | None] = set()
         execution_active = False
         backend = None
         has_execute_tool = "execute" in tool_names

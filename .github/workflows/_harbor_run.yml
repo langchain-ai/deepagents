@@ -18,6 +18,12 @@ on:
       agent_impl:
         type: string
         default: "dcode"
+      branch:
+        type: string
+        default: "current"
+      branch_sha:
+        type: string
+        default: ""
       langsmith_dataset:
         # Explicit LangSmith dataset name; empty derives it from the dataset.
         type: string
@@ -31,6 +37,19 @@ on:
       shard_parallel:
         type: string
         default: "10"
+      flat_matrix:
+        # A pre-expanded `{"include":[...]}` job matrix (one entry per
+        # model/category/shard leaf), e.g. from a unified multi-model dispatch.
+        # When non-empty, `prep` passes it through verbatim instead of running
+        # `shard_matrix.py`'s single-dataset expansion.
+        type: string
+        default: ""
+      max_parallel:
+        # Explicit size of the harbor job's parallel runner pool, for a caller
+        # driving `flat_matrix` across several models/categories at once. 0
+        # falls back to `shard_parallel`, the single-dataset pool size.
+        type: string
+        default: "0"
       concurrency:
         type: string
         default: "4"
@@ -52,6 +71,17 @@ on:
       agent_timeout_multiplier:
         type: string
         default: "1.0"
+      env_build_timeout_multiplier:
+        # Scales each task's environment.build_timeout_sec (harbor's client-side
+        # wait). Note: it does NOT extend the LangSmith build service's own limit.
+        type: string
+        default: "1.0"
+      override_storage_mb:
+        # Raises the sandbox snapshot filesystem above harbor's 32 GiB floor.
+        # Heavy harbor-index images (big base + layer copies) exhaust 32 GiB and
+        # fail the LangSmith snapshot build; e.g. 65536 = 64 GiB. 0 = don't override.
+        type: string
+        default: "0"
       disable_verification:
         type: boolean
         default: false
@@ -61,6 +91,12 @@ on:
       harbor_package_override:
         type: string
         default: ""
+      judge_models:
+        # Grader model(s) for LLM-judge verifiers (e.g. harbor-index), passed as
+        # JUDGE_MODELS with JUDGE_PROVIDER=openai. Prefer an independent grader,
+        # not the model under test, to avoid self-grading bias.
+        type: string
+        default: "gpt-5.6-luna"
 
 permissions:
   contents: read
@@ -72,16 +108,28 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      matrix: ${{ steps.shard-matrix.outputs.matrix }}
+      matrix: ${{ steps.resolve-matrix.outputs.matrix }}
       # Effective shard count after capping to the selectable work (<= n_shards).
       # The harbor job reads this so its partition matches the emitted matrix.
-      n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
+      n_shards: ${{ steps.resolve-matrix.outputs.n_shards }}
+      # Size of the harbor job's parallel runner pool: an explicit max_parallel
+      # override when the caller supplied one, else the per-leaf shard_parallel.
+      effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}
+      # One entry per category to aggregate: a single entry for the plain
+      # single-dataset call, or (on a flat multi-category run) one entry per
+      # distinct category present in flat_matrix. The `aggregate` job matrixes
+      # over this.
+      aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
+        # Only the single-dataset path needs this expansion; a caller supplying
+        # flat_matrix has already pre-expanded its own model/category/shard
+        # entries (see the passthrough step below).
+        if: ${{ inputs.flat_matrix == '' }}
         # This leaf evaluates exactly ONE model (inputs.model), so the model
         # matrix is a single-entry include (no models.py/validate_harbor_limits
         # step needed here). Cross-products it with the shard axis, caps the
@@ -94,6 +142,110 @@ jobs:
           N_TASKS: ${{ inputs.n_tasks }}
         run: python .github/scripts/shard_matrix.py
 
+      - name: "🧮 Resolve matrix + parallel pool"
+        id: resolve-matrix
+        # Picks the flat_matrix passthrough or the shard-matrix expansion
+        # (whichever ran) and derives the parallel pool, all in bash so the
+        # fallback logic isn't an inline `fromJson`/ternary expression.
+        env:
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
+          SHARD_MATRIX: ${{ steps.shard-matrix.outputs.matrix }}
+          SHARD_N_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
+          MAX_PARALLEL: ${{ inputs.max_parallel }}
+          SHARD_PARALLEL: ${{ inputs.shard_parallel }}
+        run: |
+          if [ -n "$FLAT_MATRIX" ]; then
+            matrix="$FLAT_MATRIX"
+          else
+            matrix="$SHARD_MATRIX"
+          fi
+          {
+            echo "matrix=$matrix"
+            echo "n_shards=$SHARD_N_SHARDS"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] && [ "$MAX_PARALLEL" -gt 0 ]; then
+            effective_max_parallel="$MAX_PARALLEL"
+          else
+            effective_max_parallel="$SHARD_PARALLEL"
+          fi
+          echo "effective_max_parallel=$effective_max_parallel" >> "$GITHUB_OUTPUT"
+
+      - name: "🗂️ Derive aggregate matrix"
+        id: agg-matrix
+        # One aggregate_shards.py invocation per category: the single-dataset
+        # path (flat_matrix empty) emits exactly one entry; a flat
+        # multi-category run emits one entry per distinct category present in
+        # flat_matrix, with expected_shards = the number of flat_matrix entries
+        # carrying that category (each entry is one shard job).
+        env:
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
+          SINGLE_CATEGORY: ${{ inputs.category }}
+          SINGLE_DATASET: ${{ inputs.dataset }}
+          SINGLE_AGENT_IMPL: ${{ inputs.agent_impl }}
+          SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          flat_matrix = os.environ.get("FLAT_MATRIX", "").strip()
+          category_re = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+          if flat_matrix:
+              try:
+                  data = json.loads(flat_matrix)
+              except json.JSONDecodeError as exc:
+                  sys.exit(f"::error::Invalid flat_matrix JSON: {exc}")
+              by_key: dict[tuple[str, str], dict] = {}
+              for entry in data.get("include", []):
+                  category = entry.get("category")
+                  agent_impl = entry.get("agent_impl") or ""
+                  if not category or not category_re.match(str(category)):
+                      sys.exit(
+                          f"::error::Invalid or missing category in flat_matrix entry: {category!r}"
+                      )
+                  key = (category, agent_impl)
+                  info = by_key.setdefault(
+                      key, {"count": 0, "dataset": None, "agent_impl": agent_impl}
+                  )
+                  info["count"] += 1
+                  if info["dataset"] is None:
+                      info["dataset"] = entry.get("dataset") or entry.get("dataset_path") or ""
+              if not by_key:
+                  sys.exit("::error::flat_matrix produced no categories to aggregate")
+              include = [
+                  {
+                      "category": category,
+                      "agent_impl": info["agent_impl"],
+                      "dataset": info["dataset"] or "",
+                      "expected_shards": info["count"],
+                  }
+                  for (category, _impl), info in sorted(by_key.items())
+              ]
+          else:
+              raw_expected = os.environ.get("SINGLE_EXPECTED_SHARDS", "").strip()
+              include = [
+                  {
+                      "category": os.environ.get("SINGLE_CATEGORY", ""),
+                      "agent_impl": os.environ.get("SINGLE_AGENT_IMPL", ""),
+                      "dataset": os.environ.get("SINGLE_DATASET", ""),
+                      "expected_shards": int(raw_expected) if raw_expected.isdigit() else "",
+                  }
+              ]
+
+          matrix = {"include": include}
+          line = "aggregate_matrix=" + json.dumps(matrix, separators=(",", ":"))
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as fh:
+                  fh.write(line + "\n")
+          else:
+              print(line)
+          PY
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
@@ -105,7 +257,7 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJson(inputs.shard_parallel) }}
+      max-parallel: ${{ fromJson(needs.prep.outputs.effective_max_parallel) }}
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
 
     defaults:
@@ -113,24 +265,33 @@ jobs:
         working-directory: libs/evals
     env:
       UV_NO_SYNC: "true"
-      HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
-      HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+      HARBOR_DATASET: ${{ matrix.dataset || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+      HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
-      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+      HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
+      HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
-      # Effective shard count from prep (capped to selectable work), not the raw
-      # input — the partition must match the matrix or tasks would be dropped.
-      HARBOR_N_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
+      # A flat_matrix entry carries its own (already-effective) n_shards;
+      # otherwise fall back to prep's effective shard count (capped to
+      # selectable work), not the raw input — the partition must match the
+      # matrix or tasks would be dropped.
+      HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
-      HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
+      HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
+      HARBOR_BRANCH: ${{ inputs.branch }}
       HARBOR_MODEL: ${{ matrix.model }}
+      # Per-leaf category, so a multi-category flat_matrix run can be
+      # aggregated per category downstream.
+      HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
+      HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -144,10 +305,11 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
+          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
+          # so this key is required regardless of the model under test.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -161,8 +323,7 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
-              ;;
+              ;; # Uses LANGSMITH_API_KEY (already required above)
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1
@@ -218,7 +379,16 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
+        run: |
+          # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
+          # so newline is the only safe delimiter. Collect into an array and pass
+          # as separate args — never re-split or eval'd, preserving injection
+          # safety — so a single install covers e.g. harbor + harbor-langsmith.
+          specs=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -235,26 +405,34 @@ jobs:
         # dedicated "tau3-subset" LangSmith dataset name.
         if: env.HARBOR_DATASET == 'tau3-subset'
         run: |
-          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
-          # Fail loudly if the filter resolved to the wrong size. An import error
-          # already aborts via `set -e` (a bare assignment propagates the command
-          # substitution's exit code — do not switch to `local`/`export`, which
-          # swallow it), but a successful-but-empty/partial result would be
-          # written verbatim and silently run a different set than the promised
-          # "30-task subset" — an empty value means NO filter, i.e. the FULL
-          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
-          # invariant the unit tests pin; change both together.
-          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
-          if [ "$task_count" -ne 30 ]; then
-            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
-            exit 1
+          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+            # A caller-provided filter (e.g. profile=lite) wins: keep it, skip the
+            # full tau3_subset expansion and its 30-task invariant. Still rewrite
+            # the dataset ref + LangSmith name below.
+            include_tasks="$HARBOR_INCLUDE_TASKS"
+            echo "tau3-subset: using caller include_tasks ($(printf '%s' "$include_tasks" | wc -w | tr -d ' ') tasks)"
+          else
+            include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+            # Fail loudly if the filter resolved to the wrong size. An import error
+            # already aborts via `set -e` (a bare assignment propagates the command
+            # substitution's exit code — do not switch to `local`/`export`, which
+            # swallow it), but a successful-but-empty/partial result would be
+            # written verbatim and silently run a different set than the promised
+            # "30-task subset" — an empty value means NO filter, i.e. the FULL
+            # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
+            # invariant the unit tests pin; change both together.
+            task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
+            if [ "$task_count" -ne 30 ]; then
+              echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
+              exit 1
+            fi
+            echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
           fi
           {
             echo "HARBOR_DATASET=sierra-research/tau3-bench"
             echo "HARBOR_INCLUDE_TASKS=$include_tasks"
             echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
           } >> "$GITHUB_ENV"
-          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
 
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports
@@ -270,10 +448,10 @@ jobs:
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
       - name: "🗂️ Populate local dataset corpus"
-        if: ${{ inputs.dataset_path != '' }}
+        if: ${{ (matrix.dataset_path || inputs.dataset_path) != '' }}
         working-directory: libs/evals
         env:
-          HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+          HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
         # The per-task corpus is single-sourced (git-ignored) and regenerated from
         # the vendored copy so each task's build context has its files/ before
         # Harbor builds the task images.
@@ -283,6 +461,62 @@ jobs:
           fi
           uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
 
+      - name: "🌿 Overlay branch agent source"
+        if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
+        working-directory: .
+        env:
+          BRANCH: ${{ inputs.branch }}
+          BRANCH_SHA: ${{ inputs.branch_sha }}
+        run: |
+          # Overlay the compared branch's agent source AFTER the harness's locked
+          # install (so `uv sync --locked` matched the workflow-ref lockfile) and
+          # just before the rsync into .local_deps stages it for the sandbox. The
+          # harness runs at the workflow ref; only the agent under test is the
+          # branch's source. BRANCH and BRANCH_SHA arrive via env, never
+          # interpolated into the shell body; reject malformed values before use.
+          if ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BRANCH" == -* ]] || [[ "$BRANCH" == *".."* ]]; then
+            echo "::error::Invalid branch ref: $BRANCH"; exit 1
+          fi
+          if ! [[ "$BRANCH_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Invalid resolved branch SHA: $BRANCH_SHA"; exit 1
+          fi
+          git fetch origin "$BRANCH_SHA" --depth=1
+          fetched_sha=$(git rev-parse FETCH_HEAD)
+          if [ "$fetched_sha" != "${BRANCH_SHA,,}" ]; then
+            echo "::error::Fetched commit $fetched_sha does not match resolved SHA $BRANCH_SHA"
+            exit 1
+          fi
+          # Overlay ONLY the agent-under-test libraries. The harness (harbor +
+          # deepagents_harbor/langgraph_project, including langgraph_agent.py) must
+          # stay at the eval ref: it carries eval-infra fixes the pinned harbor
+          # build expects, and a compared branch's harness could diverge from them.
+          git checkout FETCH_HEAD -- \
+            libs/deepagents \
+            libs/code \
+            libs/partners/quickjs
+          echo "Overlaid agent source from branch: $BRANCH ($BRANCH_SHA)"
+
+      - name: "🐳 Wait for the Docker daemon"
+        # GH-hosted runners intermittently have the Docker daemon not-yet-ready at
+        # job start; harbor's docker sandbox then hard-fails with "Docker daemon is
+        # not running", losing an otherwise-good shard. Wait it out (docker-sandbox
+        # only). No sudo/start: the codebase disallows privilege escalation in
+        # workflows, and this targets the startup race, not a dead daemon (which
+        # still fails the shard, but the aggregator no longer voids the scorecard
+        # for a single missing shard).
+        if: ${{ inputs.sandbox_env == 'docker' }}
+        run: |
+          for i in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready (after ${i} check(s))."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Docker daemon not ready after ~120s."
+          docker info || true
+          exit 1
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -291,10 +525,11 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
+          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
+          # so this key is required regardless of the model under test.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -341,10 +576,27 @@ jobs:
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
+          if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
+            exit 1
+          fi
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
             exit 1
+          fi
+          if ! [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
+            echo "::error::Invalid env_build_timeout_multiplier (must be a positive decimal): $HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER"
+            exit 1
+          fi
+          # Non-negative integer; 0 means "don't override" (use the task's default).
+          if ! [[ "$HARBOR_OVERRIDE_STORAGE_MB" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid override_storage_mb (must be a non-negative integer): $HARBOR_OVERRIDE_STORAGE_MB"
+            exit 1
+          fi
+          storage_flag=()
+          if [ "$HARBOR_OVERRIDE_STORAGE_MB" != "0" ]; then
+            storage_flag=(--override-storage-mb "$HARBOR_OVERRIDE_STORAGE_MB")
           fi
           # Allowlist the boolean; only literal true/false accepted.
           verification_flag=()
@@ -476,7 +728,9 @@ jobs:
               # shard's slice is legitimately empty. Upload a marker so aggregation
               # can distinguish this successful no-op from a missing shard artifact.
               mkdir -p harbor-jobs/terminal-bench
-              touch "harbor-jobs/terminal-bench/empty-shard-$HARBOR_SHARD_INDEX"
+              # Category-scoped so a flat multi-category run's independently-sharded
+              # categories can't collide on the same shard index's marker name.
+              touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"
               echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
               echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
               exit 0
@@ -504,44 +758,33 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
+          # agent_impl IS the graph key in langgraph.json (the single registry).
+          # Validate membership before it reaches `harbor run --agent-kwarg
+          # graph=...`. Callers already validate, so this is defense-in-depth;
+          # AGENT_IMPL is passed via env, never interpolated into the validator.
+          AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
+            "$GITHUB_WORKSPACE/.github/scripts/validate_agent_graph.py" \
+            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+          HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
+          experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
+          experiment_branch="${experiment_branch}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
+          experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it
           # can't be clobbered.
           HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
-          # Include the run id + attempt so all shards of this dispatch share one
-          # experiment name (Harbor's LangSmith plugin uses an explicit name
-          # verbatim and create-or-reuses it, converging the shards) while a
-          # later dispatch or re-run gets its own experiment. HARBOR_LANGSMITH_DATASET
+          # Scope the experiment name by category so each category's dataset gets
+          # its own experiment: one model spans three datasets, and a single
+          # experiment name shared across them double-counts runs in LangSmith.
+          # Shards within a category still share this name, so Harbor's LangSmith
+          # plugin reuses one session per category and converges them; the run id +
+          # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
           # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_branch}-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
-          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
 
@@ -553,6 +796,18 @@ jobs:
           )
           verifier_env_args=(
             --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
+            # harbor-index (and other) verifiers are OpenAI LLM judges: they need
+            # the key, not just the base URL, or they exit without writing a
+            # reward file. Mirrors the always-on base URL above; forwards empty
+            # when the job wasn't granted a key (harmless for non-judge verifiers).
+            --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}'
+            # native_judge config the harbor-index verifiers require ("set by the
+            # job yaml"); without these the judge raises JudgeConfigurationError
+            # and writes no reward. Non-judge verifiers ignore the unused vars.
+            --verifier-env 'JUDGE_PROVIDER=openai'
+            --verifier-env "JUDGE_MODELS=$HARBOR_JUDGE_MODELS"
+            --verifier-env 'JUDGE_REPEATS=1'
+            --verifier-env 'JUDGE_CONCURRENCY=1'
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -574,7 +829,7 @@ jobs:
           esac
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
-          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
+          echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
           uv run harbor run \
@@ -588,8 +843,10 @@ jobs:
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
+            --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             "${force_build_flag[@]}" \
+            "${storage_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
@@ -623,7 +880,6 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
           HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
-          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
@@ -650,7 +906,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
+            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
@@ -661,7 +917,9 @@ jobs:
       - name: "🔖 Compute leaf slug"
         if: always()
         # Sanitized model+category, used to scope this run's artifact names so
-        # concurrent runs don't collide.
+        # concurrent runs don't collide. HARBOR_CATEGORY_SAFE additionally scopes
+        # the artifact name by category, so a flat multi-category run's shards
+        # group distinctly per category for the aggregate job.
         env:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
@@ -672,12 +930,46 @@ jobs:
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "LEAF_SLUG=$slug" >> "$GITHUB_ENV"
 
+          category_safe=$(printf '%s' "$HARBOR_CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$category_safe" ]; then
+            category_safe="uncategorized"
+          fi
+          # Short hash keeps the category slug injective, mirroring LEAF_SLUG
+          # above: two raw categories differing only in separators (e.g.
+          # "auto.test" vs "auto_test") would otherwise sanitize alike and
+          # collide in aggregate_matrix's per-category shard glob.
+          category_safe="${category_safe}-$(printf '%s' "$HARBOR_CATEGORY" | sha256sum | cut -c1-8)"
+          echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
+
+          # Agent-config-safe slug, computed exactly like HARBOR_CATEGORY_SAFE so
+          # the aggregate job's agent-slug step reproduces it byte-for-byte. It
+          # additionally scopes the artifact name by agent config, so two configs
+          # of the same model+category don't collide on one artifact name.
+          agent_safe=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$HARBOR_AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "HARBOR_AGENT_SAFE=$agent_safe" >> "$GITHUB_ENV"
+
+          # Branch-safe slug, computed exactly like HARBOR_AGENT_SAFE so the
+          # aggregate job's branch-slug step reproduces it byte-for-byte. It
+          # scopes the artifact name by branch, so a (model, branch) comparison
+          # run's shards group distinctly per branch for the aggregate job.
+          branch_safe=$(printf '%s' "$HARBOR_BRANCH" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$branch_safe" ]; then
+            branch_safe="current"
+          fi
+          branch_safe="${branch_safe}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
+          echo "HARBOR_BRANCH_SAFE=$branch_safe" >> "$GITHUB_ENV"
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # Slug-scoped so the aggregate job globs only this run's shards.
-          name: shard-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          # Branch-, agent-, category- and slug-scoped so the aggregate job globs
+          # only this run's own shards, grouped per (branch, agent config, category).
+          name: shard-${{ env.HARBOR_BRANCH_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
@@ -693,6 +985,13 @@ jobs:
     permissions:
       contents: read
       actions: write        # download shard artifacts, then delete them after merging
+    # One leg per category to aggregate: a single leg for the plain
+    # single-dataset call, or (on a flat multi-category run) one leg per
+    # distinct category present in flat_matrix, each carrying its own dataset +
+    # expected_shards.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.aggregate_matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -701,9 +1000,6 @@ jobs:
       # failed. Empty shards (task-filtered slices) no-op successfully, so a
       # filtered run is not falsely reported as incomplete.
       HARBOR_RESULT: ${{ needs.harbor.result }}
-      # Authoritative effective count after prep caps shards to selectable work.
-      # Successful empty slices upload markers, so every emitted shard is countable.
-      EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -722,13 +1018,64 @@ jobs:
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
+      - name: "🔖 Compute category slug"
+        id: cat-slug
+        # Sanitized aggregate_matrix category. Must match the harbor job's
+        # HARBOR_CATEGORY_SAFE byte-for-byte so the download/delete globs below
+        # hit exactly this category's shard artifacts.
+        env:
+          CATEGORY: ${{ matrix.category }}
+        run: |
+          if ! [[ "$CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid aggregate category: $CATEGORY"
+            exit 1
+          fi
+          category_safe=$(printf '%s' "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$category_safe" ]; then
+            category_safe="uncategorized"
+          fi
+          # Short hash keeps the category slug injective (mirrors the harbor
+          # job's HARBOR_CATEGORY_SAFE); must match it byte-for-byte.
+          category_safe="${category_safe}-$(printf '%s' "$CATEGORY" | sha256sum | cut -c1-8)"
+          echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
+
+      - name: "🔖 Compute branch slug"
+        id: branch-slug
+        # Sanitized inputs.branch. Must match the harbor job's HARBOR_BRANCH_SAFE
+        # byte-for-byte so the download/delete globs below hit exactly this
+        # branch's shard artifacts.
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          branch_safe=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$branch_safe" ]; then
+            branch_safe="current"
+          fi
+          branch_safe="${branch_safe}-$(printf '%s' "$BRANCH" | sha256sum | cut -c1-8)"
+          echo "slug=$branch_safe" >> "$GITHUB_OUTPUT"
+
+      - name: "🔖 Compute agent slug"
+        id: agent-slug
+        # Sanitized aggregate_matrix agent_impl. Must match the harbor job's
+        # HARBOR_AGENT_SAFE byte-for-byte so the download/delete globs below hit
+        # exactly this agent config's shard artifacts.
+        env:
+          AGENT_IMPL: ${{ matrix.agent_impl }}
+        run: |
+          agent_safe=$(printf '%s' "$AGENT_IMPL" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$agent_safe" ]; then
+            agent_safe="unknown"
+          fi
+          agent_safe="${agent_safe}-$(printf '%s' "$AGENT_IMPL" | sha256sum | cut -c1-8)"
+          echo "slug=$agent_safe" >> "$GITHUB_OUTPUT"
+
       - name: "⬇️ Download shard results"
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: shard-${{ steps.branch-slug.outputs.slug }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -756,12 +1103,20 @@ jobs:
 
       - name: "📊 Compute pass@k / avg@k"
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
-        # avoid workflow-input injection; argparse int-parses --rollouts.
+        # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
+        # category, and expected_shards come from this leg's aggregate_matrix
+        # entry: on the single-dataset path that entry mirrors inputs.dataset /
+        # inputs.category / needs.prep.outputs.n_shards exactly.
         env:
-          DATASET: ${{ inputs.dataset }}
+          DATASET: ${{ matrix.dataset }}
           ROLLOUTS: ${{ inputs.rollouts }}
           MODEL: ${{ inputs.model }}
-          CATEGORY: ${{ inputs.category }}
+          CATEGORY: ${{ matrix.category }}
+          AGENT_IMPL: ${{ matrix.agent_impl }}
+          BRANCH: ${{ inputs.branch }}
+          SOURCE_SHA: ${{ inputs.branch_sha }}
+          EXPECTED_SHARDS: ${{ matrix.expected_shards }}
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
@@ -771,6 +1126,18 @@ jobs:
           if [ -n "$EXPECTED_SHARDS" ]; then
             expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
           fi
+          # needs.harbor.result is the single result of the whole harbor matrix.
+          # On a flat multi-category run that matrix spans every category, so one
+          # failed shard would mark *every* category's summary incomplete. There
+          # the per-category --expected-shards count is the category-local
+          # completeness authority (a category whose shards all uploaded is
+          # complete regardless of a sibling category's failure), so the global
+          # result is not passed. The single-dataset path (one category leg)
+          # keeps it: that result maps to its lone category.
+          harbor_result_args=()
+          if [ -z "$FLAT_MATRIX" ]; then
+            harbor_result_args=(--harbor-result "$HARBOR_RESULT")
+          fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
           python3 .github/scripts/aggregate_shards.py _shards \
@@ -779,15 +1146,24 @@ jobs:
             --dataset "$DATASET" \
             --model "$MODEL" \
             --category "$CATEGORY" \
-            --harbor-result "$HARBOR_RESULT" \
+            --config "$AGENT_IMPL" \
+            --branch "$BRANCH" \
+            --source-sha "$SOURCE_SHA" \
+            "${harbor_result_args[@]}" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"
         # One zip per category: the merged shard harbor data plus summary.json
-        # and per_task.jsonl.
+        # and per_task.jsonl. The single-dataset path (flat_matrix unset) keeps
+        # the plain unqualified name; a flat multi-category run qualifies it by
+        # the branch slug (inputs.branch can contain '/', which artifact names
+        # reject) plus raw matrix.agent_impl / matrix.category, which are safe
+        # because prep restricts agent_impl to the upstream enum and cat-slug
+        # validates category before this step; don't reorder past those guards.
+        # Attribution is read from summary.json downstream, not this name.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: harbor-combined-${{ steps.slug.outputs.slug }}
+          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}
           path: _shards
           if-no-files-found: warn
 
@@ -800,7 +1176,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: shard-${{ steps.branch-slug.outputs.slug }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
     from pathlib import Path
     from typing import Protocol
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.resume_state import RubricResult
 
     # Type alias matching HITLResponse["decisions"] element type
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -79,6 +81,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
 )
@@ -223,11 +226,48 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
-def _format_rubric_event(data: dict[str, Any]) -> str | None:
-    """Format a rubric custom-stream event for the chat transcript.
+def _is_auto_mode_classifier_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is internal Auto mode classifier output.
+
+    The Auto mode authorization classifier is invoked with
+    `config={"metadata": {"lc_source": "auto_mode_classifier"}}`
+    (see `AutoModeHITLMiddleware` in `deepagents_code.auto_mode`), which
+    LangChain's callback system merges into the stream metadata dict.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
 
     Returns:
-        A user-visible message for rubric events, or `None` for custom-stream
+        Whether the chunk should be hidden from the conversation transcript.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "auto_mode_classifier"
+
+
+class RubricEvaluationEnd(NamedTuple):
+    """A validated `rubric_evaluation_end` event forwarded to the caller.
+
+    Bundling the two fields as named attributes (rather than two positional
+    strings) makes the grading-run correlation self-documenting and removes the
+    risk of transposing the run ID and the verdict at a call site.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for this grading run."""
+
+    result: RubricResult
+    """Terminal/loop verdict carried by the event."""
+
+
+def _format_rubric_event(data: dict[str, Any]) -> str | None:
+    """Format a concise rubric custom-stream event for the transcript.
+
+    Args:
+        data: Custom-stream rubric event payload.
+
+    Returns:
+        A user-visible summary for rubric events, or `None` for custom-stream
         events that are not rubric events.
     """
     glyphs = get_glyphs()
@@ -247,40 +287,75 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
         return None
 
     result = data.get("result")
-    explanation = str(data.get("explanation") or "").strip()
     if result is None:
         return None
     if result == "satisfied":
         return f"{glyphs.checkmark} Acceptance criteria satisfied"
     if result == "needs_revision":
-        lines = [
-            f"{glyphs.retry} Changes need revision"
-            + (f": {explanation}" if explanation else ""),
-        ]
-        for criterion in data.get("criteria", []):
-            if isinstance(criterion, dict) and criterion.get("passed") is False:
-                name = str(criterion.get("name", "criterion"))
-                gap = str(criterion.get("gap", "")).strip()
-                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
-        return "\n".join(lines)
+        return f"{glyphs.retry} Acceptance criteria not yet satisfied"
     if result == "max_iterations_reached":
         return (
-            f"{glyphs.warning} Acceptance criteria not satisfied "
+            f"{glyphs.warning} Acceptance criteria not yet satisfied "
             "(iteration limit reached)"
         )
-    if result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
-        return (
-            f"{glyphs.warning} Rubric "
-            + label
-            + (f": {explanation}" if explanation else "")
-        )
+    if result == "failed":
+        return f"{glyphs.warning} Rubric is invalid or cannot be evaluated"
+    if result == "grader_error":
+        return f"{glyphs.warning} Acceptance criteria check failed"
     # A `rubric_evaluation_end` with an unrecognized result is still a terminal
     # grading event; surface it rather than silently dropping it (e.g. if the
     # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
-    return f"{glyphs.warning} Rubric grading ended" + (
-        f": {explanation}" if explanation else ""
-    )
+    return f"{glyphs.warning} Acceptance criteria check ended"
+
+
+def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -> str:
+    """Format complete grader details without serializing or truncating payloads.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
+
+    Returns:
+        Plain text containing the full explanation, unmet criteria, and next step.
+    """
+    result = data.get("result")
+    if result in {None, "satisfied"}:
+        return ""
+
+    sections: list[str] = []
+    explanation = str(data.get("explanation") or "").strip()
+    if explanation:
+        sections.append(f"Explanation\n{explanation}")
+
+    criteria = data.get("criteria")
+    failing: list[tuple[str, str]] = []
+    if isinstance(criteria, list):
+        for criterion in criteria:
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name") or "Unnamed criterion").strip()
+                gap = str(criterion.get("gap") or "").strip()
+                failing.append((name, gap))
+    if failing:
+        lines = ["Unmet criteria"]
+        for name, gap in failing:
+            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
+        sections.append("\n".join(lines))
+
+    if result == "max_iterations_reached" and goal_active:
+        next_step = (
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"}:
+        next_step = "Address every unmet criterion, then retry the check."
+    elif result == "failed":
+        next_step = "Review or replace the rubric before grading again."
+    elif result == "grader_error":
+        next_step = "Retry the check, or choose a different grader model."
+    else:
+        next_step = "Review the grader details before continuing."
+    sections.append(f"Next step\n{next_step}")
+    return "\n\n".join(sections)
 
 
 class TextualUIAdapter:
@@ -295,7 +370,9 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
-        on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
+        on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
+        | None = None,
+        on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         on_user_visible_output_started: Callable[[], None] | None = None,
@@ -310,6 +387,10 @@ class TextualUIAdapter:
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
         on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
+        on_auto_mode_event: (
+            Callable[[dict[str, Any]], Awaitable[None] | None] | None
+        ) = None,
+        on_approval_mode_fallback: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -322,12 +403,10 @@ class TextualUIAdapter:
         """Async callback that returns a Future for HITL approval."""
 
         self._on_auto_approve_enabled = on_auto_approve_enabled
-        """Callback invoked when auto-approve is enabled via the HITL approval
-        menu.
+        """Callback invoked before a Manual approval enables Auto."""
 
-        Fired when the user selects "Auto-approve all" from an approval dialog,
-        allowing the app to sync its status bar and session state.
-        """
+        self._on_switch_to_manual = on_switch_to_manual
+        """Callback that persists Manual before an Auto fallback resumes."""
 
         self._set_spinner = set_spinner
         """Callback to show/hide loading spinner."""
@@ -363,12 +442,13 @@ class TextualUIAdapter:
         """
 
         self._on_subagent_event = on_subagent_event
-        """Sync callback fired for each validated `subagent` custom-stream event.
+        """Sync callback fired for each validated `subagent` custom-stream event."""
 
-        Drives the live subagent fan-out panel. Events originate from the
-        QuickJS `task()` bridge during a `js_eval` call; payload strings are
-        LLM/JS-authored and treated as untrusted by the panel renderer.
-        """
+        self._on_auto_mode_event = on_auto_mode_event
+        """Callback for compact sanitized Auto denial and fallback events."""
+
+        self._on_approval_mode_fallback = on_approval_mode_fallback
+        """Callback that synchronizes a fail-closed startup fallback to Manual."""
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -460,6 +540,89 @@ def _build_interrupted_ai_message(
     )
 
 
+def _interrupt_owned_tool_rows(
+    action_requests: Iterable[Mapping[str, Any]],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallMessage]:
+    """Return the tracked tool rows a nested interrupt's action requests own.
+
+    Used by `_interrupt_tool_rows` for a nested (non-main-agent) checkpoint,
+    whose pause/resume must touch only the specific tool calls it carries so
+    unrelated outer ``task`` rows keep running. Because a `HITLRequest`'s
+    `ActionRequest` carries no tool-call id, ownership is matched by tool name
+    plus argument value-equality (order-independent ``dict`` comparison). Each
+    candidate row is claimed at most once, so two identical calls map to two
+    distinct rows.
+
+    Two caveats follow from matching on args value rather than an id:
+
+    - It relies on the human-in-the-loop middleware surfacing the tool call's
+      ``args`` unchanged in the action request (true as of the pinned
+      ``langchain`` middleware). If that ever diverges — normalization, a JSON
+      round-trip, redaction — the match degrades silently to returning fewer
+      rows; ``test_matches_row_by_name_and_args`` guards the current contract.
+    - A nested action request that happens to share a name and args with a
+      concurrently tracked row (e.g. an identical ``execute`` call at another
+      nesting level) can misattribute that row. This is strictly rarer than
+      pausing every row and self-corrects, since the same helper drives both
+      pause and resume.
+
+    A nested subagent's own child tool call is not tracked in
+    ``current_tool_messages`` — message-stream tool rows are gated to the main
+    agent (see the ``is_main_agent`` check) — so a purely nested interrupt
+    normally matches nothing and leaves every outer row untouched, keeping the
+    still-running ``task`` timers monotonic across the checkpoint.
+
+    Args:
+        action_requests: The interrupt's action requests (``name`` + ``args``).
+        current_tool_messages: Live map of tool-call id to tracked tool row.
+
+    Returns:
+        The subset of tracked rows owned by these action requests, in request
+        order.
+    """
+    candidates = list(current_tool_messages.values())
+    claimed_ids: set[int] = set()
+    owned: list[ToolCallMessage] = []
+    for request in action_requests:
+        name = request.get("name")
+        args = request.get("args", {})
+        for tool_msg in candidates:
+            if id(tool_msg) in claimed_ids:
+                continue
+            if tool_msg.tool_name == name and tool_msg.args == args:
+                owned.append(tool_msg)
+                claimed_ids.add(id(tool_msg))
+                break
+    return owned
+
+
+def _interrupt_tool_rows(
+    namespace: tuple[Any, ...],
+    action_requests: Iterable[Mapping[str, Any]],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallMessage]:
+    """Return rows blocked by an interrupt at `namespace`.
+
+    A main-agent checkpoint prevents its entire parallel tool batch from
+    reaching the tool node, including ungated siblings omitted from the HITL
+    action requests. Nested checkpoints must remain scoped to their own action
+    requests so unrelated outer `task` rows keep running.
+
+    Args:
+        namespace: Stream namespace that emitted the interrupt.
+        action_requests: The interrupt's reviewed tool calls.
+        current_tool_messages: Live map of tool-call id to tracked tool row.
+
+    Returns:
+        Every tracked row for a main-agent interrupt, otherwise only rows owned
+        by the nested interrupt's action requests.
+    """
+    if not namespace:
+        return list(current_tool_messages.values())
+    return _interrupt_owned_tool_rows(action_requests, current_tool_messages)
+
+
 def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
     """Read a mentioned file for inline embedding (sync, for use with to_thread).
 
@@ -500,6 +663,36 @@ def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  #
     return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
+def _require_approval_mode_key(value: str | None) -> str:
+    """Return a written Store key for fail-closed startup.
+
+    Raises:
+        RuntimeError: If the remote agent has no Store writer.
+    """
+    if value is None:
+        msg = "Approval-mode Store writer is unavailable"
+        raise RuntimeError(msg)
+    return value
+
+
+def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
+    """Return whether a custom event is a sanitized top-level Auto event."""
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return False
+    event = data.get("event")
+    reason = data.get("reason")
+    mode = data.get("mode")
+    return (
+        event in {"denial", "unavailable", "fallback", "warning"}
+        and (reason is None or isinstance(reason, str))
+        and (mode is None or (event == "fallback" and mode == "manual"))
+    )
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -512,8 +705,11 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    graph_input: dict[str, Any] | None = None,
     rubric: str | None = None,
+    goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
+    on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -525,25 +721,29 @@ async def execute_task_textual(
         user_input: The user's input message
         agent: The LangGraph agent to execute
         assistant_id: The agent identifier
-        session_state: Session state with auto_approve flag
-        adapter: The TextualUIAdapter for UI operations
-        backend: Optional backend for file operations
-        image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params. The
-            current approval mode (`session_state.auto_approve`) is written
-            into `context["auto_approve"]` on every stream iteration before it
-            is passed to the graph via `context=`, so the `interrupt_on` `when`
-            predicate can suppress interrupts at the source.
+        session_state: Session state with a typed approval mode.
+        adapter: The TextualUIAdapter for UI operations.
+        backend: Optional backend for file operations.
+        image_tracker: Optional tracker for images.
+        context: Optional `CLIContext` with model override and params. The current
+            mode is persisted and copied into runtime context before every stream
+            iteration.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        graph_input: Prepared non-conversation input for a server-side graph
+            operation. When provided, no user message or media is constructed.
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
+        on_rubric_evaluation_end: Optional callback receiving a validated
+            `RubricEvaluationEnd` (grading run ID and verdict) for each
+            main-agent `rubric_evaluation_end` event.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -557,6 +757,7 @@ async def execute_task_textual(
 
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
+        RuntimeError: If Manual cannot be persisted before graph execution.
     """
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -567,48 +768,46 @@ async def execute_task_textual(
     from langgraph.types import Command
     from pydantic import ValidationError
 
-    from deepagents_code.approval_mode import awrite_approval_mode
+    from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
+    from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
 
-    # Parse file mentions and inject content if any — offload blocking I/O
-    prompt_text, mentioned_files = await asyncio.to_thread(
-        parse_file_mentions, user_input
-    )
-
-    # Max file size to embed inline (256KB, matching mistral-vibe)
-    # Larger files get a reference instead - use read_file tool to view them
-    max_embed_bytes = 256 * 1024
-
-    if mentioned_files:
-        context_parts = [prompt_text, "\n\n## Referenced Files\n"]
-        for file_path in mentioned_files:
-            try:
-                part = await asyncio.to_thread(
-                    _read_mentioned_file, file_path, max_embed_bytes
-                )
-                context_parts.append(part)
-            except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
-                context_parts.append(
-                    f"\n### {file_path.name}\n[Error reading file: {e}]"
-                )
-        final_input = "\n".join(context_parts)
-    else:
-        final_input = prompt_text
-
-    # Include images and videos in the message content
-    images_to_send = []
-    videos_to_send = []
-    if image_tracker:
-        images_to_send = image_tracker.get_images()
-        videos_to_send = image_tracker.get_videos()
-    if images_to_send or videos_to_send:
-        message_content = create_multimodal_content(
-            final_input, images_to_send, videos_to_send
+    message_content: str | list[dict[str, Any]] | None = None
+    if graph_input is None:
+        prompt_text, mentioned_files = await asyncio.to_thread(
+            parse_file_mentions, user_input
         )
-    else:
-        message_content = final_input
+        max_embed_bytes = 256 * 1024
+
+        if mentioned_files:
+            context_parts = [prompt_text, "\n\n## Referenced Files\n"]
+            for file_path in mentioned_files:
+                try:
+                    part = await asyncio.to_thread(
+                        _read_mentioned_file, file_path, max_embed_bytes
+                    )
+                    context_parts.append(part)
+                except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
+                    context_parts.append(
+                        f"\n### {file_path.name}\n[Error reading file: {e}]"
+                    )
+            final_input = "\n".join(context_parts)
+        else:
+            final_input = prompt_text
+
+        images_to_send = []
+        videos_to_send = []
+        if image_tracker:
+            images_to_send = image_tracker.get_images()
+            videos_to_send = image_tracker.get_videos()
+        if images_to_send or videos_to_send:
+            message_content = create_multimodal_content(
+                final_input, images_to_send, videos_to_send
+            )
+        else:
+            message_content = final_input
 
     thread_id = session_state.thread_id
     # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
@@ -617,13 +816,17 @@ async def execute_task_textual(
     # `advance_turn`, but lightweight callers/test doubles may not, so probe for
     # it and degrade to no turn markers rather than raising.
     advance_turn = getattr(session_state, "advance_turn", None)
-    if callable(advance_turn):
+    if graph_input is None and callable(advance_turn):
         turn_id, turn_number = advance_turn()
     else:
         turn_id, turn_number = None, None
     # `build_stream_config` does blocking git filesystem reads and may shell out
     # to `git`; offload it so the Textual event loop stays responsive. Advancing
     # the turn markers above is pure/cheap and stays on the loop.
+    #
+    # `auto_approve` is sampled once here, at turn start, so it labels the trace
+    # with the mode the turn began in. A mid-turn Shift+Tab toggle still changes
+    # execution behavior (via `context`) but does not relabel this turn's trace.
     config = await asyncio.to_thread(
         build_stream_config,
         thread_id,
@@ -631,6 +834,7 @@ async def execute_task_textual(
         sandbox_type=sandbox_type,
         turn_id=turn_id,
         turn_number=turn_number,
+        auto_approve=bool(session_state.auto_approve),
     )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -702,20 +906,34 @@ async def execute_task_textual(
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
 
-    # Clear media from tracker after creating the message
-    if image_tracker:
+    if image_tracker and graph_input is None:
         image_tracker.clear()
 
-    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
-    if message_kwargs:
-        user_msg.update(message_kwargs)
-    # Auto-approve is carried via run context (set per stream iteration below),
-    # not graph state — so the initial input is a plain dict. A first-turn
-    # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
-    # API server and crash `_control_branch` on a fresh thread.
-    stream_input: dict | Command = {"messages": [user_msg]}
-    if rubric:
-        stream_input["rubric"] = rubric
+    if graph_input is None:
+        user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+        if message_kwargs:
+            user_msg.update(message_kwargs)
+        additional_kwargs = user_msg.get("additional_kwargs")
+        trusted_kwargs = (
+            dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}
+        )
+        trusted_kwargs[USER_PROMPT_METADATA_KEY] = user_prompt_metadata(
+            user_input,
+            [str(path) for path in mentioned_files],
+            turn_id=turn_id,
+        )
+        user_msg["additional_kwargs"] = trusted_kwargs
+        stream_input: dict | Command = {
+            "messages": [user_msg],
+            "goal_criteria_request": None,
+        }
+        if rubric:
+            stream_input["rubric"] = rubric
+    else:
+        stream_input = dict(graph_input)
+    recover_interrupted_turn = not (
+        graph_input is not None and graph_input.get("goal_criteria_request") is not None
+    )
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -724,16 +942,9 @@ async def execute_task_textual(
         while True:
             interrupt_occurred = False
             suppress_resumed_output = False
-            pending_interrupts: dict[str, HITLRequest] = {}
+            pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
 
-            # Carry the current approval mode into run context so the
-            # `interrupt_on` `when` predicate can suppress interrupts at the
-            # source. Also write the live store item that the server-side
-            # predicate re-reads on each tool call, so toggling approval mode
-            # mid-stream (either direction) takes effect before the current
-            # stream returns. Turning auto-approve off is the safety-critical
-            # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
@@ -741,28 +952,63 @@ async def execute_task_textual(
                 context["blocked_goal_retry_context"] = blocked_goal_retry_context
             else:
                 context.pop("blocked_goal_retry_context", None)
-            auto_approve = bool(session_state.auto_approve)
-            context["auto_approve"] = auto_approve
+            raw_mode = getattr(session_state, "approval_mode", None)
+            if raw_mode is None:
+                raw_mode = (
+                    ApprovalMode.YOLO
+                    if getattr(session_state, "auto_approve", False)
+                    else ApprovalMode.MANUAL
+                )
             try:
-                live_key = await awrite_approval_mode(
-                    agent,
-                    thread_id,
-                    auto_approve=auto_approve,
+                selected_mode = ApprovalMode(raw_mode)
+            except (TypeError, ValueError):
+                selected_mode = ApprovalMode.MANUAL
+            context["approval_mode"] = selected_mode.value
+            context["auto_approve"] = selected_mode is not ApprovalMode.MANUAL
+            try:
+                live_key = _require_approval_mode_key(
+                    await awrite_approval_mode(
+                        agent,
+                        thread_id,
+                        mode=selected_mode,
+                    )
                 )
             except Exception:
                 logger.warning(
-                    "Failed to write live approval mode; interrupting for safety",
+                    "Failed to persist selected approval mode; forcing Manual",
                     exc_info=True,
                 )
-                context["auto_approve"] = False
-                context.pop("approval_mode_key", None)
-                session_state.approval_mode_key = None
-            else:
-                if live_key is None:
+                try:
+                    live_key = _require_approval_mode_key(
+                        await awrite_approval_mode(
+                            agent,
+                            thread_id,
+                            mode=ApprovalMode.MANUAL,
+                        )
+                    )
+                except Exception as exc:
+                    context["approval_mode"] = ApprovalMode.MANUAL.value
+                    context["auto_approve"] = False
                     context.pop("approval_mode_key", None)
-                else:
-                    context["approval_mode_key"] = live_key
-                session_state.approval_mode_key = live_key
+                    session_state.approval_mode = ApprovalMode.MANUAL
+                    session_state.approval_mode_key = None
+                    if adapter._on_approval_mode_fallback is not None:
+                        adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                    adapter._update_status("Approval mode fell back to Manual")
+                    msg = (
+                        "Manual approval mode could not be persisted; graph execution "
+                        "is blocked until the Store is available."
+                    )
+                    raise RuntimeError(msg) from exc
+                selected_mode = ApprovalMode.MANUAL
+                session_state.approval_mode = ApprovalMode.MANUAL
+                context["approval_mode"] = ApprovalMode.MANUAL.value
+                context["auto_approve"] = False
+                if adapter._on_approval_mode_fallback is not None:
+                    adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                adapter._update_status("Approval mode fell back to Manual")
+            context["approval_mode_key"] = live_key
+            session_state.approval_mode_key = live_key
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -804,8 +1050,51 @@ async def execute_task_textual(
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
                     )
-                    if formatted_rubric_event is not None and is_main_agent:
-                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                    if (
+                        formatted_rubric_event is not None
+                        and rubric_message is not None
+                        and is_main_agent
+                    ):
+                        details = (
+                            _format_rubric_details(
+                                rubric_message,
+                                goal_active=goal_active,
+                            )
+                            if rubric_message.get("type") == "rubric_evaluation_end"
+                            else ""
+                        )
+                        message = (
+                            RubricResultMessage(formatted_rubric_event, details)
+                            if details
+                            else AppMessage(formatted_rubric_event)
+                        )
+                        await adapter._mount_message(message)
+                        if (
+                            on_rubric_evaluation_end is not None
+                            and rubric_message.get("type") == "rubric_evaluation_end"
+                        ):
+                            grading_run_id = rubric_message.get("grading_run_id")
+                            result = rubric_message.get("result")
+                            if (
+                                isinstance(grading_run_id, str)
+                                and grading_run_id.strip()
+                                and isinstance(result, str)
+                            ):
+                                # Structurally validated here; the verdict is
+                                # cast to `RubricResult` at this boundary and the
+                                # consumer re-checks it against the known set.
+                                try:
+                                    on_rubric_evaluation_end(
+                                        RubricEvaluationEnd(
+                                            grading_run_id=grading_run_id.strip(),
+                                            result=cast("RubricResult", result),
+                                        )
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "on_rubric_evaluation_end callback failed",
+                                        exc_info=True,
+                                    )
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a
@@ -824,8 +1113,19 @@ async def execute_task_textual(
                         try:
                             adapter._on_subagent_event(data)
                         except Exception:
-                            # Panel rendering must never crash the stream loop.
                             logger.exception("subagent panel event handler failed")
+                    if (
+                        adapter._on_auto_mode_event is not None
+                        and _is_renderable_auto_mode_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            callback_result = adapter._on_auto_mode_event(data)
+                            if callback_result is not None:
+                                await callback_result
+                        except Exception:
+                            logger.exception("Auto mode event handler failed")
                     continue
 
                 # Handle UPDATES stream - for interrupts and todos
@@ -921,7 +1221,8 @@ async def execute_task_textual(
                                             hitl_request_adapter.validate_python(iv)
                                         )
                                         pending_interrupts[interrupt_obj.id] = (
-                                            validated_request
+                                            ns_key,
+                                            validated_request,
                                         )
                                         interrupt_occurred = True
                                         await dispatch_hook("input.required", {})
@@ -969,6 +1270,45 @@ async def execute_task_textual(
                             summarization_in_progress = True
                             if adapter._set_spinner:
                                 await adapter._set_spinner("Offloading")
+                        continue
+
+                    # Extract token usage before filtering hidden model output.
+                    # Usage may be attached to any message chunk, including the
+                    # internal Auto mode classifier response.
+                    if hasattr(message, "usage_metadata"):
+                        usage = message.usage_metadata
+                        if usage:
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
+                            total_toks = usage.get("total_tokens", 0)
+                            from deepagents_code.config import settings
+
+                            active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, total_toks
+                                )
+
+                    # The Auto mode authorization classifier is a nested model
+                    # call. Its structured JSON is internal policy machinery,
+                    # not assistant output for the conversation transcript.
+                    if _is_auto_mode_classifier_chunk(metadata):
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -1140,38 +1480,6 @@ async def execute_task_textual(
                                     exc_info=True,
                                 )
                         continue
-
-                    # Extract token usage (before content_blocks check
-                    # - usage may be on any chunk)
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
@@ -1394,12 +1702,36 @@ async def execute_task_textual(
 
                 # Tools mounted above start their spinner immediately, but a
                 # tool blocked on HITL approval or `ask_user` input is not
-                # actually running. Pause every in-flight row so none shows a
-                # misleading "Running..."; the approve branches below call
-                # `set_running` again to resume those that proceed. Guard each
-                # row individually so a single bad widget can't abort the whole
+                # actually running. A main-agent checkpoint blocks its complete
+                # parallel batch, including ungated siblings absent from the
+                # action requests. Nested interrupts remain scoped so unrelated
+                # outer or sibling `task` rows keep running. The approve branches
+                # below call `set_running` on the same rows to resume them.
+                # Crucially, an unrelated in-flight row — a still-running outer
+                # `task`, or a sibling subagent's `task` whose child did not
+                # interrupt — is left running so its elapsed timer stays
+                # monotonic across the nested checkpoint. Guard each row
+                # individually so a single bad widget can't abort the whole
                 # interrupt handler (mirrors `clear_awaiting_approval` below).
-                for tool_msg in adapter._current_tool_messages.values():
+                paused_tool_msgs: list[ToolCallMessage] = []
+                paused_ids: set[int] = set()
+                for namespace, hitl_request in pending_interrupts.values():
+                    for tool_msg in _interrupt_tool_rows(
+                        namespace,
+                        hitl_request["action_requests"],
+                        adapter._current_tool_messages,
+                    ):
+                        if id(tool_msg) not in paused_ids:
+                            paused_ids.add(id(tool_msg))
+                            paused_tool_msgs.append(tool_msg)
+                for ask_req in pending_ask_user.values():
+                    ask_tool_msg = adapter._current_tool_messages.get(
+                        ask_req["tool_call_id"]
+                    )
+                    if ask_tool_msg is not None and id(ask_tool_msg) not in paused_ids:
+                        paused_ids.add(id(ask_tool_msg))
+                        paused_tool_msgs.append(ask_tool_msg)
+                for tool_msg in paused_tool_msgs:
                     try:
                         tool_msg.pause_running()
                         adapter._sync_tool_widget(tool_msg)
@@ -1604,15 +1936,24 @@ async def execute_task_textual(
                                     "Failed to update ask_user row for %s", tool_id
                                 )
 
-                for interrupt_id, hitl_request in list(pending_interrupts.items()):
+                for interrupt_id, (namespace, hitl_request) in list(
+                    pending_interrupts.items()
+                ):
                     action_requests = hitl_request["action_requests"]
 
-                    if session_state.auto_approve:
+                    if (
+                        getattr(session_state, "approval_mode", None)
+                        is ApprovalMode.YOLO
+                    ):
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
                         resume_payload[interrupt_id] = {"decisions": decisions}
-                        for tool_msg in list(adapter._current_tool_messages.values()):
+                        for tool_msg in _interrupt_tool_rows(
+                            namespace,
+                            action_requests,
+                            adapter._current_tool_messages,
+                        ):
                             tool_msg.set_running()
                             adapter._sync_tool_widget(tool_msg)
                     else:
@@ -1635,7 +1976,9 @@ async def execute_task_textual(
                         suppressed_tool_msgs = (
                             [
                                 tool_msg
-                                for tool_msg in adapter._current_tool_messages.values()
+                                for tool_msg in _interrupt_owned_tool_rows(
+                                    action_requests, adapter._current_tool_messages
+                                )
                                 if tool_msg.tool_name == "execute"
                             ]
                             if len(action_requests) == 1
@@ -1644,10 +1987,27 @@ async def execute_task_textual(
                         for tool_msg in suppressed_tool_msgs:
                             tool_msg.set_awaiting_approval()
                         try:
-                            future = await adapter._request_approval(
-                                action_requests, assistant_id
-                            )
-                            decision = await future
+                            while True:
+                                future = await adapter._request_approval(
+                                    action_requests, assistant_id
+                                )
+                                decision = await future
+                                if (
+                                    isinstance(decision, dict)
+                                    and decision.get("type") == "auto_approve_all"
+                                    and adapter._on_auto_approve_enabled is not None
+                                ):
+                                    callback_result = adapter._on_auto_approve_enabled()
+                                    enabled = (
+                                        await callback_result
+                                        if inspect.isawaitable(callback_result)
+                                        else callback_result
+                                    )
+                                    if enabled is None:
+                                        enabled = True
+                                    if enabled is False:
+                                        continue
+                                break
                         finally:
                             for tool_msg in suppressed_tool_msgs:
                                 try:
@@ -1663,23 +2023,14 @@ async def execute_task_textual(
                             decision_type = decision.get("type")
 
                             if decision_type == "auto_approve_all":
-                                session_state.auto_approve = True
-                                # The resuming stream re-reads
-                                # `session_state.auto_approve` into run context
-                                # at the top of the loop, so the `interrupt_on`
-                                # `when` predicate suppresses interrupts on the
-                                # remaining tool calls in this turn — keeping it
-                                # a single run instead of resuming after each.
-                                if adapter._on_auto_approve_enabled:
-                                    callback_result = adapter._on_auto_approve_enabled()
-                                    if callback_result is not None:
-                                        await callback_result
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                tool_msgs = list(
-                                    adapter._current_tool_messages.values()
+                                tool_msgs = _interrupt_tool_rows(
+                                    namespace,
+                                    action_requests,
+                                    adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
@@ -1697,13 +2048,33 @@ async def execute_task_textual(
                                                 tool_name, args
                                             )
 
+                            elif decision_type == "switch_manual":
+                                if adapter._on_switch_to_manual is None:
+                                    msg = "Manual mode callback is unavailable"
+                                    raise RuntimeError(msg)
+                                callback_result = adapter._on_switch_to_manual()
+                                switched = (
+                                    await callback_result
+                                    if inspect.isawaitable(callback_result)
+                                    else callback_result
+                                )
+                                if not switched:
+                                    msg = "Manual mode could not be persisted"
+                                    raise RuntimeError(msg)
+                                decisions = [
+                                    cast("HITLDecision", {"type": "switch_manual"})
+                                    for _ in action_requests
+                                ]
+
                             elif decision_type == "approve":
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                tool_msgs = list(
-                                    adapter._current_tool_messages.values()
+                                tool_msgs = _interrupt_tool_rows(
+                                    namespace,
+                                    action_requests,
+                                    adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
@@ -1737,19 +2108,21 @@ async def execute_task_textual(
                                     else RejectDecision(type="reject")
                                 )
                                 decisions = [reject_decision for _ in action_requests]
-                                tool_msgs = list(
-                                    adapter._current_tool_messages.values()
-                                )
-                                for tool_msg in tool_msgs:
-                                    tool_msg.set_rejected(reason=reject_message)
-                                    adapter._sync_tool_widget(tool_msg)
-                                # Bare reject aborts the turn and shows the
-                                # canned "Command rejected" banner so the user
-                                # can redirect. When a reason is supplied, the
-                                # reason itself serves as feedback for the
-                                # agent: keep `any_rejected=False` so the
-                                # stream resumes and the banner is suppressed.
-                                if reject_message is None:
+                                # Bare reject aborts an ordinary conversation
+                                # turn and shows the canned "Command rejected"
+                                # banner. Server operations must receive every
+                                # decision so their nested agent can finish
+                                # without the rejected context. A supplied
+                                # reason likewise resumes either kind of run.
+                                if reject_message is None and graph_input is None:
+                                    # The whole turn aborts: give every tracked
+                                    # row a terminal state before teardown so
+                                    # none is left frozen on a stale "Running...".
+                                    for tool_msg in list(
+                                        adapter._current_tool_messages.values()
+                                    ):
+                                        tool_msg.set_rejected(reason=reject_message)
+                                        adapter._sync_tool_widget(tool_msg)
                                     completed_tool_result_ids.update(
                                         _dispatch_terminal_tool_result_hooks(
                                             adapter._current_tool_messages,
@@ -1758,6 +2131,30 @@ async def execute_task_textual(
                                     )
                                     adapter._current_tool_messages.clear()
                                     any_rejected = True
+                                else:
+                                    # The run resumes, so only reviewed calls are
+                                    # terminally rejected. A main-agent checkpoint
+                                    # also paused ungated siblings in the parallel
+                                    # batch; resume those because they can still run
+                                    # after the rejected calls are replaced with
+                                    # synthetic ToolMessages.
+                                    tracked_tool_msgs = adapter._current_tool_messages
+                                    rejected_tool_msgs = _interrupt_owned_tool_rows(
+                                        action_requests,
+                                        tracked_tool_msgs,
+                                    )
+                                    rejected_ids = {
+                                        id(tool_msg) for tool_msg in rejected_tool_msgs
+                                    }
+                                    for tool_msg in rejected_tool_msgs:
+                                        tool_msg.set_rejected(reason=reject_message)
+                                        adapter._sync_tool_widget(tool_msg)
+                                    if not namespace:
+                                        for tool_msg in tracked_tool_msgs.values():
+                                            if id(tool_msg) in rejected_ids:
+                                                continue
+                                            tool_msg.set_running()
+                                            adapter._sync_tool_widget(tool_msg)
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1872,6 +2269,7 @@ async def execute_task_textual(
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
             start_time=start_time,
+            recover_interrupted_turn=recover_interrupted_turn,
         )
         return turn_stats
     finally:
@@ -1991,6 +2389,7 @@ async def _handle_interrupt_cleanup(
     captured_output_tokens: int,
     turn_stats: SessionStats,
     start_time: float,
+    recover_interrupted_turn: bool = True,
 ) -> None:
     """Shared cleanup for CancelledError and KeyboardInterrupt.
 
@@ -2004,6 +2403,8 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+        recover_interrupted_turn: Whether to append the normal partial assistant
+            and cancellation messages for an interrupted conversation turn.
 
     Raises:
         ValueError: If proactive remote-run cancellation is attempted without a
@@ -2025,7 +2426,8 @@ async def _handle_interrupt_cleanup(
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
-    await adapter._mount_message(AppMessage("Interrupted by user"))
+    if recover_interrupted_turn:
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This
@@ -2050,9 +2452,13 @@ async def _handle_interrupt_cleanup(
                 exc_info=True,
             )
 
-    interrupted_msg = _build_interrupted_ai_message(
-        pending_text_by_namespace,
-        adapter._current_tool_messages,
+    interrupted_msg = (
+        _build_interrupted_ai_message(
+            pending_text_by_namespace,
+            adapter._current_tool_messages,
+        )
+        if recover_interrupted_turn
+        else None
     )
 
     # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
@@ -2096,22 +2502,23 @@ async def _handle_interrupt_cleanup(
         # cancellation notice), not user-driven agent activity; surfacing them as
         # standalone peer runs alongside real agent turns clutters the trace view.
         with tracing_context(enabled=False):
-            if interrupted_msg:
-                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+            if recover_interrupted_turn:
+                if interrupted_msg:
+                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
-            cancellation_msg = HumanMessage(
-                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                "Previous operation was cancelled."
-            )
-            cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
-            # Piggy-back the latest token count on this already-required write
-            # instead of issuing a separate `aupdate_state`. `after_model` never
-            # ran on the partial turn, so without this the count would be stale
-            # on resume.
-            captured_total = captured_input_tokens + captured_output_tokens
-            if captured_total:
-                cancellation_values["_context_tokens"] = captured_total
-            await agent.aupdate_state(config, cancellation_values)
+                cancellation_msg = HumanMessage(
+                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                    "Previous operation was cancelled."
+                )
+                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                # Piggy-back the latest token count on this already-required
+                # write instead of issuing a separate `aupdate_state`.
+                # `after_model` never ran on the partial turn, so without this
+                # the count would be stale on resume.
+                captured_total = captured_input_tokens + captured_output_tokens
+                if captured_total:
+                    cancellation_values["_context_tokens"] = captured_total
+                await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception as exc:  # interrupt cleanup must not propagate

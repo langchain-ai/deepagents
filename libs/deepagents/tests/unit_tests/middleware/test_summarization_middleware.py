@@ -714,7 +714,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
@@ -756,7 +756,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
@@ -3511,7 +3511,7 @@ async def test_async_upload_response_error_writes_placeholder() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
+    with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
         await call_awrap_model_call(middleware, state, runtime)
 
     image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]

@@ -8,6 +8,7 @@ point-in-time session/runtime snapshot plus a live tail of recent
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import logging
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, cast, get_args
@@ -22,7 +23,8 @@ from textual.geometry import Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
-from textual.widgets import Select, Static
+from textual.style import Style as TStyle
+from textual.widgets import Checkbox, Select, Static
 from textual.widgets._select import (  # noqa: PLC2701  # needed to keep Tab navigation inside the open Select overlay
     SelectCurrent,
     SelectOverlay,
@@ -34,8 +36,10 @@ from deepagents_code._debug_buffer import (
     DEFAULT_CAPACITY,
     InMemoryLogRecord,
     get_log_buffer,
+    retention_bucket_for_level,
 )
 from deepagents_code.clipboard import copy_text_to_clipboard
+from deepagents_code.tui.widgets._links import open_style_link
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
@@ -51,23 +55,42 @@ r"""Textual key name for the `Ctrl+\` chord that toggles the console."""
 
 
 class SnapshotField(NamedTuple):
-    """A single `label`/`value` row in the console's session snapshot.
+    """A single row in the console's session snapshot.
 
-    A named pair (rather than a bare ``tuple[str, str]``) so the two display-only
-    string slots cannot be silently transposed at the construction site.
+    The four named fields keep the display strings and their interaction metadata
+    explicit at construction sites. `copyable` opts a row into click-to-copy, and
+    `thread_id` enables a resolvable `(langsmith)` trace link for the thread row.
     """
 
     label: str
     value: str
+    copyable: bool = False
+    """Whether `value` can be clicked to copy it to the clipboard."""
+    thread_id: str | None = None
+    """A LangSmith thread id whose ``(langsmith)`` trace link is appended to the
+    row once the URL resolves. `None` disables the link."""
+
+
+_SNAPSHOT_COPY_META = "snapshot_copy"
+"""Meta key marking a snapshot span whose text is copied on click."""
 
 
 _REFRESH_INTERVAL = 0.5
 """Seconds between log-tail refresh ticks."""
 
 _RECORD_LIMIT = DEFAULT_CAPACITY
-"""Maximum records retained by an open debug console view."""
+"""Maximum records retained per level by an open debug console view.
+
+Matches the buffer's per-level `deque` bound so the console mirrors the buffer's
+level-partitioned retention instead of re-flattening it into a single window."""
 
 _FILTER_SELECT_ID = "debug-level-filter"
+_CLICK_TO_COPY_ID = "debug-click-to-copy"
+"""Id of the checkbox that opts click-to-copy in for the console."""
+_CLICK_TO_COPY_DEFAULT = False
+"""Whether click-to-copy is enabled before the user toggles the checkbox."""
+_FOCUS_CYCLE = f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
+"""Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
     "all",
     "min:DEBUG",
@@ -228,9 +251,12 @@ class _DebugLogView(ScrollView, can_focus=True):
         *,
         widget_id: str | None = None,
         classes: str | None = None,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
     ) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._on_copy_record = on_copy_record
+        self.click_to_copy = click_to_copy
+        """Whether clicking a log line copies it. Enter always copies."""
         self._records: list[InMemoryLogRecord] = []
         self._notice: Content | None = None
         self._contents: list[Content] = []
@@ -526,19 +552,19 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._copy_selected_record()
 
     def key_tab(self, event: events.Key) -> None:
-        """Move focus from the log to the level filter."""
+        """Move focus from the log to the next toolbar control."""
         event.prevent_default()
         event.stop()
-        self.screen.focus_next("#debug-level-filter, #debug-log")
+        self.screen.focus_next(_FOCUS_CYCLE)
 
     def key_shift_tab(self, event: events.Key) -> None:
-        """Move focus from the log to the level filter."""
+        """Move focus from the log to the previous toolbar control."""
         event.prevent_default()
         event.stop()
-        self.screen.focus_previous("#debug-level-filter, #debug-log")
+        self.screen.focus_previous(_FOCUS_CYCLE)
 
     def on_click(self, event: events.Click) -> None:
-        """Copy the clicked logical log record."""
+        """Select the clicked log record, copying it when click-to-copy is on."""
         _scroll_x, scroll_y = self.scroll_offset
         record = self._record_at_visual_y(scroll_y + event.y)
         if record is None:
@@ -547,7 +573,75 @@ class _DebugLogView(ScrollView, can_focus=True):
         if index is not None:
             self._select_record(index)
         event.stop()
-        self._on_copy_record(record)
+        if self.click_to_copy:
+            self._on_copy_record(record)
+
+
+def _snapshot_copy_text(style: object) -> str | None:
+    """Return the copy payload from a snapshot span style, if any.
+
+    Args:
+        style: The Textual event style under the pointer/click.
+
+    Returns:
+        The text to copy when the span carries a copy marker, else `None`.
+    """
+    meta = getattr(style, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    text = meta.get(_SNAPSHOT_COPY_META)
+    return text if isinstance(text, str) and text else None
+
+
+class _SnapshotView(Static):
+    """Snapshot header that copies marked spans and opens link spans on click."""
+
+    # Match WelcomeBanner: disabling auto_links avoids a hover-refresh flicker
+    # loop caused by link styles getting a fresh random id on every render.
+    auto_links = False
+
+    def __init__(
+        self,
+        on_copy: Callable[[str], None],
+        *,
+        classes: str | None = None,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
+    ) -> None:
+        """Initialize with a callback used to copy a clicked span's text.
+
+        Args:
+            on_copy: Called with the span text when a copyable span is clicked.
+            classes: Optional space-separated CSS classes.
+            click_to_copy: Whether copyable spans respond to clicks. Links
+                always open regardless of this setting.
+        """
+        super().__init__(classes=classes)
+        self._on_copy = on_copy
+        self.click_to_copy = click_to_copy
+        """Whether clicking a copyable span copies its value."""
+
+    def on_click(self, event: events.Click) -> None:
+        """Copy a marked span or open a link span under the click."""
+        if getattr(event.style, "link", None):
+            open_style_link(event)
+            return
+        if not self.click_to_copy:
+            return
+        text = _snapshot_copy_text(event.style)
+        if text is not None:
+            event.stop()
+            self._on_copy(text)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Show a hand pointer over clickable spans and reset it elsewhere."""
+        clickable = bool(getattr(event.style, "link", None)) or (
+            self.click_to_copy and _snapshot_copy_text(event.style) is not None
+        )
+        self.styles.pointer = "pointer" if clickable else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the snapshot."""
+        self.styles.pointer = "default"
 
 
 class DebugConsoleScreen(ModalScreen[None]):
@@ -609,6 +703,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         width: 18;
     }
 
+    DebugConsoleScreen .debug-console-click-to-copy {
+        margin-left: 2;
+        color: $text-muted;
+    }
+
     DebugConsoleScreen .debug-console-log {
         height: 1fr;
         min-height: 5;
@@ -632,20 +731,64 @@ class DebugConsoleScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, snapshot: Sequence[SnapshotField]) -> None:
+    def __init__(
+        self,
+        snapshot: Sequence[SnapshotField],
+        *,
+        cleared_upto: int = 0,
+        on_clear: Callable[[int], None] | None = None,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
+        on_click_to_copy_change: Callable[[bool], None] | None = None,
+    ) -> None:
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
-            snapshot: Ordered `(label, value)` fields rendered in the header.
+            snapshot: Ordered `SnapshotField` rows rendered in the header.
+            cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
+                The console starts rendering from here so a clear persists across
+                close/reopen; records emitted after it still appear.
+            on_clear: Invoked with the new clear cursor whenever `Ctrl+L` clears
+                the view, letting the owner persist it for the next open.
+            click_to_copy: Initial state of the "Click to copy" checkbox,
+                restored from the persisted preference.
+            on_click_to_copy_change: Called with the new value whenever the
+                checkbox is toggled, so the host can persist the preference.
         """
         super().__init__()
         self._snapshot = list(snapshot)
         self._records: list[InMemoryLogRecord] = []
-        # Absolute index of the next unrendered log record (incremental writes).
-        self._rendered_upto = 0
+        # Absolute index of the next unrendered log record (incremental writes),
+        # seeded from any persisted clear so reopening honors the last Ctrl+L.
+        self._rendered_upto = cleared_upto
+        self._on_clear = on_clear
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
+        self._click_to_copy = click_to_copy
+        self._on_click_to_copy_change = on_click_to_copy_change
+        # Seed links resolved elsewhere in this process (normally the welcome
+        # banner) so reopening the console does not briefly render without one.
+        self._langsmith_urls = self._cached_langsmith_urls()
+
+    def _cached_langsmith_urls(self) -> dict[str, str]:
+        """Return immediately available LangSmith URLs for snapshot threads."""
+        from deepagents_code.config import get_cached_langsmith_thread_url
+
+        urls: dict[str, str] = {}
+        thread_ids = {field.thread_id for field in self._snapshot if field.thread_id}
+        for thread_id in thread_ids:
+            try:
+                url = get_cached_langsmith_thread_url(thread_id)
+            except Exception:  # a diagnostic overlay must always be able to open
+                logger.warning(
+                    "Cached LangSmith thread URL lookup errored for %r",
+                    thread_id,
+                    exc_info=True,
+                )
+                continue
+            if url:
+                urls[thread_id] = url
+        return urls
 
     def compose(self) -> ComposeResult:
         """Lay out the title, snapshot, filter, log tail, and key-hint footer.
@@ -655,7 +798,13 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         with Vertical():
             yield Static("Debug Console", classes="debug-console-title")
-            yield Static(self._render_snapshot(), classes="debug-console-snapshot")
+            snapshot_view = _SnapshotView(
+                self._copy_snapshot_value,
+                classes="debug-console-snapshot",
+                click_to_copy=self._click_to_copy,
+            )
+            snapshot_view.update(self._render_snapshot())
+            yield snapshot_view
             with Horizontal(classes="debug-console-toolbar"):
                 yield Static("Level", classes="debug-console-filter-label")
                 yield _LogLevelSelect(
@@ -665,10 +814,18 @@ class DebugConsoleScreen(ModalScreen[None]):
                     id=_FILTER_SELECT_ID,
                     compact=True,
                 )
+                yield Checkbox(
+                    "Click to copy",
+                    value=self._click_to_copy,
+                    id=_CLICK_TO_COPY_ID,
+                    compact=True,
+                    classes="debug-console-click-to-copy",
+                )
             yield _DebugLogView(
                 self._copy_record,
                 widget_id="debug-log",
                 classes="debug-console-log",
+                click_to_copy=self._click_to_copy,
             )
             yield Static(self._render_help(), classes="debug-console-help")
 
@@ -676,23 +833,90 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Start the refresh timer and render the current buffer contents."""
         self.set_interval(_REFRESH_INTERVAL, self._poll_logs)
         self._poll_logs()
+        self._resolve_langsmith_links()
         self.call_after_refresh(self.query_one("#debug-log", _DebugLogView).focus)
 
+    def _resolve_langsmith_links(self) -> None:
+        """Kick off background resolution of `(langsmith)` links for the snapshot."""
+        thread_ids = {
+            field.thread_id
+            for field in self._snapshot
+            if field.thread_id and field.thread_id not in self._langsmith_urls
+        }
+        for thread_id in thread_ids:
+            self.run_worker(
+                self._fetch_langsmith_link(thread_id),
+                exclusive=False,
+                group="debug-console-langsmith",
+            )
+
+    async def _fetch_langsmith_link(self, thread_id: str) -> None:
+        """Resolve a thread's LangSmith URL and re-render the snapshot.
+
+        Follows the welcome banner's thread + short-timeout pattern so an
+        unreachable LangSmith never blocks the console, but splits error
+        handling by expectedness: an expected timeout/I/O failure degrades
+        quietly to no link, while an unexpected error is logged loudly so a
+        genuine resolution bug is not hidden inside the diagnostic overlay.
+        """
+        from deepagents_code.config import build_langsmith_thread_url
+
+        try:
+            url = await asyncio.wait_for(
+                asyncio.to_thread(build_langsmith_thread_url, thread_id),
+                timeout=2.0,
+            )
+        except (TimeoutError, OSError):
+            # Expected: the outer timeout fired or a network error escaped the
+            # helper. A passive convenience link merely fails to appear.
+            logger.debug(
+                "LangSmith thread URL lookup timed out/failed for %r",
+                thread_id,
+                exc_info=True,
+            )
+            return
+        except Exception:  # a diagnostic overlay must not crash on a lookup bug
+            # Unexpected: a real defect in URL resolution. WARNING (not DEBUG) so
+            # the traceback lands in the always-on in-memory buffer and is visible
+            # in the console itself; the package logger sits at INFO by default,
+            # which drops DEBUG.
+            logger.warning(
+                "LangSmith thread URL lookup errored unexpectedly for %r",
+                thread_id,
+                exc_info=True,
+            )
+            return
+        if url:
+            self._langsmith_urls[thread_id] = url
+            self._refresh_snapshot()
+
+    def _refresh_snapshot(self) -> None:
+        """Re-render the snapshot header in place (e.g. after a link resolves)."""
+        from textual.css.query import NoMatches
+
+        try:
+            self.query_one(".debug-console-snapshot", _SnapshotView).update(
+                self._render_snapshot()
+            )
+        except NoMatches:
+            # The console was dismissed before the worker returned.
+            logger.debug("Debug console snapshot refresh skipped (widget unavailable)")
+
     def key_tab(self, event: events.Key) -> None:
-        """Cycle focus between the level filter and log lines."""
+        """Cycle focus between the toolbar controls and log lines."""
         if self._level_select().expanded:
             return
         event.prevent_default()
         event.stop()
-        self.focus_next("#debug-level-filter, #debug-log")
+        self.focus_next(_FOCUS_CYCLE)
 
     def key_shift_tab(self, event: events.Key) -> None:
-        """Cycle focus between the log lines and level filter."""
+        """Cycle focus between the log lines and toolbar controls."""
         if self._level_select().expanded:
             return
         event.prevent_default()
         event.stop()
-        self.focus_previous("#debug-level-filter, #debug-log")
+        self.focus_previous(_FOCUS_CYCLE)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""
@@ -710,6 +934,18 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._level_filter = cast("FilterValue", value)
         self._refresh_log_view(scroll_end=True)
 
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Toggle click-to-copy for the log lines and snapshot spans."""
+        if event.checkbox.id != _CLICK_TO_COPY_ID:
+            return
+        self._click_to_copy = event.value
+        self.query_one("#debug-log", _DebugLogView).click_to_copy = event.value
+        self.query_one(
+            ".debug-console-snapshot", _SnapshotView
+        ).click_to_copy = event.value
+        if self._on_click_to_copy_change is not None:
+            self._on_click_to_copy_change(event.value)
+
     def _render_snapshot(self) -> Content:
         """Build the right-aligned `label: value` snapshot block.
 
@@ -718,12 +954,33 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         if not self._snapshot:
             return Content.styled("(no session data)", "dim italic")
-        width = max(len(label) for label, _ in self._snapshot)
-        lines = [
-            Content.assemble((f"{label:>{width}}  ", "bold"), value)
-            for label, value in self._snapshot
-        ]
+        width = max(len(field.label) for field in self._snapshot)
+        lines = [self._render_snapshot_row(field, width) for field in self._snapshot]
         return Content("\n").join(lines)
+
+    def _render_snapshot_row(self, field: SnapshotField, width: int) -> Content:
+        """Render a single snapshot row, wiring up copy and link spans.
+
+        Args:
+            field: The snapshot field to render.
+            width: Column width the labels are right-aligned to.
+
+        Returns:
+            The formatted row content.
+        """
+        parts: list[str | tuple[str, str | TStyle]] = [
+            (f"{field.label:>{width}}  ", "bold")
+        ]
+        if field.copyable and field.value:
+            parts.append(
+                (field.value, TStyle.from_meta({_SNAPSHOT_COPY_META: field.value}))
+            )
+        else:
+            parts.append(field.value)
+        url = self._langsmith_urls.get(field.thread_id) if field.thread_id else None
+        if url:
+            parts.extend(("  ", ("(langsmith)", TStyle(link=url))))
+        return Content.assemble(*parts)
 
     @staticmethod
     def _render_help() -> Content:
@@ -733,7 +990,8 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · click copy line",
+            "Esc close · Ctrl+L clear view · c copy visible logs · "
+            "Enter copy line · check 'Click to copy' to copy on click",
             "dim italic",
         )
 
@@ -786,15 +1044,36 @@ class DebugConsoleScreen(ModalScreen[None]):
         log.append_records(self._visible_records(records))
 
     def _prune_records(self) -> bool:
-        """Trim retained records to the in-memory ring buffer capacity.
+        """Trim retained records to the ring buffer capacity, per level.
+
+        Mirrors the buffer's level-partitioned retention: each standard level
+        keeps at most `_RECORD_LIMIT` records, while custom levels share the
+        buffer's fallback bucket. Only the oldest entries of an over-capacity
+        bucket are dropped; chronological order is preserved.
 
         Returns:
             `True` when records were pruned.
         """
-        overflow = len(self._records) - _RECORD_LIMIT
-        if overflow <= 0:
+        counts: dict[str, int] = {}
+        for record in self._records:
+            bucket = retention_bucket_for_level(record.level)
+            counts[bucket] = counts.get(bucket, 0) + 1
+        overflow = {
+            level: count - _RECORD_LIMIT
+            for level, count in counts.items()
+            if count > _RECORD_LIMIT
+        }
+        if not overflow:
             return False
-        del self._records[:overflow]
+        kept: list[InMemoryLogRecord] = []
+        for record in self._records:
+            bucket = retention_bucket_for_level(record.level)
+            remaining = overflow.get(bucket, 0)
+            if remaining > 0:
+                overflow[bucket] = remaining - 1
+                continue
+            kept.append(record)
+        self._records = kept
         return True
 
     def _visible_records(
@@ -814,12 +1093,18 @@ class DebugConsoleScreen(ModalScreen[None]):
         )
 
     def action_clear_view(self) -> None:
-        """Clear the on-screen log view; the in-memory buffer keeps accruing."""
+        """Clear the on-screen log view; the in-memory buffer keeps accruing.
+
+        Advances the render cursor past everything emitted so far and reports it
+        via `on_clear` so the owner can persist the clear across close/reopen.
+        """
         self.query_one("#debug-log", _DebugLogView).clear_records()
         self._records.clear()
         buffer = get_log_buffer()
         if buffer is not None:
             self._rendered_upto = buffer.total_emitted
+        if self._on_clear is not None:
+            self._on_clear(self._rendered_upto)
 
     def action_copy(self) -> None:
         """Copy visible retained log records since the last clear to the clipboard."""
@@ -830,13 +1115,27 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Copy a clicked logical log record to the clipboard."""
         self._copy_lines([record.plain_line], empty_message="No log line to copy")
 
+    def _copy_snapshot_value(self, text: str) -> None:
+        """Copy a clicked snapshot value (e.g. the thread ID) to the clipboard."""
+        self._copy_lines(
+            [text],
+            empty_message="Nothing to copy",
+            success_message="Thread ID copied",
+        )
+
     def _level_select(self) -> Select[FilterValue]:
         """Return the level-filter dropdown."""
         return cast(
             "Select[FilterValue]", self.query_one("#debug-level-filter", Select)
         )
 
-    def _copy_lines(self, lines: Sequence[str], *, empty_message: str) -> None:
+    def _copy_lines(
+        self,
+        lines: Sequence[str],
+        *,
+        empty_message: str,
+        success_message: str = "Debug log copied",
+    ) -> None:
         """Copy lines to clipboard with user-visible feedback."""
         text = "\n".join(lines)
         if not text:
@@ -847,12 +1146,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         success, error = copy_text_to_clipboard(self.app, text)
         if success:
             self.app.notify(
-                "Debug log copied", severity="information", timeout=2, markup=False
+                success_message, severity="information", timeout=2, markup=False
             )
             return
         suffix = f": {error}" if error else ""
         self.app.notify(
-            f"Failed to copy debug log{suffix}",
+            f"Failed to copy{suffix}",
             severity="warning",
             timeout=3,
             markup=False,

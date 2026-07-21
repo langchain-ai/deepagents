@@ -85,6 +85,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+# Package-scoped logger so records propagate under `deepagents_code.*` after
+# the hooks package split (legacy module previously lived at hooks.py).
 logger = logging.getLogger("deepagents_code.hooks")
 
 HOOK_TOOL_OUTPUT_LIMIT = 2000

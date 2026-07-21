@@ -3733,6 +3733,390 @@ class TestMessageQueue:
             assert not app.query(StartupTip)
             dispatch.assert_awaited_once_with(*expected_args)
 
+    async def test_initial_prompt_shown_as_queued_while_connecting(self) -> None:
+        """`-m` prompt renders as queued immediately, before `ServerReady`."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+            assert widgets.first()._content == "hello world"
+            assert app._initial_prompt_queued_widget is widgets.first()
+            # Placeholder is not enqueued in the standard queue, but still
+            # counts toward the status-bar queued depth.
+            assert not app._pending_messages
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+            assert not app.query(StartupTip)
+
+    async def test_initial_prompt_placeholder_replaced_on_submission(self) -> None:
+        """Submitting the `-m` prompt drops the placeholder and sends the message."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert len(app.query(QueuedUserMessage)) == 1
+
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+
+            await app._submit_initial_submission()
+            await pilot.pause()
+
+            dispatch.assert_awaited_once_with("hello world")
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_initial_prompt_placeholder_skipped_if_submission_overtakes(
+        self,
+    ) -> None:
+        """A ready server can submit while placeholder setup is yielding."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            dismiss_started = asyncio.Event()
+            resume_dismissal = asyncio.Event()
+            dismiss_calls = 0
+
+            async def controlled_dismiss() -> None:
+                nonlocal dismiss_calls
+                dismiss_calls += 1
+                if dismiss_calls == 1:
+                    dismiss_started.set()
+                    await resume_dismissal.wait()
+
+            app._dismiss_startup_tip = controlled_dismiss  # ty: ignore
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+
+            placeholder_task = asyncio.create_task(app._show_initial_prompt_as_queued())
+            await dismiss_started.wait()
+
+            # `ServerReady` clears this before scheduling initial submission.
+            app._connecting = False
+            await app._submit_initial_submission()
+            resume_dismissal.set()
+            await placeholder_task
+            await pilot.pause()
+
+            dispatch.assert_awaited_once_with("hello world")
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_initial_prompt_anchors_direct_mounts_above_it(self) -> None:
+        """Transient startup output stays above the initial placeholder."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            messages = app.query_one("#messages", Container)
+            output = AppMessage("startup output")
+
+            await app._mount_before_queued(messages, output)
+            await pilot.pause()
+
+            placeholder = app._initial_prompt_queued_widget
+            assert placeholder is not None
+            children = list(messages.children)
+            assert children.index(output) < children.index(placeholder)
+
+    async def test_initial_prompt_anchors_transcript_spacers_above_it(self) -> None:
+        """Stored startup output stays above the initial placeholder."""
+        from deepagents_code.app import _MESSAGE_BOTTOM_SPACER_ID
+
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            output = AppMessage("Running startup command")
+
+            await app._mount_message(output)
+            await pilot.pause()
+
+            messages = app.query_one("#messages", Container)
+            placeholder = app._initial_prompt_queued_widget
+            assert placeholder is not None
+            bottom = messages.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}")
+            children = list(messages.children)
+            assert children.index(output) < children.index(bottom)
+            assert children.index(bottom) < children.index(placeholder)
+
+    async def test_initial_prompt_placeholder_skipped_for_skill(self) -> None:
+        """Skills render differently and keep their existing startup path."""
+        app = DeepAgentsApp(initial_prompt="hello world", initial_skill="review")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_should_queue_placeholder_excludes_resume(self) -> None:
+        """Resume startup must not schedule the placeholder; a bare `-m` must.
+
+        Guards the resume-exclusion decision in `on_mount`, which reads
+        `_resume_thread_intent` before the resolve task consumes it. This is the
+        only site enforcing the exclusion, so it needs direct coverage.
+        """
+        resuming = DeepAgentsApp(
+            initial_prompt="hello world",
+            resume_thread="thread-123",
+        )
+        resuming._connecting = True
+        assert resuming._should_queue_initial_prompt_placeholder() is False
+
+        fresh = DeepAgentsApp(initial_prompt="hello world")
+        fresh._connecting = True
+        assert fresh._should_queue_initial_prompt_placeholder() is True
+
+        # Not connecting (e.g. already-ready session): never schedule.
+        fresh._connecting = False
+        assert fresh._should_queue_initial_prompt_placeholder() is False
+
+    async def test_initial_prompt_placeholder_skipped_for_goal(self) -> None:
+        """Goals render differently and keep their existing startup path."""
+        app = DeepAgentsApp(initial_prompt="hello world", initial_goal="ship it")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_skipped_for_blank_prompt(self) -> None:
+        """A whitespace-only `-m` prompt must not mount a placeholder."""
+        app = DeepAgentsApp(initial_prompt="   ")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_skipped_when_not_connecting(
+        self,
+    ) -> None:
+        """The placeholder is only for the connect window; skip once ready."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_connecting` is already False for a no-server test app.
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_is_idempotent(self) -> None:
+        """A second call is a no-op; the placeholder is never duplicated."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            first = app._initial_prompt_queued_widget
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is first
+            assert len(app.query(QueuedUserMessage)) == 1
+
+    async def test_initial_prompt_placeholder_counts_with_pending(self) -> None:
+        """Placeholder depth is additive with genuinely queued messages."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+
+            app._pending_messages.append(QueuedMessage(text="typed", mode="normal"))
+            app._sync_status_queued()
+            assert app._status_bar.queued_count == 2
+
+            await app._remove_initial_prompt_placeholder()
+            assert app._status_bar.queued_count == 1
+
+    async def test_discard_queue_clears_initial_prompt_placeholder(self) -> None:
+        """Discarding the queue mid-connect cancels the startup prompt.
+
+        Regression: `_discard_queue` (reached via `/force-clear`) detaches the
+        placeholder, so it must also clear both the pointer and the backing
+        prompt. Otherwise the queued count stays at 1 until `ServerReady`,
+        which then submits work that appeared to have been discarded.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._initial_prompt_queued_widget is not None
+
+            app._discard_queue()
+            await pilot.pause()
+
+            assert app._initial_prompt is None
+            assert app._initial_prompt_queued_widget is None
+            assert not app._has_initial_submission()
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+            await app._submit_initial_submission()
+            dispatch.assert_not_awaited()
+
+    async def test_clear_messages_clears_initial_prompt_placeholder(self) -> None:
+        """`_clear_messages` detaches the placeholder, so it must drop the pointer."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._initial_prompt_queued_widget is not None
+
+            await app._clear_messages()
+            app._sync_status_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_on_mount_shows_initial_prompt_placeholder_while_connecting(
+        self,
+    ) -> None:
+        """`on_mount` itself surfaces the `-m` placeholder during a real connect.
+
+        The other placeholder tests drive `_show_initial_prompt_as_queued`
+        directly. This exercises the `on_mount` seam that consults
+        `_should_queue_initial_prompt_placeholder` and schedules the task —
+        without it, deleting that whole block would leave the feature dead on
+        real startup while the suite stayed green. A `server_kwargs` app leaves
+        `_connecting` True at mount; the real server spawn is stubbed so the
+        connect window stays open and never fires `ServerReady`.
+        """
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="hello world",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+        )
+
+        async def _noop_server_start() -> None:  # noqa: RUF029
+            return
+
+        app._start_server_background = _noop_server_start  # ty: ignore
+        dispatch = AsyncMock()
+        app._handle_user_message = dispatch  # ty: ignore
+
+        async with app.run_test() as pilot:
+            # on_mount schedules the placeholder via `call_after_refresh`; pump
+            # a few frames so the scheduled task mounts it.
+            for _ in range(5):
+                await pilot.pause()
+
+            assert app._connecting is True
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+            assert widgets.first()._content == "hello world"
+            assert app._initial_prompt_queued_widget is widgets.first()
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+            # Shown while still connecting: the real prompt is not dispatched
+            # until `ServerReady`, which the stubbed server never fires.
+            dispatch.assert_not_awaited()
+
+    async def test_spinner_anchors_above_initial_prompt_placeholder(self) -> None:
+        """The startup spinner sits directly above the `-m` placeholder.
+
+        During the connect window there are no real `_queued_widgets`, so the
+        placeholder is the only anchor `_reposition_spinner` and
+        `_is_spinner_at_correct_position` can pin the spinner above — the
+        `child is initial` branch of `_first_mounted_queued_widget` that the
+        `_queued_widgets`-based spinner tests never reach.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            spinner = app._loading_widget
+            placeholder = app._initial_prompt_queued_widget
+            assert spinner is not None
+            assert placeholder is not None
+            assert not app._queued_widgets  # placeholder is the only anchor
+
+            messages = app.query_one("#messages", Container)
+            children = list(messages.children)
+            assert children.index(spinner) == children.index(placeholder) - 1
+            assert app._is_spinner_at_correct_position(messages) is True
+
+            # Strand the spinner below the placeholder, then confirm
+            # `_reposition_spinner` re-pins it above using the placeholder anchor.
+            messages.move_child(spinner, after=placeholder)
+            assert app._is_spinner_at_correct_position(messages) is False
+
+            app._reposition_spinner(messages)
+            children = list(messages.children)
+            assert children.index(spinner) == children.index(placeholder) - 1
+            assert app._is_spinner_at_correct_position(messages) is True
+
+    async def test_initial_prompt_placeholder_reveals_connection_status(self) -> None:
+        """Showing the placeholder un-defers the status-bar connection display.
+
+        The connect window normally hides the connection indicator to avoid
+        flashing it during fast startup; revealing the placeholder means the
+        user is now looking at a pending message, so the indicator should show.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._defer_connection_status_display = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._defer_connection_status_display is False
+
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()
@@ -15860,6 +16244,51 @@ class TestExitGracefulWorkerHandoff:
             assert restart_task.done()
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
+
+    async def test_restart_timeout_still_stops_server(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung restart cleanup hits its timeout; server shutdown still runs."""
+        restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_blocker = asyncio.Event()
+
+        async def respawn() -> None:
+            restart_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_blocker.wait()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            restart = asyncio.create_task(respawn())
+            app._track_server_restart_task(restart)
+            await asyncio.wait_for(restart_started.wait(), timeout=2.0)
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+        assert any(
+            "Server restart cleanup did not finish within 0.01s before app exit"
+            in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_submission_is_rejected_during_graceful_exit(self) -> None:
         """A responsive UI cannot start work after shutdown begins."""

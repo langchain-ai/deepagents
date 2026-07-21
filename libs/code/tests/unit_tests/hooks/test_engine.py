@@ -69,8 +69,19 @@ def _context(tmp_path: Path, *, agent: AgentIdentity | None = None) -> HookConte
     )
 
 
+def _transcript_path(tmp_path: Path) -> Path:
+    return tmp_path / "thread.jsonl"
+
+
+def _agent_transcript_path(tmp_path: Path) -> Path:
+    return tmp_path / "agent.jsonl"
+
+
 def _invocation(tmp_path: Path, event: HookDomainEvent) -> HookInvocation:
-    return HookInvocation(context=_context(tmp_path), event=event)
+    agent = getattr(event, "agent", None)
+    if not isinstance(agent, AgentIdentity):
+        agent = None
+    return HookInvocation(context=_context(tmp_path, agent=agent), event=event)
 
 
 def _config(hooks: dict[str, object]) -> HooksConfig:
@@ -290,6 +301,25 @@ def test_snapshot_rejects_invalid_matcher_at_compile_time(tmp_path: Path) -> Non
     assert match.diagnostics == ()
 
 
+def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "Stop": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": "invalid"}],
+                    },
+                    {"hooks": [{"type": "command", "command": "valid"}]},
+                ]
+            }
+        )
+    )
+
+    assert [item.command for item in snapshot.handlers[HookEvent.STOP]] == ["valid"]
+    assert [item.code for item in snapshot.diagnostics] == ["unsupported_matcher"]
+
+
 @pytest.mark.parametrize(
     ("event", "expected"),
     [
@@ -374,7 +404,15 @@ def test_projects_all_wire_events(
     invocation = _invocation(tmp_path, event)
 
     payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
-        project_hook_input(invocation),
+        project_hook_input(
+            invocation,
+            transcript_path=_transcript_path(tmp_path),
+            agent_transcript_path=(
+                _agent_transcript_path(tmp_path)
+                if isinstance(event, SubagentStopEvent)
+                else None
+            ),
+        ),
         mode="json",
         by_alias=True,
         exclude_none=True,
@@ -384,7 +422,7 @@ def test_projects_all_wire_events(
     assert payload["session_id"] == "thread-1"
     assert payload["permission_mode"] == "default"
     assert payload["effort"] == {"level": "high"}
-    assert payload["transcript_path"].endswith("thread-1.jsonl")
+    assert payload["transcript_path"].endswith("thread.jsonl")
 
 
 def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
@@ -401,7 +439,10 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
     )
 
     payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
-        project_hook_input(invocation),
+        project_hook_input(
+            invocation,
+            transcript_path=_transcript_path(tmp_path),
+        ),
         mode="json",
         by_alias=True,
         exclude_none=True,
@@ -409,6 +450,26 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
 
     assert payload["tool_name"] == "Bash"
     assert payload["tool_input"] == {"command": "pwd"}
+
+    agent = AgentIdentity(id="agent-9", name="researcher")
+    nested = HookInvocation(
+        context=_context(tmp_path, agent=agent),
+        event=PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call-2", name="ls", args={"path": "."}),
+        ),
+    )
+    nested_payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
+        project_hook_input(
+            nested,
+            transcript_path=_transcript_path(tmp_path),
+        ),
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
+    )
+    assert nested_payload["agent_id"] == "agent-9"
+    assert nested_payload["agent_type"] == "researcher"
 
     invocation = _invocation(
         tmp_path,
@@ -419,10 +480,86 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
         ),
     )
 
-    payload = json.loads(serialize_hook_input(invocation))
+    payload = json.loads(
+        serialize_hook_input(
+            invocation,
+            transcript_path=_transcript_path(tmp_path),
+        )
+    )
 
     assert payload["tool_response"]["update"] == {"result": "done"}
     assert payload["tool_response"]["goto"] == []
+
+
+def test_projection_rejects_unknown_notification_and_omits_auto_mode(
+    tmp_path: Path,
+) -> None:
+    unknown = HookInvocation(
+        context=HookContext(
+            thread_id="thread",
+            cwd=tmp_path,
+            approval_mode=ApprovalMode.MANUAL,
+        ),
+        event=NotificationEvent(
+            event=HookEvent.NOTIFICATION,
+            notification=DcodeNotification(type="invented", message="notice"),
+        ),
+    )
+    with pytest.raises(ValueError, match="Unsupported notification type"):
+        project_hook_input(
+            unknown,
+            transcript_path=_transcript_path(tmp_path),
+        )
+
+    automatic = HookInvocation(
+        context=HookContext(
+            thread_id="thread",
+            cwd=tmp_path,
+            approval_mode=ApprovalMode.AUTO,
+        ),
+        event=SessionStartEvent(
+            event=HookEvent.SESSION_START,
+            cause=SessionStartCause.STARTUP,
+        ),
+    )
+    payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
+        project_hook_input(
+            automatic,
+            transcript_path=_transcript_path(tmp_path),
+        ),
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
+    )
+    assert "permission_mode" not in payload
+
+
+async def test_engine_requires_client_materialized_transcript_path(
+    tmp_path: Path,
+) -> None:
+    invocation = _invocation(
+        tmp_path,
+        SessionStartEvent(
+            event=HookEvent.SESSION_START,
+            cause=SessionStartCause.STARTUP,
+        ),
+    )
+    snapshot = HooksSnapshot.from_config(HooksConfig(hooks={}))
+
+    missing = await HookEngine(snapshot).run(invocation)
+    automatic = HookInvocation(
+        context=invocation.context.model_copy(
+            update={"approval_mode": ApprovalMode.AUTO}
+        ),
+        event=invocation.event,
+    )
+    auto = await HookEngine(snapshot).run(
+        automatic,
+        transcript_path=_transcript_path(tmp_path),
+    )
+
+    assert [item.code for item in missing.diagnostics] == ["projection_failed"]
+    assert [item.code for item in auto.diagnostics] == ["unsupported_permission_mode"]
 
 
 @pytest.mark.parametrize(
@@ -459,13 +596,13 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
         (
             "read_file",
             {"file_path": "/tmp/result.txt", "offset": 0, "limit": 100},
-            "Read",
-            {"file_path": "/tmp/result.txt", "offset": 1, "limit": 100},
+            "read_file",
+            {"file_path": "/tmp/result.txt", "offset": 0, "limit": 100},
         ),
         (
             "glob",
             {"pattern": "**/*.py", "path": "/tmp"},
-            "Glob",
+            "glob",
             {"pattern": "**/*.py", "path": "/tmp"},
         ),
         (
@@ -477,16 +614,16 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
                 "output_mode": "content",
                 "max_count": 20,
             },
-            "Grep",
+            "grep",
             {
-                "pattern": r"result\.\*",
+                "pattern": "result.*",
                 "path": "/tmp",
                 "glob": "*.txt",
                 "output_mode": "content",
-                "head_limit": 20,
+                "max_count": 20,
             },
         ),
-        ("ls", {"path": "/tmp"}, "LS", {"path": "/tmp"}),
+        ("ls", {"path": "/tmp"}, "ls", {"path": "/tmp"}),
         ("custom", {"value": 1}, "custom", {"value": 1}),
     ],
 )
@@ -514,7 +651,12 @@ def test_serializes_native_tool_message_as_json(tmp_path: Path) -> None:
         ),
     )
 
-    payload = json.loads(serialize_hook_input(invocation))
+    payload = json.loads(
+        serialize_hook_input(
+            invocation,
+            transcript_path=_transcript_path(tmp_path),
+        )
+    )
 
     assert payload["tool_response"]["content"] == [{"type": "text", "text": "done"}]
 
@@ -546,7 +688,6 @@ async def test_runner_executes_shell_syntax(tmp_path: Path) -> None:
     ("code", "expected_code"),
     [
         ("pass", None),
-        ("print('not json')", "malformed_json"),
         ("print('[]')", "invalid_output"),
         ("raise SystemExit(3)", "nonzero_exit"),
     ],
@@ -564,6 +705,53 @@ async def test_runner_protocol_failures_are_structured(
     assert [item.code for item in result.diagnostics] == (
         [] if expected_code is None else [expected_code]
     )
+
+
+async def test_runner_session_start_plain_stdout_is_context(tmp_path: Path) -> None:
+    code = "print('plain')"
+    handler = _handler(tmp_path, f"{sys.executable} -c {json.dumps(code)}")
+
+    result = await run_command_handler(
+        handler,
+        b"{}",
+        cwd=tmp_path,
+        event=HookEvent.SESSION_START,
+    )
+
+    assert result.output is None
+    assert result.plain_output == "plain"
+    assert result.diagnostics == ()
+
+
+async def test_runner_pretool_plain_stdout_is_malformed(tmp_path: Path) -> None:
+    code = "print('not json')"
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} -c {json.dumps(code)}",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    handler = snapshot.handlers[HookEvent.PRE_TOOL_USE][0]
+
+    result = await run_command_handler(
+        handler,
+        b"{}",
+        cwd=tmp_path,
+        event=HookEvent.PRE_TOOL_USE,
+    )
+
+    assert result.output is None
+    assert [item.code for item in result.diagnostics] == ["malformed_json"]
 
 
 async def test_runner_turns_exit_two_stderr_into_block(tmp_path: Path) -> None:
@@ -606,8 +794,8 @@ async def test_runner_reports_launch_failure_and_bounded_streams(
     assert {item.code for item in bounded.diagnostics} == {
         "stdout_truncated",
         "stderr_truncated",
-        "malformed_json",
     }
+    assert bounded.plain_output == "x" * 10
 
 
 def test_reducer_merges_session_context_and_common_fields(tmp_path: Path) -> None:
@@ -623,7 +811,7 @@ def test_reducer_merges_session_context_and_common_fields(tmp_path: Path) -> Non
             output=HookWireOutput.model_validate(
                 {
                     "systemMessage": "notice",
-                    "terminalSequence": "sequence",
+                    "terminalSequence": "\x1b]9;done\x07",
                     "hookSpecificOutput": {
                         "hookEventName": "SessionStart",
                         "additionalContext": "context one",
@@ -651,7 +839,7 @@ def test_reducer_merges_session_context_and_common_fields(tmp_path: Path) -> Non
 
     assert decision.context == ["context one", "context two"]
     assert decision.user_notices == ["notice"]
-    assert decision.terminal_sequences == ["sequence"]
+    assert decision.terminal_sequences == ["\x1b]9;done\x07"]
     assert decision.continue_processing is False
     assert decision.stop_reason == "stop"
 
@@ -814,11 +1002,11 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
     assert permission.permission.behavior == "deny"
     assert post_tool.feedback == ["feedback"]
     assert post_tool.context == ["context"]
-    assert stop.continue_loop is False
+    assert stop.continue_loop is True
+    assert stop.feedback == ["continue"]
     assert subagent_start.context == ["focus"]
-    assert subagent_stop.context == []
-    assert stop.diagnostics[0].code == "continuation_guard"
-    assert subagent_stop.diagnostics[0].code == "continuation_guard"
+    assert subagent_stop.context == ["continue"]
+    assert subagent_stop.diagnostics == []
 
 
 def test_reducer_guards_top_level_stop_blocks(tmp_path: Path) -> None:
@@ -826,7 +1014,7 @@ def test_reducer_guards_top_level_stop_blocks(tmp_path: Path) -> None:
         tmp_path,
         StopEvent(
             event=HookEvent.STOP,
-            continuation_count=1,
+            continuation_count=8,
             last_assistant_message="Done",
         ),
     )
@@ -850,8 +1038,8 @@ def test_reducer_guards_top_level_stop_blocks(tmp_path: Path) -> None:
     assert isinstance(stop, StopDecision)
     assert isinstance(subagent, SubagentStopDecision)
     assert stop.continue_loop is False
+    assert stop.diagnostics[0].code == "continuation_cap"
     assert subagent.context == []
-    assert stop.diagnostics[0].code == "continuation_guard"
     assert subagent.diagnostics[0].code == "continuation_guard"
 
 
@@ -974,6 +1162,131 @@ def test_reducer_honors_deny_even_with_updated_input(tmp_path: Path) -> None:
     assert decision.diagnostics[0].code == "unsupported_field"
 
 
+def test_reducer_keeps_stop_sticky_and_retains_siblings(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        SessionStartEvent(
+            event=HookEvent.SESSION_START,
+            cause=SessionStartCause.STARTUP,
+        ),
+    )
+    decision = reduce_hook_results(
+        invocation,
+        [
+            HandlerResult(
+                handler_id="first",
+                output=HookWireOutput.model_validate(
+                    {"continue": False, "stopReason": "first"}
+                ),
+            ),
+            HandlerResult(
+                handler_id="second",
+                output=HookWireOutput.model_validate(
+                    {
+                        "continue": False,
+                        "stopReason": "second",
+                        "hookSpecificOutput": {
+                            "hookEventName": "SessionStart",
+                            "additionalContext": "later context",
+                        },
+                    }
+                ),
+            ),
+            HandlerResult(
+                handler_id="third",
+                diagnostics=(
+                    HookDiagnostic(
+                        code="sibling_failed",
+                        severity="warning",
+                        message="sibling diagnostic",
+                    ),
+                ),
+                plain_output="plain sibling",
+            ),
+        ],
+    )
+
+    assert isinstance(decision, SessionStartDecision)
+    assert decision.continue_processing is False
+    assert decision.stop_reason == "first"
+    assert decision.context == ["later context", "plain sibling"]
+    assert {item.code for item in decision.diagnostics} == {
+        "additional_stop_reason",
+        "sibling_failed",
+    }
+
+
+def test_reducer_same_rank_permission_is_first_wins(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="execute", args={}),
+        ),
+    )
+    results = [
+        HandlerResult(
+            handler_id=reason,
+            output=HookWireOutput.model_validate(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+            ),
+        )
+        for reason in ("first", "second")
+    ]
+
+    decision = reduce_hook_results(invocation, results)
+
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == "ask"
+    assert decision.permission.reason == "first"
+
+
+def test_permission_request_diagnoses_all_deferred_fields(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PermissionRequestEvent(
+            event=HookEvent.PERMISSION_REQUEST,
+            call=ToolCallData(id="call", name="execute", args={}),
+        ),
+    )
+    output = HookWireOutput.model_validate(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "allow",
+                    "updatedInput": {"command": "changed"},
+                    "updatedPermissions": [
+                        {
+                            "type": "setMode",
+                            "mode": "default",
+                            "destination": "session",
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    decision = reduce_hook_results(
+        invocation,
+        [HandlerResult(handler_id="deferred", output=output)],
+    )
+
+    assert isinstance(decision, PermissionRequestDecision)
+    assert decision.permission.behavior == "none"
+    assert {item.field for item in decision.diagnostics} == {
+        "updatedInput",
+        "updatedPermissions",
+    }
+
+
 async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"
@@ -1019,7 +1332,10 @@ async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
         ),
     )
 
-    decision = await HookEngine(snapshot).run(invocation)
+    decision = await HookEngine(snapshot).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+    )
 
     assert decision.continue_processing is False
     assert decision.stop_reason == "stop"
@@ -1044,7 +1360,10 @@ async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:
         ),
     )
 
-    decision = await HookEngine(snapshot).run(invocation)
+    decision = await HookEngine(snapshot).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+    )
 
     assert decision.diagnostics == []
 

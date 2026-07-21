@@ -6,13 +6,21 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from deepagents_code.hooks.capabilities import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    PlainOutputPolicy,
+    get_event_spec,
+)
+from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_OUTPUT_ADAPTER
-from deepagents_code.hooks.models.domain import HookDiagnostic
+from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
 from deepagents_code.hooks.models.wire import HookWireOutput
 
 if TYPE_CHECKING:
@@ -21,10 +29,11 @@ if TYPE_CHECKING:
 
     from deepagents_code.hooks.snapshot import HookHandler
 
-DEFAULT_HOOK_TIMEOUT = 10.0
+DEFAULT_HOOK_TIMEOUT = DEFAULT_COMMAND_TIMEOUT_SECONDS
 MAX_HOOK_OUTPUT_BYTES = 100_000
 _READ_CHUNK_BYTES = 8192
 _BLOCKING_EXIT_CODE = 2
+_TERMINATE_WAIT_TIMEOUT = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +43,7 @@ class HandlerResult:
     handler_id: str
     output: HookWireOutput | None = None
     diagnostics: tuple[HookDiagnostic, ...] = ()
+    plain_output: str | None = None
 
 
 async def run_command_handler(
@@ -41,8 +51,10 @@ async def run_command_handler(
     payload: bytes,
     *,
     cwd: Path,
+    event: HookEvent | None = None,
     default_timeout: float = DEFAULT_HOOK_TIMEOUT,
     max_output_bytes: int = MAX_HOOK_OUTPUT_BYTES,
+    env: dict[str, str] | None = None,
 ) -> HandlerResult:
     """Run one hook command with bounded time and captured output.
 
@@ -50,8 +62,11 @@ async def run_command_handler(
         handler: Snapshotted command handler.
         payload: Validated JSON sent to stdin.
         cwd: Working directory inherited from the invocation.
+        event: Event used for plain-output policy. Defaults to `handler.event`.
         default_timeout: Timeout used when the handler has no override.
         max_output_bytes: Maximum retained bytes for each output stream.
+        env: Optional environment override. Defaults to a sanitized copy of the
+            process environment.
 
     Returns:
         Validated protocol output and structured diagnostics.
@@ -62,13 +77,14 @@ async def run_command_handler(
     if not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
+    resolved_event = event or handler.event
     try:
         # Shell form preserves pipes, redirects, globs, and $VAR expansion to
         # match the compatible command-hook contract (no separate args field).
         process = await asyncio.create_subprocess_shell(
             handler.command,
             cwd=cwd,
-            env=os.environ.copy(),
+            env=env if env is not None else sanitize_hook_environ(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -117,6 +133,9 @@ async def run_command_handler(
 
     if process.returncode == _BLOCKING_EXIT_CODE:
         reason = _decode(stderr).strip() or "Hook blocked the operation"
+        # Exit 2 ignores stdout JSON. Event-specific interpretation of the
+        # synthetic decision:"block" is owned by the capability registry via
+        # the reducer.
         return HandlerResult(
             handler_id=handler.id,
             output=HookWireOutput(decision="block", reason=reason),
@@ -137,6 +156,14 @@ async def run_command_handler(
     try:
         decoded = json.loads(stdout)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        plain = _decode(stdout).strip()
+        policy = get_event_spec(resolved_event).plain_output_policy
+        if policy is PlainOutputPolicy.CONTEXT and plain:
+            return HandlerResult(
+                handler_id=handler.id,
+                plain_output=plain,
+                diagnostics=tuple(diagnostics),
+            )
         diagnostics.append(
             _diagnostic(handler.id, "malformed_json", "Hook output is not valid JSON")
         )
@@ -214,9 +241,22 @@ async def _read_bounded(
 
 
 async def _terminate(process: Process) -> None:
-    if process.returncode is None:
-        process.kill()
-    await process.wait()
+    """Kill the hook process group, then reap the direct child."""
+    if process.returncode is not None:
+        return
+    if os.name == "posix" and process.pid is not None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            with suppress(OSError):
+                process.kill()
+    else:
+        with suppress(OSError):
+            process.kill()
+    with suppress(OSError, TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
 
 
 def _decode(value: bytes) -> str:

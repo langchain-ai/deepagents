@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -11,7 +12,6 @@ from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import (
     DEFAULT_HOOK_TIMEOUT,
     MAX_HOOK_OUTPUT_BYTES,
-    HandlerResult,
     run_command_handler,
 )
 
@@ -31,6 +31,10 @@ class HookEngine:
     async def run(self, invocation: HookInvocation) -> HookDecision:
         """Execute matching handlers and return a normalized decision.
 
+        Matching handlers run concurrently with independent timeouts. Results
+        are reduced in stable configuration order, independent of completion
+        order.
+
         Args:
             invocation: Native lifecycle invocation.
 
@@ -49,23 +53,30 @@ class HookEngine:
             return reduce_hook_results(
                 invocation,
                 (),
-                diagnostics=(*match.diagnostics, diagnostic),
+                diagnostics=(
+                    *self.snapshot.diagnostics,
+                    *match.diagnostics,
+                    diagnostic,
+                ),
             )
 
-        results: list[HandlerResult] = []
-        for handler in match.handlers:
-            result = await run_command_handler(
-                handler,
-                payload,
-                cwd=invocation.context.cwd,
-                default_timeout=self.default_timeout,
-                max_output_bytes=self.max_output_bytes,
+        results = await asyncio.gather(
+            *(
+                run_command_handler(
+                    handler,
+                    payload,
+                    cwd=invocation.context.cwd,
+                    default_timeout=self.default_timeout,
+                    max_output_bytes=self.max_output_bytes,
+                )
+                for handler in match.handlers
             )
-            results.append(result)
-            if result.output is not None and not result.output.continue_:
-                break
+        )
         return reduce_hook_results(
             invocation,
             results,
-            diagnostics=match.diagnostics,
+            diagnostics=(
+                *self.snapshot.diagnostics,
+                *match.diagnostics,
+            ),
         )

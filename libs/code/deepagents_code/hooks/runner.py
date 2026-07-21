@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shlex
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -59,16 +58,14 @@ async def run_command_handler(
     Raises:
         asyncio.CancelledError: If the caller cancels command execution.
     """
-    try:
-        argv = shlex.split(handler.command)
-    except ValueError as exc:
-        return _failure(handler.id, "invalid_command", f"Invalid hook command: {exc}")
-    if not argv:
+    if not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
     try:
-        process = await asyncio.create_subprocess_exec(
-            *argv,
+        # Shell form preserves pipes, redirects, globs, and $VAR expansion to
+        # match the compatible command-hook contract (no separate args field).
+        process = await asyncio.create_subprocess_shell(
+            handler.command,
             cwd=cwd,
             env=os.environ.copy(),
             stdin=asyncio.subprocess.PIPE,

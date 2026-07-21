@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStopEvent,
 )
 from deepagents_code.hooks.models.wire import (
+    PermissionAllow,
     PermissionRequestSpecificOutput,
     PostToolUseSpecificOutput,
     PreToolUseSpecificOutput,
@@ -40,6 +41,16 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.runner import HandlerResult
 
 _PERMISSION_RANK = {"none": 0, "allow": 1, "ask": 2, "deny": 3}
+
+# Exit 2 / decision:"block" cannot veto these lifecycle points in MVP.
+_NON_BLOCKING_EVENTS = frozenset(
+    {
+        HookEvent.SESSION_START,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+        HookEvent.SUBAGENT_START,
+    }
+)
 
 
 @dataclass(slots=True)
@@ -97,7 +108,7 @@ def _merge_output(
     if output.terminal_sequence is not None:
         state.terminal_sequences.append(output.terminal_sequence)
     if output.decision == "block":
-        _merge_block(invocation, state, output.reason)
+        _merge_block(invocation, state, handler_id, output.reason)
 
     specific = output.hook_specific_output
     if specific is None:
@@ -113,12 +124,13 @@ def _merge_output(
             )
         )
         return
-    _merge_specific(invocation, state, specific)
+    _merge_specific(invocation, state, handler_id, specific)
 
 
 def _merge_block(
     invocation: HookInvocation,
     state: _Reduction,
+    handler_id: str,
     reason: str | None,
 ) -> None:
     message = reason or "Blocked by hook"
@@ -144,6 +156,19 @@ def _merge_block(
             state.diagnostics.append(_loop_guard_diagnostic())
         else:
             state.context.append(message)
+    elif event in _NON_BLOCKING_EVENTS:
+        # Exit 2 / decision:"block" is not a veto for these events; keep going
+        # and surface the attempt so configs that expect Claude blocking see why
+        # dcode ignored it.
+        state.diagnostics.append(
+            HookDiagnostic(
+                code="unsupported_block",
+                severity="warning",
+                message=f"Block/exit 2 is not supported for {event.value}: {message}",
+                handler_id=handler_id,
+                field="decision",
+            )
+        )
     else:
         state.stop_reason = message
         state.continue_processing = False
@@ -152,6 +177,7 @@ def _merge_block(
 def _merge_specific(
     invocation: HookInvocation,
     state: _Reduction,
+    handler_id: str,
     specific: object,
 ) -> None:
     if isinstance(specific, SessionStartSpecificOutput):
@@ -159,6 +185,12 @@ def _merge_specific(
     elif isinstance(specific, PreToolUseSpecificOutput):
         _append(state.context, specific.additional_context)
         behavior = specific.permission_decision
+        if specific.updated_input is not None:
+            _diagnose_unsupported_updated_input(state, handler_id)
+            # Allow/ask coupled to mutation falls back to normal permission flow;
+            # deny remains safe without applying the mutated input.
+            if behavior in {"allow", "ask"}:
+                behavior = None
         if behavior is not None:
             normalized = "none" if behavior == "defer" else behavior
             _merge_permission(
@@ -171,7 +203,13 @@ def _merge_specific(
     elif isinstance(specific, PermissionRequestSpecificOutput):
         decision = specific.decision
         if decision.behavior == "allow":
-            _merge_permission(state, PermissionEffect(behavior="allow"))
+            if (
+                isinstance(decision, PermissionAllow)
+                and decision.updated_input is not None
+            ):
+                _diagnose_unsupported_updated_input(state, handler_id)
+            else:
+                _merge_permission(state, PermissionEffect(behavior="allow"))
         else:
             _merge_permission(
                 state,
@@ -206,6 +244,23 @@ def _merge_specific(
             state.diagnostics.append(_loop_guard_diagnostic())
         else:
             state.context.append(specific.additional_context)
+
+
+def _diagnose_unsupported_updated_input(
+    state: _Reduction,
+    handler_id: str,
+) -> None:
+    state.diagnostics.append(
+        HookDiagnostic(
+            code="unsupported_field",
+            severity="warning",
+            message=(
+                "updatedInput is not supported; the mutated tool input was ignored"
+            ),
+            handler_id=handler_id,
+            field="updatedInput",
+        )
+    )
 
 
 def _merge_permission(state: _Reduction, effect: PermissionEffect) -> None:

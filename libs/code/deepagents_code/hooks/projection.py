@@ -36,6 +36,7 @@ from deepagents_code.hooks.models.wire import (
     WireNotificationType,
     WirePermissionMode,
 )
+from deepagents_code.hooks.tools import to_wire_call
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
@@ -85,11 +86,12 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
             reason=event.cause,
         )
     elif isinstance(event, PermissionRequestEvent):
+        tool_name, tool_input = to_wire_call(event.call)
         result = PermissionRequestWireInput(
             **_common_fields(invocation),
             hook_event_name=HookEvent.PERMISSION_REQUEST,
-            tool_name=event.call.name,
-            tool_input=event.call.args,
+            tool_name=tool_name,
+            tool_input=tool_input,
         )
     elif isinstance(event, NotificationEvent):
         result = NotificationWireInput(
@@ -100,19 +102,21 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
             notification_type=_notification_type(event.notification.type),
         )
     elif isinstance(event, PreToolUseEvent):
+        tool_name, tool_input = to_wire_call(event.call)
         result = PreToolUseWireInput(
             **_common_fields(invocation),
             hook_event_name=HookEvent.PRE_TOOL_USE,
-            tool_name=event.call.name,
-            tool_input=event.call.args,
+            tool_name=tool_name,
+            tool_input=tool_input,
             tool_use_id=event.call.id,
         )
     elif isinstance(event, PostToolUseEvent):
+        tool_name, tool_input = to_wire_call(event.call)
         result = PostToolUseWireInput(
             **_common_fields(invocation),
             hook_event_name=HookEvent.POST_TOOL_USE,
-            tool_name=event.call.name,
-            tool_input=event.call.args,
+            tool_name=tool_name,
+            tool_input=tool_input,
             tool_response=_tool_result(event.result),
             tool_use_id=event.call.id,
             duration_ms=event.duration_ms,

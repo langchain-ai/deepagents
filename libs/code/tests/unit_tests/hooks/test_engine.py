@@ -189,9 +189,72 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
     assert snapshot.match(permission).handlers == ()
 
 
-def test_snapshot_reports_invalid_regex_and_runs_non_matchable_groups(
-    tmp_path: Path,
-) -> None:
+def test_snapshot_matches_native_tool_names_via_wire_adapter(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash|Write",
+                        "hooks": [{"type": "command", "command": "policy"}],
+                    }
+                ]
+            }
+        )
+    )
+    execute = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call-1", name="execute", args={"command": "pwd"}),
+        ),
+    )
+    write = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call-2", name="write_file", args={}),
+        ),
+    )
+    read = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call-3", name="read_file", args={}),
+        ),
+    )
+
+    assert [item.command for item in snapshot.match(execute).handlers] == ["policy"]
+    assert [item.command for item in snapshot.match(write).handlers] == ["policy"]
+    assert snapshot.match(read).handlers == ()
+
+
+def test_snapshot_exact_matcher_does_not_substring_match(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write",
+                        "hooks": [{"type": "command", "command": "write"}],
+                    }
+                ]
+            }
+        )
+    )
+    # Exact matchers must not treat "Write" as a regex substring of "WriteFile".
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call-1", name="WriteFile", args={}),
+        ),
+    )
+
+    assert snapshot.match(invocation).handlers == ()
+
+
+def test_snapshot_rejects_invalid_matcher_at_compile_time(tmp_path: Path) -> None:
     snapshot = HooksSnapshot.from_config(
         _config(
             {
@@ -201,8 +264,11 @@ def test_snapshot_reports_invalid_regex_and_runs_non_matchable_groups(
                         "hooks": [{"type": "command", "command": "bad"}],
                     },
                     {
-                        "matcher": "ignored",
+                        "matcher": "logout",
                         "hooks": [{"type": "command", "command": "good"}],
+                    },
+                    {
+                        "hooks": [{"type": "command", "command": "all"}],
                     },
                 ]
             }
@@ -215,8 +281,11 @@ def test_snapshot_reports_invalid_regex_and_runs_non_matchable_groups(
 
     match = snapshot.match(invocation)
 
-    assert [handler.command for handler in match.handlers] == ["good"]
-    assert [diagnostic.code for diagnostic in match.diagnostics] == ["invalid_matcher"]
+    assert [handler.command for handler in match.handlers] == ["all"]
+    assert [diagnostic.code for diagnostic in snapshot.diagnostics] == [
+        "invalid_matcher"
+    ]
+    assert match.diagnostics == ()
 
 
 @pytest.mark.parametrize(
@@ -316,7 +385,29 @@ def test_projects_all_wire_events(
     assert payload["transcript_path"].endswith("thread-1.jsonl")
 
 
-def test_serializes_native_command_as_json(tmp_path: Path) -> None:
+def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(
+                id="call-1",
+                name="execute",
+                args={"command": "pwd"},
+            ),
+        ),
+    )
+
+    payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
+        project_hook_input(invocation),
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
+    )
+
+    assert payload["tool_name"] == "Bash"
+    assert payload["tool_input"] == {"command": "pwd"}
+
     invocation = _invocation(
         tmp_path,
         PostToolUseEvent.model_construct(
@@ -359,6 +450,18 @@ async def test_runner_accepts_json_and_uses_invocation_cwd(tmp_path: Path) -> No
     assert result.output is not None
     assert result.output.system_message == str(tmp_path)
     assert result.diagnostics == ()
+
+
+async def test_runner_executes_shell_syntax(tmp_path: Path) -> None:
+    out = tmp_path / "shell.txt"
+    command = f"printf '%s' '{{\"systemMessage\":\"ok\"}}' > {out} && cat {out}"
+    handler = _handler(tmp_path, command)
+
+    result = await run_command_handler(handler, b"{}", cwd=tmp_path)
+
+    assert result.output is not None
+    assert result.output.system_message == "ok"
+    assert out.read_text() == '{"systemMessage":"ok"}'
 
 
 @pytest.mark.parametrize(
@@ -410,13 +513,18 @@ async def test_runner_times_out_and_reaps_process(tmp_path: Path) -> None:
 async def test_runner_reports_launch_failure_and_bounded_streams(
     tmp_path: Path,
 ) -> None:
+    # Shell form: a missing binary is started by the shell and exits non-zero
+    # rather than failing at process spawn.
     missing = _handler(tmp_path, "definitely-not-a-real-hook-command")
     failed = await run_command_handler(missing, b"{}", cwd=tmp_path)
+    empty = _handler(tmp_path, "   ")
+    empty_result = await run_command_handler(empty, b"{}", cwd=tmp_path)
     code = "import sys; print('x'*100); print('y'*100, file=sys.stderr)"
     noisy = _handler(tmp_path, f"{sys.executable} -c {json.dumps(code)}")
     bounded = await run_command_handler(noisy, b"{}", cwd=tmp_path, max_output_bytes=10)
 
-    assert [item.code for item in failed.diagnostics] == ["launch_failed"]
+    assert [item.code for item in failed.diagnostics] == ["nonzero_exit"]
+    assert [item.code for item in empty_result.diagnostics] == ["invalid_command"]
     assert {item.code for item in bounded.diagnostics} == {
         "stdout_truncated",
         "stderr_truncated",
@@ -698,14 +806,110 @@ def test_reducer_retains_fail_open_diagnostics(tmp_path: Path) -> None:
     assert decision.diagnostics[0].code == "timeout"
 
 
-async def test_engine_runs_in_order_and_short_circuits(tmp_path: Path) -> None:
-    marker = tmp_path / "marker.txt"
-    first = (
-        "import json,pathlib; "
-        f"pathlib.Path({str(marker)!r}).write_text('first'); "
-        "print(json.dumps({'continue': False}))"
+def test_reducer_ignores_session_start_block(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        SessionStartEvent(
+            event=HookEvent.SESSION_START, cause=SessionStartCause.STARTUP
+        ),
     )
-    second = f"import pathlib; pathlib.Path({str(marker)!r}).write_text('second')"
+
+    decision = reduce_hook_results(
+        invocation,
+        [
+            HandlerResult(
+                handler_id="block",
+                output=HookWireOutput(decision="block", reason="nope"),
+            )
+        ],
+    )
+    assert isinstance(decision, SessionStartDecision)
+
+    assert decision.continue_processing is True
+    assert decision.diagnostics[0].code == "unsupported_block"
+
+
+def test_reducer_warns_on_unsupported_updated_input(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="execute", args={}),
+        ),
+    )
+
+    decision = reduce_hook_results(
+        invocation,
+        [
+            HandlerResult(
+                handler_id="mutate",
+                output=HookWireOutput.model_validate(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "allow",
+                            "updatedInput": {"command": "echo mutated"},
+                        }
+                    }
+                ),
+            )
+        ],
+    )
+    assert isinstance(decision, PreToolUseDecision)
+
+    assert decision.permission.behavior == "none"
+    assert decision.diagnostics[0].code == "unsupported_field"
+    assert decision.diagnostics[0].field == "updatedInput"
+
+
+def test_reducer_honors_deny_even_with_updated_input(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="execute", args={}),
+        ),
+    )
+
+    decision = reduce_hook_results(
+        invocation,
+        [
+            HandlerResult(
+                handler_id="deny",
+                output=HookWireOutput.model_validate(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": "blocked",
+                            "updatedInput": {"command": "echo mutated"},
+                        }
+                    }
+                ),
+            )
+        ],
+    )
+    assert isinstance(decision, PreToolUseDecision)
+
+    assert decision.permission.behavior == "deny"
+    assert decision.permission.reason == "blocked"
+    assert decision.diagnostics[0].code == "unsupported_field"
+
+
+async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first_cmd = (
+        "import json,pathlib,time; "
+        "time.sleep(0.05); "
+        f"pathlib.Path({str(first)!r}).write_text('first'); "
+        "print(json.dumps({'continue': False, 'stopReason': 'stop'}))"
+    )
+    second_cmd = (
+        "import pathlib,time; "
+        "time.sleep(0.05); "
+        f"pathlib.Path({str(second)!r}).write_text('second')"
+    )
     snapshot = HooksSnapshot.from_config(
         _config(
             {
@@ -714,11 +918,15 @@ async def test_engine_runs_in_order_and_short_circuits(tmp_path: Path) -> None:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"{sys.executable} -c {json.dumps(first)}",
+                                "command": (
+                                    f"{sys.executable} -c {json.dumps(first_cmd)}"
+                                ),
                             },
                             {
                                 "type": "command",
-                                "command": f"{sys.executable} -c {json.dumps(second)}",
+                                "command": (
+                                    f"{sys.executable} -c {json.dumps(second_cmd)}"
+                                ),
                             },
                         ]
                     }
@@ -736,7 +944,9 @@ async def test_engine_runs_in_order_and_short_circuits(tmp_path: Path) -> None:
     decision = await HookEngine(snapshot).run(invocation)
 
     assert decision.continue_processing is False
-    assert marker.read_text() == "first"
+    assert decision.stop_reason == "stop"
+    assert first.read_text() == "first"
+    assert second.read_text() == "second"
 
 
 async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:

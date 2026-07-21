@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
+from deepagents._middleware import apply_custom_middleware
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -21,8 +22,10 @@ from deepagents.middleware.subagents import (
     TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
     _build_task_tool,
+    _create_default_subagent_middleware,
     create_sub_agent,
 )
+from deepagents.profiles import HarnessProfile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -97,6 +100,37 @@ class TestSubagentMiddlewareInit:
         assert "Available subagent types:" in middleware.system_prompt
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
+
+    def test_public_middleware_replaces_factory_built_subagent_middleware(self) -> None:
+        """The factory returns a public dispatcher that users can replace by name."""
+        backend = StateBackend()
+        custom = SubAgentMiddleware(
+            backend=backend,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": RunnableLambda(lambda state: state),
+                }
+            ],
+        )
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        default = _create_default_subagent_middleware(
+            backend=backend,
+            subagents=[],
+            base_model=model,
+            base_tools=[],
+            base_permissions=None,
+            base_interrupt_on=None,
+            base_profile=HarnessProfile(),
+            base_skills=None,
+            base_middleware=[],
+            profile_matched_classes=set(),
+            profile_matched_names=set(),
+        )
+
+        assert default.name == custom.name == "SubAgentMiddleware"
+        assert apply_custom_middleware([default], [custom]) == [custom]
 
     def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
         """Public constructor annotations should support runtime introspection."""

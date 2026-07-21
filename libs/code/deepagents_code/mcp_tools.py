@@ -1767,18 +1767,38 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP adapter modules whose first import may block.
+    """Eagerly import MCP modules whose first import may block.
 
-    Run via `asyncio.to_thread` before adapter symbols are used, so the initial
-    (potentially blocking) package-resource scan stays off the server event
-    loop. Because this runs inside `_load_tools_from_config`, it happens only
-    when at least one active MCP server exists — a config with no MCP servers
-    never imports the adapters.
+    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
+    blocking side effect of a first import happens off the server event loop
+    rather than where Blockbuster would reject it. Two known offenders:
+
+    - `langchain_mcp_adapters` runs a package-resource scan on first import.
+    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
+      calls `os.getcwd()` in its module body (verified against the pinned
+      versions — the exact culprit may shift as dependencies change, but the
+      general risk of import-time I/O in this subtree does not).
+
+    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
+    (remote-server preflight and the per-tool call path), where an import
+    failure is captured and reported per server. A failure to warm it must not
+    abort loading for every server — notably stdio-only configs, which never
+    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
+    at the real use site. Runs only when at least one active MCP server exists.
     """
     from langchain_mcp_adapters import (
         sessions as _sessions,  # noqa: F401
         tools as _tools,  # noqa: F401
     )
+
+    try:
+        from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm mcp_auth import off the event loop; "
+            "deferring to per-server use",
+            exc_info=True,
+        )
 
 
 async def _gather_bounded(
@@ -2398,6 +2418,77 @@ def _log_skipped_project_servers(
         )
 
 
+def _mcp_trust_list_notices(
+    trust_lists: McpServerTrustLists,
+) -> list[tuple[Path, str]]:
+    """Config-error entries surfacing a trust-list's read/migration problems.
+
+    The loader runs in non-interactive paths where a bare `logger.warning` has
+    no handler, so these must-see notices are rendered as visible config errors
+    via `_bad_config_infos`. Returned (rather than appended in place) so a
+    single trust-list load can surface them once for both the plugin and
+    project config paths instead of duplicating them per path.
+
+    Args:
+        trust_lists: The user's loaded allow/deny policy.
+
+    Returns:
+        `(path, message)` tuples for each detected problem, empty when clean.
+    """
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    notices: list[tuple[Path, str]] = []
+    if trust_lists.read_error is not None:
+        # Surface the read failure as a visible config error (a bare
+        # logger.warning has no handler outside debug mode).
+        notices.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+    if trust_lists.legacy_ignored:
+        # The removed flat allowlist stops loading these silently; make it
+        # visible since the loader runs in non-interactive paths where the
+        # migration warning would otherwise be unseen.
+        ignored = ", ".join(sorted(trust_lists.legacy_ignored))
+        notices.append(
+            (
+                DEFAULT_CONFIG_PATH,
+                (
+                    "[mcp].enabled_project_servers is no longer used; "
+                    "re-approve via the project MCP prompt to keep loading: "
+                    f"{ignored}"
+                ),
+            )
+        )
+    if trust_lists.legacy_env_ignored:
+        # The env var was renamed; make the set-but-ignored old name visible
+        # so its servers don't silently stop pre-approving.
+        notices.append(
+            (
+                Path("<env>"),
+                (
+                    f"{_env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS} is no "
+                    "longer used; it was renamed to "
+                    f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}"
+                ),
+            )
+        )
+    if trust_lists.malformed_approvals:
+        # A corrupt saved approval would otherwise just silently re-prompt;
+        # surface it here (the loader runs in non-interactive paths where a
+        # bare logger.warning is unseen), mirroring the legacy notices above.
+        count = trust_lists.malformed_approvals
+        entry_word = "entry" if count == 1 else "entries"
+        notices.append(
+            (
+                DEFAULT_CONFIG_PATH,
+                (
+                    f"{count} [mcp].enabled_project_server_approvals {entry_word} "
+                    "could not be read and were ignored; re-approve via the "
+                    "project MCP prompt to keep loading affected servers"
+                ),
+            )
+        )
+    return notices
+
+
 async def resolve_and_load_mcp_tools(
     *,
     explicit_config_path: str | None = None,
@@ -2440,7 +2531,13 @@ async def resolve_and_load_mcp_tools(
         project_context: Explicit project path context for config discovery
             and trust resolution.
         additional_configs: Config layers injected by higher-level composition,
-            such as plugin-provided MCP servers.
+            such as plugin-provided MCP servers. Installing a plugin is treated
+            as the user's trust decision for its bundled servers, so these load
+            without per-server approval — but the user-level deny policy still
+            applies (an explicitly disabled server stays disabled), and if that
+            policy cannot be read the servers fail closed rather than bypass a
+            saved rejection. A malformed layer (non-dict, or a non-mapping
+            `mcpServers`) is skipped and surfaced as a config error.
         stateless: When `True`, do not return an owned runtime session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2483,7 +2580,70 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
-    configs.extend(additional_configs)
+    # The user-level allow/deny policy (home config.toml + env) gates both
+    # plugin-provided and project `.mcp.json` servers. Load it once — and
+    # surface its read/migration notices once — so a plugin-only session and a
+    # project session behave identically and a read error is not reported
+    # twice. Sourced only from the user's own config (never the repo), so a
+    # committed `.mcp.json` cannot self-approve. Loaded lazily: skipped when
+    # there is neither a plugin layer nor a discovered project config to gate.
+    trust_lists: McpServerTrustLists | None = None
+    if additional_configs or project_configs:
+        from deepagents_code.model_config import load_mcp_server_trust_lists
+
+        trust_lists = load_mcp_server_trust_lists()
+        config_load_errors.extend(_mcp_trust_list_notices(trust_lists))
+
+    # Installing a plugin is the user's trust decision for every bundled
+    # component, including MCP servers. Still apply the user-level deny policy
+    # so an explicitly disabled server stays disabled. If that policy cannot be
+    # read, fail closed rather than potentially bypass a saved rejection. The
+    # `trust_lists is not None` guard holds whenever `additional_configs` is
+    # non-empty (the load above ran); it only narrows the type.
+    if additional_configs and trust_lists is not None:
+        plugin_project_root = _resolve_project_config_base(project_context)
+        for plugin_config in additional_configs:
+            if not isinstance(plugin_config, dict):
+                continue
+            plugin_servers = plugin_config.get("mcpServers")
+            if plugin_servers is None or (
+                isinstance(plugin_servers, dict) and not plugin_servers
+            ):
+                # No servers to contribute; nothing to trust-filter.
+                continue
+            if not isinstance(plugin_servers, dict):
+                # A present-but-malformed `mcpServers` (e.g. a list or string)
+                # is a plugin authoring mistake; surface it instead of dropping
+                # it silently, mirroring how project configs report bad shapes.
+                config_load_errors.append(
+                    (
+                        Path("<plugin>"),
+                        (
+                            "plugin 'mcpServers' must be a mapping of name to "
+                            "server definition, got "
+                            f"{type(plugin_servers).__name__}"
+                        ),
+                    )
+                )
+                continue
+            plugin_kept = filter_trusted_project_servers(
+                plugin_servers,
+                trust_lists,
+                project_root=plugin_project_root,
+                config_trusted=not trust_lists.load_failed,
+            )
+            plugin_dropped = [
+                name for name in plugin_servers if name not in plugin_kept
+            ]
+            if plugin_dropped:
+                logger.warning(
+                    "Skipped plugin MCP servers denied by an explicit disable or "
+                    "an unreadable trust policy: %s",
+                    ", ".join(sorted(plugin_dropped)),
+                )
+            if plugin_kept:
+                configs.append({**plugin_config, "mcpServers": plugin_kept})
+
     loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
 
     for path in project_configs:
@@ -2493,7 +2653,10 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             loaded_project_configs.append((path, config))
 
-    if loaded_project_configs:
+    if loaded_project_configs and trust_lists is not None:
+        # `trust_lists` was loaded above because `project_configs` is non-empty
+        # here; the `is not None` guard only narrows the type. Its read/migration
+        # notices were already surfaced once at the shared load site.
         project_config, server_sources = _merge_mcp_configs_with_sources(
             loaded_project_configs
         )
@@ -2503,64 +2666,6 @@ async def resolve_and_load_mcp_tools(
         # or the interactive approval prompt's decision). Without it, servers
         # load solely via the user's scoped approvals below.
         config_trusted = trust_project_mcp is True
-
-        # The allow/deny lists are sourced only from the user's own config
-        # (home config.toml + env) — never from the repo — so a committed
-        # .mcp.json cannot self-approve.
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            load_mcp_server_trust_lists,
-        )
-
-        trust_lists = load_mcp_server_trust_lists()
-        if trust_lists.read_error is not None:
-            # Surface the read failure as a visible config error (a bare
-            # logger.warning has no handler outside debug mode).
-            config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
-        if trust_lists.legacy_ignored:
-            # The removed flat allowlist stops loading these silently; make
-            # it visible here too, since the loader runs in non-interactive
-            # paths where the migration warning would otherwise be unseen.
-            ignored = ", ".join(sorted(trust_lists.legacy_ignored))
-            config_load_errors.append(
-                (
-                    DEFAULT_CONFIG_PATH,
-                    (
-                        "[mcp].enabled_project_servers is no longer used; "
-                        "re-approve via the project MCP prompt to keep loading: "
-                        f"{ignored}"
-                    ),
-                )
-            )
-        if trust_lists.legacy_env_ignored:
-            # The env var was renamed; make the set-but-ignored old name visible
-            # here too so its servers don't silently stop pre-approving.
-            config_load_errors.append(
-                (
-                    Path("<env>"),
-                    (
-                        f"{_env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS} is no "
-                        "longer used; it was renamed to "
-                        f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}"
-                    ),
-                )
-            )
-        if trust_lists.malformed_approvals:
-            # A corrupt saved approval would otherwise just silently re-prompt;
-            # surface it here (the loader runs in non-interactive paths where a
-            # bare logger.warning is unseen), mirroring the legacy notices above.
-            count = trust_lists.malformed_approvals
-            entry_word = "entry" if count == 1 else "entries"
-            config_load_errors.append(
-                (
-                    DEFAULT_CONFIG_PATH,
-                    (
-                        f"{count} [mcp].enabled_project_server_approvals {entry_word} "
-                        "could not be read and were ignored; re-approve via the "
-                        "project MCP prompt to keep loading affected servers"
-                    ),
-                )
-            )
 
         if trust_lists.load_failed:
             # Fail closed: the user's allow/deny policy could not be read,

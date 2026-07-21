@@ -36,7 +36,14 @@ def test_resolve_branch_sha_uses_ls_remote_argument_list(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert up._resolve_branch_sha("feature/x") == "a" * 40
-    assert calls == [(["git", "ls-remote", "origin", "feature/x"], True, True, True)]
+    assert calls == [
+        (
+            ["git", "ls-remote", "--exit-code", "origin", "refs/heads/feature/x"],
+            True,
+            True,
+            True,
+        )
+    ]
 
 
 def test_resolve_branch_sha_rejects_unsafe_refs():
@@ -378,7 +385,7 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     pairs = {(e["model"], e["branch"]) for e in matrix["include"]}
     assert pairs == {("openai:gpt-5.6-luna", "main"), ("openai:gpt-5.6-luna", "feature")}
@@ -387,10 +394,20 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     )
     assert {e["branch_sha"] for e in matrix["include"]} == {"a" * 40}
     leaves = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("expected_leaves=")).split("=", 1)[1]
+        next(
+            line for line in text.splitlines() if line.startswith("expected_leaves=")
+        ).split("=", 1)[1]
     )
-    assert {l["branch"] for l in leaves} == {"main", "feature"}
-    assert all({"model", "branch", "config", "category"} <= set(l) for l in leaves)
+    assert {leaf["branch"] for leaf in leaves} == {"main", "feature"}
+    assert all(
+        {"model", "branch", "source_sha", "config", "category"} <= set(leaf)
+        for leaf in leaves
+    )
+    outputs = dict(line.split("=", 1) for line in text.splitlines())
+    assert _j.loads(outputs["sources"]) == [
+        {"branch": "main", "sha": "a" * 40},
+        {"branch": "feature", "sha": "a" * 40},
+    ]
 
 
 def test_main_total_job_guard_counts_branches(tmp_path, monkeypatch):
@@ -439,7 +456,7 @@ def test_main_default_branch_is_current(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     assert {e["branch"] for e in matrix["include"]} == {"current"}
 

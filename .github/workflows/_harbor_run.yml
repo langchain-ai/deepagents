@@ -481,6 +481,11 @@ jobs:
             echo "::error::Invalid resolved branch SHA: $BRANCH_SHA"; exit 1
           fi
           git fetch origin "$BRANCH_SHA" --depth=1
+          fetched_sha=$(git rev-parse FETCH_HEAD)
+          if [ "$fetched_sha" != "${BRANCH_SHA,,}" ]; then
+            echo "::error::Fetched commit $fetched_sha does not match resolved SHA $BRANCH_SHA"
+            exit 1
+          fi
           # Overlay ONLY the agent-under-test libraries. The harness (harbor +
           # deepagents_harbor/langgraph_project, including langgraph_agent.py) must
           # stay at the eval ref: it carries eval-infra fixes the pinned harbor
@@ -1109,6 +1114,7 @@ jobs:
           CATEGORY: ${{ matrix.category }}
           AGENT_IMPL: ${{ matrix.agent_impl }}
           BRANCH: ${{ inputs.branch }}
+          SOURCE_SHA: ${{ inputs.branch_sha }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
@@ -1142,6 +1148,7 @@ jobs:
             --category "$CATEGORY" \
             --config "$AGENT_IMPL" \
             --branch "$BRANCH" \
+            --source-sha "$SOURCE_SHA" \
             "${harbor_result_args[@]}" \
             --out-dir _shards
 

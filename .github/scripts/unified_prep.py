@@ -264,7 +264,7 @@ def _resolve_branch_sha(branch: str) -> str:
         raise SystemExit(f"Invalid branch ref: {branch!r}")
     try:
         result = subprocess.run(
-            ["git", "ls-remote", "origin", branch],
+            ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
             check=True,
             capture_output=True,
             text=True,
@@ -275,8 +275,8 @@ def _resolve_branch_sha(branch: str) -> str:
     line = result.stdout.splitlines()
     if not line:
         raise SystemExit(f"Branch ref {branch!r} was not found on origin.")
-    sha = line[0].split(maxsplit=1)[0]
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+    sha = line[0].split(maxsplit=1)[0].lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise SystemExit(f"Origin returned an invalid SHA for branch ref {branch!r}.")
     return sha
 
@@ -507,7 +507,12 @@ def main(argv: list[str] | None = None) -> int:
         "categories": categories,
         "configs": code_impls,
         "branches": branches,
-        "expected_leaves": [key._asdict() for key in expected_keys],
+        "expected_leaves": [
+            {**key._asdict(), "source_sha": branch_shas[key.branch]} for key in expected_keys
+        ],
+        "sources": [
+            {"branch": branch, "sha": branch_shas[branch]} for branch in branches
+        ],
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
     }

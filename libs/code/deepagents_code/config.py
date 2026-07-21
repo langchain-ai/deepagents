@@ -16,7 +16,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard
 from urllib.parse import unquote, urlparse
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
@@ -2099,8 +2099,8 @@ def _provider_retry_disable_kwargs(
     """
     from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
 
-    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
-    if retry_param is None and section:
+    retry_param: str | None = None
+    if section:
         provider_section = section.get(provider)
         if isinstance(provider_section, dict) and "param" in provider_section:
             configured = _coerce_retry_param(
@@ -2109,6 +2109,11 @@ def _provider_retry_disable_kwargs(
             )
             if configured is not None:
                 retry_param = configured
+
+    # An explicit integration-specific override is authoritative. Fall back to
+    # the built-in registry only when config does not supply a valid parameter.
+    if retry_param is None:
+        retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
 
     # A custom provider that already exposes the conventional parameter has
     # positively identified its retry control through model configuration.
@@ -2159,6 +2164,25 @@ MODEL_RETRY_OVERRIDE_ATTR = "_deepagents_model_retry_override"
 """Private model attribute carrying an explicit CLI retry override, if any."""
 
 
+def is_valid_retry_count(raw: object) -> TypeGuard[int]:
+    """Return whether `raw` is a usable retry count.
+
+    A retry count must be a non-negative integer. `bool` is rejected explicitly
+    because it is an `int` subclass, so `True`/`False` would otherwise slip
+    through as `1`/`0`. This is the single definition of the invariant shared by
+    every reader (`get_model_retries`, `get_model_retry_override`, and the
+    runtime carrier check in `model_retry`); the `TypeGuard` lets those callers
+    return the narrowed value directly.
+
+    Args:
+        raw: Candidate value read from model metadata or runtime context.
+
+    Returns:
+        `True` when `raw` is a non-negative, non-boolean integer.
+    """
+    return isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0
+
+
 def set_model_retry_metadata(
     model: BaseChatModel, *, retries: int, cli_override: int | None
 ) -> None:
@@ -2191,7 +2215,7 @@ def get_model_retries(model: BaseChatModel, fallback: int) -> int:
             is missing, non-integer, boolean, or negative.
     """
     raw = getattr(model, MODEL_RETRIES_ATTR, None)
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+    if is_valid_retry_count(raw):
         return raw
     return fallback
 
@@ -2206,7 +2230,7 @@ def get_model_retry_override(model: BaseChatModel) -> int | None:
         The non-negative integer override, or `None` when absent or invalid.
     """
     raw = getattr(model, MODEL_RETRY_OVERRIDE_ATTR, None)
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+    if is_valid_retry_count(raw):
         return raw
     return None
 
@@ -4464,7 +4488,12 @@ class ModelResult:
         unsupported_modalities: Input modalities not indicated as supported by
             the model profile (e.g. `{"audio", "video"}`).
         model_retries: Effective model-node retry count for the resolved
-            provider (see `resolve_model_retries`). `0` disables retries.
+            provider (see `resolve_model_retries`). `0` disables retries. This
+            is the *startup fallback* the middleware uses when the model carries
+            no attached metadata; the authoritative per-request budget lives on
+            the model instance via `set_model_retry_metadata` (read back through
+            `get_model_retries`). The two are set from the same value in
+            `create_model`, so they agree at construction.
     """
 
     model: BaseChatModel

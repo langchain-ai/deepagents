@@ -142,6 +142,19 @@ class _StructuredModel:
         return self.result
 
 
+class _FlakyStructuredModel(_StructuredModel):
+    def __init__(self, result: object, errors: list[Exception]) -> None:
+        super().__init__(result)
+        self.errors = errors
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.result
+
+
 class _FailIfClassifiedModel(_StructuredModel):
     def with_structured_output(self, schema: object) -> _StructuredModel:
         msg = f"unexpected classifier call for {schema}"
@@ -657,6 +670,82 @@ async def test_sensitive_write_requires_classifier(
     )
 
     assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert len(model.calls) == 1
+
+
+async def test_classifier_retries_transient_model_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The direct classifier call uses the same bounded retry policy."""
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        lambda _self, _attempt: 0,
+    )
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 2
+
+
+async def test_classifier_honors_zero_retry_fallback(tmp_path: Path) -> None:
+    """An object model without metadata inherits the agent's zero budget."""
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=1,
+        model_retry_fallback=0,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert len(model.calls) == 1
 
 

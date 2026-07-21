@@ -1740,7 +1740,7 @@ class TestCreateCliAgentInteractiveForwarding:
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
             ) as mock_create_deep_agent,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_code.agent.get_system_prompt") as mock_get_prompt,
@@ -1804,7 +1804,7 @@ class TestCreateCliAgentInteractiveForwarding:
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
             ) as mock_create_deep_agent,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             patch("deepagents_code.agent.get_system_prompt") as mock_get_prompt,
@@ -2128,7 +2128,7 @@ class TestCreateCliAgentSkillsSources:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -2234,7 +2234,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -2301,7 +2301,7 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -2373,7 +2373,7 @@ class TestCreateCliAgentMemoryAutoSave:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -2477,7 +2477,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch("langchain.chat_models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2557,7 +2557,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch("langchain.chat_models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2634,7 +2634,7 @@ class TestCreateCliAgentProjectContext:
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch("langchain.chat_models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2758,7 +2758,7 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch("langchain.chat_models.init_chat_model", return_value=fake_model),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2821,7 +2821,7 @@ class TestMiddlewareStackConformance:
                 side_effect=capture_create_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -2887,7 +2887,7 @@ class TestEnableAskUser:
                 side_effect=capture,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3223,7 +3223,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3262,7 +3262,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3312,7 +3312,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3370,7 +3370,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3423,7 +3423,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3476,7 +3476,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3524,6 +3524,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
         )
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
+        from deepagents_code.offload_middleware import (
+            RetryingSummarizationMiddleware,
+        )
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3570,7 +3573,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=pinned_result,
             ) as create_pinned_model,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3604,6 +3607,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert middleware_types == [
                 ConfigurableModelMiddleware,
                 CodeModelRetryMiddleware,
+                RetryingSummarizationMiddleware,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
             assert subagents_by_name[name]["middleware"][1].max_retries == model_retries
@@ -3663,7 +3667,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3716,7 +3720,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3766,7 +3770,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -3826,12 +3830,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=explicit_result,
             ) as create_explicit_model,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 enable_memory=False,
                 enable_skills=False,
@@ -3936,7 +3940,7 @@ class TestExperimentalTodoMiddlewareWiring:
                 return_value=explicit_result,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -4247,7 +4251,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -4289,7 +4293,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -4329,7 +4333,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -4419,7 +4423,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             _ignore_interpreter_beta_warning(),
@@ -4453,7 +4457,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
         ):
@@ -4479,7 +4483,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             pytest.raises(ValueError, match="remote sandbox"),
@@ -4525,7 +4529,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             _ignore_interpreter_beta_warning(),
@@ -4565,7 +4569,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             pytest.raises(ValueError, match="acknowledge_unsafe"),
@@ -4618,7 +4622,7 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
+                "langchain.chat_models.init_chat_model",
                 return_value=fake_model,
             ),
             _ignore_interpreter_beta_warning(),

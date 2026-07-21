@@ -994,6 +994,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         worktree_root: str | Path,
         shell_allow_list: Sequence[str] = (),
         classifier_timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS,
+        model_retry_fallback: int | None = None,
     ) -> None:
         """Initialize the local interactive Auto policy.
 
@@ -1002,6 +1003,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             worktree_root: Trusted repository boundary for deterministic writes.
             shell_allow_list: Restrictive configured shell entries.
             classifier_timeout_seconds: Timeout for one structured decision batch.
+            model_retry_fallback: Retry budget for models without metadata.
         """
         super().__init__(dict(interrupt_on))
         self._worktree_root = Path(worktree_root).resolve(strict=False)
@@ -1014,6 +1016,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         }
         self._shell_allow_list = tuple(shell_allow_list)
         self._classifier_timeout_seconds = classifier_timeout_seconds
+        self._model_retry_fallback = model_retry_fallback
         self._known_secrets = _known_credential_values()
 
     async def _counter_context(  # noqa: PLR6301
@@ -1285,8 +1288,23 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         started = time.monotonic()
         try:
-            classified = await self._classify(
-                request, gated_calls, deterministic_dispositions, tools
+            from deepagents_code.model_retry import (
+                CodeModelRetryMiddleware,
+                _runtime_model_retry_override,
+            )
+
+            retry = (
+                CodeModelRetryMiddleware(max_retries=self._model_retry_fallback)
+                if self._model_retry_fallback is not None
+                else CodeModelRetryMiddleware()
+            )
+            classified = await retry.arun_with_retry(
+                request.model,
+                lambda: self._classify(
+                    request, gated_calls, deterministic_dispositions, tools
+                ),
+                writer=getattr(request.runtime, "stream_writer", None),
+                max_retries=_runtime_model_retry_override(request.runtime),
             )
             expected_ids = {_tool_call_id(call) for call in review_calls}
             _validate_classifier_ids(classified, expected_ids)

@@ -21,6 +21,7 @@ from deepagents_code.config import CLI_MAX_RETRIES_KEY, MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
+    RetryingSummarizationMiddleware,
     _ArchiveReadGuard,
     _runtime_model_config,
 )
@@ -144,6 +145,64 @@ class TestCLICompactionMiddleware:
         ]
         summarization._compute_state_cutoff.return_value = 2
         return summarization
+
+    def test_automatic_summarization_retries_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The automatic path retries before it can commit an error summary."""
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.invoke.side_effect = [
+            httpx.ReadError("dropped"),
+            AIMessage(content="Recovered summary"),
+        ]
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        summary = middleware._create_summary([HumanMessage("one"), HumanMessage("two")])
+
+        assert summary == "Recovered summary"
+        assert model.invoke.call_count == 2
+        assert middleware.name == "SummarizationMiddleware"
+
+    async def test_async_automatic_summarization_retries_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.ainvoke = AsyncMock(
+            side_effect=[
+                httpx.ReadError("dropped"),
+                AIMessage(content="Recovered summary"),
+            ]
+        )
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        summary = await middleware._acreate_summary(
+            [HumanMessage("one"), HumanMessage("two")]
+        )
+
+        assert summary == "Recovered summary"
+        assert model.ainvoke.await_count == 2
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""

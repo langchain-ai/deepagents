@@ -30,6 +30,7 @@ from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     get_glyphs,
     get_model_retries,
+    is_valid_retry_count,
 )
 
 if TYPE_CHECKING:
@@ -146,7 +147,7 @@ def _runtime_model_retry_override(runtime: object) -> int | None:
     if not isinstance(params, Mapping):
         return None
     raw = params.get(CLI_MAX_RETRIES_KEY)
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+    if is_valid_retry_count(raw):
         return raw
     return None
 
@@ -441,6 +442,42 @@ def _contains_retryable_model_error(exc: BaseException) -> bool:
     )
 
 
+def _should_retry_after_failure(exc: BaseException) -> bool:
+    """Decide whether a failed model call is worth retrying.
+
+    The top-level exception's own classification wins when it is definitively
+    non-transient: a permanent provider error code, or a status-bearing
+    deterministic client error (a 4xx other than 408/429 that is not an AWS
+    throttle). This stops a transient error buried in the `__cause__` /
+    `__context__` chain -- or grouped alongside it in a `BaseExceptionGroup`
+    (common under asyncio/anyio task groups) -- from flipping an actionable
+    auth/permission/validation failure to "retryable" and delaying it by the
+    full backoff budget with a misleading retry status.
+
+    When the top-level error carries no such definitive verdict, fall back to
+    scanning the chain so a genuinely transient fault wrapped in an opaque
+    outer exception is still retried.
+
+    Args:
+        exc: The exception raised by the model call.
+
+    Returns:
+        `True` when the failure should be retried.
+    """
+    if isinstance(exc, Exception):
+        if _provider_error_code(exc) in _NONRETRYABLE_ERROR_CODES:
+            return False
+        status = _extract_status_code(exc)
+        if (
+            status is not None
+            and status not in _RETRYABLE_STATUS_CODES
+            and not (_HTTP_SERVER_ERROR_FLOOR <= status < _HTTP_SERVER_ERROR_CEILING)
+            and _provider_error_code(exc) not in _THROTTLING_ERROR_CODES
+        ):
+            return False
+    return _contains_retryable_model_error(exc)
+
+
 def format_retry_status(attempt: int, max_retries: int) -> str:
     """Return the concise user-facing status shown during a retry backoff.
 
@@ -495,6 +532,13 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
         """
+        # `retry_on` and `on_failure` are passed only to satisfy the base
+        # constructor's validation; they are inert here. `wrap_model_call` /
+        # `awrap_model_call` are fully overridden and delegate to
+        # `run_with_retry`, which classifies via `_should_retry_after_failure`
+        # (a chain-aware superset of `_is_retryable_model_error`) and always
+        # re-raises rather than returning an error `AIMessage`. The base retry
+        # loop is never reached.
         super().__init__(
             max_retries=max_retries,
             retry_on=_is_retryable_model_error,
@@ -512,7 +556,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             attempt: The 0-indexed attempt that just failed.
 
         Returns:
-            Delay in seconds, capped at `_MAX_DELAY_SECONDS`, with +-10% jitter.
+            Delay in seconds. The exponential term is capped at
+                `_MAX_DELAY_SECONDS` *before* +-10% jitter is applied (mirroring
+                Codex), so a capped delay can land slightly above the cap.
         """
         delay = self.initial_delay * (self.backoff_factor**attempt)
         delay = min(delay, self.max_delay)
@@ -575,12 +621,13 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         retry_if: Callable[[], bool] | None = None,
         max_retries: int | None = None,
     ) -> _T:
-        """Run a direct model call with the model's attached retry budget.
+        """Run a model call with retries, using the model's attached budget.
 
-        This is used by model calls that do not pass through LangChain's model
-        node, such as forced conversation summaries. On exhaustion, a
-        non-transient error, or a `retry_if` veto, the original model error is
-        re-raised with its traceback intact (never wrapped or swallowed).
+        This is the shared retry driver. It backs both `wrap_model_call` (the
+        LangChain model node) and direct model calls made outside that node,
+        such as forced conversation summaries. On exhaustion, a non-transient
+        error, or a `retry_if` veto, the original model error is re-raised with
+        its traceback intact (never wrapped or swallowed).
 
         Args:
             model: Concrete model used by `handler`.
@@ -600,12 +647,17 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         resolved_retries = (
             max_retries if max_retries is not None else self._model_max_retries(model)
         )
+        # A negative budget would make `range(resolved_retries + 1)` empty,
+        # skipping the model call entirely and hitting the fail-loud guard
+        # below. Callers pass validated values today; clamp defensively so the
+        # loop always runs at least the initial attempt.
+        resolved_retries = max(0, resolved_retries)
         for attempt in range(resolved_retries + 1):
             try:
                 return handler()
-            except Exception as exc:  # classified by _is_retryable_model_error
+            except Exception as exc:  # classified by _should_retry_after_failure
                 if (
-                    not _contains_retryable_model_error(exc)
+                    not _should_retry_after_failure(exc)
                     or attempt >= resolved_retries
                     or (retry_if is not None and not retry_if())
                 ):
@@ -626,11 +678,13 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         retry_if: Callable[[], bool] | None = None,
         max_retries: int | None = None,
     ) -> _T:
-        """Asynchronously run a direct model call with attached retry metadata.
+        """Asynchronously run a model call with the model's attached budget.
 
-        On exhaustion, a non-transient error, or a `retry_if` veto, the original
-        model error is re-raised with its traceback intact (never wrapped or
-        swallowed).
+        The async twin of `run_with_retry`: it backs both `awrap_model_call`
+        (the LangChain model node) and direct async model calls outside that
+        node, such as forced conversation summaries. On exhaustion, a
+        non-transient error, or a `retry_if` veto, the original model error is
+        re-raised with its traceback intact (never wrapped or swallowed).
 
         Args:
             model: Concrete model used by `handler`.
@@ -652,12 +706,14 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         resolved_retries = (
             max_retries if max_retries is not None else self._model_max_retries(model)
         )
+        # See `run_with_retry`: clamp so a negative budget cannot skip the call.
+        resolved_retries = max(0, resolved_retries)
         for attempt in range(resolved_retries + 1):
             try:
                 return await handler()
-            except Exception as exc:  # classified by _is_retryable_model_error
+            except Exception as exc:  # classified by _should_retry_after_failure
                 if (
-                    not _contains_retryable_model_error(exc)
+                    not _should_retry_after_failure(exc)
                     or attempt >= resolved_retries
                     or (retry_if is not None and not retry_if())
                 ):

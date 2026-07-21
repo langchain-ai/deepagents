@@ -421,11 +421,3 @@ Remember: Skills make you more capable and consistent. When in doubt, check if a
 **Project**: python (uv), monorepo
 
 **Runtimes**: Python 3.13.1, Node 24.14.0
-
-## Compact conversation Tool `compact_conversation`
-
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.

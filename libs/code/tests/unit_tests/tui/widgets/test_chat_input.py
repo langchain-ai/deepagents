@@ -2815,6 +2815,45 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_image_id == 1
 
+    async def test_backspace_from_line_below_image_keeps_placeholder(
+        self, tmp_path
+    ) -> None:
+        """Backspace on the line below `[image N]` rejoins lines, keeps token.
+
+        Two images dropped on separate lines render as `[image 1]`, a newline,
+        and then `[image 2]`, with no trailing space after the first token. The
+        newline sits immediately after the first
+        token's closing bracket. Backspacing from the start of the second line
+        must remove only the line break, not delete `[image 1]` atomically with
+        it (the regression this fix addresses for the media code path).
+        """
+        from PIL import Image
+
+        img1 = tmp_path / "one.png"
+        img2 = tmp_path / "two.png"
+        Image.new("RGB", (4, 4), color="cyan").save(img1, format="PNG")
+        Image.new("RGB", (4, 4), color="magenta").save(img2, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(f"{img1}\n{img2}")
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1]\n[image 2]"
+
+            chat._text_area.move_cursor((1, 0))
+            await pilot.pause()
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # The line break is removed and both placeholders survive rather
+            # than `[image 1]` being deleted atomically with the newline.
+            assert chat._text_area.text == "[image 1][image 2]"
+            assert len(app.tracker.get_images()) == 2
+
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
         img_path = tmp_path / "readd.png"
@@ -3608,7 +3647,7 @@ class TestBackslashEnterNewline:
         # Widen the gap so wall-clock timing between pilot.press calls on slow
         # CI runners cannot push the enter past the 150ms default and trip the
         # submit path.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3646,7 +3685,7 @@ class TestBackslashEnterNewline:
         `call_after_refresh(scroll_cursor_visible)` keeps the cursor visible.
         """
         # Widen the backslash+enter gap so the fallback test isn't racy on CI.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
@@ -3704,7 +3743,7 @@ class TestBackslashEnterNewline:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Backslash + enter on empty prompt should not submit."""
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3725,7 +3764,7 @@ class TestBackslashEnterNewline:
     ) -> None:
         """Backslash + enter beyond the timing gap should submit normally."""
         # Set gap to 0 so any real delay exceeds it.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3743,6 +3782,44 @@ class TestBackslashEnterNewline:
 
             # Should have submitted (backslash included in text)
             assert len(app.submitted) == 1
+
+    async def test_backslash_enter_suppressed_while_completion_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An open completion popup owns Enter, so the fallback must not fire.
+
+        `_on_key` passes `enabled=not self._completion_active` to the shared
+        `_consume_backslash_enter_newline`. While completion is active the
+        backslash+enter fallback must be suppressed (the popup consumes Enter to
+        accept a suggestion), yet the pending-backslash timestamp must still be
+        cleared so a *later* Enter can't retroactively trip the fallback.
+
+        Driving `_on_key` directly (as the sibling completion tests do) isolates
+        the text area's handling from the parent's completion bubbling, which is
+        what makes the assertions deterministic.
+        """
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            ta.set_completion_active(active=True)
+            await pilot.pause()
+
+            # Backslash arms the fallback; Enter arrives well within the gap.
+            await ta._on_key(events.Key("backslash", "\\"))
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # Fallback suppressed: backslash untouched, no newline, no submit.
+            assert ta.text == "hello\\"
+            # Pending state cleared even though the fallback was disabled.
+            assert ta._backslash_pending_time is None
+            assert len(app.submitted) == 0
 
 
 class TestVSCodeSpaceWorkaround:
@@ -3955,6 +4032,27 @@ class TestModifiedBackspaceDeleteWordLeft:
             chat.handle_external_paste("p" * 900)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_after_tab_deletes_placeholder_atomically(
+        self, key: str
+    ) -> None:
+        """Modified Backspace preserves token integrity after a tab."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("p" * 900)
+            chat._text_area.insert("\t")
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]\t"
 
             await pilot.press(key)
             await pilot.pause()
@@ -5197,6 +5295,36 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
 
             assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    async def test_backspace_from_line_below_placeholder_keeps_it(self) -> None:
+        """Backspace on a line below a placeholder rejoins lines, keeps token.
+
+        Regression: a newline immediately after a `[Pasted text #N]` placeholder
+        was treated as an auto-inserted trailing separator, so backspacing from
+        the start of the next line deleted the whole placeholder instead of just
+        removing the line break. The cursor should land at the end of the
+        placeholder line with the placeholder intact.
+        """
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            chat._text_area.insert("\n")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (1, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[Pasted text #1]"
+            assert chat._text_area.cursor_location == (0, len("[Pasted text #1]"))
             assert 1 in chat._pasted_contents
 
     async def test_identical_multiline_repaste_expands_placeholder(self) -> None:

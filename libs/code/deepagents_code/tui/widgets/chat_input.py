@@ -7,11 +7,10 @@ import contextlib
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -81,16 +80,6 @@ protocol spec (functional key definitions) for background.
 
 _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
-
-_BACKSLASH_ENTER_GAP_SECONDS = 0.15
-"""Maximum gap between a `\\` key and a following `enter` key to treat the
-pair as a terminal-emitted shift+enter sequence.
-
-Some terminals (e.g. VSCode's built-in terminal) send a literal backslash
-followed by enter when the user presses shift+enter.  The gap is
-generous (150 ms) because the terminal emits both characters nearly
-simultaneously; a human deliberately typing `\\` then pressing Enter would
-have a much larger gap."""
 
 _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
 """Window after a terminal focus regain during which a click only refocuses.
@@ -456,36 +445,11 @@ class CompletionPopup(VerticalScroll):
 
 
 class ChatTextArea(PasteBurstTextArea):
-    """TextArea subclass with custom key handling for chat input."""
+    """TextArea subclass with custom key handling for chat input.
 
-    BINDINGS: ClassVar[list[Binding]] = [
-        Binding(
-            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
-            "insert_newline",
-            "New Line",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+backspace,alt+backspace",
-            "delete_word_left",
-            "Delete left to start of word",
-            show=False,
-        ),
-    ]
-    """Key bindings for the chat text area.
-
-    These are the single source of truth for shortcut keys. `_NEWLINE_KEYS`
-    is derived from this list so that `_on_key` stays in sync automatically.
+    Modifier-Enter / Ctrl+J newline bindings and the VSCode backslash+enter
+    fallback are inherited from `PasteBurstTextArea`.
     """
-
-    _NEWLINE_KEYS: ClassVar[frozenset[str]] = frozenset(
-        key
-        for b in BINDINGS
-        if b.action == "insert_newline"
-        for key in b.key.split(",")
-    )
-    """Flattened set of keys that insert a newline, derived from `BINDINGS`."""
 
     _skip_history_change_events: int
     """Counter incremented before a history-driven text replacement so the
@@ -556,9 +520,8 @@ class ChatTextArea(PasteBurstTextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
-        # Paste-burst state is initialized by PasteBurstTextArea.__init__.
-        # See _BACKSLASH_ENTER_GAP_SECONDS for context.
-        self._backslash_pending_time: float | None = None
+        # Paste-burst and backslash-pending state is initialized by
+        # PasteBurstTextArea.__init__.
         # Tracks terminal focus so a click that re-focuses the window only
         # restores focus instead of also moving the cursor. See
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
@@ -887,16 +850,6 @@ class ChatTextArea(PasteBurstTextArea):
             return
         super().action_cursor_down(select)
 
-    def _reset_paste_burst_state(self) -> None:
-        """Reset all paste-burst and backslash tracking to a clean slate.
-
-        Shared by the text-replacing entry points (`set_text_from_history`,
-        `clear_text`, `discard_text`) so a wholesale text swap never leaves
-        stale burst/backslash timing that would misclassify the next keystroke.
-        """
-        super()._reset_paste_burst_state()
-        self._backslash_pending_time = None
-
     def _in_slash_command_context(self) -> bool:
         """Return whether the current input is composing a slash command."""
         owner = self._chat_input_owner
@@ -943,30 +896,6 @@ class ChatTextArea(PasteBurstTextArea):
             return
 
         self.insert(payload)
-
-    def _delete_preceding_backslash(self) -> bool:
-        """Delete the backslash character immediately before the cursor.
-
-        Caller must ensure a backslash is expected at this position. The
-        method verifies the character before deleting it.
-
-        Returns:
-            `True` if a backslash was found and deleted, `False` otherwise.
-        """
-        row, col = self.cursor_location
-        if col > 0:
-            start = (row, col - 1)
-            if self.document.get_text_range(start, self.cursor_location) == "\\":
-                self.delete(start, self.cursor_location)
-                return True
-        elif row > 0:
-            prev_line = self.document.get_line(row - 1)
-            start = (row - 1, len(prev_line) - 1)
-            end = (row - 1, len(prev_line))
-            if self.document.get_text_range(start, end) == "\\":
-                self.delete(start, self.cursor_location)
-                return True
-        return False
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -1044,29 +973,17 @@ class ChatTextArea(PasteBurstTextArea):
 
         # Some terminals (e.g. VSCode built-in) send a literal backslash
         # followed by enter for shift+enter.  When enter arrives shortly
-        # after a backslash, delete the backslash and insert a newline.
-        if (
-            event.key == "enter"
-            and not self._completion_active
-            and self._backslash_pending_time is not None
-            and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+        # after a backslash, delete the backslash and insert a newline.  The
+        # fallback is inactive while completion is active.
+        if self._consume_backslash_enter_newline(
+            event, now, enabled=not self._completion_active
         ):
-            self._backslash_pending_time = None
-            if self._delete_preceding_backslash():
-                event.prevent_default()
-                event.stop()
-                self.action_insert_newline()
-                return
-        self._backslash_pending_time = None
+            return
 
-        if event.key == "backslash" and event.character == "\\":
-            self._backslash_pending_time = now
+        self._track_backslash_pending(event, now)
 
         # Modifier+Enter inserts newline — keys derived from BINDINGS
-        if event.key in self._NEWLINE_KEYS:
-            event.prevent_default()
-            event.stop()
-            self.action_insert_newline()
+        if self._consume_modifier_newline(event):
             return
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
@@ -1224,10 +1141,14 @@ class ChatTextArea(PasteBurstTextArea):
                         return start, end
                     if cursor_offset > 0:
                         previous_index = cursor_offset - 1
+                        # Swallow trailing whitespace with the token, except for
+                        # a newline: backspacing a line break should rejoin the
+                        # lines without deleting the placeholder.
                         if (
                             previous_index < len(text)
                             and previous_index == end
                             and text[previous_index].isspace()
+                            and text[previous_index] != "\n"
                         ):
                             return start, cursor_offset
                 elif start <= cursor_offset < end:

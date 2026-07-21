@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code import model_config
+from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
@@ -20,8 +21,9 @@ from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
-    STARTUP_MODE_DANGEROUSLY_AUTO,
+    STARTUP_MODE_AUTO,
     STARTUP_MODE_MANUAL,
+    STARTUP_MODE_YOLO,
     THREAD_COLUMN_DEFAULTS,
     McpProjectServerApproval,
     McpServerTrustLists,
@@ -2762,7 +2764,7 @@ enabled = false
         fetch.assert_called_once_with(None)
 
     def test_empty_installed_model_discovery_not_cached(self) -> None:
-        """Empty `/api/tags` results do not block later recovery."""
+        """Empty `/api/tags` results from a reachable daemon are not cached."""
         with patch(
             "deepagents_code.model_config._fetch_ollama_installed_models",
             side_effect=[[], ["qwen3:4b"]],
@@ -2771,6 +2773,98 @@ enabled = false
             assert model_config._get_ollama_installed_models(None) == ["qwen3:4b"]
 
         assert fetch.call_count == 2
+        # A reachable-but-empty daemon is never marked unreachable.
+        assert model_config._ollama_unreachable_endpoints == set()
+
+    def test_unreachable_daemon_probed_and_logged_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unreachable daemon is probed and logged once per reload."""
+        reachable = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+
+        with (
+            patch("urllib.request.urlopen") as urlopen,
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            assert (
+                model_config._get_ollama_installed_models("http://localhost:11434")
+                == []
+            )
+            assert (
+                model_config._get_ollama_installed_models("http://localhost:11434")
+                == []
+            )
+
+        # Preflight ran once; the negative result was cached for the second call.
+        reachable.assert_called_once()
+        urlopen.assert_not_called()
+        assert caplog.text.count("Ollama daemon not detected") == 1
+
+    def test_unreachable_daemon_logged_once_across_callers(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The two startup callers share one probe and one "not detected" log.
+
+        Regression: an unreachable daemon was probed -- and logged "not
+        detected" -- once by `get_available_models` and again by
+        `get_model_profiles`, so the line appeared twice per reload. Drives the
+        real callers rather than `_get_ollama_installed_models` directly.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OLLAMA_DISCOVERY", raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            MagicMock(return_value=False),
+        )
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_code.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch("urllib.request.urlopen") as urlopen,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            get_available_models()
+            get_model_profiles()
+
+        urlopen.assert_not_called()
+        assert caplog.text.count("Ollama daemon not detected") == 1
+
+    @pytest.mark.parametrize("endpoint", [None, "http://localhost:11434/"])
+    def test_unreachable_cache_key_matches_across_normalization(
+        self, endpoint: str | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`None` and a trailing slash resolve to the same negative-cache key.
+
+        The add-site (`_fetch_ollama_installed_models`) and check-site
+        (`_get_ollama_installed_models`) must normalize identically, else the
+        empty result is keyed differently from the lookup and the daemon is
+        re-probed every call instead of once per reload.
+        """
+        reachable = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+
+        with patch("urllib.request.urlopen"):
+            assert model_config._get_ollama_installed_models(endpoint) == []
+            assert model_config._get_ollama_installed_models(endpoint) == []
+
+        reachable.assert_called_once()
 
     def test_model_profiles_include_discovered_context_length(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3217,6 +3311,29 @@ class TestOllamaHostReachable:
             assert (
                 model_config._ollama_host_reachable("http://localhost:11434") is False
             )
+
+        assert caplog.records == []
+
+    def test_defers_to_probe_on_connect_timeout(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A connect timeout is ambiguous, so it defers to the HTTP probe.
+
+        A present-but-slow or still-booting daemon times out just like an
+        absent one; reporting it absent here would negatively cache the empty
+        result and hide a working daemon until the next reload. Returning
+        "reachable" lets the HTTP probe -- which may now succeed -- decide, and
+        leaves the empty result uncached. Silent, since a timeout is expected.
+        """
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise TimeoutError
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"),
+            patch("socket.create_connection", side_effect=boom),
+        ):
+            assert model_config._ollama_host_reachable("http://localhost:11434") is True
 
         assert caplog.records == []
 
@@ -6266,13 +6383,18 @@ class TestLoadMcpServerTrustLists:
         assert result.approvals == frozenset()
         assert result.disabled == frozenset({"blocked"})
 
-    def test_env_overrides_toml(
+    def test_env_composes_with_toml_approvals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Env lists replace their TOML counterparts, independently per list."""
+        """Process-wide names and project-scoped approvals both remain active."""
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
         fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        approval = McpProjectServerApproval(
+            project_root=project_root,
+            name="toml-enabled",
+            fingerprint=fingerprint,
+        )
         config_path.write_text(
             "[mcp]\n"
             "enabled_project_server_approvals = ["
@@ -6287,18 +6409,22 @@ class TestLoadMcpServerTrustLists:
 
         result = load_mcp_server_trust_lists(config_path)
 
-        # Enabled comes from env; disabled falls back to the TOML value.
         assert result.enabled == frozenset({"env-enabled", "env-two"})
-        assert result.approvals == frozenset()
+        assert result.approvals == frozenset({approval})
         assert result.disabled == frozenset({"toml-disabled"})
 
-    def test_empty_env_clears_toml_list(
+    def test_empty_env_keeps_toml_approvals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A set-but-empty env var overrides (clears) the TOML list."""
+        """An empty process-wide allowlist does not erase remembered approvals."""
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
         fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        approval = McpProjectServerApproval(
+            project_root=project_root,
+            name="toml-enabled",
+            fingerprint=fingerprint,
+        )
         config_path.write_text(
             "[mcp]\n"
             "enabled_project_server_approvals = ["
@@ -6313,7 +6439,7 @@ class TestLoadMcpServerTrustLists:
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.enabled == frozenset()
-        assert result.approvals == frozenset()
+        assert result.approvals == frozenset({approval})
 
     def test_defaults_to_user_config_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -6361,8 +6487,8 @@ class TestLoadMcpServerTrustLists:
     ) -> None:
         """The disabled env list UNIONS with the TOML deny list (denies accrue).
 
-        Unlike the enabled list (env replaces TOML), a deny must never be
-        silently dropped by the other source, so both contribute.
+        A deny must never be silently dropped by the other source, so both
+        contribute.
         """
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
@@ -6651,12 +6777,14 @@ max_input_tokens = 4096
         model_config._ollama_installed_models_cache["http://localhost:11434"] = [
             "qwen3:4b"
         ]
+        model_config._ollama_unreachable_endpoints.add("http://localhost:11434")
         model_config._ollama_model_profiles_cache[
             "http://localhost:11434", "qwen3:4b"
         ] = {"max_input_tokens": 262144}
         clear_caches()
         assert model_config._profiles_cache is None
         assert model_config._ollama_installed_models_cache == {}
+        assert model_config._ollama_unreachable_endpoints == set()
         assert model_config._ollama_model_profiles_cache == {}
 
     def test_overridden_keys_subset_of_profile(self, tmp_path: Path) -> None:
@@ -6894,7 +7022,7 @@ class TestAddEnabledProjectMcpServers:
     """Tests for persisting the approval prompt's "always allow" choice."""
 
     @staticmethod
-    def _server_configs() -> dict[str, object]:
+    def _server_configs() -> JsonObject:
         return {
             "docs": {"command": "echo", "args": ["docs"]},
             "reference": {"type": "http", "url": "https://example.test/mcp"},
@@ -7233,18 +7361,28 @@ class TestLoadStartupMode:
         config.write_text("[startup]\nmode = 'manual'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
-    def test_explicit_dangerously_auto(self, tmp_path: Path) -> None:
-        """`mode = 'dangerously-auto'` is returned verbatim."""
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", STARTUP_MODE_AUTO), ("yolo", STARTUP_MODE_YOLO)],
+    )
+    def test_explicit_autonomous_modes(
+        self, tmp_path: Path, value: str, expected: str
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nmode = '{value}'\n")
+        assert load_startup_mode(config) == expected
+
+    def test_dangerously_auto_is_rejected(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         config.write_text("[startup]\nmode = 'dangerously-auto'\n")
-        assert load_startup_mode(config) == STARTUP_MODE_DANGEROUSLY_AUTO
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
     def test_invalid_value_returns_default(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """An unrecognized mode logs a warning and falls back to the default."""
         config = tmp_path / "config.toml"
-        config.write_text("[startup]\nmode = 'yolo'\n")
+        config.write_text("[startup]\nmode = 'hands-off'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             assert load_startup_mode(config) == STARTUP_MODE_MANUAL
         assert any("startup" in r.getMessage().lower() for r in caplog.records)

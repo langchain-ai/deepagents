@@ -873,3 +873,21 @@ class TestCheckEdgeCases:
         assert parsed["status"] == "success"
         # result should show empty-messages fallback since thread values couldn't be fetched
         assert "no output" in parsed["result"].lower()
+
+
+class TestStaleStatusGuidanceInToolDescriptions:
+    """The stale-status rule lives in the async status tool descriptions.
+
+    It used to be in the (now-trimmed) async system prompt, so it is migrated
+    into the always-visible `check_async_task` / `list_async_tasks` descriptions.
+    """
+
+    def _descriptions(self) -> dict[str, str]:
+        tools = _build_async_subagent_tools([_make_spec()])
+        return {t.name: (t.description or "") for t in tools}
+
+    def test_check_async_task_warns_statuses_are_stale(self) -> None:
+        assert "stale" in self._descriptions()["check_async_task"].lower()
+
+    def test_list_async_tasks_warns_statuses_are_stale(self) -> None:
+        assert "stale" in self._descriptions()["list_async_tasks"].lower()

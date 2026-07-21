@@ -11,6 +11,8 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.middleware.filesystem import (
     EXECUTION_SYSTEM_PROMPT,
+    GREP_TOOL_DESCRIPTION,
+    READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
@@ -19,6 +21,21 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
+
+
+class TestLargeToolResultGuidanceInToolDescriptions:
+    """Large-tool-result offload guidance lives in the tool descriptions.
+
+    It used to be in the (now-trimmed) filesystem system prompt, so it is
+    migrated into the always-visible `read_file` / `grep` descriptions.
+    """
+
+    def test_read_file_describes_offloaded_results(self) -> None:
+        assert "large_tool_results/" in READ_FILE_TOOL_DESCRIPTION
+        assert "offloaded" in READ_FILE_TOOL_DESCRIPTION.lower()
+
+    def test_grep_describes_searching_offloaded_results(self) -> None:
+        assert "large_tool_results/" in GREP_TOOL_DESCRIPTION
 
 
 class TestDynamicSystemPromptCache:

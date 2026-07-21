@@ -497,7 +497,11 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         name="check_async_task",
         func=check_async_task,
         coroutine=acheck_async_task,
-        description="Check the status of an async subagent task. Returns the current status and, if complete, the result.",
+        description=(
+            "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
+            "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
+            "rather than reporting a status from a previous tool result."
+        ),
         infer_schema=False,
         args_schema=CheckAsyncTaskSchema,
     )
@@ -833,7 +837,9 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "List tracked async subagent tasks with their current live statuses. "
             "By default shows all tasks. Use `status_filter` to narrow by status "
             "(e.g. 'running', 'success', 'error', 'cancelled'). "
-            "Use `check_async_task` to get the full result of a specific completed task."
+            "Use `check_async_task` to get the full result of a specific completed task. "
+            "Statuses shown earlier in the conversation are always stale, so call this to read current "
+            "statuses rather than reporting one from a previous tool result."
         ),
         infer_schema=False,
         args_schema=ListAsyncTasksSchema,

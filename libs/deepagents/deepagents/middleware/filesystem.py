@@ -963,6 +963,7 @@ Usage:
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+- Large tool results are sometimes offloaded to a file (under a `large_tool_results/` directory) instead of returned inline; the tool message gives the path. Read that file here, using `offset`/`limit` to page through it.
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
 
 For multimodal reads (image, audio, video, PDF, etc.):
@@ -1042,6 +1043,9 @@ Do NOT pass a regex. In particular:
 - To match any of several strings, run a SEPARATE grep for each one. There is no
   `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
 - Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.{execute_fallback}
+
+To search across offloaded large tool results when you do not know the exact
+file path, grep the `large_tool_results/` directory.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`

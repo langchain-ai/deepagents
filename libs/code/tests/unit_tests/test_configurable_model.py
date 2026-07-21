@@ -24,6 +24,7 @@ from deepagents_code.configurable_model import (
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _sanitize_message_content,
 )
 
 
@@ -1345,3 +1346,172 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+def _make_anthropic_model() -> MagicMock:
+    """Create a mock model that reports the Anthropic provider."""
+    model = MagicMock(spec=BaseChatModel)
+    model.model_name = "claude-sonnet-4-6"
+    model._get_ls_params.return_value = {"ls_provider": "anthropic"}
+    return model
+
+
+def _thinking_blocks(messages: list[Any]) -> list[dict[str, Any]]:
+    """Return every thinking/reasoning content block across messages."""
+    return [
+        block
+        for message in messages
+        if isinstance(getattr(message, "content", None), list)
+        for block in message.content
+        if isinstance(block, dict) and block.get("type") in {"thinking", "reasoning"}
+    ]
+
+
+class TestThinkingBlockSanitization:
+    """Anthropic extended-thinking sanitization and 400 retry fallback."""
+
+    def test_empty_thinking_block_repaired_before_call(self) -> None:
+        assert _is_anthropic_model(_make_anthropic_model())
+        history: list[Any] = [HumanMessage(content="hi")]
+        history.extend(AIMessage(content="ok") for _ in range(150))
+        history.append(
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "", "signature": "s"},
+                    {"type": "text", "text": "please continue"},
+                ]
+            )
+        )
+        request = _make_request(_make_anthropic_model())
+        request = request.override(messages=history)
+
+        captured: list[ModelRequest] = []
+        ConfigurableModelMiddleware(persist_model_state=False).wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        sent = _thinking_blocks(captured[0].messages)
+        assert all(block.get("thinking") for block in sent)
+
+    def test_intact_thinking_block_preserved(self) -> None:
+        history = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "kept", "signature": "s"},
+                    {"type": "text", "text": "answer"},
+                ]
+            ),
+        ]
+        request = _make_request(_make_anthropic_model()).override(messages=history)
+
+        captured: list[ModelRequest] = []
+        ConfigurableModelMiddleware(persist_model_state=False).wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        sent = _thinking_blocks(captured[0].messages)
+        assert [block["thinking"] for block in sent] == ["kept"]
+
+    def test_non_anthropic_thinking_left_untouched(self) -> None:
+        history = [
+            AIMessage(content=[{"type": "thinking", "thinking": ""}]),
+        ]
+        request = _make_request(_make_model("gpt-5.5")).override(messages=history)
+
+        captured: list[ModelRequest] = []
+        ConfigurableModelMiddleware(persist_model_state=False).wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].messages is history
+
+    def test_field_required_400_retries_with_thinking_stripped(self) -> None:
+        history = [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "reasoning", "signature": "s"},
+                    {"type": "text", "text": "answer"},
+                ]
+            ),
+        ]
+        request = _make_request(_make_anthropic_model()).override(messages=history)
+
+        attempts: list[ModelRequest] = []
+
+        def handler(r: ModelRequest) -> ModelResponse[Any]:
+            attempts.append(r)
+            if len(attempts) == 1:
+                msg = (
+                    "Error code: 400 - messages.152.content.0.thinking.thinking: "
+                    "Field required"
+                )
+                raise ValueError(msg)
+            return _make_response()
+
+        result = ConfigurableModelMiddleware(persist_model_state=False).wrap_model_call(
+            request, handler
+        )
+
+        assert isinstance(result, ModelResponse)
+        assert len(attempts) == 2
+        assert _thinking_blocks(attempts[1].messages) == []
+
+    def test_unrelated_400_not_retried(self) -> None:
+        request = _make_request(_make_anthropic_model())
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            msg = "Error code: 400 - something else"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="something else"):
+            ConfigurableModelMiddleware(persist_model_state=False).wrap_model_call(
+                request, handler
+            )
+
+    def test_async_field_required_400_retries(self) -> None:
+        history = [
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "reasoning", "signature": "s"},
+                    {"type": "text", "text": "answer"},
+                ]
+            ),
+        ]
+        request = _make_request(_make_anthropic_model()).override(messages=history)
+
+        attempts: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            attempts.append(r)
+            if len(attempts) == 1:
+                msg = ".thinking: Field required"
+                raise ValueError(msg)
+            return _make_response()
+
+        result = asyncio.run(
+            ConfigurableModelMiddleware(persist_model_state=False).awrap_model_call(
+                request, handler
+            )
+        )
+
+        assert isinstance(result, ModelResponse)
+        assert len(attempts) == 2
+        assert _thinking_blocks(attempts[1].messages) == []
+
+    def test_sanitize_treats_thinking_block_atomically(self) -> None:
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "", "signature": "s"},
+                    {"type": "text", "text": "keep me"},
+                ]
+            )
+        ]
+
+        sanitized = _sanitize_message_content(messages, drop_all_thinking=False)
+
+        assert sanitized is not None
+        assert sanitized[0].content == [{"type": "text", "text": "keep me"}]

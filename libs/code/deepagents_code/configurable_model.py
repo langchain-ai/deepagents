@@ -153,6 +153,109 @@ must be stripped on cross-provider swap."""
 _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
+_THINKING_BLOCK_TYPES: frozenset[str] = frozenset({"thinking", "reasoning"})
+"""Content-block types whose required text field Anthropic rejects when empty.
+
+Anthropic extended-thinking returns `thinking` blocks (and, on some model
+families, `reasoning` blocks); both carry a required text field under the same
+name as the block type."""
+
+_THINKING_FIELD_REQUIRED_MARKER = ".thinking: Field required"
+"""Substring identifying the Anthropic 400 raised for a malformed thinking block.
+
+Matches both `messages.N.content.M.thinking.thinking: Field required` and the
+shorter `.thinking: Field required` phrasing so the retry fallback recognizes the
+error without importing the provider SDK's exception type."""
+
+
+def _is_empty_thinking_block(block: object) -> bool:
+    """Return whether a content block is a thinking block with no text.
+
+    Args:
+        block: A single message content block.
+
+    Returns:
+        `True` when `block` is a thinking/reasoning block whose required text
+            field is missing or empty.
+    """
+    if not isinstance(block, Mapping):
+        return False
+    block_type = block.get("type")
+    if block_type not in _THINKING_BLOCK_TYPES:
+        return False
+    text = block.get(block_type)
+    return not (isinstance(text, str) and text.strip())
+
+
+def _is_thinking_block(block: object) -> bool:
+    """Return whether a content block is a thinking/reasoning block."""
+    return isinstance(block, Mapping) and block.get("type") in _THINKING_BLOCK_TYPES
+
+
+def _sanitize_message_content(
+    messages: list[Any], *, drop_all_thinking: bool
+) -> list[Any] | None:
+    """Return messages with malformed (or all) thinking blocks removed.
+
+    Thinking blocks are treated as atomic: a block is kept whole or dropped
+    whole, never partially rewritten. When `drop_all_thinking` is set every
+    thinking block is removed; otherwise only blocks with an empty required text
+    field are removed. A message whose content is left empty keeps an empty
+    block list rather than being dropped.
+
+    Args:
+        messages: The outgoing message list.
+        drop_all_thinking: Whether to strip every thinking block, not just the
+            malformed ones.
+
+    Returns:
+        A new message list when any block was removed, otherwise `None`.
+    """
+    predicate = _is_thinking_block if drop_all_thinking else _is_empty_thinking_block
+    changed = False
+    result: list[Any] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list) or not any(
+            predicate(block) for block in content
+        ):
+            result.append(message)
+            continue
+        kept = [block for block in content if not predicate(block)]
+        result.append(message.model_copy(update={"content": kept}))
+        changed = True
+    return result if changed else None
+
+
+def _is_thinking_field_required_error(exc: BaseException) -> bool:
+    """Return whether an exception is the Anthropic malformed-thinking 400."""
+    return _THINKING_FIELD_REQUIRED_MARKER in str(exc)
+
+
+def _sanitize_thinking_request(request: ModelRequest) -> ModelRequest:
+    """Drop malformed thinking blocks from an Anthropic request before dispatch.
+
+    Compaction/summarization can leave an accumulated assistant turn with a
+    thinking block whose required text field is empty, which Anthropic rejects
+    with a 400. Repairing the compacted message list here — the outermost model
+    wrapper, just before the provider call — keeps a malformed block from ever
+    reaching the wire.
+
+    Args:
+        request: The resolved model request about to be dispatched.
+
+    Returns:
+        The original request when nothing needed repair or the model is not
+            Anthropic, otherwise a request with empty thinking blocks removed.
+    """
+    if not _is_anthropic_model(request.model):
+        return request
+    sanitized = _sanitize_message_content(request.messages, drop_all_thinking=False)
+    if sanitized is None:
+        return request
+    logger.debug("Removed empty Anthropic thinking block(s) before model call")
+    return request.override(messages=sanitized)
+
 
 def _has_header(headers: Mapping[object, object], target: str) -> bool:
     """Return whether a headers mapping already includes `target`.
@@ -573,7 +676,23 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        model_request = _sanitize_thinking_request(resolved.request)
+        try:
+            response = handler(model_request)
+        except Exception as exc:
+            if not _is_thinking_field_required_error(exc):
+                raise
+            stripped = _sanitize_message_content(
+                model_request.messages, drop_all_thinking=True
+            )
+            if stripped is None:
+                raise
+            logger.warning(
+                "Anthropic rejected a thinking block (%s); retrying once with "
+                "thinking content stripped from history",
+                type(exc).__name__,
+            )
+            response = handler(model_request.override(messages=stripped))
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -591,7 +710,23 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        model_request = _sanitize_thinking_request(resolved.request)
+        try:
+            response = await handler(model_request)
+        except Exception as exc:
+            if not _is_thinking_field_required_error(exc):
+                raise
+            stripped = _sanitize_message_content(
+                model_request.messages, drop_all_thinking=True
+            )
+            if stripped is None:
+                raise
+            logger.warning(
+                "Anthropic rejected a thinking block (%s); retrying once with "
+                "thinking content stripped from history",
+                type(exc).__name__,
+            )
+            response = await handler(model_request.override(messages=stripped))
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

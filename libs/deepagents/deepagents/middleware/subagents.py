@@ -904,11 +904,55 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
 
 class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
-    """Deep Agents' default subagent construction policy.
+    """Construct Deep Agents' default synchronous subagent configuration.
 
-    This subclass normalizes declarative specs and synthesizes the implicit
-    general-purpose subagent from the parent agent's configuration. The public
-    ``SubAgentMiddleware`` remains a dispatcher for fully specified specs.
+    ``create_deep_agent`` installs this middleware to turn raw declarative
+    subagent specs into fully specified ``SubAgent`` configs. Compiled specs
+    are preserved unchanged. The public ``SubAgentMiddleware`` remains the
+    lower-level dispatcher for callers that already have fully specified specs.
+
+    An implicit ``general-purpose`` subagent is prepended unless the parent
+    profile disables it or a supplied spec already uses that name. If neither
+    an implicit nor a supplied synchronous subagent is available, construction
+    raises ``ValueError``.
+
+    Args:
+        backend: Backend used by filesystem, summarization, and skills
+            middleware installed on normalized subagents.
+        subagents: Declarative or compiled synchronous subagent specs. A
+            declarative spec inherits the parent values below only for fields it
+            omits; a compiled spec is used unchanged.
+        model: Parent model. Used as the fallback model for declarative specs
+            and by the implicit general-purpose subagent.
+        tools: Parent tool sequence. Declarative specs that omit ``tools``
+            inherit it; explicitly setting ``tools=[]`` opts out of tool
+            inheritance. The general-purpose subagent receives these tools with
+            parent-profile description overrides applied.
+        permissions: Parent filesystem permission rules. Declarative specs that
+            omit ``permissions`` inherit these rules; a supplied value replaces
+            them for that spec. The general-purpose subagent always uses the
+            parent rules.
+        interrupt_on: Parent human-in-the-loop tool configuration. Declarative
+            specs inherit it unless they provide their own mapping. Generated
+            filesystem approval rules are merged with either mapping.
+        profile: Resolved parent harness profile. It controls implicit
+            general-purpose enablement, description and prompt overrides,
+            profile middleware, middleware/tool exclusions, and tool-description
+            overrides.
+        skills: Parent skill sources installed only on the implicit
+            general-purpose subagent. Declarative specs use their own ``skills``
+            field and do not inherit this value.
+        inherited_middleware: Parent middleware eligible to replace matching
+            default slots on the implicit general-purpose stack. Middleware that
+            does not match a default slot is not inherited.
+        system_prompt: Task-tool guidance appended to the parent agent's system
+            prompt. It lists the normalized subagents that may be dispatched.
+        task_description: Optional replacement description for the task tool.
+            The ``{available_agents}`` placeholder, when present, is expanded
+            with the normalized name/description list.
+        private_state_keys: Parent state fields removed before task dispatch.
+        state_schema: Parent graph state schema forwarded while compiling
+            declarative specs. Compiled specs retain their own schema.
     """
 
     @property

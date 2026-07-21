@@ -63,7 +63,6 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
-    _GlmReadFileMediaGuard,
     _GlmTerminalStallRecovery,
 )
 from deepagents_code.approval_mode import (
@@ -1922,7 +1921,6 @@ def create_cli_agent(
 
     def _subagent_cli_middleware(
         *,
-        construction_model: str | BaseChatModel,
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
         middleware: list[AgentMiddleware[Any, Any]] = []
@@ -1933,15 +1931,9 @@ def create_cli_agent(
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        # Both guards self-gate on the runtime model, so a stack built for a
-        # non-GLM model still activates once a `/model` switch resolves to GLM-5.2
-        # — but their scopes differ: the media guard covers all GLM-5.2 specs,
-        # while recovery activates only for Fireworks GLM-5.2 (see
-        # `_GlmTerminalStallRecovery`). Recovery is also headless-only: interactive
-        # turns may legitimately be tool-free, so they must not be forced into an
-        # action. It sits inner to the media guard so its retry keeps the guard's
-        # transitioned prompt.
-        middleware.append(_GlmReadFileMediaGuard(construction_model))
+        # Interactive turns may legitimately be tool-free, so terminal-stall
+        # recovery is installed only on headless stacks. The middleware itself
+        # activates only for the measured Fireworks GLM-5.2 endpoint.
         if not interactive:
             middleware.append(_GlmTerminalStallRecovery())
         if restrictive_shell_allow_list is not None:
@@ -1977,7 +1969,6 @@ def create_cli_agent(
         if model_spec:
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
-            construction_model=model_spec or model,
             has_explicit_model=has_explicit_model,
         )
         if subagent_middleware:
@@ -2004,10 +1995,7 @@ def create_cli_agent(
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
             "description": GENERAL_PURPOSE_SUBAGENT["description"],
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-            "middleware": _subagent_cli_middleware(
-                construction_model=model,
-                has_explicit_model=False,
-            ),
+            "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
         if resolved_interrupt_on is not None:
             general_purpose_subagent["interrupt_on"] = {}
@@ -2016,13 +2004,10 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _GlmReadFileMediaGuard(model),
         # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
         # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
         *_todo_list_middleware_override(),
     ]
-    # Headless-only terminal-stall recovery, inner to the media guard. See the
-    # subagent stack above for the model-scoping and ordering rationale.
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
 

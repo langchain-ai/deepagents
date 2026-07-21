@@ -32,10 +32,9 @@ _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # Single source of truth for which specs are GLM-5.2: reuse dcode's exact,
-# case-sensitive spec set so this eval default and dcode's media guard / prompt
-# suffix / profile registration fire on precisely the same specs. Matching
-# case-insensitively here would re-bump reasoning for a spec dcode classifies as
-# non-GLM (so the media guard would be absent) — the divergence we must avoid.
+# case-sensitive spec set so this eval default and dcode's prompt profile apply
+# to precisely the same specs. Matching case-insensitively here would re-bump
+# reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
 _SHELL_ENV_DENYLIST = frozenset(

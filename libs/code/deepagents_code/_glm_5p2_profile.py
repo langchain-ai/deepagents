@@ -1,19 +1,17 @@
 """GLM-5.2 harness profile for Deep Agents Code.
 
-Bundles the execution-focused prompt suffix with the two per-stack middlewares
-that support it: a text-only `read_file` media guard and headless terminal-stall
-recovery. The prompt suffix itself is deliberately concise (see the anti-bloat
-word-count guard in the unit tests).
+Bundles a concise execution-focused prompt suffix with one-shot recovery for the
+measured Fireworks headless terminal-stall failure mode.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING
 
 # Private import: the SDK exposes no public helpers to derive the exact
-# provider/model spec that the guards need to classify the runtime model.
+# provider/model spec that terminal-stall recovery needs to classify each call.
 from deepagents._models import (  # noqa: PLC2701
     get_model_identifier,
     get_model_provider,
@@ -21,20 +19,15 @@ from deepagents._models import (  # noqa: PLC2701
 from deepagents.profiles import HarnessProfile, register_harness_profile
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
-    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
 )
-from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.types import Command
+from langchain_core.messages import AIMessage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
-    from langgraph.prebuilt.tool_node import ToolCallRequest
 
 
 logger = logging.getLogger(__name__)
@@ -111,12 +104,6 @@ is complete and the assertions pass; do not add speculative extras.
 </execution>"""
 """Text appended to the Deep Agents system prompt for GLM-5.2."""
 
-_MEDIA_READ_ERROR = (
-    "Error: this model can consume only text from `read_file`. Use a shell command "
-    "or script to extract the needed information into text, then read that text output."
-)
-"""Fixed error used instead of reflecting unsupported media results."""
-
 _TERMINAL_STALL_RECOVERY_SUFFIX = """\
 <terminal_stall_recovery>
 Your prior attempt exhausted its output budget without taking an action. Stop \
@@ -125,24 +112,6 @@ deliverable. Prefer the smallest valid artifact, then run one discriminating che
 Keep any reasoning brief enough to reach the tool call.
 </terminal_stall_recovery>"""
 """One-shot instruction used to recover a capped headless model turn."""
-
-
-def _has_only_text_content(message: ToolMessage) -> bool:
-    """Return whether a successful tool message contains only valid text."""
-    content = message.content
-    if isinstance(content, str):
-        return True
-    if not isinstance(content, list) or not content:
-        return False
-    return all(
-        isinstance(block, str)
-        or (
-            isinstance(block, dict)
-            and block.get("type") == "text"
-            and isinstance(block.get("text"), str)
-        )
-        for block in content
-    )
 
 
 def _model_spec(model: str | BaseChatModel) -> str | None:
@@ -157,236 +126,9 @@ def _model_spec(model: str | BaseChatModel) -> str | None:
     return f"{provider}:{identifier}"
 
 
-def _is_glm_5p2_model(model: str | BaseChatModel) -> bool:
-    """Return whether a model or spec is an exact registered GLM-5.2 spec."""
-    return _model_spec(model) in _GLM_5P2_MODEL_SPEC_SET
-
-
 def _is_fireworks_glm_5p2_model(model: str | BaseChatModel) -> bool:
     """Return whether a model resolves to the measured Fireworks GLM-5.2."""
     return _model_spec(model) == _FIREWORKS_GLM_5P2_SPEC
-
-
-def _dcode_owns_suffix(model: str | BaseChatModel) -> bool:
-    """Return whether the dcode suffix is the one registered for this spec.
-
-    The harness registry is authoritative. When a user override or built-in has
-    claimed the spec with a different suffix (registration deferred to it), the
-    guard must leave that suffix alone instead of appending the dcode one, so an
-    override actually wins rather than getting the dcode suffix bolted on.
-    """
-    spec = _model_spec(model)
-    if spec is None or spec not in _GLM_5P2_MODEL_SPEC_SET:
-        return False
-    # Private import: no public accessor exposes the live registry we must read
-    # to tell whether the dcode suffix or an override currently owns this spec.
-    from deepagents.profiles.harness.harness_profiles import (
-        _HARNESS_PROFILES,  # noqa: PLC2701
-    )
-
-    existing = _HARNESS_PROFILES.get(spec)
-    return (
-        existing is not None and existing.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX
-    )
-
-
-def _without_trusted_suffix(prompt: str) -> str:
-    """Remove exact, delimited GLM suffixes without changing surrounding text.
-
-    Returns:
-        Prompt without trusted GLM suffixes.
-    """
-    start = prompt.find(_SYSTEM_PROMPT_SUFFIX)
-    while start >= 0:
-        end = start + len(_SYSTEM_PROMPT_SUFFIX)
-        has_left_boundary = start == 0 or prompt[start - 2 : start] == "\n\n"
-        has_right_boundary = end == len(prompt) or prompt[end : end + 2] == "\n\n"
-        if not (has_left_boundary and has_right_boundary):
-            start = prompt.find(_SYSTEM_PROMPT_SUFFIX, end)
-            continue
-
-        if start == 0 and end < len(prompt):
-            end += 2
-        elif start > 0:
-            start -= 2
-        prompt = prompt[:start] + prompt[end:]
-        start = prompt.find(_SYSTEM_PROMPT_SUFFIX, max(0, start - 2))
-    return prompt
-
-
-def _transition_system_prompt(prompt: str | None, *, active: bool) -> str | None:
-    """Add, remove, or deduplicate the trusted GLM suffix at the prompt tail.
-
-    Returns:
-        Transitioned prompt, or `None` when no prompt was supplied.
-    """
-    if prompt is None:
-        return None
-    base = _without_trusted_suffix(prompt)
-    if not active:
-        return base
-    if not base:
-        return _SYSTEM_PROMPT_SUFFIX
-    return f"{base}\n\n{_SYSTEM_PROMPT_SUFFIX}"
-
-
-class _GlmReadFileMediaState(AgentState):
-    """Private state shared between the GLM model and tool wrappers."""
-
-    _glm_5p2_active: Annotated[NotRequired[bool], PrivateStateAttr]
-
-
-class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
-    """Apply GLM-5.2 model-response and `read_file` media guards."""
-
-    state_schema = _GlmReadFileMediaState
-
-    def __init__(self, model: str | BaseChatModel) -> None:
-        """Capture the construction model as a safe tool-state fallback.
-
-        Args:
-            model: Model instance or spec used to construct this agent stack.
-        """
-        super().__init__()
-        self._construction_active = _is_glm_5p2_model(model)
-
-    def _prepare_model_request(
-        self,
-        request: ModelRequest,
-    ) -> tuple[ModelRequest, bool]:
-        """Classify the resolved model and transition its trusted prompt suffix.
-
-        The returned flag drives `read_file` media gating and tracks GLM-5.2 by
-        model identity, since a text-only model cannot consume media regardless
-        of which profile owns the prompt. The suffix transition is narrower: it
-        only manages the dcode suffix for a spec the dcode profile actually owns,
-        so a user/built-in override that won registration keeps its own suffix.
-
-        When the runtime model's spec is unresolvable, the media guard must fail
-        closed rather than open: it falls back to the construction-time
-        classification instead of silently treating "cannot tell" as non-GLM,
-        and leaves the prompt untouched since it cannot know which profile owns
-        any suffix already present.
-
-        Returns:
-            The request to send downstream and whether its model is GLM-5.2.
-        """
-        spec = _model_spec(request.model)
-        if spec is None:
-            return request, self._construction_active
-        active = spec in _GLM_5P2_MODEL_SPEC_SET
-        suffix_active = active and _dcode_owns_suffix(request.model)
-        prompt = request.system_prompt
-        transitioned = _transition_system_prompt(prompt, active=suffix_active)
-        if transitioned != prompt:
-            request = request.override(system_prompt=transitioned)
-        return request, active
-
-    @staticmethod
-    def _model_result(
-        response: ModelResponse, *, active: bool
-    ) -> ExtendedModelResponse:
-        """Attach the resolved GLM classification as private state.
-
-        Returns:
-            Extended response that updates the private tool-gating state.
-        """
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={"_glm_5p2_active": active}),
-        )
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ExtendedModelResponse:
-        """Classify the resolved model before calling it.
-
-        Returns:
-            Model response with the effective GLM state update.
-        """
-        request, active = self._prepare_model_request(request)
-        response = handler(request)
-        return self._model_result(response, active=active)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ExtendedModelResponse:
-        """Classify and call the resolved model asynchronously.
-
-        Returns:
-            Model response with the effective GLM state update.
-        """
-        request, active = self._prepare_model_request(request)
-        response = await handler(request)
-        return self._model_result(response, active=active)
-
-    def _active_for_tool(self, request: ToolCallRequest) -> bool:
-        """Read validated private state or use the construction fallback.
-
-        Returns:
-            Whether media reads should be blocked for this tool call.
-        """
-        state = request.state
-        if isinstance(state, Mapping):
-            active = state.get("_glm_5p2_active")
-            if isinstance(active, bool):
-                return active
-        return self._construction_active
-
-    @staticmethod
-    def _normalize(
-        request: ToolCallRequest,
-        result: ToolMessage | Command[Any],
-    ) -> ToolMessage | Command[Any]:
-        """Replace non-text reads without reflecting untrusted result data.
-
-        Returns:
-            The original safe result or a generic text-only error.
-        """
-        if request.tool_call.get("name") != "read_file":
-            return result
-        if isinstance(result, ToolMessage) and _has_only_text_content(result):
-            return result
-        return ToolMessage(
-            content=_MEDIA_READ_ERROR,
-            name="read_file",
-            tool_call_id=request.tool_call["id"],
-            status="error",
-        )
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """Run the validated tool call, then remove unsupported media output.
-
-        Returns:
-            The original safe result or a generic text-only error.
-        """
-        result = handler(request)
-        if not self._active_for_tool(request):
-            return result
-        return self._normalize(request, result)
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        """Run and normalize an asynchronous tool call.
-
-        Returns:
-            The original safe result or a generic text-only error.
-        """
-        result = await handler(request)
-        if not self._active_for_tool(request):
-            return result
-        return self._normalize(request, result)
 
 
 class _GlmTerminalStallRecovery(AgentMiddleware):
@@ -399,16 +141,15 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
     at most once, so it cannot loop even when the provider ignores the forced
     tool call and the retry itself re-stalls (see `_log_if_still_stalled`).
 
-    Two scoping constraints, neither expressed on `_GLM_5P2_PROFILE`:
+    Two scoping constraints are intentionally kept out of the process-global
+    harness profile:
 
-    - Headless-only. This middleware is not part of the harness profile; it is
-      added to the stack by `create_cli_agent` only in non-interactive mode.
-      Interactive turns may legitimately be tool-free, so they must not be
-      forced into an action.
+    - Headless-only. `create_cli_agent` installs this middleware only in
+      non-interactive mode. Interactive turns may legitimately be tool-free, so
+      they must not be forced into an action.
     - Fireworks-only. `_should_recover` gates on `_is_fireworks_glm_5p2_model`,
       so only `_FIREWORKS_GLM_5P2_SPEC` recovers. The output cap that produces
-      the stall was measured only there; the OpenRouter and Baseten GLM-5.2
-      specs are intentionally excluded even though the media guard covers them.
+      the stall was measured only there; OpenRouter and Baseten are excluded.
     """
 
     @staticmethod
@@ -519,12 +260,10 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
 _GLM_5P2_PROFILE = HarnessProfile(
     system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
 )
-"""Harness profile shared by the exact GLM-5.2 registrations.
+"""Prompt-only harness profile shared by the exact GLM-5.2 registrations.
 
-Kept suffix-only: process-global registration cannot express per-session or
-per-model wiring, so `_GlmReadFileMediaGuard` and `_GlmTerminalStallRecovery`
-are installed per stack by `create_cli_agent` where the session mode is known
-and the runtime model is re-checked on every call.
+Headless terminal-stall recovery remains separate because whether a session is
+interactive is known only when `create_cli_agent` assembles its runtime stack.
 """
 
 _glm_5p2_profile_registered = False

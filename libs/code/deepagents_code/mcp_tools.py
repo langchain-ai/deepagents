@@ -38,6 +38,23 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
+MCP_MAX_RESULT_CHARS_DEFAULT = 4000
+"""Hard per-call cap on the text an MCP tool result may push into model context.
+
+High-volume data tools (e.g. LangSmith `fetch_runs`) can return 30KB+ of raw
+metadata JSON per page; feeding that unbounded into context compounds prompt
+tokens turn over turn and drives multi-dollar single-turn cost blowups. This
+cap clamps any single tool result's text to a bounded size so an oversized page
+is truncated with a marker instructing the model to page forward with a cursor
+or narrow the query instead of re-fetching the same window."""
+
+MCP_RESULT_TRUNCATION_MARKER = (
+    "…[MCP result truncated — page forward with the returned cursor or narrow the "
+    "query instead of re-fetching the same window]"
+)
+"""Suffix appended to a clamped MCP tool result so the model can tell a capped
+result from a short one and knows how to proceed."""
+
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
 # `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
@@ -1496,6 +1513,31 @@ def _normalize_mcp_arguments(
     return cleaned
 
 
+def _clamp_text(text: str, max_chars: int) -> str:
+    """Return `text` clamped to `max_chars` with a truncation marker when over."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    keep = max(0, max_chars - len(MCP_RESULT_TRUNCATION_MARKER))
+    return text[:keep] + MCP_RESULT_TRUNCATION_MARKER
+
+
+def _cap_mcp_result_content(content: Any, max_chars: int) -> Any:  # noqa: ANN401
+    """Return a converted MCP tool result with its text clamped to `max_chars`."""
+    if isinstance(content, str):
+        return _clamp_text(content, max_chars)
+    if isinstance(content, list):
+        capped: list[Any] = []
+        for block in content:
+            if isinstance(block, str):
+                capped.append(_clamp_text(block, max_chars))
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                capped.append({**block, "text": _clamp_text(block["text"], max_chars)})
+            else:
+                capped.append(block)
+        return capped
+    return content
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1641,7 +1683,8 @@ def _build_cached_mcp_tool(
         # the MCP content blocks into a `ToolMessage(status="error")`. Other
         # expected `ToolException`s raised by this wrapper are formatted by that
         # same tool-local handler.
-        return _convert_call_tool_result(result)
+        content, artifact = _convert_call_tool_result(result)
+        return _cap_mcp_result_content(content, MCP_MAX_RESULT_CHARS_DEFAULT), artifact
 
     return StructuredTool(
         name=lc_tool_name,

@@ -26,12 +26,16 @@ if TYPE_CHECKING:
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
+    MCP_MAX_RESULT_CHARS_DEFAULT,
+    MCP_RESULT_TRUNCATION_MARKER,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
     _apply_tool_filter,
+    _cap_mcp_result_content,
     _check_remote_server,
     _check_stdio_server,
+    _clamp_text,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
@@ -3420,6 +3424,81 @@ class TestGatherBounded:
         # plus the logged sibling), so neither is lost.
         assert "first_failure" in caplog.text
         assert "second_failure" in caplog.text
+
+
+class TestMCPResultCap:
+    """Oversized MCP tool results are clamped before entering model context."""
+
+    def test_clamp_text_under_limit_is_unchanged(self) -> None:
+        text = "small payload"
+        assert _clamp_text(text, MCP_MAX_RESULT_CHARS_DEFAULT) == text
+
+    def test_clamp_text_over_limit_is_truncated_with_marker(self) -> None:
+        text = "x" * (MCP_MAX_RESULT_CHARS_DEFAULT + 5000)
+        clamped = _clamp_text(text, MCP_MAX_RESULT_CHARS_DEFAULT)
+        assert len(clamped) <= MCP_MAX_RESULT_CHARS_DEFAULT
+        assert clamped.endswith(MCP_RESULT_TRUNCATION_MARKER)
+
+    def test_cap_content_handles_str_list_and_blocks(self) -> None:
+        big = "y" * (MCP_MAX_RESULT_CHARS_DEFAULT + 100)
+        assert _cap_mcp_result_content(big, MCP_MAX_RESULT_CHARS_DEFAULT).endswith(
+            MCP_RESULT_TRUNCATION_MARKER
+        )
+        capped_list = _cap_mcp_result_content([big], MCP_MAX_RESULT_CHARS_DEFAULT)
+        assert capped_list[0].endswith(MCP_RESULT_TRUNCATION_MARKER)
+        capped_block = _cap_mcp_result_content(
+            [{"type": "text", "text": big}], MCP_MAX_RESULT_CHARS_DEFAULT
+        )
+        assert capped_block[0]["type"] == "text"
+        assert capped_block[0]["text"].endswith(MCP_RESULT_TRUNCATION_MARKER)
+
+    async def test_oversized_tool_result_is_truncated_on_invoke(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """A 30KB+ tool result is clamped to the cap before reaching the model."""
+        from mcp.types import CallToolResult, TextContent
+
+        big_payload = json.dumps([{"run": i, "blob": "z" * 300} for i in range(200)])
+        assert len(big_payload) > 30_000
+
+        oversized = CallToolResult(content=[TextContent(type="text", text=big_payload)])
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        def _new_session() -> AsyncMock:
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("fetch_runs")])
+            )
+            session.call_tool = AsyncMock(return_value=oversized)
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield _new_session()
+
+        with (
+            patch("deepagents_code.mcp_tools._check_stdio_server"),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+        ):
+            tools, manager, _ = await get_mcp_tools(path)
+            result = await tools[0].ainvoke({})  # ty: ignore
+
+        text = str(result)
+        assert len(text) <= MCP_MAX_RESULT_CHARS_DEFAULT + len(
+            MCP_RESULT_TRUNCATION_MARKER
+        )
+        assert MCP_RESULT_TRUNCATION_MARKER in text
+        assert manager is not None
+        await manager.cleanup()
 
 
 class TestCachedSessionProxy:

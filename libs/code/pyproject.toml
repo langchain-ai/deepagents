@@ -43,9 +43,9 @@ dependencies = [
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
-    # Workaround for Textualize/textual#6378 lives in `_textual_patches.py`.
-    # On bump, run `tests/unit_tests/test_textual_patches.py` and delete the
-    # patch if the upstream issue is fixed.
+    # Textual 8.2.8 handles colon-separated Kitty associated text.
+    # Textualize/textual#6378 remains unresolved; its Alt-key workaround and
+    # the remaining Kitty fixes live in `_textual_patches.py`.
     "textual>=8.2.8,<9.0.0",
     "textual-autocomplete>=4.0.6,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",

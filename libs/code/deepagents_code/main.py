@@ -2779,8 +2779,9 @@ def _run_project_mcp_trust_action_picker(
         console: Console to print fallback notices to (stderr).
 
     Returns:
-        The chosen action, `INTERRUPTED` for Ctrl+C, or `None` when the inline
-        picker cannot run and the caller should use the text fallback.
+        The chosen action, `CANCELLED` for Esc, `INTERRUPTED` for Ctrl+C, or
+        `None` when the inline picker cannot run and the caller should use the
+        text fallback.
     """
     if not _project_mcp_picker_has_terminal():
         return None
@@ -2819,7 +2820,7 @@ def _run_project_mcp_trust_action_picker(
                 "class:prompt.help",
                 (
                     f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                    "Enter select · Esc deny\n"
+                    "Enter select · Esc abort\n"
                 ),
             ),
         ]
@@ -2852,8 +2853,8 @@ def _run_project_mcp_trust_action_picker(
         event.app.exit(result=actions[selected_index][0])
 
     @key_bindings.add("escape")
-    def _deny(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustAction.DENY)
+    def _abort(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
@@ -2904,7 +2905,8 @@ def _select_project_mcp_trust_action(
         console: Console used by the text fallback.
 
     Returns:
-        The selected trust action, or `INTERRUPTED` when the user presses Ctrl+C.
+        The selected trust action, `CANCELLED` when the user presses Esc, or
+        `INTERRUPTED` when the user presses Ctrl+C.
     """
     selected = _run_project_mcp_trust_action_picker(console)
     if selected is not None:
@@ -3150,7 +3152,8 @@ def _select_project_servers_to_persist(
     Returns:
         The chosen server names. Empty when the user confirms no servers or
         makes no valid fallback selection. `CANCELLED` means the user backed out
-        and the caller should deny. `INTERRUPTED` means the user pressed Ctrl+C.
+        and the caller should abort the launch. `INTERRUPTED` means the user
+        pressed Ctrl+C.
     """
     names = [name for name, _kind, _summary in prompt_servers]
     if len(names) <= 1:
@@ -3184,8 +3187,8 @@ def _check_mcp_project_trust(
     returns `True`. Otherwise it shows an inline action selector for unresolved
     servers: allow once, remember selected servers, or deny. Remembered approvals
     are scoped to this project and each exact server definition. The remember
-    picker starts with nothing selected; Esc cancels the launch, and no server
-    loads without an explicit allow action.
+    picker starts with nothing selected; Esc in either picker aborts the launch,
+    and no server loads without an explicit allow action.
 
     Servers already resolved by the user's scoped approvals, the
     `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
@@ -3203,8 +3206,8 @@ def _check_mcp_project_trust(
         `True` to allow project servers, `False` to deny (including when the
             user's trust policy could not be read), `None` when there are no
             project servers whose fate this prompt decides, `INTERRUPTED` when
-            the user presses Ctrl+C, or `CANCELLED` when the user backs out of
-            server selection.
+            the user presses Ctrl+C, or `CANCELLED` when the user presses Esc to
+            abort the launch.
     """
     from deepagents_code.mcp_tools import (
         ProjectServerSummary,
@@ -3317,6 +3320,8 @@ def _check_mcp_project_trust(
     action = _select_project_mcp_trust_action(prompt_console)
     if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
     if action is _ProjectMcpTrustAction.DENY:
         prompt_console.print(
             f"[dim]Denied {server_count} project MCP {noun}.[/dim]",
@@ -3337,10 +3342,6 @@ def _check_mcp_project_trust(
     if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
-        prompt_console.print(
-            f"[dim]Cancelled; denied {server_count} project MCP {noun}.[/dim]",
-            highlight=False,
-        )
         return _ProjectMcpTrustPromptOutcome.CANCELLED
     if not names:
         prompt_console.print(

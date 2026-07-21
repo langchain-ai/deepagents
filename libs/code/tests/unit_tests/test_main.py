@@ -2507,6 +2507,45 @@ class TestCheckMcpProjectTrustPrompt:
         captured = capsys.readouterr()
         assert "debug-project-mcp" in captured.err
 
+    def test_escape_aborts_without_denying(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch without recording a denial decision."""
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _ProjectMcpTrustPromptOutcome,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_project_mcp_trust_action",
+                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert "denied" not in capsys.readouterr().err.lower()
+
     def test_prompt_is_concise(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
@@ -3024,7 +3063,7 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
         assert not user_config.exists()
-        assert "Cancelled" in capsys.readouterr().err
+        assert "denied" not in capsys.readouterr().err.lower()
 
     def test_always_allow_all_excludes_disabled_server(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3504,6 +3543,54 @@ class TestSelectProjectServersToPersist:
         assert "Allow for this project — until changed" in rendered
         assert "Deny" in rendered
         assert "Choose how to continue" not in rendered
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_escape_aborts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch instead of selecting the deny action."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _run_project_mcp_trust_action_picker,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _ProjectMcpTrustPromptOutcome:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                abort = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_abort"
+                )
+                abort(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Esc abort" in rendered
+        assert "Esc deny" not in rendered
 
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch

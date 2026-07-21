@@ -107,6 +107,10 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if branch is not None and not isinstance(branch, str):
         msg = "branch must be a string or null"
         raise _LeafSummaryError(msg)
+    source_sha = summary.get("source_sha")
+    if source_sha is not None and not isinstance(source_sha, str):
+        msg = "source_sha must be a string or null"
+        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -119,6 +123,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "category": category or "unknown",
         "config": config or "unknown",
         "branch": branch or "current",
+        "source_sha": source_sha or "",
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "tasks": tasks,
@@ -148,6 +153,7 @@ def combine(
     # so a missing leaf is flagged without assuming which categories a config ran
     # (tau3 covers conversation only; code configs cover the code categories).
     required_by_row: dict[RowKey, set[str]] = {}
+    source_sha_by_row: dict[RowKey, str] = {}
     row_order: list[RowKey] = []
     for quad in expected_leaves or []:
         key = _as_leaf_key(quad)
@@ -155,6 +161,9 @@ def combine(
         if row not in required_by_row:
             required_by_row[row] = set()
             row_order.append(row)
+            source_sha_by_row[row] = (
+                quad.get("source_sha", "") if isinstance(quad, dict) else ""
+            )
         required_by_row[row].add(key.category)
 
     by_row: dict[RowKey, list[dict]] = {}
@@ -174,6 +183,7 @@ def combine(
         if row not in required_by_row:
             required_by_row[row] = set()
             row_order.append(row)
+        source_sha_by_row.setdefault(row, leaf.get("source_sha", ""))
 
     rows_out: list[dict] = []
     for row in row_order:
@@ -212,6 +222,7 @@ def combine(
             {
                 "model": model,
                 "branch": branch,
+                "source_sha": source_sha_by_row.get(row, ""),
                 "config": config,
                 "categories": cats,
                 "macro": macro,
@@ -365,7 +376,7 @@ def _load_list_env(name: str) -> list[str] | None:
     return cast(list[str], value) or None
 
 
-def _load_leaves_env(name: str) -> list[LeafKey] | None:
+def _load_leaves_env(name: str) -> list[dict[str, str]] | None:
     raw = os.environ.get(name)
     if not raw:
         return None
@@ -382,9 +393,7 @@ def _load_leaves_env(name: str) -> list[LeafKey] | None:
         for item in value
     ):
         raise SystemExit(msg)
-    return [
-        LeafKey(item["model"], item["branch"], item["config"], item["category"]) for item in value
-    ]
+    return cast(list[dict[str, str]], value)
 
 
 def _as_leaf_key(value: LeafKey | dict[str, str]) -> LeafKey:

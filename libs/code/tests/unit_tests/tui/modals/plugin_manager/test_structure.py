@@ -891,6 +891,41 @@ def test_marketplace_options_omit_divider_when_empty() -> None:
     assert [option.id for option in options] == ["add-marketplace"]
 
 
+def test_marketplace_options_pad_between_entries() -> None:
+    """Marketplace entries are separated by disabled spacers, like the plugins list."""
+    screen = PluginManagerScreen()
+    screen._tab = "marketplaces"
+    screen._state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(),
+        marketplaces=(
+            _MarketplaceRow("first", "owner/first", 1, 0),
+            _MarketplaceRow("second", "owner/second", 1, 0),
+            _MarketplaceRow("third", "owner/third", 1, 0),
+        ),
+        errors=(),
+    )
+
+    options = screen._current_options()
+
+    ids = [option.id for option in options]
+    assert ids == [
+        "add-marketplace",
+        "marketplace-divider",
+        "marketplace:first",
+        "marketplace-spacer:1",
+        "marketplace:second",
+        "marketplace-spacer:2",
+        "marketplace:third",
+    ]
+    spacers = [
+        option
+        for option in options
+        if option.id is not None and option.id.startswith("marketplace-spacer:")
+    ]
+    assert all(spacer.disabled for spacer in spacers)
+
+
 def test_healthy_marketplace_label_shows_available_plugins() -> None:
     row = _MarketplaceRow("healthy", "owner/healthy", 3, 0)
 
@@ -1280,7 +1315,7 @@ async def test_marketplace_divider_refits_on_resize() -> None:
 
 
 async def test_plugin_manager_overlays_underlying_content() -> None:
-    """Transparent modal backdrop must composite the screen underneath."""
+    """Dimmed modal backdrop must composite the screen underneath."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1296,7 +1331,11 @@ async def test_plugin_manager_overlays_underlying_content() -> None:
         app.push_screen(PluginManagerScreen())
         await pilot.pause()
 
-        assert app.screen.styles.background.a == 0
+        # Inherit the default ModalScreen dim backdrop instead of a fully
+        # transparent one. The alpha is in (0, 1) only under a non-ansi theme
+        # (hence the "textual-dark" pin above); it degrades to transparent
+        # under ansi themes.
+        assert 0 < app.screen.styles.background.a < 1
         plain = re.sub(r"<[^>]+>", " ", app.export_screenshot())
         assert "TOP_MARKER_VISIBLE" in plain
         assert "Plugins" in plain

@@ -1052,7 +1052,13 @@ Examples:
 GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
 _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="")
 
-EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
+_EXECUTE_SEARCH_GUIDANCE = "You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. "
+_EXECUTE_GREP_SEARCH_GUIDANCE = "You MUST avoid using shell grep for searches. Instead use the grep tool to search text. "
+_EXECUTE_GLOB_SEARCH_GUIDANCE = "You MUST avoid using shell find for searches. Instead use the glob tool to find files. "
+_EXECUTE_GLOB_BAD_EXAMPLE = "\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead"
+_EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead"
+
+_EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox environment.
 
 Usage:
 Executes a given command in the sandbox environment with proper handling and security measures.
@@ -1075,7 +1081,7 @@ Usage notes:
   - If the output is very large, it may be truncated
   - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
   - A timeout of 0 may disable timeouts on backends that support no-timeout execution
-  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
+  - VERY IMPORTANT: {search_guidance}You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
     - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
@@ -1090,12 +1096,31 @@ Examples:
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-    - execute(command="cat file.txt")  # Use read_file tool instead
-    - execute(command="find . -name '*.py'")  # Use glob tool instead
-    - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+    - execute(command="cat file.txt")  # Use read_file tool instead{glob_bad_example}{grep_bad_example}
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
+
+EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
+    search_guidance=_EXECUTE_SEARCH_GUIDANCE,
+    glob_bad_example=_EXECUTE_GLOB_BAD_EXAMPLE,
+    grep_bad_example=_EXECUTE_GREP_BAD_EXAMPLE,
+)
+_EXECUTE_TOOL_DESCRIPTION_WITH_GREP_ONLY = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
+    search_guidance=_EXECUTE_GREP_SEARCH_GUIDANCE,
+    glob_bad_example="",
+    grep_bad_example=_EXECUTE_GREP_BAD_EXAMPLE,
+)
+_EXECUTE_TOOL_DESCRIPTION_WITH_GLOB_ONLY = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
+    search_guidance=_EXECUTE_GLOB_SEARCH_GUIDANCE,
+    glob_bad_example=_EXECUTE_GLOB_BAD_EXAMPLE,
+    grep_bad_example="",
+)
+_EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
+    search_guidance="",
+    glob_bad_example="",
+    grep_bad_example="",
+)
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
@@ -2508,6 +2533,82 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return rewritten if changed else tools
 
+    def _execute_tool_description(self, *, visible_search_tools: set[str]) -> str:
+        """Return the execute description for the visible search tools.
+
+        Args:
+            visible_search_tools: Search tool names available to the model.
+
+        Returns:
+            The custom description, or the default variant matching tool visibility.
+        """
+        custom_description = self._custom_tool_descriptions.get("execute")
+        if custom_description:
+            return custom_description
+        if "grep" in visible_search_tools and "glob" in visible_search_tools:
+            return EXECUTE_TOOL_DESCRIPTION
+        if "grep" in visible_search_tools:
+            return _EXECUTE_TOOL_DESCRIPTION_WITH_GREP_ONLY
+        if "glob" in visible_search_tools:
+            return _EXECUTE_TOOL_DESCRIPTION_WITH_GLOB_ONLY
+        return _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH
+
+    def _with_filtered_execute_description(
+        self,
+        tools: list[BaseTool | dict[str, Any]],
+        *,
+        visible_search_tools: set[str],
+    ) -> list[BaseTool | dict[str, Any]]:
+        """Copy default execute tools when their search guidance changes.
+
+        Args:
+            tools: Request tools after backend capability filtering.
+            visible_search_tools: Search tool names available to the model.
+
+        Returns:
+            A copied list when an execute description changes, otherwise `tools`.
+        """
+        if self._custom_tool_descriptions.get("execute"):
+            return tools
+
+        target_description = self._execute_tool_description(visible_search_tools=visible_search_tools)
+        default_descriptions = {
+            EXECUTE_TOOL_DESCRIPTION,
+            _EXECUTE_TOOL_DESCRIPTION_WITH_GREP_ONLY,
+            _EXECUTE_TOOL_DESCRIPTION_WITH_GLOB_ONLY,
+            _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH,
+        }
+        rewritten: list[BaseTool | dict[str, Any]] = []
+        changed = False
+
+        for tool in tools:
+            tool_name = self._tool_name(tool)
+            if tool_name != "execute":
+                rewritten.append(tool)
+                continue
+
+            if isinstance(tool, BaseTool):
+                if tool.description in default_descriptions and tool.description != target_description:
+                    rewritten.append(tool.model_copy(update={"description": target_description}))
+                    changed = True
+                else:
+                    rewritten.append(tool)
+                continue
+
+            if not isinstance(tool, dict):
+                rewritten.append(cast("BaseTool | dict[str, Any]", tool))
+                continue
+
+            if tool.get("description") in default_descriptions and tool.get("description") != target_description:
+                copied_tool = tool.copy()
+                copied_tool["description"] = target_description
+                rewritten.append(copied_tool)
+                changed = True
+            else:
+                rewritten.append(tool)
+
+        return rewritten if changed else tools
+
     @staticmethod
     def _tool_name(tool: object) -> str | None:
         """Extract a request tool name from `BaseTool`, dict, or test doubles."""
@@ -2619,7 +2720,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
-        tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
+        visible_search_tools = {"grep", "glob"}
+        if self._enabled_tools is not None:
+            visible_search_tools.intersection_update(self._enabled_tools)
+        tool_description = self._execute_tool_description(visible_search_tools=visible_search_tools)
 
         def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: str,
@@ -2820,10 +2924,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_names: set[str | None] = {self._tool_name(tool) for tool in request.tools}
         unsupported, execution_active, backend = self._unsupported_tools_and_execution_state(tool_names, request.runtime)
         visible_tools = [tool for tool in request.tools if self._tool_name(tool) not in unsupported]
+        visible_fs = {name for name in (tool_names - unsupported) if name is not None}
         if unsupported:
             request = request.override(tools=visible_tools)
 
         described_tools = self._with_filtered_grep_description(visible_tools, include_execution=execution_active)
+        described_tools = self._with_filtered_execute_description(
+            described_tools,
+            visible_search_tools=visible_fs,
+        )
         if described_tools is not visible_tools:
             request = request.override(tools=described_tools)
 
@@ -2832,7 +2941,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt reflecting only the tools that survived filtering
-            visible_fs = {n for n in (tool_names - unsupported) if n is not None}
             tool_header, tool_descriptions = _build_fs_tools_section(visible_fs)
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(

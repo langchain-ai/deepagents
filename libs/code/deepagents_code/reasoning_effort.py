@@ -86,7 +86,7 @@ GOOGLE_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
 """Gemini `thinking_level` labels.
 
 Applied to every `gemini-3*` model (the gate in `_classify_reasoning_provider`),
-including Gemini 3 Pro/Flash, 3.1 Pro, and 3.5 Flash — all accept
+including Gemini 3 Pro/Flash, 3.1 Pro, and 3.6 Flash — all accept
 low/medium/high. `minimal` is Flash-Lite / original-Pro territory, neither of
 which is offered here. See https://ai.google.dev/gemini-api/docs/thinking.
 """
@@ -278,7 +278,7 @@ def _google_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
 
 def _google_default_effort(model: str) -> EffortLabel | None:
     """Return the Gemini default thinking level when known."""
-    if model.startswith("gemini-3.5-flash"):
+    if model.startswith("gemini-3.6-flash"):
         return "medium"
     if model.startswith(("gemini-3.1-pro", "gemini-3-flash", "gemini-3-pro")):
         return "high"

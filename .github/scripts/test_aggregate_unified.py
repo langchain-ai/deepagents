@@ -999,6 +999,24 @@ def _bleaf(model, branch, config, category, pass_at_k):
     }
 
 
+def test_combined_row_records_expected_source_sha():
+    expected = [
+        {
+            "model": "openai:gpt",
+            "branch": "feature",
+            "source_sha": "a" * 40,
+            "config": "bare",
+            "category": "autonomous",
+        }
+    ]
+    combined = au.combine(
+        [_bleaf("openai:gpt", "feature", "bare", "autonomous", 1.0)],
+        expected_leaves=expected,
+        expected_categories=["autonomous"],
+    )
+    assert combined["rows"][0]["source_sha"] == "a" * 40
+
+
 def test_combine_rows_split_by_branch():
     import aggregate_unified
 

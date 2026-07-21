@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code._env_vars import (
     DEBUG,
+    EXPERIMENTAL,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_VERSION,
@@ -115,6 +116,23 @@ def _debug_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
     return TStyle(foreground=TColor.parse(colors.warning), bold=True)
 
 
+def _experimental_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
+    """Build the style for the `(experimental mode)` tag.
+
+    Args:
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        A bold magenta markup style under ANSI themes (whose palette the terminal
+            owns, so a parsed color could be invisible) or a bold themed accent
+            color otherwise.
+    """
+    if ansi:
+        return "bold magenta"
+    return TStyle(foreground=TColor.parse(colors.accent), bold=True)
+
+
 def _home_prefixed(cwd: str) -> str:
     """Format a directory path, using `~` for the home directory when possible.
 
@@ -144,7 +162,9 @@ class WelcomeBanner(Static):
 
     Renders a bordered box with the product title and optional version. A
     `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is enabled
-    (truthy), even when the version is hidden. A `(local)` tag appears for
+    (truthy), and an `(experimental mode)` tag appears when
+    `DEEPAGENTS_CODE_EXPERIMENTAL` is enabled (truthy), both even when the
+    version is hidden. A `(local)` tag appears for
     editable installs only when the version is shown. Rows follow that appear
     only when their data (and any env gate) is present. In render order: the
     active model
@@ -230,6 +250,7 @@ class WelcomeBanner(Static):
         )
         self._project_urls: dict[str, str] = {}
         self._debug_enabled = is_env_truthy(DEBUG)
+        self._experimental_enabled = is_env_truthy(EXPERIMENTAL)
         self._show_thread_id = self._debug_enabled
         super().__init__(self._build_banner(), **kwargs)
 
@@ -351,7 +372,8 @@ class WelcomeBanner(Static):
 
         Returns:
             Content with the title, optional version, and any applicable header
-            tags (`(debug enabled)` when debug is on; `(local)` for editable
+            tags (`(debug enabled)` when debug is on; `(experimental mode)` when
+            experimental mode is on; `(local)` for editable
             installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
@@ -379,6 +401,13 @@ class WelcomeBanner(Static):
                 (
                     " (debug enabled)",
                     _debug_tag_style(ansi=ansi, colors=colors),
+                )
+            )
+        if self._experimental_enabled:
+            parts.append(
+                (
+                    " (experimental mode)",
+                    _experimental_tag_style(ansi=ansi, colors=colors),
                 )
             )
         if not self._hide_version and _is_editable_install():

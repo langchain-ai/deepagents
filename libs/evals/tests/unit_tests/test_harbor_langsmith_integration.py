@@ -24,10 +24,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     target = target.split("\n\n", maxsplit=1)[0]
 
     assert "HARBOR_AGENT_IMPL ?= dcode" in makefile
-    assert (
-        "HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)"
-        in makefile
-    )
+    assert "HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)" in makefile
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT)" in makefile

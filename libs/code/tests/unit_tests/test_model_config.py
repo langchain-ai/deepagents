@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code import model_config
+from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
@@ -6382,13 +6383,18 @@ class TestLoadMcpServerTrustLists:
         assert result.approvals == frozenset()
         assert result.disabled == frozenset({"blocked"})
 
-    def test_env_overrides_toml(
+    def test_env_composes_with_toml_approvals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Env lists replace their TOML counterparts, independently per list."""
+        """Process-wide names and project-scoped approvals both remain active."""
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
         fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        approval = McpProjectServerApproval(
+            project_root=project_root,
+            name="toml-enabled",
+            fingerprint=fingerprint,
+        )
         config_path.write_text(
             "[mcp]\n"
             "enabled_project_server_approvals = ["
@@ -6403,18 +6409,22 @@ class TestLoadMcpServerTrustLists:
 
         result = load_mcp_server_trust_lists(config_path)
 
-        # Enabled comes from env; disabled falls back to the TOML value.
         assert result.enabled == frozenset({"env-enabled", "env-two"})
-        assert result.approvals == frozenset()
+        assert result.approvals == frozenset({approval})
         assert result.disabled == frozenset({"toml-disabled"})
 
-    def test_empty_env_clears_toml_list(
+    def test_empty_env_keeps_toml_approvals(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A set-but-empty env var overrides (clears) the TOML list."""
+        """An empty process-wide allowlist does not erase remembered approvals."""
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
         fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        approval = McpProjectServerApproval(
+            project_root=project_root,
+            name="toml-enabled",
+            fingerprint=fingerprint,
+        )
         config_path.write_text(
             "[mcp]\n"
             "enabled_project_server_approvals = ["
@@ -6429,7 +6439,7 @@ class TestLoadMcpServerTrustLists:
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.enabled == frozenset()
-        assert result.approvals == frozenset()
+        assert result.approvals == frozenset({approval})
 
     def test_defaults_to_user_config_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -6477,8 +6487,8 @@ class TestLoadMcpServerTrustLists:
     ) -> None:
         """The disabled env list UNIONS with the TOML deny list (denies accrue).
 
-        Unlike the enabled list (env replaces TOML), a deny must never be
-        silently dropped by the other source, so both contribute.
+        A deny must never be silently dropped by the other source, so both
+        contribute.
         """
         config_path = tmp_path / "config.toml"
         project_root = str(tmp_path / "project")
@@ -7012,7 +7022,7 @@ class TestAddEnabledProjectMcpServers:
     """Tests for persisting the approval prompt's "always allow" choice."""
 
     @staticmethod
-    def _server_configs() -> dict[str, object]:
+    def _server_configs() -> JsonObject:
         return {
             "docs": {"command": "echo", "args": ["docs"]},
             "reference": {"type": "http", "url": "https://example.test/mcp"},

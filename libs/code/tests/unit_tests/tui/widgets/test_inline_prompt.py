@@ -231,9 +231,32 @@ class TestInlinePromptPaste:
             await pilot.press("enter")
             await pilot.pause()
 
-            assert "\n" in ta.text
-            assert "\\" not in ta.text
+            # Exact match: the backslash is gone and exactly one newline was
+            # inserted (guards against a double-fire re-adding the char or a
+            # second newline).
+            assert ta.text == "hello\n"
             assert app.submissions == []
+
+    async def test_reset_clears_pending_backslash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Replacing text cannot reuse a backslash timestamp from old text."""
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            ta.text = "replacement\\"
+            ta.move_cursor((0, len(ta.text)))
+            ta.reset_paste_state()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submissions == ["replacement\\"]
 
     @pytest.mark.parametrize(
         "key",
@@ -246,9 +269,9 @@ class TestInlinePromptPaste:
         """Modifier+Enter (and Ctrl+J) insert a newline instead of submitting.
 
         This is the headline affordance the inline prompt inherits from
-        `PasteBurstTextArea`; without it these keys would fall through to the
-        plain-enter branch and submit. Regression guard for the shared
-        `BINDINGS` / `_consume_modifier_newline` wiring.
+        `PasteBurstTextArea`; without it these keys would not insert a newline
+        (and a bare-`enter` variant would submit). Regression guard for the
+        shared `BINDINGS` / `_consume_modifier_newline` wiring.
         """
         app = _PromptApp()
         async with app.run_test() as pilot:
@@ -262,7 +285,9 @@ class TestInlinePromptPaste:
             await pilot.press(key)
             await pilot.pause()
 
-            assert "\n" in ta.text
+            # Exact match guards against both keys double-firing (inherited
+            # priority binding + explicit `_consume_modifier_newline` handler).
+            assert ta.text == "hello\n"
             assert app.submissions == []
 
     async def test_identical_second_paste_expands_placeholder(

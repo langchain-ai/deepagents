@@ -216,7 +216,7 @@ class PasteBurstTextArea(TextArea):
         self._paste_burst_last_suppressed_enter_time = None
 
     def _reset_paste_burst_state(self) -> None:
-        """Reset all paste-burst tracking to a clean slate.
+        """Reset all paste-burst and backslash tracking to a clean slate.
 
         Used by text-replacing entry points so a wholesale text swap never
         leaves stale burst timing that would misclassify the next keystroke.
@@ -224,6 +224,7 @@ class PasteBurstTextArea(TextArea):
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._paste_burst_window_until = None
+        self._backslash_pending_time = None
         self._reset_paste_burst_run()
         self._cancel_paste_burst_timer()
 
@@ -453,7 +454,7 @@ class PasteBurstTextArea(TextArea):
             self._backslash_pending_time = now
 
     def _consume_modifier_newline(self, event: events.Key) -> bool:
-        """Return whether a modifier-Enter key was consumed as an inserted newline."""
+        """Return whether a modifier-Enter (or Ctrl+J) key inserted a newline."""
         if event.key in self._NEWLINE_KEYS:
             event.prevent_default()
             event.stop()

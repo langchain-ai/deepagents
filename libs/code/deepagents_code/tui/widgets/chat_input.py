@@ -850,16 +850,6 @@ class ChatTextArea(PasteBurstTextArea):
             return
         super().action_cursor_down(select)
 
-    def _reset_paste_burst_state(self) -> None:
-        """Reset all paste-burst and backslash tracking to a clean slate.
-
-        Shared by the text-replacing entry points (`set_text_from_history`,
-        `clear_text`, `discard_text`) so a wholesale text swap never leaves
-        stale burst/backslash timing that would misclassify the next keystroke.
-        """
-        super()._reset_paste_burst_state()
-        self._backslash_pending_time = None
-
     def _in_slash_command_context(self) -> bool:
         """Return whether the current input is composing a slash command."""
         owner = self._chat_input_owner

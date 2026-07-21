@@ -175,47 +175,6 @@ Available async agent types:
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote server, so it has its own tools and capabilities."""  # noqa: E501
 
-ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
-
-You have access to async subagent tools that launch background tasks on remote LangGraph servers.
-
-### Tools
-
-- `start_async_task`: Start a new background task. Returns a task ID immediately.
-- `check_async_task`: Get current status and result of a task. Returns status + result (if complete).
-- `update_async_task`: Send new instructions to a running task. Returns confirmation + updated status.
-- `cancel_async_task`: Stop a running task. Returns confirmation.
-- `list_async_tasks`: List all tracked tasks with live statuses. Returns summary of all tasks.
-
-### Workflow
-
-1. **Start** — Use `start_async_task` to start a task. Report the task ID to the user and stop.
-   Do NOT immediately check the status — the task runs in the background while you and the user continue other work.
-2. **Check (on request)** — Only use `check_async_task` when the user explicitly asks for a status update or
-   result. If the status is "running", report that and stop — do not poll in a loop.
-3. **Update** (optional) — Use `update_async_task` to send new instructions to a running task. This interrupts
-   the current run and starts a fresh one on the same thread. The task_id stays the same.
-4. **Cancel** (optional) — Use `cancel_async_task` to stop a task that is no longer needed.
-5. **Collect** — When `check_async_task` returns status "success", the result is included in the response.
-6. **List** — Use `list_async_tasks` to see live statuses for all tasks at once, or to recall task IDs after context compaction.
-
-### Critical rules
-
-- After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
-- Never poll `check_async_task` in a loop. Check once per user request, then stop.
-- If a check returns "running", tell the user and wait for them to ask again.
-- Task statuses in conversation history are ALWAYS stale — a task that was "running" may now be done.
-  NEVER report a status from a previous tool result. ALWAYS call a tool to get the current status:
-  use `list_async_tasks` when the user asks about multiple tasks or "all tasks",
-  use `check_async_task` when the user asks about a specific task.
-- Always show the full task_id — never truncate or abbreviate it.
-
-### When to use async subagents
-
-- Long-running tasks that would block the main agent
-- Tasks that benefit from running on specialized remote deployments
-- When you want to run multiple tasks concurrently and collect results later"""
-
 
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
     """Build headers for a remote Agent Protocol server.

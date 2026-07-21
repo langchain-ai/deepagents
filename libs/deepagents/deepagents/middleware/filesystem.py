@@ -1107,54 +1107,6 @@ FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "gl
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
-_FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
-    "ls": "ls: list files in a directory (requires absolute path)",
-    "read_file": "read_file: read a file from the filesystem",
-    "write_file": "write_file: write to a file in the filesystem",
-    "edit_file": "edit_file: edit a file in the filesystem",
-    "delete": "delete: delete a file or directory (recursively) from the filesystem",
-    "glob": 'glob: find files matching a pattern (e.g., "**/*.py")',
-    "grep": "grep: search for text within files",
-}
-
-
-def _build_fs_tools_section(visible: set[str]) -> tuple[str, str]:
-    """Return (header backtick list, bullet descriptions) for the given visible FS tools."""
-    ordered = [t for t in _FS_TOOL_ORDER if t in visible]
-    header = ", ".join(f"`{t}`" for t in ordered)
-    descriptions = "\n".join(f"- {_FS_TOOL_DESCRIPTION_LINES[t]}" for t in ordered)
-    return header, descriptions
-
-
-_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
-
-- Read files before editing — understand existing content before making changes
-- Mimic existing style, naming conventions, and patterns
-
-## Filesystem Tools {tool_header}
-
-You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
-
-{tool_descriptions}
-
-## Large Tool Results
-
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
-
-_default_tool_header, _default_tool_descriptions = _build_fs_tools_section(set(_FS_TOOL_ORDER))
-FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-    large_tool_results_prefix="/large_tool_results",
-    tool_header=_default_tool_header,
-    tool_descriptions=_default_tool_descriptions,
-)
-
-EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
-
-You have access to an `execute` tool for running shell commands in a sandboxed environment.
-Use this tool to run commands, scripts, tests, builds, and other shell operations.
-
-- execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
 def _route_host_path_prompt(backend: BackendProtocol) -> str:
@@ -2765,10 +2717,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if described_tools is not visible_tools:
             request = request.override(tools=described_tools)
 
-        # `system_prompt` (default `None`) is the caller's tool-usage prose; the
-        # built-in tool-usage guidance is intentionally not generated, since it
-        # duplicates the tools' own schema descriptions (see FILESYSTEM_SYSTEM_PROMPT
-        # / EXECUTION_SYSTEM_PROMPT to restore it). The host-path routing section is
+        # `system_prompt` (default `None`) is the caller's tool-usage prose; no
+        # built-in tool-usage guidance is generated, since it would duplicate the
+        # tools' own schema descriptions. The host-path routing section is
         # essential per-backend config (virtual->host path mapping for the `execute`
         # shell), not prose, so it is appended when the execute tool is active
         # regardless of the prose. Routing is empty for non-composite backends.

@@ -926,55 +926,6 @@ class TestFilesystem:
         assert "execute" in captured_tools
         assert "read_file" in captured_tools
 
-    def test_system_prompt_includes_execute_instructions_only_when_supported(self):
-        """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
-        # Track system prompts passed to the model
-        captured_prompts = []
-
-        class CapturingMiddleware(AgentMiddleware):
-            def wrap_model_call(self, request, handler):
-                captured_prompts.clear()
-                if request.system_prompt:
-                    captured_prompts.append(request.system_prompt)
-                return handler(request)
-
-        # Test with StateBackend (no execution support)
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-6"),
-            middleware=[
-                FilesystemMiddleware(backend=StateBackend()),
-                CapturingMiddleware(),
-            ],
-        )
-
-        agent.invoke({"messages": [HumanMessage(content="List files")]})
-
-        # System prompt should NOT include execute instructions
-        assert len(captured_prompts) > 0
-        prompt = captured_prompts[0]
-        assert "execute" not in prompt.lower() or "Execute Tool" not in prompt
-
-        # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(output="test", exit_code=0, truncated=False)
-
-        agent_with_sandbox = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-6"),
-            middleware=[
-                FilesystemMiddleware(backend=MockSandboxBackend),
-                CapturingMiddleware(),
-            ],
-        )
-
-        captured_prompts.clear()
-        agent_with_sandbox.invoke({"messages": [HumanMessage(content="List files")]})
-
-        # System prompt SHOULD include execute instructions
-        assert len(captured_prompts) > 0
-        prompt = captured_prompts[0]
-        assert "Execute Tool" in prompt or "execute" in prompt
-
     def test_composite_backend_execution_support_detection(self):
         """Verify supports_execution correctly detects CompositeBackend capabilities."""
 

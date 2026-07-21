@@ -91,7 +91,7 @@ class TestLargeToolResultsPrompt:
         prompt = middleware._build_dynamic_system_prompt(include_execution=True)
 
         assert (
-            "or use `execute` with `grep -r <pattern> /large_tool_results/` if you need to search "
+            "or try `execute` with `grep -r <pattern> /large_tool_results/` if you need to search "
             "across offloaded tool results and do not know the exact file path"
         ) in prompt
         assert "or use `grep` within" not in prompt

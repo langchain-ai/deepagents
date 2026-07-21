@@ -1160,7 +1160,7 @@ def _large_tool_results_search_guidance(visible: set[str], prefix: str) -> str:
         return f", or use `grep` within `{prefix}/` if you need to search across offloaded tool results and do not know the exact file path"
     if "execute" in visible:
         return (
-            f", or use `execute` with `grep -r <pattern> {prefix}/` if you need to search "
+            f", or try `execute` with `grep -r <pattern> {prefix}/` if you need to search "
             "across offloaded tool results and do not know the exact file path"
         )
     return ""

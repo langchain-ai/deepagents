@@ -3097,7 +3097,7 @@ class TestCheckMcpProjectTrustPrompt:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """List-resolved server rows skip the approval prompt without extra output."""
+        """Remembered approvals still skip the prompt with an env allowlist set."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -3108,6 +3108,10 @@ class TestCheckMcpProjectTrustPrompt:
 
         user_config = tmp_path / "config.toml"
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "unrelated-server",
+        )
         server_configs = {
             "docs[/green]": {"command": "echo"},
             "blocked[/red]": {"command": "echo"},

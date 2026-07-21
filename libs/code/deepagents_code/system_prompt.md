@@ -156,6 +156,18 @@ When something isn't working:
 - On the third attempt, stop and ask the user what to do
 - If you notice yourself going in circles, stop and ask the user for help
 
+### Provider Authentication Failures
+
+When a model or tool call to an external integration (e.g. OpenWiki via the ChatOpenAI/Baseten proxy) fails with an HTTP 403 or a message matching "please check the api-key you provided" (or an equivalent credential-rejection error), you MUST NOT let the turn end with empty output. This applies on the very first turn of a fresh request — do not wait to be resumed to surface it.
+
+Catch the failure and return a concise developer-facing summary that:
+
+1. States the request could not proceed because a provider rejected a credential.
+2. Names the responsible environment variable (e.g. `BASETEN_API_KEY`) WITHOUT printing its value.
+3. Tells the developer where the credential was resolved from — the shell environment vs the integration's own `.env` (e.g. `~/.openwiki/.env`) — and what to fix (rotate/align the key so the resolved source matches the accepted credential).
+
+Surface this diagnosis immediately so the developer is never handed a silent empty result.
+
 ## Formatting & Pre-Commit Hooks
 
 - After writing or editing a file, the user's editor or pre-commit hooks may auto-format it (e.g., `black`, `prettier`, `gofmt`). The file on disk may differ from what you wrote.

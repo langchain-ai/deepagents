@@ -784,9 +784,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     Args:
         backend: Backend for file operations and execution.
-        subagents: Fully specified declarative or compiled subagent configs.
-            Declarative specs must provide `model` and `tools`; use
-            `DefaultSubAgentMiddleware` for Deep Agents default construction.
+        subagents: List of fully-specified subagent configs.
+
+            Each SubAgent must specify `model` and `tools`.
+
+            Optional `interrupt_on` on individual subagents is respected.
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
@@ -832,17 +834,17 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
     ) -> None:
-        """Initialize the public dispatcher from fully specified subagent specs."""
+        """Initialize the `SubAgentMiddleware`."""
         super().__init__()
         if not subagents:
             msg = "At least one subagent must be specified"
             raise ValueError(msg)
         self._backend = backend
+        self._subagents = subagents
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
-        self._subagents = tuple(subagents)
-        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in self._subagents)
+        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
@@ -852,11 +854,14 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
         )
+
+        # Build system prompt with available agents
         if system_prompt:
             agents_desc = "\n".join(f"- {spec['name']}: {spec['description']}" for spec in self._subagents)
             self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
+
         self.tools = [task_tool]
 
     @property

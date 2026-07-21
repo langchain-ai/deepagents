@@ -1,5 +1,6 @@
-"""Hook contracts and compatibility dispatch."""
+"""Hook contracts, execution engine, and compatibility dispatch."""
 
+from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.legacy import (
     HOOK_SUBPROCESS_TIMEOUT,
     HOOK_TOOL_OUTPUT_LIMIT,
@@ -16,6 +17,7 @@ from deepagents_code.hooks.legacy import (
 __all__ = [
     "HOOK_SUBPROCESS_TIMEOUT",
     "HOOK_TOOL_OUTPUT_LIMIT",
+    "HookEngine",
     "_background_tasks",
     "dispatch_hook",
     "dispatch_hook_fire_and_forget",

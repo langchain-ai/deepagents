@@ -74,6 +74,7 @@ def user_hooks_path(config_dir: Path | None = None) -> Path:
 def load_hooks_config(
     *,
     cwd: Path,
+    workspace_trusted: bool,
     config_dir: Path | None = None,
     paths: Sequence[Path] | None = None,
 ) -> LoadedHooksConfig:
@@ -81,9 +82,11 @@ def load_hooks_config(
 
     Args:
         cwd: Session working directory used for project precedence.
+        workspace_trusted: Whether project-scoped hooks may be loaded.
         config_dir: Alternate user config directory.
-        paths: Explicit source paths in precedence order (highest first).
-            When omitted, project then user paths are used.
+        paths: Explicit trusted source paths in precedence order (highest first).
+            When omitted, project hooks are included only for trusted workspaces,
+            followed by user hooks.
 
     Returns:
         Frozen load result with canonical `snapshot_id`.
@@ -92,8 +95,9 @@ def load_hooks_config(
         tuple(paths)
         if paths is not None
         else (
-            project_hooks_path(cwd),
-            user_hooks_path(config_dir),
+            (project_hooks_path(cwd), user_hooks_path(config_dir))
+            if workspace_trusted
+            else (user_hooks_path(config_dir),)
         )
     )
     diagnostics: list[HookDiagnostic] = []

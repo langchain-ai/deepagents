@@ -68,7 +68,22 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_hooks_config(cwd=project_dir, config_dir=user_dir)
+    untrusted = load_hooks_config(
+        cwd=project_dir,
+        workspace_trusted=False,
+        config_dir=user_dir,
+    )
+    assert [
+        group.hooks[0].command
+        for group in untrusted.config.hooks[HookEvent.SESSION_START]
+    ] == ["user-hook"]
+    assert untrusted.sources == (user_dir / "hooks.json",)
+
+    loaded = load_hooks_config(
+        cwd=project_dir,
+        workspace_trusted=True,
+        config_dir=user_dir,
+    )
     groups = loaded.config.hooks[HookEvent.SESSION_START]
 
     assert [group.hooks[0].command for group in groups] == [
@@ -122,7 +137,11 @@ def test_legacy_migration_only_maps_exact_session_end_semantics(
         ),
         encoding="utf-8",
     )
-    loaded = load_hooks_config(cwd=tmp_path, config_dir=user_dir)
+    loaded = load_hooks_config(
+        cwd=tmp_path,
+        workspace_trusted=False,
+        config_dir=user_dir,
+    )
 
     assert HookEvent.SESSION_START not in loaded.config.hooks
     assert HookEvent.SESSION_END in loaded.config.hooks
@@ -139,7 +158,11 @@ def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_hooks_config(cwd=tmp_path, config_dir=config_dir)
+    loaded = load_hooks_config(
+        cwd=tmp_path,
+        workspace_trusted=False,
+        config_dir=config_dir,
+    )
 
     assert loaded.config.hooks == {}
     assert loaded.sources == ()

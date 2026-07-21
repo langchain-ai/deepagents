@@ -57,16 +57,18 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
     # 8 — three calibrated hard tasks + four medium frontier tasks + one guard,
-    # re-picked from the five-model full-context results. All selected tasks
-    # were independently validated against the vendored corpus and answer keys.
+    # re-picked from the five-model full-context results after the first lite
+    # confirmation run failed to preserve the target context ordering. All
+    # selected tasks were independently validated against the vendored corpus
+    # and answer keys.
     "context": [
-        "cb-cloud-71",  # multi_hop_chain
-        "cb-cloud-15",  # multi_entity_comparison
-        "cb-cloud-35",  # multi_entity_comparison
-        "cb-cloud-55",  # multi_entity_comparison
-        "cb-cloud-62",  # multi_hop_chain
-        "cb-cloud-10",  # multi_hop_chain
-        "cb-cloud-74",  # multi_entity_comparison
+        "cb-cloud-10",  # multi_hop_chain (hard)
+        "cb-cloud-74",  # multi_entity_comparison (hard)
+        "cb-cloud-90",  # multi_hop_chain (hard)
+        "cb-cloud-15",  # multi_entity_comparison (medium)
+        "cb-cloud-35",  # multi_entity_comparison (medium)
+        "cb-cloud-62",  # multi_hop_chain (medium)
+        "cb-cloud-67",  # multi_hop_chain (medium)
         "cb-cloud-8",  # cross_file_counting (guard)
     ],
 }

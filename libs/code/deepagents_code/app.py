@@ -3412,9 +3412,15 @@ class DeepAgentsApp(App):
 
         self._initial_prompt_queued_widget: QueuedUserMessage | None = None
         """Placeholder mounted at startup for a `-m`/`--message` prompt so it
-        shows as queued immediately while the server is still connecting,
-        mirroring the typed-while-connecting path. Removed when the initial
-        submission dispatches (see `_submit_initial_submission`)."""
+        appears queued immediately while the server is still connecting,
+        matching the on-screen feedback of the typed-while-connecting path.
+        Unlike that path this is a cosmetic placeholder: it is not tracked in
+        `_pending_messages`/`_queued_widgets` and is never drained — instead
+        `_submit_initial_submission` removes it (via
+        `_remove_initial_prompt_placeholder`) and submits the real message.
+        Its `+1` in `_sync_status_queued` keeps the queued count honest while
+        it is live, so any path that detaches the widget must also clear this
+        pointer (see `_clear_messages`, `_discard_queue`)."""
 
         self._message_store = MessageStore()
         """Message virtualization store."""
@@ -3828,16 +3834,19 @@ class DeepAgentsApp(App):
 
         # Surface a `-m`/`--message` prompt as a queued message right away,
         # while the server is still connecting, instead of waiting for
-        # `ServerReady` to submit it. Matches the immediate feedback a user
-        # gets typing into an already-running session mid-connect. Skipped when
-        # resuming (`-r`): that path bulk-loads history on connect, which would
-        # briefly render the placeholder above the restored transcript.
-        # `_resume_thread_intent` is read here (before the resolve task consumes
-        # it) so the decision is stable.
-        if self._connecting and self._resume_thread_intent is None:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._show_initial_prompt_as_queued()),
-            )
+        # `ServerReady` to submit it. The resume-exclusion decision is read
+        # here, synchronously, before the resume-resolve task consumes
+        # `_resume_thread_intent` (see `_should_queue_initial_prompt_placeholder`).
+        if self._should_queue_initial_prompt_placeholder():
+
+            def _queue_initial_prompt_placeholder() -> None:
+                # Bare `create_task` would let any failure in the placeholder
+                # setup vanish as an unretrieved-task warning; route it through
+                # `_log_task_exception` like every other fire-and-forget task.
+                task = asyncio.create_task(self._show_initial_prompt_as_queued())
+                task.add_done_callback(_log_task_exception)
+
+            self.call_after_refresh(_queue_initial_prompt_placeholder)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -6830,9 +6839,7 @@ class DeepAgentsApp(App):
         ):
             anchor = spinner
         if anchor is None:
-            first_queued = self._queued_widgets[0] if self._queued_widgets else None
-            if first_queued is not None and first_queued.parent is container:
-                anchor = first_queued
+            anchor = self._first_mounted_queued_widget(container)
         if anchor is not None:
             try:
                 await container.mount(widget, before=anchor)
@@ -6858,6 +6865,14 @@ class DeepAgentsApp(App):
             if isinstance(child, LoadingWidget | QueuedUserMessage):
                 continue
             return child
+        return None
+
+    def _first_mounted_queued_widget(self, container: Container) -> Widget | None:
+        """Return the first queued placeholder mounted in `container`."""
+        initial = self._initial_prompt_queued_widget
+        for child in container.children:
+            if child is initial or child in self._queued_widgets:
+                return child
         return None
 
     @staticmethod
@@ -6904,14 +6919,7 @@ class DeepAgentsApp(App):
             )
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
-                anchor = next(
-                    (
-                        queued
-                        for queued in self._queued_widgets
-                        if queued.parent is container
-                    ),
-                    None,
-                )
+                anchor = self._first_mounted_queued_widget(container)
             if anchor is None:
                 await container.mount(bottom)
             else:
@@ -7010,10 +7018,8 @@ class DeepAgentsApp(App):
         if not children or self._loading_widget not in children:
             return False
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             return children.index(self._loading_widget) == (
                 children.index(first_queued) - 1
             )
@@ -7149,8 +7155,8 @@ class DeepAgentsApp(App):
                 "Spinner widget not in container children; skipping reposition",
             )
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             container.move_child(self._loading_widget, before=first_queued)
             return
         non_spinner = [
@@ -8048,6 +8054,21 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    def _should_queue_initial_prompt_placeholder(self) -> bool:
+        """Whether startup should surface the `-m` prompt as a queued placeholder.
+
+        Called synchronously from `on_mount`, before the resume-resolve task
+        consumes `_resume_thread_intent`, so the resume exclusion is decided
+        against the raw `-r` intent. Resume is excluded because that path
+        bulk-loads history on connect, which would briefly render the
+        placeholder above the restored transcript.
+
+        Returns:
+            `True` when a bare `-m` prompt should be shown as queued during the
+            initial connect; `False` when resuming or not connecting.
+        """
+        return self._connecting and self._resume_thread_intent is None
+
     async def _show_initial_prompt_as_queued(self) -> None:
         """Mount the `-m` prompt as a queued placeholder during connect.
 
@@ -8068,6 +8089,11 @@ class DeepAgentsApp(App):
             return
 
         await self._dismiss_startup_tip()
+        # `ServerReady` can arrive while tip dismissal yields. Its startup
+        # sequence may submit the prompt before this task resumes, so recheck
+        # readiness before creating a placeholder that nobody will remove.
+        if not self._connecting or self._initial_prompt_queued_widget is not None:
+            return
         queued_widget = QueuedUserMessage(self._initial_prompt)
         self._initial_prompt_queued_widget = queued_widget
         await self._mount_message(queued_widget)
@@ -8080,8 +8106,13 @@ class DeepAgentsApp(App):
         if widget is None:
             return
         self._initial_prompt_queued_widget = None
-        with suppress(Exception):
-            await widget.remove()
+        if widget.is_attached:
+            # Only benign detach races are expected here; a broader
+            # `suppress(Exception)` would hide a real removal failure and
+            # strand the placeholder above the real message. Matches the
+            # narrow-suppress idiom used elsewhere for widget removal.
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
         self._sync_status_queued()
 
     async def _submit_initial_submission(self) -> None:
@@ -15036,6 +15067,10 @@ class DeepAgentsApp(App):
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
         self._active_user_message = None
+        # Same reasoning for the startup `-m` placeholder: remove_children()
+        # below detaches its widget, so the pointer must not outlive it or
+        # `_sync_status_queued`'s `+1` would strand the queued count.
+        self._initial_prompt_queued_widget = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -15171,6 +15206,13 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        # The startup `-m` placeholder is a queued widget too; drop it here so
+        # discarding the queue can't leave the count (or the widget) orphaned
+        # when no `_clear_messages` follows.
+        placeholder = self._initial_prompt_queued_widget
+        if placeholder is not None:
+            self._initial_prompt_queued_widget = None
+            placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
 

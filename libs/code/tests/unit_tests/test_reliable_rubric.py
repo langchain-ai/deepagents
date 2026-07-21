@@ -114,10 +114,19 @@ class TestReliableRubricMiddleware:
         state = _state()
         messages_before = list(state["messages"])
 
-        result = await middleware._agrade(state, 0)
+        context = {"approval_mode": "manual"}
+        result = await middleware._agrade(state, 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.ainvoke.await_count == 2
+        assert all(
+            call.kwargs["context"] is context for call in grader.ainvoke.await_args_list
+        )
+        operation_ids = {
+            call.args[0]["rubric_grading_operation_id"]
+            for call in grader.ainvoke.await_args_list
+        }
+        assert operation_ids == {"untracked:0"}
         assert state["messages"] == messages_before
 
     async def test_does_not_retry_unrelated_exception(self) -> None:

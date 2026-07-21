@@ -53,6 +53,7 @@ from deepagents_code.goal_rubric import (
     GoalCriteriaRequest,
     GoalCriteriaState,
     _coerce_goal_proposal,
+    _ContextToolCallBudgetMiddleware,
     _conversation_context,
     _create_goal_criteria_agent,
     _criteria_interrupt_on,
@@ -65,6 +66,7 @@ from deepagents_code.goal_rubric import (
     _prompt_with_conversation_context,
     _proposal_from_result,
     _RepositoryToolBudgetMiddleware,
+    _rubric_interrupt_on,
     _summarize_criteria_result,
     _WebSearchBudgetMiddleware,
     create_goal_criteria_agent,
@@ -355,6 +357,46 @@ class TestCriteriaContextBudgetMiddleware:
         assert isinstance(result.content, str)
         assert len(result.text) == _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT
         assert "Criteria context limit reached" in result.text
+
+
+class TestContextToolCallBudgetMiddleware:
+    """Rubric verification tools share an atomic per-evaluation call budget."""
+
+    @staticmethod
+    def _request(call_id: str, operation_id: str) -> ToolCallRequest:
+        return ToolCallRequest(
+            tool_call={
+                "name": "notion_fetch",
+                "args": {"page_id": "page"},
+                "id": call_id,
+                "type": "tool_call",
+            },
+            tool=None,
+            state={"rubric_grading_operation_id": operation_id},
+            runtime=MagicMock(),
+        )
+
+    def test_budget_is_scoped_to_rubric_evaluation(self) -> None:
+        middleware = _ContextToolCallBudgetMiddleware(
+            {"notion_fetch"},
+            limit=2,
+        )
+        handler = MagicMock(
+            return_value=ToolMessage(content="page", tool_call_id="call")
+        )
+
+        first = middleware.wrap_tool_call(self._request("1", "run:0"), handler)
+        second = middleware.wrap_tool_call(self._request("2", "run:0"), handler)
+        exhausted = middleware.wrap_tool_call(self._request("3", "run:0"), handler)
+        next_iteration = middleware.wrap_tool_call(self._request("4", "run:1"), handler)
+
+        assert isinstance(first, ToolMessage)
+        assert isinstance(second, ToolMessage)
+        assert isinstance(exhausted, ToolMessage)
+        assert "Verification context limit reached" in exhausted.text
+        assert isinstance(next_iteration, ToolMessage)
+        assert next_iteration.text == "page"
+        assert handler.call_count == 3
 
 
 class TestWebSearchBudgetMiddleware:
@@ -664,6 +706,20 @@ class TestCriteriaHitlPolicy:
         assert "Search the documentation server." in rendered
         displayed = rendered.split("\u201c", 1)[1].split("\u201d", 1)[0]
         assert len(displayed) <= _CRITERIA_OBJECTIVE_DISPLAY_LIMIT
+
+    def test_rubric_context_tool_uses_grading_approval_description(self) -> None:
+        tool = self._tool("notion_fetch", "Read the current Notion page.")
+        policy = _rubric_interrupt_on([tool])
+        description = cast("Callable[..., str]", policy["notion_fetch"]["description"])
+
+        rendered = description(
+            {"name": "notion_fetch", "args": {}, "id": "call"},
+            {},
+            SimpleNamespace(context={}),
+        )
+
+        assert "while verifying the completed work" in rendered
+        assert "Read the current Notion page." in rendered
 
 
 class TestGoalCriteriaMiddleware:

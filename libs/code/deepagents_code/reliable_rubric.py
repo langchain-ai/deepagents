@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import httpx
 from deepagents.middleware.rubric import GraderResponse, RubricMiddleware, RubricState
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +73,15 @@ class ReliableRubricMiddleware(RubricMiddleware):
     surfaces it as a `grader_error` result rather than a silent success.
     """
 
-    def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
+    def _grade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
         try:
-            return super()._grade(state, iteration)
+            return super()._grade(state, iteration, context=cast("Any", context))
         except Exception as exc:
             if not _is_transient_grader_transport_error(exc):
                 raise
@@ -82,11 +89,17 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 "Rubric grader transport failed; retrying grading once",
                 exc_info=True,
             )
-        return super()._grade(state, iteration)
+        return super()._grade(state, iteration, context=cast("Any", context))
 
-    async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
+    async def _agrade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
         try:
-            return await super()._agrade(state, iteration)
+            return await super()._agrade(state, iteration, context=cast("Any", context))
         except Exception as exc:
             if not _is_transient_grader_transport_error(exc):
                 raise
@@ -94,4 +107,4 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 "Rubric grader transport failed; retrying grading once",
                 exc_info=True,
             )
-        return await super()._agrade(state, iteration)
+        return await super()._agrade(state, iteration, context=cast("Any", context))

@@ -272,11 +272,16 @@ def _goal_only_messages(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
 
 
 class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
-    """Bound all tool-result text accumulated by a criteria operation."""
+    """Bound tool-result text accumulated by one nested context operation."""
 
-    def __init__(self) -> None:
-        """Initialize bounded per-operation context counters."""
+    def __init__(self, *, label: str = "Criteria context") -> None:
+        """Initialize bounded per-operation context counters.
+
+        Args:
+            label: Human-readable name used in truncation markers.
+        """
         super().__init__()
+        self._label = label
         self._remaining: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -316,7 +321,7 @@ class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, N
         elif allowed == 0:
             bounded = ""
         else:
-            marker = "\n[Criteria context limit reached; additional content omitted.]"
+            marker = f"\n[{self._label} limit reached; additional content omitted.]"
             if allowed <= len(marker):
                 bounded = marker[:allowed]
             else:
@@ -350,6 +355,83 @@ class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, N
         return self._bound_result(request, await handler(request))
 
 
+class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
+    """Bound selected context-tool calls independently for each nested operation."""
+
+    def __init__(self, tool_names: set[str], *, limit: int) -> None:
+        """Initialize a per-operation call budget for the selected tools.
+
+        Args:
+            tool_names: Tool names counted against the shared budget.
+            limit: Maximum selected-tool calls allowed per operation.
+        """
+        super().__init__()
+        self._tool_names = frozenset(tool_names)
+        self._limit = limit
+        self._calls: OrderedDict[str, int] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _reserve(self, request: ToolCallRequest) -> bool:
+        """Reserve one call for the request's nested operation.
+
+        Returns:
+            `True` when the operation remains within its call budget.
+        """
+        key = _RepositoryToolBudgetMiddleware._operation_key(request)
+        with self._lock:
+            count = self._calls.get(key, 0)
+            if count >= self._limit:
+                return False
+            self._calls[key] = count + 1
+            self._calls.move_to_end(key)
+            while len(self._calls) > _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT:
+                self._calls.popitem(last=False)
+        return True
+
+    @staticmethod
+    def _error(request: ToolCallRequest) -> ToolMessage:
+        """Return a bounded context-call-budget error."""
+        return ToolMessage(
+            content=(
+                "Verification context limit reached. Decide using the evidence "
+                "already gathered."
+            ),
+            name=request.tool_call["name"],
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the synchronous selected-tool call budget.
+
+        Returns:
+            The tool result or a bounded budget error.
+        """
+        if request.tool_call["name"] not in self._tool_names or self._reserve(request):
+            return handler(request)
+        return self._error(request)
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the asynchronous selected-tool call budget.
+
+        Returns:
+            The tool result or a bounded budget error.
+        """
+        if request.tool_call["name"] not in self._tool_names or self._reserve(request):
+            return await handler(request)
+        return self._error(request)
+
+
 class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
     """Bound repository inspection calls and read/result sizes."""
 
@@ -367,9 +449,12 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
 
     @staticmethod
     def _operation_key(request: ToolCallRequest) -> str:
-        """Return the current criteria operation identifier."""
-        operation_id = request.state.get("criteria_operation_id")
-        return operation_id if isinstance(operation_id, str) else "__legacy__"
+        """Return the current criteria-drafting or rubric-grading operation ID."""
+        for key in ("criteria_operation_id", "rubric_grading_operation_id"):
+            operation_id = request.state.get(key)
+            if isinstance(operation_id, str):
+                return operation_id
+        return "__legacy__"
 
     def _reserve_call(self, request: ToolCallRequest) -> bool:
         """Reserve one repository call for this criteria operation.
@@ -668,18 +753,49 @@ def _criteria_approval_description(
     return describe
 
 
-def _criteria_interrupt_on(
+def _rubric_approval_description(
+    tool_name: str,
+    normal_description: object,
+) -> Callable[[ToolCall, AgentState[Any], Runtime[Any]], str]:
+    """Prefix a normal tool approval description with rubric-grading context.
+
+    Returns:
+        Description callback preserving the normal tool details.
+    """
+
+    def describe(
+        tool_call: ToolCall,
+        state: AgentState[Any],
+        runtime: Runtime[Any],
+    ) -> str:
+        preface = (
+            f"Deep Agents Code wants to use {tool_name} while verifying the "
+            "completed work against its acceptance criteria."
+        )
+        if isinstance(normal_description, str):
+            details = normal_description
+        elif callable(normal_description):
+            describe_tool = cast(
+                "Callable[[ToolCall, AgentState[Any], Runtime[Any]], str]",
+                normal_description,
+            )
+            details = describe_tool(tool_call, state, runtime)
+        else:
+            details = ""
+        return f"{preface}\n\n{details}" if details else preface
+
+    return describe
+
+
+def _context_interrupt_on(
     tools: Sequence[BaseTool],
     *,
-    auto_mode_enabled: bool = True,
+    auto_mode_enabled: bool,
+    describe: Callable[
+        [str, object], Callable[[ToolCall, AgentState[Any], Runtime[Any]], str]
+    ],
 ) -> dict[str, InterruptOnConfig]:
-    """Resolve criteria HITL policy from normal tool policy and loaded MCP tools.
-
-    Args:
-        tools: External context tools available to the criteria agent.
-        auto_mode_enabled: Whether classifier-backed Auto is eligible to bypass
-            delegated context approval. When `False`, the `when` predicate keeps
-            a live Auto record gated instead of bypassing.
+    """Resolve delegated HITL policy for read-only external context tools.
 
     Returns:
         Per-tool interrupt configuration for every external context tool.
@@ -701,10 +817,9 @@ def _criteria_interrupt_on(
         config = normal.get(tool.name)
         if config is not None:
             copied = dict(config)
-            description = copied.get("description", tool.description)
-            copied["description"] = _criteria_approval_description(
+            copied["description"] = describe(
                 tool.name,
-                description,
+                copied.get("description", tool.description),
             )
             interrupt_on[tool.name] = cast("InterruptOnConfig", copied)
             continue
@@ -712,17 +827,45 @@ def _criteria_interrupt_on(
             "InterruptOnConfig",
             {
                 "allowed_decisions": ["approve", "reject"],
-                "description": cast(
-                    "Any",
-                    _criteria_approval_description(
-                        tool.name,
-                        tool.description,
-                    ),
-                ),
+                "description": cast("Any", describe(tool.name, tool.description)),
                 "when": when,
             },
         )
     return interrupt_on
+
+
+def _criteria_interrupt_on(
+    tools: Sequence[BaseTool],
+    *,
+    auto_mode_enabled: bool = True,
+) -> dict[str, InterruptOnConfig]:
+    """Resolve criteria HITL policy from normal tool policy and loaded MCP tools.
+
+    Returns:
+        Per-tool criteria-context approval configuration.
+    """
+    return _context_interrupt_on(
+        tools,
+        auto_mode_enabled=auto_mode_enabled,
+        describe=_criteria_approval_description,
+    )
+
+
+def _rubric_interrupt_on(
+    tools: Sequence[BaseTool],
+    *,
+    auto_mode_enabled: bool = True,
+) -> dict[str, InterruptOnConfig]:
+    """Resolve rubric-grader HITL policy for read-only external context tools.
+
+    Returns:
+        Per-tool rubric-verification approval configuration.
+    """
+    return _context_interrupt_on(
+        tools,
+        auto_mode_enabled=auto_mode_enabled,
+        describe=_rubric_approval_description,
+    )
 
 
 def _coerce_goal_proposal(value: object) -> tuple[str, str] | None:

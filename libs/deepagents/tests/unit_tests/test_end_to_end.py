@@ -9,7 +9,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
+from langchain.agents.middleware.human_in_the_loop import ApproveDecision
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
@@ -4406,6 +4407,69 @@ class TestRubricMiddlewareEndToEnd:
         assert len(evals) == 1
         assert evals[0]["result"] == "satisfied"
         assert evals[0]["criteria"] == [{"name": "built", "passed": True}]
+
+    def test_grader_tool_approval_resumes_through_parent_graph(self) -> None:
+        """A nested grader tool can pause, resume, execute, and return a verdict."""
+        observed: list[str] = []
+
+        @tool
+        def inspect_external(resource_id: str) -> str:
+            """Inspect an external resource without modifying it."""
+            observed.append(resource_id)
+            return "resource is updated"
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="external update complete")]))
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "inspect_external",
+                                "args": {"resource_id": "page-123"},
+                                "id": "inspect-call",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="external state verified",
+                        criteria=[{"name": "resource updated", "passed": True}],
+                    ),
+                ]
+            )
+        )
+        rubric = RubricMiddleware(
+            model=grader_model,
+            tools=[inspect_external],
+            grader_middleware=[HumanInTheLoopMiddleware({"inspect_external": True})],
+        )
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[rubric],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-grader-tool-hitl"}}
+
+        first = agent.invoke(
+            {
+                "messages": [HumanMessage(content="update the external resource")],
+                "rubric": "- resource updated",
+            },
+            config=config,
+        )
+        interrupt = first["__interrupt__"][0]
+        agent.invoke(
+            Command(resume={interrupt.id: {"decisions": [ApproveDecision(type="approve")]}}),
+            config=config,
+        )
+
+        assert observed == ["page-123"]
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_evaluations"][-1]["criteria"] == [{"name": "resource updated", "passed": True}]
 
     def test_needs_revision_loops_back_then_satisfied(self) -> None:
         """Grader's `needs_revision` triggers a model re-run with the feedback HumanMessage injected."""

@@ -20,12 +20,15 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
 from pydantic import ValidationError
 
 from deepagents.middleware.rubric import (
@@ -57,7 +60,7 @@ def _runtime(events: list[dict[str, Any]] | None = None) -> Any:  # noqa: ANN401
     `SimpleNamespace` is plenty.
     """
     sink = events if events is not None else []
-    return SimpleNamespace(stream_writer=sink.append)
+    return SimpleNamespace(stream_writer=sink.append, context={})
 
 
 def _stub_grader(
@@ -74,13 +77,25 @@ def _stub_grader(
     call_log: list[int] = []
     iterator = iter(responses)
 
-    def _grade(state: dict[str, Any], iteration: int) -> GraderResponse:  # noqa: ARG001
+    def _grade(
+        state: dict[str, Any],
+        iteration: int,
+        *,
+        context: object | None = None,  # noqa: ARG001
+    ) -> GraderResponse:
+        _ = state
         if exc is not None:
             raise exc
         call_log.append(iteration)
         return next(iterator)
 
-    async def _agrade(state: dict[str, Any], iteration: int) -> GraderResponse:  # noqa: ARG001
+    async def _agrade(
+        state: dict[str, Any],
+        iteration: int,
+        *,
+        context: object | None = None,  # noqa: ARG001
+    ) -> GraderResponse:
+        _ = state
         if exc is not None:
             raise exc
         call_log.append(iteration)
@@ -305,6 +320,13 @@ class TestAfterAgentDirect:
         with pytest.raises(KeyboardInterrupt):
             mw.after_agent(self._state(), _runtime())
 
+    def test_nested_grader_interrupt_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=3)
+        _stub_grader(mw, monkeypatch, exc=GraphInterrupt(()))
+
+        with pytest.raises(GraphInterrupt):
+            mw.after_agent(self._state(), _runtime())
+
     def test_on_evaluation_callback_fires(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: list[RubricEvaluation] = []
         mw = RubricMiddleware(
@@ -397,7 +419,7 @@ class TestGraderPlumbing:
         """A grader with no tools is built only when first needed."""
         built: list[dict[str, Any]] = []
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **kwargs: Any):  # type: ignore[no-untyped-def]
             built.append(
                 {
                     "model": model,
@@ -405,6 +427,8 @@ class TestGraderPlumbing:
                     "tools": list(tools),
                     "name": name,
                     "response_format": response_format,
+                    "middleware": kwargs["middleware"],
+                    "context_schema": kwargs["context_schema"],
                 }
             )
             return SimpleNamespace(
@@ -426,6 +450,8 @@ class TestGraderPlumbing:
         assert built[0]["tools"] == []
         assert built[0]["name"] == "rubric_grader"
         assert built[0]["response_format"] is GraderResponse
+        assert built[0]["middleware"] == []
+        assert built[0]["context_schema"] is None
         # Trust-boundary language is preserved in the grader prompt so
         # adversarial transcript content can't redirect grading.
         prompt = built[0]["system_prompt"]
@@ -443,7 +469,7 @@ class TestGraderPlumbing:
 
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["tools"] = list(tools)
             return SimpleNamespace()
 
@@ -453,10 +479,59 @@ class TestGraderPlumbing:
         mw._ensure_grader()
         assert seen["tools"] == [shell]
 
+    def test_grader_middleware_and_context_schema_are_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+        grader_middleware = AgentMiddleware()
+
+        def fake_create_agent(**kwargs: Any) -> SimpleNamespace:
+            seen.update(kwargs)
+            return SimpleNamespace()
+
+        class GraderContext:
+            pass
+
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents._models.resolve_model", lambda model: model)
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            grader_middleware=[grader_middleware],
+            grader_context_schema=GraderContext,
+        )
+
+        mw._ensure_grader()
+
+        assert seen["middleware"] == [grader_middleware]
+        assert seen["context_schema"] is GraderContext
+        assert seen["state_schema"].__name__ == "RubricGraderState"
+
+    def test_grade_forwards_context_and_stable_operation_id(self) -> None:
+        grader = MagicMock()
+        grader.invoke.return_value = {
+            "structured_response": GraderResponse(
+                result="satisfied",
+                explanation="verified",
+                criteria=[],
+            )
+        }
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        mw._grader = grader
+        state = {
+            "rubric": "- external record updated",
+            "messages": [HumanMessage(content="update it")],
+            "_current_grading_run_id": "run-123",
+        }
+        context = {"approval_mode": "manual"}
+
+        mw._grade(state, 2, context=context)  # type: ignore[arg-type]
+
+        child_input = grader.invoke.call_args.args[0]
+        assert child_input["rubric_grading_operation_id"] == "run-123:2"
+        assert grader.invoke.call_args.kwargs["context"] is context
+
     def test_model_propagated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["model"] = model
             return SimpleNamespace()
 
@@ -470,7 +545,7 @@ class TestGraderPlumbing:
         """A user-supplied `system_prompt` replaces the default grader prompt."""
         seen: dict[str, Any] = {}
 
-        def fake_create_agent(*, model, system_prompt, tools, name, response_format):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def fake_create_agent(*, model, system_prompt, tools, name, response_format, **kwargs: Any):  # type: ignore[no-untyped-def]  # noqa: ARG001
             seen["system_prompt"] = system_prompt
             return SimpleNamespace()
 

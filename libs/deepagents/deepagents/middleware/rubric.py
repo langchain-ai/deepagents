@@ -40,6 +40,7 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
+from langgraph.errors import GraphBubbleUp
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
@@ -291,6 +292,13 @@ class GraderResponse(BaseModel):
         return self
 
 
+class RubricGraderState(AgentState[GraderResponse]):
+    """Private nested-grader state used to scope verification-tool budgets."""
+
+    rubric_grading_operation_id: NotRequired[str]
+    """Stable identifier shared by tool calls and retries for one evaluation."""
+
+
 @beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
@@ -326,6 +334,11 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             `GraderResponse`.
 
             With none, the grader reasons from the transcript alone.
+        grader_middleware: Middleware applied only to the nested grader agent.
+            Use it to enforce verification-tool approval, call, or result limits
+            without affecting the task agent.
+        grader_context_schema: Runtime context schema forwarded to the nested
+            grader. The grader receives the parent agent's runtime context.
         max_iterations: Maximum grader iterations per rubric attempt; must be a
             positive integer.
 
@@ -351,6 +364,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         model: str | BaseChatModel,
         system_prompt: str | None = None,
         tools: Sequence[BaseTool] | None = None,
+        grader_middleware: Sequence[AgentMiddleware[RubricGraderState, ContextT, GraderResponse]] | None = None,
+        grader_context_schema: type[ContextT] | None = None,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
     ) -> None:
@@ -368,6 +383,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         self._model = model
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
+        self._grader_middleware: list[AgentMiddleware[RubricGraderState, ContextT, GraderResponse]] = (
+            list(grader_middleware) if grader_middleware else []
+        )
+        self._grader_context_schema = grader_context_schema
         self._on_evaluation = on_evaluation
         # Built lazily so importing the middleware doesn't construct a model
         # client (which can trigger env-var lookups / API key validation).
@@ -446,7 +465,13 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         grading_run_id, iteration = prep
 
         try:
-            graded = self._grade(state, iteration)
+            graded = self._grade(
+                state,
+                iteration,
+                context=getattr(runtime, "context", None),
+            )
+        except GraphBubbleUp:
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, grading_run_id, iteration, exc)
 
@@ -464,7 +489,13 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         grading_run_id, iteration = prep
 
         try:
-            graded = await self._agrade(state, iteration)
+            graded = await self._agrade(
+                state,
+                iteration,
+                context=getattr(runtime, "context", None),
+            )
+        except GraphBubbleUp:
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, grading_run_id, iteration, exc)
 
@@ -532,21 +563,46 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             model=resolve_model(self._model),
             system_prompt=self._system_prompt,
             tools=self._tools,
+            middleware=self._grader_middleware,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
+            state_schema=RubricGraderState,
+            context_schema=self._grader_context_schema,
         )
         return self._grader
 
-    def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
-        grader = self._ensure_grader()
+    def _grader_input(self, state: RubricState, iteration: int) -> RubricGraderState:
+        """Build nested-grader input with a stable verification-operation ID."""
+        grading_run_id = state.get("_current_grading_run_id") or "untracked"
         payload = self._build_grader_payload(state, iteration)
-        result = grader.invoke({"messages": [HumanMessage(content=payload)]})
+        return {
+            "messages": [HumanMessage(content=payload)],
+            "rubric_grading_operation_id": f"{grading_run_id}:{iteration}",
+        }
+
+    def _grade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: ContextT | None = None,
+    ) -> GraderResponse:
+        grader = self._ensure_grader()
+        result = grader.invoke(self._grader_input(state, iteration), context=context)
         return self._extract_graded(result)
 
-    async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
+    async def _agrade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: ContextT | None = None,
+    ) -> GraderResponse:
         grader = self._ensure_grader()
-        payload = self._build_grader_payload(state, iteration)
-        result = await grader.ainvoke({"messages": [HumanMessage(content=payload)]})
+        result = await grader.ainvoke(
+            self._grader_input(state, iteration),
+            context=context,
+        )
         return self._extract_graded(result)
 
     @staticmethod

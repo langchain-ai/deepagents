@@ -4220,7 +4220,16 @@ class TestCreateCliAgentInterpreterWiring:
 
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
+        from langchain_core.tools import StructuredTool
 
+        def inspect_resource(resource_id: str) -> str:
+            return resource_id
+
+        mcp_read = StructuredTool.from_function(
+            func=inspect_resource,
+            name="notion_fetch",
+            description="Inspect the current Notion resource.",
+        )
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4246,6 +4255,7 @@ class TestCreateCliAgentInterpreterWiring:
                 enable_shell=False,
                 rubric_model="custom-grader-model",
                 rubric_max_iterations=5,
+                rubric_grader_tools=[mcp_read],
             )
 
         _, kwargs = mock_create.call_args
@@ -4264,7 +4274,62 @@ class TestCreateCliAgentInterpreterWiring:
             "ls",
             "glob",
             "grep",
+            "notion_fetch",
         ]
+        assert "`notion_fetch`" in rubrics[0]._system_prompt
+        assert rubrics[0]._grader_context_schema is CLIContextSchema
+        assert any(
+            isinstance(middleware, AsyncApprovalHITLMiddleware)
+            for middleware in rubrics[0]._grader_middleware
+        )
+
+    def test_auto_approve_disables_rubric_context_hitl(self, tmp_path: Path) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+        from langchain_core.tools import StructuredTool
+
+        def inspect_resource(resource_id: str) -> str:
+            return resource_id
+
+        mcp_read = StructuredTool.from_function(
+            func=inspect_resource,
+            name="notion_fetch",
+            description="Inspect the current Notion resource.",
+        )
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                auto_approve=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                rubric_grader_tools=[mcp_read],
+            )
+
+        rubric = next(
+            middleware
+            for middleware in mock_create.call_args.kwargs["middleware"]
+            if isinstance(middleware, RubricMiddleware)
+        )
+        assert not any(
+            isinstance(middleware, AsyncApprovalHITLMiddleware)
+            for middleware in rubric._grader_middleware
+        )
 
     def test_untyped_sandbox_omits_rubric_repository_tools(
         self, tmp_path: Path
@@ -4593,6 +4658,27 @@ class TestCreateCliAgentInterpreterWiring:
         assert "read-only `ls`, `read_file`, `glob`, and `grep`" in with_repo
         assert "`/repo`" in with_repo
         assert "read-only `ls`" not in without_repo
+
+    def test_rubric_grader_rejects_context_tool_name_collision(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+        from langchain_core.tools import StructuredTool
+
+        def conflicting_read(file_path: str) -> str:
+            return file_path
+
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        composite = CompositeBackend(default=backend, routes={})
+        context_tool = StructuredTool.from_function(
+            func=conflicting_read,
+            name="read_file",
+            description="Conflicting external reader.",
+        )
+
+        with pytest.raises(ValueError, match="read_file"):
+            _create_rubric_grader_tools(composite, context_tools=[context_tool])
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware

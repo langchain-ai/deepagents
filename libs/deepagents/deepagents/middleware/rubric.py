@@ -127,6 +127,14 @@ This follows the same convention as `SummarizationMiddleware`, which tags
 its synthetic summary messages with `lc_source="summarization"`.
 """
 
+_INTERNAL_HUMAN_MESSAGE_SOURCES = frozenset({"goal_control", "goal_state", RUBRIC_GRADER_MESSAGE_SOURCE})
+_INTERNAL_HUMAN_MESSAGE_PREFIXES = (
+    "[SYSTEM] Goal amended by the user.",
+    "[SYSTEM] Goal resumed by the user.",
+    "[SYSTEM] Goal/rubric state changed.",
+    "[SYSTEM] Task interrupted by user.",
+)
+
 
 GRADER_SYSTEM_PROMPT = """You are a grader. You evaluate whether the work in `<transcript>` satisfies every criterion in `<rubric>`.
 
@@ -726,6 +734,17 @@ def _sanitize_for_payload(content: str) -> str:
     return _PAYLOAD_CLOSER_RE.sub(r"<\\/\1", content)
 
 
+def _is_internal_human_message(message: AnyMessage) -> bool:
+    """Return whether a human message is known synthetic application context."""
+    if not isinstance(message, HumanMessage):
+        return False
+    source = message.additional_kwargs.get("lc_source")
+    if source in _INTERNAL_HUMAN_MESSAGE_SOURCES:
+        return True
+    content = message.content
+    return isinstance(content, str) and content.startswith(_INTERNAL_HUMAN_MESSAGE_PREFIXES)
+
+
 def _build_grader_transcript(messages: list[AnyMessage]) -> str:
     """Build a bounded, role-labeled transcript for the grader.
 
@@ -739,19 +758,15 @@ def _build_grader_transcript(messages: list[AnyMessage]) -> str:
     original prompt -- otherwise, after the first revision loop the
     grader would see its own prior feedback as the user's request.
     """
-    if not messages:
+    visible_messages = [message for message in messages if not _is_internal_human_message(message)]
+    if not visible_messages:
         return "(empty transcript)"
 
-    first_human: AnyMessage | None = None
-    for msg in messages:
-        if not isinstance(msg, HumanMessage):
-            continue
-        if msg.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE:
-            continue
-        first_human = msg
-        break
-
-    tail = messages[-_MAX_TRANSCRIPT_MESSAGES:]
+    first_human = next(
+        (message for message in visible_messages if isinstance(message, HumanMessage)),
+        None,
+    )
+    tail = visible_messages[-_MAX_TRANSCRIPT_MESSAGES:]
     selected: list[AnyMessage] = []
     if first_human is not None and first_human not in tail:
         selected.append(first_human)

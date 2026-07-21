@@ -1,5 +1,6 @@
 """Unit tests for goal tools middleware."""
 
+import json
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -7,6 +8,7 @@ from typing import get_type_hints
 import pytest
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import SystemMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
 from deepagents_code.goal_tools import (
@@ -14,7 +16,6 @@ from deepagents_code.goal_tools import (
     GoalToolsMiddleware,
     GoalToolState,
     _goal_snapshot,
-    _goal_tool_state_context,
     _rubric_snapshot,
     _update_goal_command,
 )
@@ -175,21 +176,6 @@ def test_goal_snapshot_objective_without_status_defaults_active() -> None:
     snapshot = _goal_snapshot({"_goal_objective": "add refresh tokens"})
     assert snapshot["active"] is True
     assert snapshot["status"] == "active"
-
-
-def test_goal_tool_state_context_exposes_private_active_state() -> None:
-    """The model should see persisted activity even when chat history does not."""
-    context = _goal_tool_state_context(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "active",
-            "_goal_rubric": "- tests pass",
-        }
-    )
-
-    assert "Goal status: `active`" in context
-    assert "Goal actionable: `yes`" in context
-    assert "Rubric active: `yes`" in context
 
 
 def test_update_goal_without_active_goal_returns_tool_message_only() -> None:
@@ -402,8 +388,7 @@ def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
     assert isinstance(new_system, SystemMessage)
     blocks = new_system.content
     assert blocks[0]["text"] == "base instructions"
-    assert blocks[-1]["text"].strip().startswith(GOAL_TOOLS_SYSTEM_PROMPT)
-    assert "Goal status: `not set`" in blocks[-1]["text"]
+    assert blocks[-1]["text"] == f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"
 
 
 def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
@@ -418,51 +403,67 @@ def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
 
     new_system = captured["request"].system_message
     text = new_system.content[0]["text"]
-    assert text.startswith(GOAL_TOOLS_SYSTEM_PROMPT)
-    assert "Goal actionable: `no`" in text
-    assert "Rubric active: `no`" in text
+    assert text == GOAL_TOOLS_SYSTEM_PROMPT
 
 
-def test_wrap_model_call_exposes_active_private_state() -> None:
-    """Private goal channels should control model-visible tool gating."""
-    captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(
-        None,
-        state={
+def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
+    """Goal lifecycle state must not change cache-sensitive request prefixes."""
+    states: list[dict[str, object]] = [
+        {},
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+        },
+        {
             "_goal_objective": "ship it",
             "_goal_status": "blocked",
-            "_goal_rubric": "- tests pass",
+            "_goal_status_note": "waiting",
+            "_goal_rubric": "tests pass",
         },
-    )
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "paused",
+            "_goal_rubric": "tests pass",
+        },
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "complete",
+            "_goal_rubric": "tests pass",
+        },
+        {
+            "rubric": None,
+            "_sticky_rubric": None,
+            "_goal_objective": None,
+            "_goal_status": None,
+            "_goal_rubric": None,
+            "_goal_status_note": None,
+        },
+    ]
+    system_bytes: list[bytes] = []
+    schema_bytes: list[bytes] = []
 
-    GoalToolsMiddleware().wrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-    )
+    for state in states:
+        captured: dict[str, SimpleNamespace] = {}
+        middleware = GoalToolsMiddleware()
+        request = _fake_request(None, state=state)
+        middleware.wrap_model_call(
+            request,  # ty: ignore[invalid-argument-type]
+            _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+        )
+        content = captured["request"].system_message.content
+        system_bytes.append(
+            json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+        )
+        schemas = [convert_to_openai_tool(tool) for tool in middleware.tools]
+        schema_bytes.append(
+            json.dumps(schemas, sort_keys=True, separators=(",", ":")).encode()
+        )
 
-    text = captured["request"].system_message.content[0]["text"]
-    assert "Goal status: `blocked`" in text
-    assert "Goal actionable: `yes`" in text
-    assert "Rubric active: `yes`" in text
-
-
-def test_wrap_model_call_appends_blocked_goal_retry_context() -> None:
-    """Retry context should reach the model through runtime context."""
-    captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(
-        None,
-        context={"blocked_goal_retry_context": "<dcode_blocked_goal_retry_context />"},
-    )
-
-    GoalToolsMiddleware().wrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-    )
-
-    new_system = captured["request"].system_message
-    text = new_system.content[0]["text"]
-    assert GOAL_TOOLS_SYSTEM_PROMPT in text
-    assert "<dcode_blocked_goal_retry_context />" in text
+    assert len(set(system_bytes)) == 1
+    assert len(set(schema_bytes)) == 1
+    assert b"Current Persisted Goal/Rubric State" not in system_bytes[0]
+    assert b"blocked_goal_retry_context" not in system_bytes[0]
 
 
 async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:

@@ -16,8 +16,10 @@ from tests.evals.utils import (
     AgentStep,
     AgentTrajectory,
     ToolCall,
+    ToolCalled,
     ToolNotCalled,
     tool_call,
+    tool_called,
     tool_not_called,
 )
 
@@ -119,7 +121,54 @@ class TestToolNotCalled:
 
 
 # ---------------------------------------------------------------------------
-# ToolCall — the presence counterpart, sharing the same matcher
+# ToolCalled — hard-fail presence assertion
+# ---------------------------------------------------------------------------
+
+
+class TestToolCalled:
+    def test_present_passes(self) -> None:
+        traj = _traj(_step(1, _tc("get_rubric")))
+        assert tool_called("get_rubric").check(traj) is True
+
+    def test_absent_fails(self) -> None:
+        traj = _traj(_step(1, _tc("lookup_population")))
+        assert tool_called("get_rubric").check(traj) is False
+
+    def test_out_of_range_step_fails(self) -> None:
+        traj = _traj(_step(1, _tc("get_rubric")))
+        assert tool_called("get_rubric", step=2).check(traj) is False
+
+    def test_step_and_args_matching(self) -> None:
+        traj = _traj(
+            _step(1, _tc("lookup_population", city="tokyo")),
+            _step(2, _tc("lookup_population", city="delhi")),
+        )
+        assert tool_called(
+            "lookup_population",
+            step=2,
+            args_contains={"city": "delhi"},
+        ).check(traj)
+        assert not tool_called(
+            "lookup_population",
+            step=1,
+            args_equals={"city": "delhi"},
+        ).check(traj)
+
+    def test_describe_failure_names_tool_and_step(self) -> None:
+        traj = _traj(_step(1, _tc("lookup_population")))
+        message = tool_called("get_rubric", step=1).describe_failure(traj)
+        assert "get_rubric" in message
+        assert "step 1" in message
+
+    def test_factory_equals_class(self) -> None:
+        assert tool_called("get_goal", step=2) == ToolCalled(
+            name="get_goal",
+            step=2,
+        )
+
+
+# ---------------------------------------------------------------------------
+# ToolCall — informational presence counterpart
 # ---------------------------------------------------------------------------
 
 
@@ -147,6 +196,19 @@ class TestSelectorValidation:
     def test_tool_not_called_both_arg_filters_raise(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):
             tool_not_called("write_file", args_contains={"a": 1}, args_equals={"a": 1})
+
+    @pytest.mark.parametrize("bad_step", [0, -1])
+    def test_tool_called_nonpositive_step_raises(self, bad_step: int) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            tool_called("get_rubric", step=bad_step)
+
+    def test_tool_called_both_arg_filters_raise(self) -> None:
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            ToolCalled(
+                name="write_file",
+                args_contains={"a": 1},
+                args_equals={"a": 1},
+            )
 
     @pytest.mark.parametrize("bad_step", [0, -1])
     def test_tool_call_nonpositive_step_raises(self, bad_step: int) -> None:

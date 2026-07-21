@@ -66,6 +66,7 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.goal_state_notice import goal_state_notice_info
 from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -96,6 +97,19 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
+
+
+def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
+    """Remove and validate the canonical notice from a state update."""
+    from langchain_core.messages import HumanMessage
+
+    messages = update.pop("messages")
+    assert isinstance(messages, list)
+    assert len(messages) == 1
+    notice = messages[0]
+    assert isinstance(notice, HumanMessage)
+    assert goal_state_notice_info(notice) is not None
+    return notice
 
 
 async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
@@ -7865,22 +7879,26 @@ class TestGoalCommand:
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
 
-            updater.aupdate_state.assert_awaited_once_with(
-                {"configurable": {"thread_id": "thread-1"}},
-                {
-                    "rubric": "- tests pass",
-                    "_sticky_rubric": "- tests pass",
-                    "_goal_objective": "add refresh tokens",
-                    "_goal_status": "active",
-                    "_goal_rubric": "- tests pass",
-                    "_goal_status_note": None,
-                    "_pending_goal_completion_note": None,
-                    "_pending_goal_objective": None,
-                    "_pending_goal_rubric": None,
-                    "_pending_goal_kind": None,
-                    "_pending_goal_request_id": None,
-                },
-            )
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            config, raw_update = updater.aupdate_state.await_args.args
+            assert config == {"configurable": {"thread_id": "thread-1"}}
+            state_update = dict(raw_update)
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: active" in notice.content
+            assert state_update == {
+                "rubric": "- tests pass",
+                "_sticky_rubric": "- tests pass",
+                "_goal_objective": "add refresh tokens",
+                "_goal_status": "active",
+                "_goal_rubric": "- tests pass",
+                "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
+            }
 
     async def test_goal_accept_ensures_remote_thread_before_persisting(
         self,
@@ -8222,7 +8240,9 @@ class TestGoalCommand:
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note is None
             assert updater.aupdate_state.await_args is not None
-            state_update = updater.aupdate_state.await_args.args[1]
+            state_update = dict(updater.aupdate_state.await_args.args[1])
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: complete" in notice.content
             assert state_update == {
                 "rubric": None,
                 "_sticky_rubric": "- tests pass",
@@ -9502,12 +9522,8 @@ class TestRubricCommand:
             mock_execute.assert_awaited_once()
             assert mock_execute.await_args is not None
             user_input = mock_execute.await_args.kwargs["user_input"]
-            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
             assert user_input == "I added the provider credentials"
-            assert "previously marked blocked" in retry_context
-            assert "waiting on provider credentials" in retry_context
-            assert "I added the provider credentials" not in retry_context
-            assert 'update_goal(status="blocked", note=...)' in retry_context
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert app._goal_status == "active"
             assert app._goal_status_note is None
             assert app._status_bar.rubric_label == _rubric_status_label(
@@ -9540,22 +9556,27 @@ class TestRubricCommand:
                 await asyncio.wait_for(started.wait(), timeout=1)
 
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_awaited_once_with(
-                config,
-                {
-                    "rubric": "tests pass",
-                    "_sticky_rubric": "tests pass",
-                    "_goal_objective": "add refresh tokens",
-                    "_goal_status": "active",
-                    "_goal_rubric": "tests pass",
-                    "_goal_status_note": None,
-                    "_pending_goal_completion_note": None,
-                    "_pending_goal_objective": None,
-                    "_pending_goal_rubric": None,
-                    "_pending_goal_kind": None,
-                    "_pending_goal_request_id": None,
-                },
-            )
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            actual_config, raw_update = updater.aupdate_state.await_args.args
+            assert actual_config == config
+            state_update = dict(raw_update)
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: active" in notice.content
+            assert "waiting on provider credentials" in notice.content
+            assert state_update == {
+                "rubric": "tests pass",
+                "_sticky_rubric": "tests pass",
+                "_goal_objective": "add refresh tokens",
+                "_goal_status": "active",
+                "_goal_rubric": "tests pass",
+                "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
+            }
 
     async def test_active_goal_is_not_reset_and_sends_no_retry_context(self) -> None:
         """A non-blocked goal turn must not flip state or inject retry context."""
@@ -9582,7 +9603,7 @@ class TestRubricCommand:
 
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["user_input"] == "keep going"
-            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert not any(
                 str(w._content).startswith("Continuing active goal")
                 for w in app.query(AppMessage)
@@ -9638,19 +9659,14 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "blocked"
             app._goal_status_note = "waiting on provider credentials"
-            started = asyncio.Event()
-
-            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
-                started.set()
-                return SessionStats()
-
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
-                new=AsyncMock(side_effect=execute_stub),
-            ):
+                new_callable=AsyncMock,
+            ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
-                await asyncio.wait_for(started.wait(), timeout=1)
+                await pilot.pause()
 
+            mock_execute.assert_not_awaited()
             assert app._goal_status == "blocked"
             assert not any(
                 str(w._content).startswith(
@@ -9687,17 +9703,9 @@ class TestRubricCommand:
                 await asyncio.wait_for(started.wait(), timeout=1)
 
             assert mock_execute.await_args is not None
-            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
-            assert retry_context is not None
-            assert "waiting on provider credentials" in retry_context
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert app._goal_status == "active"
             assert app._goal_status_note is None
-
-    async def test_blocked_goal_retry_context_handles_missing_note(self) -> None:
-        """A blocked goal with no recorded note still yields coherent context."""
-        for note in (None, "", "   "):
-            context = DeepAgentsApp._blocked_goal_retry_context(note)
-            assert "no blocker note was recorded" in context
 
     async def test_blocked_goal_reset_rolls_back_when_persist_fails(self) -> None:
         """A failed persist must restore `blocked` so checkpoint and memory agree."""
@@ -9712,27 +9720,14 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "blocked"
             app._goal_status_note = "waiting on provider credentials"
-            started = asyncio.Event()
-
-            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
-                started.set()
-                return SessionStats()
-
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
-                new=AsyncMock(side_effect=execute_stub),
+                new_callable=AsyncMock,
             ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
-                await asyncio.wait_for(started.wait(), timeout=1)
+                await pilot.pause()
 
-            # The flip was rolled back, so no retry context is sent and the turn
-            # runs with the goal still blocked rather than on diverged state.
-            assert mock_execute.await_args is not None
-            assert (
-                mock_execute.await_args.kwargs["user_input"]
-                == "Credentials are configured now"
-            )
-            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            mock_execute.assert_not_awaited()
             assert app._goal_status == "blocked"
             assert app._goal_status_note == "waiting on provider credentials"
 
@@ -9862,7 +9857,14 @@ class TestRubricCommand:
                 "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_awaited_once_with(config, state_update)
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            actual_config, raw_update = updater.aupdate_state.await_args.args
+            assert actual_config == config
+            actual_update = dict(raw_update)
+            notice = _pop_goal_state_notice(actual_update)
+            assert "Rubric active: no" in notice.content
+            assert actual_update == state_update
             assert app._active_rubric is None
             assert app._next_rubric is None
             assert app._last_consumed_next_rubric is None
@@ -9883,8 +9885,8 @@ class TestRubricCommand:
                 await app._sync_goal_rubric_state_from_thread()
 
             assert app._active_rubric == "sticky"
-            assert app._last_consumed_next_rubric is None
-            assert app._last_consumed_next_previous_rubric is None
+            assert app._last_consumed_next_rubric == "one shot"
+            assert app._last_consumed_next_previous_rubric == "sticky"
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
@@ -9933,9 +9935,23 @@ class TestRubricCommand:
                 "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_has_awaits(
-                [call(config, state_update), call(config, state_update)]
-            )
+            assert updater.aupdate_state.await_count == 2
+            first_config, first_raw_update = updater.aupdate_state.await_args_list[
+                0
+            ].args
+            assert first_config == config
+            first_update = dict(first_raw_update)
+            activation = _pop_goal_state_notice(first_update)
+            assert "Rubric active: yes" in activation.content
+            assert first_update == {**state_update, "rubric": "update docs"}
+            second_config, second_raw_update = updater.aupdate_state.await_args_list[
+                1
+            ].args
+            assert second_config == config
+            second_update = dict(second_raw_update)
+            restoration = _pop_goal_state_notice(second_update)
+            assert "Rubric active: no" in restoration.content
+            assert second_update == state_update
             assert app._active_rubric is None
             assert app._next_rubric is None
             assert app._status_bar is not None
@@ -18087,6 +18103,65 @@ class TestHasConversationMessages:
             app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param(
+                {"role": "user", "content": "hi"},
+                id="openai-user-dict",
+            ),
+            pytest.param(
+                {
+                    "type": "human",
+                    "content": "hidden",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                },
+                id="remote-hidden-notice",
+            ),
+        ],
+    )
+    async def test_openai_user_and_internal_dicts(
+        self,
+        message: dict[str, object],
+    ) -> None:
+        """OpenAI user dicts count, while metadata-marked notices do not."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [message]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            additional_kwargs = message.get("additional_kwargs")
+            expected = not (
+                isinstance(additional_kwargs, dict) and "lc_source" in additional_kwargs
+            )
+            assert await app._has_conversation_messages() is expected
+
+    async def test_returns_false_for_local_internal_human(self) -> None:
+        """A notice-only local thread is not a real conversation."""
+        from langchain_core.messages import HumanMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {
+                "messages": [
+                    HumanMessage(
+                        content="hidden",
+                        additional_kwargs={"lc_source": "goal_state"},
+                    )
+                ]
+            }
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
 
     async def test_returns_false_when_only_non_human_dicts(self) -> None:
         """Should not treat every raw dict as human; non-human dicts are False."""

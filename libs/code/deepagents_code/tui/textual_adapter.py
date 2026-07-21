@@ -708,7 +708,6 @@ async def execute_task_textual(
     graph_input: dict[str, Any] | None = None,
     rubric: str | None = None,
     goal_active: bool = False,
-    blocked_goal_retry_context: str | None = None,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -738,9 +737,6 @@ async def execute_task_textual(
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
         goal_active: Whether the rubric belongs to an unfinished `/goal`.
-        blocked_goal_retry_context: One-turn model context for retrying a
-            previously blocked goal. This is carried via runtime context so it
-            is not parsed for file mentions or checkpointed as human input.
         on_rubric_evaluation_end: Optional callback receiving a validated
             `RubricEvaluationEnd` (grading run ID and verdict) for each
             main-agent `rubric_evaluation_end` event.
@@ -948,10 +944,6 @@ async def execute_task_textual(
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
-            if blocked_goal_retry_context is not None:
-                context["blocked_goal_retry_context"] = blocked_goal_retry_context
-            else:
-                context.pop("blocked_goal_retry_context", None)
             raw_mode = getattr(session_state, "approval_mode", None)
             if raw_mode is None:
                 raw_mode = (

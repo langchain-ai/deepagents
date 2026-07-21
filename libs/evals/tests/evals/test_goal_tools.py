@@ -1,48 +1,23 @@
-"""Eval tests for `deepagents_code`'s goal-tools prompt (`dcode`).
-
-These tests probe the behavioral properties of `GOAL_TOOLS_SYSTEM_PROMPT` and
-the `get_rubric` / `get_goal` / `update_goal` tool descriptions directly — using
-`create_agent` + the real `GoalToolsMiddleware` (not `create_deep_agent`) — so
-they exercise exactly the guidance that ships in
-`deepagents_code.goal_tools` without any other deepagents-side prompt running in
-front of it. This mirrors `test_langchain_middleware_todo.py`, which probes
-`langchain`'s `TodoListMiddleware` the same way.
-
-The failure mode under test: models over-eagerly call `get_rubric` / `get_goal`
-/ `update_goal` even when *no goal or rubric was ever set* earlier in the
-conversation. When nothing is set those tools return an inactive snapshot (or,
-for `update_goal`, refuse) and add nothing, so a well-behaved agent should not
-touch them. `GoalToolsMiddleware` now injects an authoritative persisted-state
-summary ("Goal actionable: no / Rubric active: no") into every request, so the
-gate is grounded in state rather than conversation history. The baseline tests
-here are the regression gate for that behavior; the hillclimb test confirms the
-guidance does not over-correct into never consulting the tools when a rubric
-*is* active.
-
-Seeding note: the goal channels (`_goal_objective`, ...) are `PrivateStateAttr`
-and are not part of the public graph input in this isolated `create_agent`
-harness (only the public `messages` / `rubric` inputs are exposed). The
-active-context hillclimb test therefore seeds the public `rubric` input — the
-same channel `RubricMiddleware` reads in the full `dcode` stack — to make a
-rubric active, rather than trying to seed a goal directly.
-"""
+"""Behavioral evals for the static goal-tool prompt and state notices."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 import pytest
+from deepagents_code.goal_state_notice import build_goal_state_notice
 from deepagents_code.goal_tools import GoalToolsMiddleware
 from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
     final_text_contains_any,
-    final_text_min_length,
     run_agent,
     tool_call,
+    tool_called,
     tool_not_called,
 )
 
@@ -53,12 +28,6 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
-"""Apply tool_use category to all tests in this module. Tier is set per-test."""
-
-
-# ---------------------------------------------------------------------------
-# Mock tools — lightweight stubs so the agent has real work to do
-# ---------------------------------------------------------------------------
 
 
 @tool
@@ -88,7 +57,7 @@ def _make_agent(
     *,
     tools: list[Any] | None = None,
 ) -> CompiledStateGraph[Any, Any]:
-    """Build a bare `create_agent` wired with the real `GoalToolsMiddleware`."""
+    """Build a bare agent wired with the production goal-tool middleware."""
     return create_agent(
         model=model,
         tools=tools or [],
@@ -96,24 +65,10 @@ def _make_agent(
     )
 
 
-# ---------------------------------------------------------------------------
-# Baseline tier — regression gates for over-eager goal-tool calls
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_no_goal_trivial_task_skips_goal_tools(model: BaseChatModel) -> None:
-    """Trivial one-shot task with no goal/rubric must not touch the goal tools.
-
-    No goal or rubric is set, so `get_rubric` / `get_goal` would only report an
-    inactive snapshot and `update_goal` would refuse. The pre-rewrite prompt
-    told the model to inspect acceptance criteria before finishing, which drove
-    reflexive `get_rubric` / `get_goal` calls even when nothing was set; this
-    test is the regression gate ensuring the state-gated prompt does not slide
-    back into that behavior. A correct answer to pure arithmetic should touch
-    none of the three goal tools, so all three are gated.
-    """
+    """A fresh trivial task must not touch goal tools."""
     agent = _make_agent(model)
     run_agent(
         agent,
@@ -133,21 +88,7 @@ def test_no_goal_trivial_task_skips_goal_tools(model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
-    """Real multi-step tool use with no goal/rubric must still skip goal tools.
-
-    Over-eagerness is not just a trivial-task artifact: even when the agent
-    legitimately calls domain tools, it should not reach for `get_rubric` /
-    `get_goal` / `update_goal` when nothing was ever set. The `tool_not_called`
-    gates are the assertion under test.
-
-    The "and by how much" phrasing forces genuine multi-step work: the reported
-    difference (Delhi 32,900,000 - Tokyo 13,960,000 = 18,940,000) is not a
-    memorable figure, so a model cannot produce it from parametric knowledge —
-    it must actually run the lookups. Without that forcing function this test
-    would silently degenerate into a copy of the trivial-task gate if a model
-    shortcut the lookups. Mirrors `test_langchain_middleware_todo.py`'s
-    `test_population_compare_lands_in_final_message`.
-    """
+    """Legitimate domain-tool work must use its tool without goal-tool calls."""
     agent = _make_agent(model, tools=[lookup_population])
     run_agent(
         agent,
@@ -159,6 +100,7 @@ def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(tool_calls=[tool_call(name="lookup_population")])
         .success(
+            tool_called("lookup_population"),
             final_text_contains("delhi", case_insensitive=True),
             final_text_contains_any(
                 "18,940,000",
@@ -175,53 +117,63 @@ def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Hillclimb tier — the guidance should not over-correct
-# ---------------------------------------------------------------------------
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.langsmith
+def test_latest_inactive_notice_supersedes_stale_active_notice(
+    model: BaseChatModel,
+) -> None:
+    """The newest canonical notice controls whether goal tools are relevant."""
+    stale = build_goal_state_notice(
+        {"rubric": "STALE-RUBRIC-SHOULD-NOT-BE-READ"},
+        event_id="goal-state-stale-active",
+    )
+    inactive = build_goal_state_notice(
+        {},
+        event_id="goal-state-current-inactive",
+    )
+    messages = [
+        stale,
+        inactive,
+        HumanMessage(content="What is 7 + 5?"),
+    ]
+
+    run_agent(
+        _make_agent(model),
+        model=model,
+        query=messages,
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=1, tool_call_requests=0)
+        .success(
+            final_text_contains("12"),
+            tool_not_called("get_rubric"),
+            tool_not_called("get_goal"),
+            tool_not_called("update_goal"),
+        ),
+    )
 
 
 @pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
-def test_active_rubric_may_be_consulted(model: BaseChatModel) -> None:
-    """When a rubric IS active, consulting `get_rubric` is allowed, not banned.
+def test_active_rubric_requires_get_rubric_and_marker(model: BaseChatModel) -> None:
+    """An active matching notice must lead to rubric retrieval and use."""
+    marker = "ACTIVE-RUBRIC-7C91"
+    rubric = f"- Include the exact marker `{marker}` in the final response."
+    notice = build_goal_state_notice(
+        {"rubric": rubric},
+        event_id="goal-state-active-rubric",
+    )
+    messages = [notice, HumanMessage(content="What is 9 * 6?")]
 
-    This guards against the rewrite over-correcting into "never call these
-    tools." A rubric is seeded via the public `rubric` input (the channel
-    `RubricMiddleware` reads in the full `dcode` stack), so the injected state
-    summary reports "Rubric active: yes" and `get_rubric` returns real criteria.
-
-    The hard requirement is only that a substantive ranking lands — the three
-    city names plus a floor on answer length, mirroring
-    `test_langchain_middleware_todo.py`'s guard against a terse wrap-up that
-    omits the ranking. The `get_rubric` expectation is deliberately in
-    `.expect()` (efficiency tier), so it never fails the test: "should use" is
-    inherently noisier than "should not," and the harness does not log or check
-    per-tool `ToolCall` expectations individually (only the aggregate
-    `tool_call_requests` count). So this test cannot fail on rubric consultation
-    itself; it verifies that seeding a rubric does not suppress a substantive
-    answer, and the `tool_call` entry documents the intended behavior.
-    """
-    agent = _make_agent(model, tools=[lookup_population, lookup_area_km2])
     run_agent(
-        agent,
+        _make_agent(model),
         model=model,
-        query=(
-            "Rank Tokyo, Delhi, and Shanghai by population density (people per "
-            "km²) from highest to lowest. Look up the population and area for "
-            "each, compute density, and present the ranking."
-        ),
-        extra_state={
-            "rubric": (
-                "- Every city is ranked by population density.\n"
-                "- Each density value is shown with its units."
-            )
-        },
-        scorer=TrajectoryScorer()
-        .expect(tool_calls=[tool_call(name="get_rubric")])
-        .success(
-            final_text_contains("tokyo", case_insensitive=True),
-            final_text_contains("delhi", case_insensitive=True),
-            final_text_contains("shanghai", case_insensitive=True),
-            final_text_min_length(80),
+        query=messages,
+        extra_state={"rubric": rubric},
+        scorer=TrajectoryScorer().success(
+            tool_called("get_rubric"),
+            final_text_contains("54"),
+            final_text_contains(marker),
+            tool_not_called("get_goal"),
+            tool_not_called("update_goal"),
         ),
     )

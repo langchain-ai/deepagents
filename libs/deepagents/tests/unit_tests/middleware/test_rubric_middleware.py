@@ -799,6 +799,50 @@ class TestGraderResponseValidation:
 
 
 class TestTranscriptSkipsSelfInjected:
+    def test_recent_internal_messages_are_removed_from_transcript(self) -> None:
+        """Goal notices and grader feedback never appear as rubric input."""
+        messages = [
+            HumanMessage(content="REAL_USER_REQUEST"),
+            HumanMessage(
+                content="GOAL_STATE_NOTICE",
+                additional_kwargs={"lc_source": "goal_state"},
+            ),
+            AIMessage(content="completed work"),
+            HumanMessage(
+                content="GRADER_FEEDBACK",
+                additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE},
+            ),
+        ]
+
+        text = _build_grader_transcript(messages)
+
+        assert "REAL_USER_REQUEST" in text
+        assert "completed work" in text
+        assert "GOAL_STATE_NOTICE" not in text
+        assert "GRADER_FEEDBACK" not in text
+
+    def test_unknown_source_remains_visible(self) -> None:
+        message = HumanMessage(
+            content="REAL_USER_REQUEST",
+            additional_kwargs={"lc_source": "slack"},
+        )
+
+        text = _build_grader_transcript([message])
+
+        assert "REAL_USER_REQUEST" in text
+
+    def test_user_system_prefix_remains_visible(self) -> None:
+        message = HumanMessage(content="[SYSTEM] explain this literal user input")
+
+        text = _build_grader_transcript([message])
+
+        assert "explain this literal user input" in text
+
+    def test_known_legacy_system_notice_is_removed(self) -> None:
+        message = HumanMessage(content="[SYSTEM] Task interrupted by user. Continue.")
+
+        assert _build_grader_transcript([message]) == "(empty transcript)"
+
     def test_grader_feedback_is_not_treated_as_original_prompt(self) -> None:
         """A grader-injected `HumanMessage` must not stand in for the user prompt.
 

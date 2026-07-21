@@ -43,32 +43,19 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
-Use the current persisted-state summary below, not conversation history, to
-decide whether these tools apply. If it says the goal is not actionable and the
-rubric is inactive, do not call these tools — they only report that nothing is
-active, and you should judge for yourself when the work is done.
+Consult the latest goal/rubric state notice in conversation history before using
+these tools. Later notices supersede earlier notices. If no notice exists, assume
+there is no actionable goal or rubric and do not call these tools.
 
-When a rubric is active, use `get_rubric` to inspect the acceptance criteria
-before deciding whether the work is complete.
-When a goal is actionable, use `get_goal` to inspect its objective and current
-status.
-A paused goal is persisted for later but must not drive work until the user resumes it.
-A goal is marked complete automatically when its current grading turn satisfies the
-accepted criteria. Use `update_goal` only when a goal is actionable: report a blocker
-with it; `status="complete"` remains available for optional completion evidence but
-is not required."""
-"""Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
+When the latest notice says a rubric is active, use `get_rubric` when its exact
+acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
+when its objective or current status is needed. Paused and completed goals must not
+drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
+`status="complete"` remains available for optional completion evidence but is not
+required. Private checkpoint state and the tools remain authoritative for details."""
+"""Static model-visible guidance injected by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
-
-
-def _runtime_blocked_goal_retry_context(ctx: object) -> str | None:
-    """Return blocked-goal retry context from LangGraph runtime context."""
-    if isinstance(ctx, dict):
-        value = ctx.get("blocked_goal_retry_context")
-    else:
-        value = getattr(ctx, "blocked_goal_retry_context", None)
-    return value if isinstance(value, str) and value else None
 
 
 class RubricSnapshot(TypedDict):
@@ -234,28 +221,6 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     }
 
 
-def _goal_tool_state_context(state: dict[str, Any]) -> str:
-    """Build the authoritative goal/rubric activity summary for the model.
-
-    Args:
-        state: Current graph state, including private persisted channels.
-
-    Returns:
-        Model-visible summary used to gate goal-tool calls.
-    """
-    goal = _goal_snapshot(state)
-    rubric = _rubric_snapshot(state)
-    status = goal["status"] or "not set"
-    actionable = "yes" if goal["active"] else "no"
-    rubric_active = "yes" if rubric["active"] else "no"
-    return (
-        "### Current Persisted Goal/Rubric State\n\n"
-        f"- Goal status: `{status}`\n"
-        f"- Goal actionable: `{actionable}`\n"
-        f"- Rubric active: `{rubric_active}`"
-    )
-
-
 def _update_goal_command(
     *,
     status: Literal["complete", "blocked"],
@@ -371,11 +336,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         def get_rubric(
             state: Annotated[dict[str, Any], InjectedState],
         ) -> RubricSnapshot:
-            """Read the current acceptance criteria used to evaluate completion.
+            """Read criteria when the latest state notice says a rubric is active.
 
-            Call this to inspect the active rubric, whether it came from a goal,
-            a sticky rubric, or the current invocation, and the latest grading
-            status if a graded turn has already run.
+            Use this only when the latest goal/rubric state notice reports an active
+            rubric. It returns whether the criteria came from a goal, a sticky
+            rubric, or the current invocation, plus the latest grading status.
 
             Returns:
                 Rubric snapshot with `active`, `criteria`, `source`, and
@@ -387,11 +352,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         def get_goal(
             state: Annotated[dict[str, Any], InjectedState],
         ) -> GoalSnapshot:
-            """Read the current persistent goal and acceptance criteria.
+            """Read a goal when the latest state notice says it is actionable.
 
-            Call this before deciding whether work is done to see the objective,
-            the current acceptance criteria (which may come from the goal or a
-            standalone rubric), the current status, and any prior note.
+            Use this only when the latest goal/rubric state notice reports an
+            actionable goal. It returns the objective, criteria, lifecycle status,
+            and any prior note from authoritative checkpoint state.
 
             Returns:
                 Goal snapshot with `active`, `objective`, `status`, `criteria`,
@@ -406,7 +371,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             tool_call_id: Annotated[str, InjectedToolCallId],
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
-            """Report a blocked goal or attach optional completion evidence.
+            """Update a goal only when the latest state notice says it is actionable.
 
             Use `blocked` when you cannot proceed without user input. Goals complete
             automatically after a satisfied goal-backed grading turn, so `complete`
@@ -434,28 +399,21 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         self.tools = [get_rubric, get_goal, update_goal]
 
     @staticmethod
-    def _request_with_goal_system_context(
+    def _request_with_goal_system_prompt(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Inject goal guidance, current state, and any one-turn retry context.
+        """Append the static goal-tool guidance to a model request.
 
         Returns:
-            Model request with goal context appended to the system prompt.
+            Model request with static goal guidance in the system prompt.
         """
-        retry_context = _runtime_blocked_goal_retry_context(request.runtime.context)
-        state = cast("dict[str, Any]", request.state)
-        prompt_parts = [GOAL_TOOLS_SYSTEM_PROMPT, _goal_tool_state_context(state)]
-        if retry_context is not None:
-            prompt_parts.append(retry_context)
-        prompt = "\n\n".join(prompt_parts)
-
         if request.system_message is not None:
             content = [
                 *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{prompt}"},
+                {"type": "text", "text": f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"},
             ]
         else:
-            content = [{"type": "text", "text": prompt}]
+            content = [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
         return request.override(
             system_message=SystemMessage(
                 content=cast("list[str | dict[str, str]]", content)
@@ -473,7 +431,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         Returns:
             Model response from the wrapped handler.
         """
-        return handler(self._request_with_goal_system_context(request))
+        return handler(self._request_with_goal_system_prompt(request))
 
     @override
     async def awrap_model_call(
@@ -488,4 +446,4 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         Returns:
             Model response from the wrapped handler.
         """
-        return await handler(self._request_with_goal_system_context(request))
+        return await handler(self._request_with_goal_system_prompt(request))

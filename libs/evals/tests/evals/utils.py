@@ -664,6 +664,51 @@ def _find_tool_call_matches(
 
 
 @dataclass(frozen=True)
+class ToolCalled(SuccessAssertion):
+    """Assert that a matching tool call exists in the trajectory."""
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject wrong-index or ambiguous selectors at construction time."""
+        _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that a matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the required tool call is present.
+        """
+        return bool(
+            _find_tool_call_matches(
+                trajectory,
+                name=self.name,
+                step=self.step,
+                args_contains=self.args_contains,
+                args_equals=self.args_equals,
+            )
+        )
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        return f"Expected a {self.name!r} tool call{step_desc}, but none matched."
+
+
+@dataclass(frozen=True)
 class ToolNotCalled(SuccessAssertion):
     """Assert that a specific tool was NOT called in the trajectory.
 
@@ -1082,6 +1127,32 @@ def tool_call(
         A `ToolCall` assertion instance.
     """
     return ToolCall(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolCalled:
+    """Create a `ToolCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be present in the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, the tool call args must contain these key-value pairs.
+        args_equals: If set, the tool call args must equal this dict exactly.
+
+    Returns:
+        A `ToolCalled` assertion instance.
+    """
+    return ToolCalled(
         name=name,
         step=step,
         args_contains=args_contains,

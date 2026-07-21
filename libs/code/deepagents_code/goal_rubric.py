@@ -35,6 +35,7 @@ from langchain_core.messages import (
 from langgraph.errors import GraphRecursionError
 from typing_extensions import TypedDict, override
 
+from deepagents_code.goal_state_notice import is_internal_message
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
@@ -1226,6 +1227,8 @@ def _conversation_context(messages: Sequence[BaseMessage]) -> str:
     remaining = _CONVERSATION_CONTEXT_TOTAL_TEXT_LIMIT
     projected_reversed: list[BaseMessage] = []
     for message in reversed(messages):
+        if is_internal_message(message):
+            continue
         if len(projected_reversed) >= _CONVERSATION_CONTEXT_MESSAGE_LIMIT:
             break
         if not isinstance(message, (HumanMessage, AIMessage)):

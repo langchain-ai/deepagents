@@ -4205,6 +4205,23 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "Real user message"
 
+    def test_lc_source_message_skipped_without_prefix(self) -> None:
+        """Metadata-marked internal messages never render as user turns."""
+        from langchain_core.messages import HumanMessage
+
+        messages = [
+            HumanMessage(
+                content="hidden state notice",
+                additional_kwargs={"lc_source": "goal_state"},
+            ),
+            HumanMessage(content="real user message"),
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert len(result) == 1
+        assert result[0].content == "real user message"
+
     def test_ai_message_text_content(self) -> None:
         """AIMessage with string content should become ASSISTANT MessageData."""
         from deepagents_code.tui.widgets.message_store import MessageType

@@ -354,26 +354,16 @@ Available subagent types:
 
 ## Goal and Rubric Tools
 
-Use the current persisted-state summary below, not conversation history, to
-decide whether these tools apply. If it says the goal is not actionable and the
-rubric is inactive, do not call these tools — they only report that nothing is
-active, and you should judge for yourself when the work is done.
+Consult the latest goal/rubric state notice in conversation history before using
+these tools. Later notices supersede earlier notices. If no notice exists, assume
+there is no actionable goal or rubric and do not call these tools.
 
-When a rubric is active, use `get_rubric` to inspect the acceptance criteria
-before deciding whether the work is complete.
-When a goal is actionable, use `get_goal` to inspect its objective and current
-status.
-A paused goal is persisted for later but must not drive work until the user resumes it.
-A goal is marked complete automatically when its current grading turn satisfies the
-accepted criteria. Use `update_goal` only when a goal is actionable: report a blocker
-with it; `status="complete"` remains available for optional completion evidence but
-is not required.
-
-### Current Persisted Goal/Rubric State
-
-- Goal status: `not set`
-- Goal actionable: `no`
-- Rubric active: `no`
+When the latest notice says a rubric is active, use `get_rubric` when its exact
+acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
+when its objective or current status is needed. Paused and completed goals must not
+drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
+`status="complete"` remains available for optional completion evidence but is not
+required. Private checkpoint state and the tools remain authoritative for details.
 
 ## `ask_user`
 

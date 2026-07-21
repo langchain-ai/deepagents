@@ -2933,6 +2933,31 @@ class TestCountMessagesFromDeltas:
         ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
 
+    def test_internal_messages_do_not_inflate_count(self) -> None:
+        """Metadata-marked local and remote notices are not user-visible rows."""
+        from langchain_core.messages import HumanMessage
+
+        deltas = [
+            [HumanMessage(content="real", id="h1")],
+            [
+                HumanMessage(
+                    content="hidden",
+                    id="h2",
+                    additional_kwargs={"lc_source": "goal_state"},
+                )
+            ],
+            [
+                {
+                    "type": "human",
+                    "content": "hidden remote",
+                    "id": "h3",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                }
+            ],
+        ]
+
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
     def test_fast_and_exact_agree_on_realistic_histories(self) -> None:
         """Fast path and exact fold agree on append/clear/overwrite histories.
 
@@ -2979,6 +3004,29 @@ class TestCountMessagesFromDeltas:
             fast = sessions._count_messages_from_deltas(deltas)  # pyright: ignore[reportPrivateUsage]
             exact = sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
             assert fast == exact, deltas
+
+
+def test_inlined_checkpoint_count_excludes_internal_messages() -> None:
+    """Checkpoint summaries count only user-visible messages."""
+    from langchain_core.messages import HumanMessage
+
+    summary = sessions._summarize_checkpoint(  # pyright: ignore[reportPrivateUsage]
+        {
+            "channel_values": {
+                "messages": [
+                    HumanMessage(content="real", id="h1"),
+                    HumanMessage(
+                        content="hidden",
+                        id="h2",
+                        additional_kwargs={"lc_source": "goal_state"},
+                    ),
+                ]
+            }
+        }
+    )
+
+    assert summary.message_count == 1
+    assert summary.initial_prompt == "real"
 
 
 class TestInitialPromptFromMessages:
@@ -3030,6 +3078,27 @@ class TestInitialPromptFromMessages:
                 {"role": "user", "content": "real prompt"},
             ]
         )
+        assert result == "real prompt"
+
+    def test_skips_metadata_marked_local_and_remote_messages(self) -> None:
+        """`lc_source` prevents hidden notices from becoming thread titles."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(
+                    content="hidden local",
+                    additional_kwargs={"lc_source": "goal_state"},
+                ),
+                {
+                    "type": "human",
+                    "content": "hidden remote",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                },
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+
         assert result == "real prompt"
 
     def test_returns_none_when_only_system_message(self) -> None:

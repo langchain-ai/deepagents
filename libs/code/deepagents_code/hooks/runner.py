@@ -74,6 +74,7 @@ async def run_command_handler(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
     except (OSError, ValueError) as exc:
         return _failure(handler.id, "launch_failed", f"Could not launch hook: {exc}")

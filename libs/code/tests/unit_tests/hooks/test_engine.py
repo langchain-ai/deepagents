@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -12,7 +13,8 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks import HookEngine, dispatch_hook
+from deepagents_code.hooks import dispatch_hook
+from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
@@ -761,3 +763,17 @@ async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:
 
 def test_legacy_dispatcher_remains_public() -> None:
     assert callable(dispatch_hook)
+
+
+def test_legacy_package_import_does_not_load_engine() -> None:
+    code = (
+        "import sys; import deepagents_code.hooks; "
+        "raise SystemExit('deepagents_code.hooks.engine' in sys.modules)"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+    )
+
+    assert result.returncode == 0

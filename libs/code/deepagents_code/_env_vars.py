@@ -67,10 +67,11 @@ file, so it does not weaken the user-level-only trust boundary (a committed
 This dangerous contract is name-based: a different project, command change, or
 URL change under the same server name still matches.
 
-When set, this replaces (takes precedence over) the scoped
-`[mcp].enabled_project_server_approvals` TOML approvals.
-(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
-is never silently emptied.)
+This process-wide allowlist and the scoped
+`[mcp].enabled_project_server_approvals` TOML approvals are independent grants.
+Setting this variable, including to an empty value, does not suppress remembered
+project approvals. (`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its
+TOML list, so a deny is never silently emptied.)
 """
 
 DEBUG = "DEEPAGENTS_CODE_DEBUG"

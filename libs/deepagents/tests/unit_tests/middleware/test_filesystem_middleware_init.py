@@ -31,11 +31,14 @@ class TestLargeToolResultGuidanceInToolDescriptions:
     """
 
     def test_read_file_describes_offloaded_results(self) -> None:
-        assert "large_tool_results/" in READ_FILE_TOOL_DESCRIPTION
+        # read_file points at the exact path from the tool message (no hardcoded
+        # directory, which would be wrong for a non-root artifacts root).
         assert "offloaded" in READ_FILE_TOOL_DESCRIPTION.lower()
 
     def test_grep_describes_searching_offloaded_results(self) -> None:
         assert "large_tool_results/" in GREP_TOOL_DESCRIPTION
+        # Must not imply the root-only path; it is under the artifacts root.
+        assert "artifacts root" in GREP_TOOL_DESCRIPTION
 
 
 class TestDynamicSystemPromptCache:

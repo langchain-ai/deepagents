@@ -49,11 +49,13 @@ from deepagents_code.hooks.projection import project_hook_input, serialize_hook_
 from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import HandlerResult, run_command_handler
 from deepagents_code.hooks.snapshot import HookHandler, HooksSnapshot
+from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.hooks.models.domain import HookDomainEvent
+    from deepagents_code.json_types import JsonObject
 
 
 def _context(tmp_path: Path, *, agent: AgentIdentity | None = None) -> HookContext:
@@ -421,6 +423,82 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
 
     assert payload["tool_response"]["update"] == {"result": "done"}
     assert payload["tool_response"]["goto"] == []
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "wire_name", "wire_input"),
+    [
+        (
+            "execute",
+            {"command": "pytest", "timeout": 30},
+            "Bash",
+            {"command": "pytest", "timeout": 30_000},
+        ),
+        (
+            "write_file",
+            {"file_path": "/tmp/result.txt", "content": "done"},
+            "Write",
+            {"file_path": "/tmp/result.txt", "content": "done"},
+        ),
+        (
+            "edit_file",
+            {
+                "file_path": "/tmp/result.txt",
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+            },
+            "Edit",
+            {
+                "file_path": "/tmp/result.txt",
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+            },
+        ),
+        (
+            "read_file",
+            {"file_path": "/tmp/result.txt", "offset": 0, "limit": 100},
+            "Read",
+            {"file_path": "/tmp/result.txt", "offset": 1, "limit": 100},
+        ),
+        (
+            "glob",
+            {"pattern": "**/*.py", "path": "/tmp"},
+            "Glob",
+            {"pattern": "**/*.py", "path": "/tmp"},
+        ),
+        (
+            "grep",
+            {
+                "pattern": "result.*",
+                "path": "/tmp",
+                "glob": "*.txt",
+                "output_mode": "content",
+                "max_count": 20,
+            },
+            "Grep",
+            {
+                "pattern": r"result\.\*",
+                "path": "/tmp",
+                "glob": "*.txt",
+                "output_mode": "content",
+                "head_limit": 20,
+            },
+        ),
+        ("ls", {"path": "/tmp"}, "LS", {"path": "/tmp"}),
+        ("custom", {"value": 1}, "custom", {"value": 1}),
+    ],
+)
+def test_adapts_native_tool_calls_to_wire(
+    name: str,
+    args: JsonObject,
+    wire_name: str,
+    wire_input: JsonObject,
+) -> None:
+    call = ToolCallData(id="call-1", name=name, args=args)
+
+    assert to_wire_call(call) == (wire_name, wire_input)
 
 
 def test_serializes_native_tool_message_as_json(tmp_path: Path) -> None:

@@ -67,7 +67,7 @@ test = [
   "pillow>=12.3.0,<13.0.0",
 ]
 [build-system]
-requires = ["setuptools>=82.0.1", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]

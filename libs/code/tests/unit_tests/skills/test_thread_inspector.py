@@ -273,6 +273,58 @@ def test_reconstructs_messages_from_latest_inline_checkpoint(
     ]
 
 
+def test_reconstructs_pending_writes_from_latest_inline_checkpoint(
+    inspector: ModuleType, tmp_path: Path
+) -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    db = tmp_path / "sessions.db"
+    thread_id = "active-thread"
+    writable = _create_database(db)
+    serde = JsonPlusSerializer()
+    checkpoint = {
+        "channel_values": {
+            "messages": [
+                HumanMessage(content="historical question", id="user-1"),
+                AIMessage(content="historical answer", id="assistant-1"),
+            ]
+        }
+    }
+    type_name, value = serde.dumps_typed(checkpoint)
+    writable.execute(
+        "INSERT INTO checkpoints "
+        "(thread_id, checkpoint_ns, checkpoint_id, metadata, type, checkpoint) "
+        "VALUES (?, '', '002', '{}', ?, ?)",
+        (thread_id, type_name, value),
+    )
+    pending = [
+        [HumanMessage(content="current question", id="user-2")],
+        [AIMessage(content="current answer", id="assistant-2")],
+    ]
+    for index, messages in enumerate(pending):
+        write_type, write_value = serde.dumps_typed(messages)
+        writable.execute(
+            "INSERT INTO writes VALUES (?, '', '002', 'task', ?, 'messages', ?, ?)",
+            (thread_id, index, write_type, write_value),
+        )
+    writable.commit()
+    writable.close()
+
+    conn = inspector._connect_read_only(db)
+    try:
+        messages = inspector._reconstruct_messages(conn, thread_id)
+    finally:
+        conn.close()
+
+    assert [message.content for message in messages] == [
+        "historical question",
+        "historical answer",
+        "current question",
+        "current answer",
+    ]
+
+
 def test_message_record_hides_reasoning_and_marks_truncation(
     inspector: ModuleType,
 ) -> None:

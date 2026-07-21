@@ -243,9 +243,9 @@ def _load_inline_messages(
     thread_id: str,
     serde: JsonPlusSerializer,
     warnings: list[str] | None = None,
-) -> list[MessageLikeRepresentation] | None:
+) -> tuple[str, list[MessageLikeRepresentation]] | None:
     checkpoint_row = conn.execute(
-        "SELECT type, checkpoint FROM checkpoints "
+        "SELECT checkpoint_id, type, checkpoint FROM checkpoints "
         "WHERE thread_id = ? AND checkpoint_ns = '' "
         "ORDER BY checkpoint_id DESC LIMIT 1",
         (thread_id,),
@@ -284,7 +284,10 @@ def _load_inline_messages(
                 "falling back to the writes table."
             )
         return None
-    return list(cast("list[MessageLikeRepresentation]", inline))
+    return (
+        str(checkpoint_row["checkpoint_id"]),
+        list(cast("list[MessageLikeRepresentation]", inline)),
+    )
 
 
 def _reconstruct_messages(
@@ -297,17 +300,23 @@ def _reconstruct_messages(
     from langgraph.types import Overwrite
 
     serde = JsonPlusSerializer()
-    inline = _load_inline_messages(conn, thread_id, serde, warnings)
-    if inline is not None:
-        return inline
-
-    rows = conn.execute(
-        "SELECT checkpoint_id, task_id, idx, type, value FROM writes "
-        "WHERE thread_id = ? AND checkpoint_ns = '' AND channel = 'messages' "
-        "ORDER BY checkpoint_id ASC, task_id ASC, idx ASC",
-        (thread_id,),
-    ).fetchall()
-    messages: list[MessageLikeRepresentation] = []
+    inline_checkpoint = _load_inline_messages(conn, thread_id, serde, warnings)
+    if inline_checkpoint is None:
+        messages: list[MessageLikeRepresentation] = []
+        rows = conn.execute(
+            "SELECT checkpoint_id, task_id, idx, type, value FROM writes "
+            "WHERE thread_id = ? AND checkpoint_ns = '' AND channel = 'messages' "
+            "ORDER BY checkpoint_id ASC, task_id ASC, idx ASC",
+            (thread_id,),
+        ).fetchall()
+    else:
+        checkpoint_id, messages = inline_checkpoint
+        rows = conn.execute(
+            "SELECT checkpoint_id, task_id, idx, type, value FROM writes "
+            "WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id = ? "
+            "AND channel = 'messages' ORDER BY task_id ASC, idx ASC",
+            (thread_id, checkpoint_id),
+        ).fetchall()
     for row in rows:
         type_name = row["type"]
         value = row["value"]

@@ -492,6 +492,7 @@ def test_make_summary_records_config():
         category="autonomous",
         config="bare",
         branch=None,
+        source_sha=None,
         rollouts=3,
         shards_found=1,
         expected_shards=1,
@@ -543,6 +544,7 @@ def test_make_summary_records_branch():
         category="autonomous",
         config="bare",
         branch="main",
+        source_sha="a" * 40,
         rollouts=3,
         shards_found=1,
         expected_shards=1,
@@ -554,6 +556,7 @@ def test_make_summary_records_branch():
         avg_at_k=1.0,
     )
     assert summary["branch"] == "main"
+    assert summary["source_sha"] == "a" * 40
     assert summary["config"] == "bare"
 
 

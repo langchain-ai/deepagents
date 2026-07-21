@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import pytest
 from textual.app import App
 from textual.events import Key, Paste
 
@@ -13,9 +14,9 @@ from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptTextArea,
 )
+from deepagents_code.tui.widgets._paste_textarea import PasteBurstTextArea
 
 if TYPE_CHECKING:
-    import pytest
     from textual.app import ComposeResult
 
 
@@ -205,6 +206,90 @@ class TestInlinePromptPaste:
 
             assert app.submissions == ["hello"]
 
+    async def test_backslash_then_enter_inserts_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rapid backslash + enter inserts a newline instead of submitting.
+
+        Some terminals (e.g. VSCode built-in) emit a literal backslash followed
+        by enter for shift+enter; the inline prompt must collapse that pair into
+        a newline like the chat input does.
+        """
+        # Widen the gap so wall-clock timing between pilot.press calls on slow
+        # CI runners cannot trip the submit path.
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Exact match: the backslash is gone and exactly one newline was
+            # inserted (guards against a double-fire re-adding the char or a
+            # second newline).
+            assert ta.text == "hello\n"
+            assert app.submissions == []
+
+    async def test_reset_clears_pending_backslash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Replacing text cannot reuse a backslash timestamp from old text."""
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            ta.text = "replacement\\"
+            ta.move_cursor((0, len(ta.text)))
+            ta.reset_paste_state()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submissions == ["replacement\\"]
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("shift+enter", id="shift_enter"),
+            pytest.param("ctrl+j", id="ctrl_j"),
+        ],
+    )
+    async def test_modifier_enter_inserts_newline(self, key: str) -> None:
+        """Modifier+Enter (and Ctrl+J) insert a newline instead of submitting.
+
+        This is the headline affordance the inline prompt inherits from
+        `PasteBurstTextArea`; without it these keys would not insert a newline
+        (and a bare-`enter` variant would submit). Regression guard for the
+        shared `BINDINGS` / `_consume_modifier_newline` wiring.
+        """
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            # Exact match guards against both keys double-firing (inherited
+            # priority binding + explicit `_consume_modifier_newline` handler).
+            assert ta.text == "hello\n"
+            assert app.submissions == []
+
     async def test_identical_second_paste_expands_placeholder(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -377,6 +462,65 @@ class TestInlinePromptPaste:
             # content. The verbatim insert is Textual's base handler's job.
             assert "[Pasted text #1" not in ta.text
             assert ta._pasted_contents == {}
+
+
+class TestSharedBindings:
+    """The newline/word-delete bindings live on the base and reach subclasses."""
+
+    def test_base_bindings_are_the_single_source_of_truth(self) -> None:
+        """`PasteBurstTextArea` owns the shared newline and word-delete keys.
+
+        Introspecting the base protects every paste-aware subclass at once: a
+        regression in these bindings would surface here before it reached the
+        chat input or inline prompt.
+        """
+        newline_keys = {
+            key.strip()
+            for binding in PasteBurstTextArea.BINDINGS
+            if binding.action == "insert_newline"
+            for key in binding.key.split(",")
+        }
+        word_delete_keys = {
+            key.strip()
+            for binding in PasteBurstTextArea.BINDINGS
+            if binding.action == "delete_word_left"
+            for key in binding.key.split(",")
+        }
+
+        assert {"shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"} <= newline_keys
+        # `ctrl+m` is carriage return in terminals, so it must remain plain Enter.
+        assert "ctrl+m" not in newline_keys
+        assert newline_keys == PasteBurstTextArea._NEWLINE_KEYS
+        assert {"ctrl+backspace", "alt+backspace"} <= word_delete_keys
+
+    def test_inline_prompt_inherits_bindings(self) -> None:
+        """`InlinePromptTextArea` defines no bindings of its own; it inherits them."""
+        assert "BINDINGS" not in InlinePromptTextArea.__dict__
+        assert InlinePromptTextArea._NEWLINE_KEYS == PasteBurstTextArea._NEWLINE_KEYS
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_deletes_word_on_ordinary_text(
+        self, key: str
+    ) -> None:
+        """The inherited word-delete binding removes the previous word.
+
+        The other inline-prompt backspace tests only cover atomic deletion of a
+        collapsed-paste placeholder; this one exercises the inherited
+        `delete_word_left` binding on ordinary text.
+        """
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert ta.text == "hello "
 
 
 class TestInlinePromptCompletion:

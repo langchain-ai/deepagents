@@ -14,7 +14,6 @@ from langgraph.types import Command
 from deepagents.backends.protocol import _resolve_backend
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
-    SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -774,24 +773,6 @@ class TestSystemPromptOverride:
         """`system_prompt` must be str or None."""
         with pytest.raises(TypeError, match="must be str or None"):
             SummarizationToolMiddleware(_make_summarization_middleware(), system_prompt=0)  # type: ignore[arg-type]
-
-    def test_wrap_model_call_appends_default_nudge(self) -> None:
-        """Baseline: default `system_prompt` appends the standard nudge text."""
-        mw = _make_middleware()
-        captured: dict[str, ModelRequest] = {}
-
-        def handler(req: ModelRequest) -> None:
-            captured["req"] = req
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([])),
-            messages=[HumanMessage(content="hi")],
-            system_message=SystemMessage(content="base"),
-            state={"messages": []},
-        )
-        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
-        appended = list(captured["req"].system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
-        assert SUMMARIZATION_SYSTEM_PROMPT in appended
 
     def test_wrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
         """`system_prompt=None` passes the request through untouched."""

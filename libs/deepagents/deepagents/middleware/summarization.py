@@ -1732,7 +1732,7 @@ def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
     *,
-    system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1748,7 +1748,6 @@ def create_summarization_tool_middleware(
     own. The agent gains:
 
     - A `compact_conversation` tool to compact its own context window
-    - A system-prompt nudge hinting when to call it
     - An eligibility gate at ~50% of the auto-summarization trigger so
         the tool refuses to compact too early
 
@@ -1764,8 +1763,8 @@ def create_summarization_tool_middleware(
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
-        system_prompt: System-prompt fragment nudging the model to call
-            `compact_conversation`. Pass `None` to skip appending the nudge.
+        system_prompt: Optional system-prompt fragment nudging the model to call
+            `compact_conversation`.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1860,7 +1859,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self,
         summarization: _DeepAgentsSummarizationMiddleware,
         *,
-        system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         """Initialize with a reference to the summarization middleware.
 

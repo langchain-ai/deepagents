@@ -15852,6 +15852,51 @@ class TestExitGracefulWorkerHandoff:
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
 
+    async def test_restart_timeout_still_stops_server(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung restart cleanup hits its timeout; server shutdown still runs."""
+        restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_blocker = asyncio.Event()
+
+        async def respawn() -> None:
+            restart_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_blocker.wait()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            restart = asyncio.create_task(respawn())
+            app._track_server_restart_task(restart)
+            await asyncio.wait_for(restart_started.wait(), timeout=2.0)
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+        assert any(
+            "Server restart cleanup did not finish within 0.01s before app exit"
+            in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
     async def test_submission_is_rejected_during_graceful_exit(self) -> None:
         """A responsive UI cannot start work after shutdown begins."""
         stop_started = threading.Event()

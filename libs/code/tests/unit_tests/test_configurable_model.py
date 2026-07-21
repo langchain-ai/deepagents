@@ -622,7 +622,7 @@ class TestFireworksSessionSettings:
         }
 
     def test_non_fireworks_non_openai_model_unchanged_with_thread_id(self) -> None:
-        model = _make_model("gemini-3.5-flash")
+        model = _make_model("gemini-3.6-flash")
         model._get_ls_params.return_value = {"ls_provider": "google_genai"}
         request = _make_request(
             model,

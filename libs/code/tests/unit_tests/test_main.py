@@ -996,7 +996,9 @@ class TestStartupAutoUpdate:
         assert exc_info.value.code == 130
         launch.assert_not_called()
 
-    def test_project_mcp_server_selection_cancel_aborts_before_tui(self) -> None:
+    def test_project_mcp_server_selection_cancel_aborts_before_tui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """Esc in the server selector cancels launch before Textual starts."""
         from deepagents_code.main import _ProjectMcpTrustPromptOutcome
 
@@ -1018,6 +1020,7 @@ class TestStartupAutoUpdate:
             cli_main()
 
         launch.assert_not_called()
+        assert "Aborted; no project MCP servers loaded" in capsys.readouterr().err
 
 
 class TestAutoUpdateDefaultMigration:
@@ -2507,6 +2510,92 @@ class TestCheckMcpProjectTrustPrompt:
         captured = capsys.readouterr()
         assert "debug-project-mcp" in captured.err
 
+    def test_escape_aborts_without_denying(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch without recording a denial decision."""
+        from deepagents_code import model_config
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _ProjectMcpTrustPromptOutcome,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_project_mcp_trust_action",
+                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert "denied" not in capsys.readouterr().err.lower()
+        assert not user_config.exists()
+
+    def test_explicit_deny_action_reports_denial(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The menu Deny action reports a denial and continues (distinct from Esc).
+
+        Positive companion to the abort tests: their `"denied" not in ...` guards
+        only mean something if the explicit-Deny path actually emits the wording.
+        """
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _ProjectMcpTrustAction,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_project_mcp_trust_action",
+                return_value=_ProjectMcpTrustAction.DENY,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        assert "denied" in capsys.readouterr().err.lower()
+
     def test_prompt_is_concise(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
@@ -3024,7 +3113,7 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
         assert not user_config.exists()
-        assert "Cancelled" in capsys.readouterr().err
+        assert "denied" not in capsys.readouterr().err.lower()
 
     def test_always_allow_all_excludes_disabled_server(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3097,7 +3186,7 @@ class TestCheckMcpProjectTrustPrompt:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """List-resolved server rows skip the approval prompt without extra output."""
+        """Remembered approvals still skip the prompt with an env allowlist set."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -3108,6 +3197,10 @@ class TestCheckMcpProjectTrustPrompt:
 
         user_config = tmp_path / "config.toml"
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "unrelated-server",
+        )
         server_configs = {
             "docs[/green]": {"command": "echo"},
             "blocked[/red]": {"command": "echo"},
@@ -3505,6 +3598,77 @@ class TestSelectProjectServersToPersist:
         assert "Deny" in rendered
         assert "Choose how to continue" not in rendered
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_escape_aborts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch instead of selecting the deny action."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _run_project_mcp_trust_action_picker,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _ProjectMcpTrustPromptOutcome:
+                from prompt_toolkit.keys import Keys
+
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                abort = next(
+                    binding.handler
+                    for binding in bindings
+                    if Keys.Escape in binding.keys
+                )
+                abort(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Esc abort" in rendered
+        assert "Esc deny" not in rendered
+
+    def test_select_action_forwards_picker_cancelled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A CANCELLED outcome from the inline picker passes straight through."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _select_project_mcp_trust_action,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_project_mcp_trust_action_picker",
+            lambda _console: _ProjectMcpTrustPromptOutcome.CANCELLED,
+        )
+
+        result = _select_project_mcp_trust_action(Console(stderr=True))
+
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3793,10 +3957,10 @@ class TestSelectProjectServersToPersist:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Esc cancels the approval, distinct from confirming an empty selection.
+        """Esc aborts the launch, distinct from confirming an empty selection.
 
-        Both paths deny rather than silently granting session trust, while Ctrl+C
-        remains a separate launch interruption.
+        Confirming an empty selection denies and continues; Esc aborts the launch
+        entirely, while Ctrl+C remains a separate launch interruption.
         """
         from rich.console import Console
 
@@ -3815,6 +3979,8 @@ class TestSelectProjectServersToPersist:
                 captured.update(kwargs)
 
             def run(self) -> list[str]:
+                from prompt_toolkit.keys import Keys
+
                 bindings = captured["key_bindings"].bindings
                 holder: dict[str, list[str]] = {}
                 event = SimpleNamespace(
@@ -3825,7 +3991,7 @@ class TestSelectProjectServersToPersist:
                 cancel = next(
                     binding.handler
                     for binding in bindings
-                    if binding.handler.__name__ == "_cancel"
+                    if Keys.Escape in binding.keys
                 )
                 cancel(event)
                 return holder["value"]
@@ -3839,6 +4005,10 @@ class TestSelectProjectServersToPersist:
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        help_control = captured["layout"].container.children[0].content
+        rendered = "".join(text for _style, text in help_control.text())
+        assert "Esc abort" in rendered
+        assert "Esc cancel" not in rendered
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_ctrl_c_returns_interrupted(

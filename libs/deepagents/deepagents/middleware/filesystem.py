@@ -1121,7 +1121,28 @@ def _build_fs_tools_section(visible: set[str]) -> tuple[str, str]:
     return header, descriptions
 
 
-_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
+def _large_tool_results_search_guidance(visible: set[str], prefix: str) -> str:
+    """Build search guidance for offloaded tool results using visible tools.
+
+    Args:
+        visible: Names of the tools visible to the model.
+        prefix: Filesystem prefix containing offloaded tool results.
+
+    Returns:
+        A comma-prefixed search clause, or an empty string when no search tool is visible.
+    """
+    if "grep" in visible:
+        return f", or use `grep` within `{prefix}/` if you need to search across offloaded tool results and do not know the exact file path"
+    if "execute" in visible:
+        return (
+            f", or use `execute` with `grep -r <pattern> {prefix}/` if you need to search "
+            "across offloaded tool results and do not know the exact file path"
+        )
+    return ""
+
+
+_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = (
+    """## Following Conventions
 
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
@@ -1135,11 +1156,19 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
+"""
+    "When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. "
+    "In those cases, use `read_file` to inspect the saved result in chunks{large_tool_search_guidance}. "
+    "Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."
+)
 
 _default_tool_header, _default_tool_descriptions = _build_fs_tools_section(set(_FS_TOOL_ORDER))
 FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
     large_tool_results_prefix="/large_tool_results",
+    large_tool_search_guidance=_large_tool_results_search_guidance(
+        set(_ALL_FS_TOOL_NAMES),
+        "/large_tool_results",
+    ),
     tool_header=_default_tool_header,
     tool_descriptions=_default_tool_descriptions,
 )
@@ -1554,10 +1583,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if cached is not None:
             return cached
         visible = set(self._enabled_tools) if self._enabled_tools is not None else set(_FS_TOOL_ORDER)
+        if not include_execution:
+            visible.discard("execute")
         tool_header, tool_descriptions = _build_fs_tools_section(visible)
         prompt_parts = [
             _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                 large_tool_results_prefix=self._large_tool_results_prefix,
+                large_tool_search_guidance=_large_tool_results_search_guidance(
+                    visible,
+                    self._large_tool_results_prefix,
+                ),
                 tool_header=tool_header,
                 tool_descriptions=tool_descriptions,
             )
@@ -2802,6 +2837,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
+                    large_tool_search_guidance=_large_tool_results_search_guidance(
+                        visible_fs,
+                        self._large_tool_results_prefix,
+                    ),
                     tool_header=tool_header,
                     tool_descriptions=tool_descriptions,
                 )

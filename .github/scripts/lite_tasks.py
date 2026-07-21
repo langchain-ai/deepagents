@@ -56,16 +56,18 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-banking_knowledge-task-073",
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
-    # 8 — hardest by combined terra+luna difficulty, plus one guard.
+    # 8 — three calibrated hard tasks + four medium frontier tasks + one guard,
+    # re-picked from the five-model full-context results. All selected tasks
+    # were independently validated against the vendored corpus and answer keys.
     "context": [
         "cb-cloud-71",  # multi_hop_chain
         "cb-cloud-15",  # multi_entity_comparison
-        "cb-cloud-90",  # multi_hop_chain
-        "cb-cloud-13",  # multi_entity_comparison
-        "cb-cloud-42",  # negation
-        "cb-cloud-83",  # multi_entity_comparison
+        "cb-cloud-35",  # multi_entity_comparison
+        "cb-cloud-55",  # multi_entity_comparison
+        "cb-cloud-62",  # multi_hop_chain
         "cb-cloud-10",  # multi_hop_chain
-        "cb-cloud-3",   # set_intersection (guard)
+        "cb-cloud-74",  # multi_entity_comparison
+        "cb-cloud-8",  # cross_file_counting (guard)
     ],
 }
 

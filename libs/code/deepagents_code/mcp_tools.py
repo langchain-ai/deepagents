@@ -1533,7 +1533,12 @@ def _build_cached_mcp_tool(
         mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
     )
     wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {**base_meta, **wrapped_meta} or None
+    metadata = {
+        **base_meta,
+        **wrapped_meta,
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+    }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
         try:
@@ -1762,18 +1767,38 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP adapter modules whose first import may block.
+    """Eagerly import MCP modules whose first import may block.
 
-    Run via `asyncio.to_thread` before adapter symbols are used, so the initial
-    (potentially blocking) package-resource scan stays off the server event
-    loop. Because this runs inside `_load_tools_from_config`, it happens only
-    when at least one active MCP server exists — a config with no MCP servers
-    never imports the adapters.
+    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
+    blocking side effect of a first import happens off the server event loop
+    rather than where Blockbuster would reject it. Two known offenders:
+
+    - `langchain_mcp_adapters` runs a package-resource scan on first import.
+    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
+      calls `os.getcwd()` in its module body (verified against the pinned
+      versions — the exact culprit may shift as dependencies change, but the
+      general risk of import-time I/O in this subtree does not).
+
+    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
+    (remote-server preflight and the per-tool call path), where an import
+    failure is captured and reported per server. A failure to warm it must not
+    abort loading for every server — notably stdio-only configs, which never
+    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
+    at the real use site. Runs only when at least one active MCP server exists.
     """
     from langchain_mcp_adapters import (
         sessions as _sessions,  # noqa: F401
         tools as _tools,  # noqa: F401
     )
+
+    try:
+        from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm mcp_auth import off the event loop; "
+            "deferring to per-server use",
+            exc_info=True,
+        )
 
 
 async def _gather_bounded(

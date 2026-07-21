@@ -119,6 +119,10 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_AUTO_MODE_ENABLED_WARNING = (
+    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+)
+
 _BLOCKED_GOAL_RETRY_CONTEXT = (
     "<dcode_blocked_goal_retry_context>\n"
     "The active goal was previously marked blocked.\n\n"
@@ -561,6 +565,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
@@ -955,6 +960,63 @@ def _load_show_scrollbar() -> bool:
     if value is not None:
         logger.warning(
             "[ui].show_scrollbar should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
+def _load_debug_console_click_to_copy() -> bool:
+    r"""Load the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Reads `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var, falling back to
+    `[ui].debug_console_click_to_copy` from `~/.deepagents/config.toml`, and
+    finally `False` (click-to-copy off; Enter-to-copy is always available).
+
+    Returns:
+        The resolved preference.
+    """
+    from deepagents_code._env_vars import (
+        DEBUG_CONSOLE_CLICK_TO_COPY,
+        classify_env_bool,
+    )
+
+    raw = os.environ.get(DEBUG_CONSOLE_CLICK_TO_COPY)
+    if raw is not None and raw.strip():
+        env = classify_env_bool(raw)
+        if env is not None:
+            return env
+
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not read config for debug console click-to-copy preference: %s",
+            exc,
+        )
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading debug console "
+            "click-to-copy preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("debug_console_click_to_copy")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].debug_console_click_to_copy should be a boolean; got %s",
             type(value).__name__,
         )
     return False
@@ -1395,6 +1457,68 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
         return _ConfigWriteResult(
             False,
             f"Scrollbar toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
+def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
+    r"""Persist the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Writes `[ui].debug_console_click_to_copy` atomically (temp file +
+    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["debug_console_click_to_copy"] = enabled
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save debug console click-to-copy preference")
+        return _ConfigWriteResult(
+            False,
+            f"Click-to-copy toggled for this session but could not be saved "
             f"({type(exc).__name__}).",
             "error",
         )
@@ -2027,16 +2151,24 @@ class TextualSessionState:
     def __init__(
         self,
         *,
-        auto_approve: bool = False,
+        approval_mode: ApprovalMode | str = "manual",
+        auto_approve: bool | None = None,
         thread_id: str | None = None,
     ) -> None:
         """Initialize session state.
 
         Args:
-            auto_approve: Whether to auto-approve tool calls
-            thread_id: Optional thread ID (generates UUID7 if not provided)
+            approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+            auto_approve: Compatibility input for the previous Boolean API.
+            thread_id: Optional thread ID (generates UUID7 if not provided).
         """
-        self.auto_approve = auto_approve
+        from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+
+        self.approval_mode = coerce_approval_mode(approval_mode)
+        if auto_approve is not None:
+            self.approval_mode = (
+                ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+            )
         self.approval_mode_key: str | None = None
         self.turn_number = 0
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
@@ -2052,6 +2184,19 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+
+    @property
+    def auto_approve(self) -> bool:
+        """Whether the compatibility unrestricted mode is active."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        return self.approval_mode is ApprovalMode.YOLO
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        self.approval_mode = ApprovalMode.YOLO if value is True else ApprovalMode.MANUAL
 
     @property
     def thread_id(self) -> str:
@@ -2370,7 +2515,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
-        Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+t", "toggle_auto_approve", "Toggle Approval Mode", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         # `check_action` steps this binding aside (returns `False`) while a
         # `DebugConsoleScreen` is active so the console's own `shift+tab`
@@ -2380,7 +2525,7 @@ class DeepAgentsApp(App):
         Binding(
             "shift+tab",
             "toggle_auto_approve",
-            "Toggle Auto-Approve",
+            "Toggle Approval Mode",
             show=False,
             priority=True,
         ),
@@ -2425,10 +2570,10 @@ class DeepAgentsApp(App):
         Binding("j", "approval_down", "Down", show=False),
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
-        Binding("1", "approval_yes", "Yes", show=False),
-        Binding("2", "approval_auto", "Auto", show=False),
+        Binding("1", "approval_position(0)", "Select first", show=False),
+        Binding("2", "approval_position(1)", "Select second", show=False),
+        Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
@@ -2466,7 +2611,8 @@ class DeepAgentsApp(App):
         agent: Pregel | None = None,
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
-        auto_approve: bool = False,
+        approval_mode: ApprovalMode | str = "manual",
+        auto_approve: bool | None = None,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         resume_thread: str | None = None,
@@ -2494,8 +2640,9 @@ class DeepAgentsApp(App):
             agent: Pre-configured LangGraph agent, or `None` when server
                 startup is deferred via `server_kwargs`.
             assistant_id: Agent identifier for memory storage
-            backend: Backend for file operations
-            auto_approve: Whether to start with auto-approve enabled
+            backend: Backend for file operations.
+            approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+            auto_approve: Compatibility input for the previous Boolean API.
             cwd: Current working directory to display
             thread_id: Thread ID for the session.
 
@@ -2622,13 +2769,15 @@ class DeepAgentsApp(App):
         self._backend = backend
         """Filesystem/storage backend for agent file operations."""
 
-        self._auto_approve = auto_approve
-        """Current auto-approve state for tool calls.
+        from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
 
-        Initialized from `--auto-approve` and toggled at runtime via
-        Ctrl+T / Shift+Tab or the approval menu's 'Auto' option; kept in
-        sync with `_session_state.auto_approve`.
-        """
+        self._approval_mode = coerce_approval_mode(approval_mode)
+        if auto_approve is not None:
+            self._approval_mode = (
+                ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+            )
+        self._auto_approve = self._approval_mode is ApprovalMode.YOLO
+        """Compatibility mirror of unrestricted `yolo` state."""
 
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         """Session cwd.
@@ -2864,6 +3013,15 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        self._auto_mode_eligible = self._sandbox_type is None and is_env_truthy(
+            EXPERIMENTAL
+        )
+        if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
+            self._approval_mode = ApprovalMode.MANUAL
+            self._auto_approve = False
+        self._approval_mode_blocked = False
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
@@ -2982,6 +3140,15 @@ class DeepAgentsApp(App):
 
         Restored from `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var or
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
+        """
+
+        self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
+        r"""Whether the `Ctrl+\` Debug Console copies on click.
+
+        Restored from `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var or
+        `[ui].debug_console_click_to_copy` and re-persisted when the console's
+        "Click to copy" checkbox is toggled. Off by default; Enter-to-copy is
+        always available.
         """
 
         # Widget refs (populated in compose/on_mount)
@@ -3558,9 +3725,21 @@ class DeepAgentsApp(App):
             merged = list(get_slash_commands()) + cmds
             self._chat_input.update_slash_commands(merged)
 
-        # Set initial auto-approve state
-        if self._auto_approve:
-            self._status_bar.set_auto_approve(enabled=True)
+        self._status_bar.set_approval_mode(self._approval_mode.value)
+        if self._approval_mode.value == "auto":
+            self.notify(
+                _AUTO_MODE_ENABLED_WARNING,
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
+        elif self._approval_mode.value == "yolo":
+            self.notify(
+                "YOLO is active: gated actions run without review.",
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
 
         # `Widget.focus()` defers the actual focus change by posting a callback.
         # Terminal keys may already be ahead of that callback in the app queue,
@@ -3861,6 +4040,7 @@ class DeepAgentsApp(App):
             update_status=self._update_status,
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
+            on_switch_to_manual=self._switch_to_manual_from_fallback,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             on_user_visible_output_started=self._on_user_visible_output_started,
@@ -3869,6 +4049,8 @@ class DeepAgentsApp(App):
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
+            on_auto_mode_event=self._on_auto_mode_event,
+            on_approval_mode_fallback=self._on_approval_mode_fallback,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -3970,12 +4152,12 @@ class DeepAgentsApp(App):
 
         def _create() -> TextualSessionState:
             return TextualSessionState(
-                auto_approve=self._auto_approve,
+                approval_mode=self._approval_mode,
                 thread_id=self._lc_thread_id,
             )
 
         try:
-            self._session_state = await asyncio.to_thread(_create)
+            session_state = await asyncio.to_thread(_create)
         except Exception:
             logger.exception("Failed to create session state")
             self.notify(
@@ -3984,6 +4166,11 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
             return
+        # A user can change the approval mode while session construction runs
+        # in the worker thread. Re-read the app-owned selection on the event
+        # loop so the newly assigned state cannot overwrite that newer choice.
+        session_state.approval_mode = self._approval_mode
+        self._session_state = session_state
         await self._auto_accept_pending_goal_rubric()
 
     async def _ensure_managed_ripgrep(self) -> bool:
@@ -6958,8 +7145,12 @@ class DeepAgentsApp(App):
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
-        # Check if ALL actions in the batch are auto-approvable shell commands
-        if settings.shell_allow_list and action_requests:
+        is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback ")
+            for request in action_requests or []
+        )
+        if settings.shell_allow_list and action_requests and not is_auto_fallback:
             all_auto_approved = True
             approved_commands = []
 
@@ -7013,7 +7204,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
+        menu = ApprovalMenu(
+            action_requests,
+            assistant_id,
+            id=unique_id,
+            auto_mode_eligible=self._auto_mode_eligible,
+        )
         menu.set_future(result_future)
 
         self._pending_approval_widget = menu
@@ -7125,22 +7321,25 @@ class DeepAgentsApp(App):
             )
         await self._mount_approval_widget(menu, result_future)
 
-    async def _write_live_approval_mode(self) -> bool:
-        """Persist the current approval mode for the active thread.
+    async def _write_live_approval_mode(self, mode: ApprovalMode | None = None) -> bool:
+        """Persist an approval mode for the active thread.
+
+        Args:
+            mode: Target mode, or the current session mode when omitted.
 
         Returns:
-            `True` when no write was needed or the write succeeded, otherwise
-            `False`.
+            `True` when the Store acknowledges the write, otherwise `False`.
         """
         if self._session_state is None or self._agent is None:
-            return True
+            return False
         from deepagents_code.approval_mode import awrite_approval_mode
 
+        target = mode or self._session_state.approval_mode
         try:
             live_key = await awrite_approval_mode(
                 self._agent,
                 self._session_state.thread_id,
-                auto_approve=bool(self._session_state.auto_approve),
+                mode=target,
             )
         except Exception:
             self._session_state.approval_mode_key = None
@@ -7161,25 +7360,77 @@ class DeepAgentsApp(App):
         """Surface live approval-mode degradation to the user."""
         self.notify(message, severity="warning", timeout=8, markup=False)
 
-    async def _on_auto_approve_enabled(self) -> None:
-        """Handle auto-approve being enabled via the HITL approval menu.
+    def _on_approval_mode_fallback(self, mode: str) -> None:
+        """Synchronize local UI state after the stream forces Manual.
 
-        Called when the user selects "Auto-approve all" from an approval
-        dialog. Syncs the auto-approve state across the app flag, status
-        bar indicator, and session state so subsequent tool calls skip
-        the approval prompt.
+        Args:
+            mode: Persisted fallback mode from the adapter.
         """
-        self._auto_approve = True
+        from deepagents_code.approval_mode import coerce_approval_mode
+
+        self._approval_mode = coerce_approval_mode(mode)
+        self._auto_approve = False
+        if self._session_state is not None:
+            self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=True)
+            self._status_bar.set_approval_mode(self._approval_mode.value)
+
+    async def _on_auto_approve_enabled(self) -> bool:
+        """Enable Auto only after the live Store acknowledges it.
+
+        Returns:
+            `True` when Auto is active for subsequent actions.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if not self._auto_mode_eligible:
+            self._warn_live_approval_mode_unavailable(
+                "Auto is available only in the opt-in local TUI beta."
+            )
+            return False
+        if not await self._write_live_approval_mode(ApprovalMode.AUTO):
+            self._warn_live_approval_mode_unavailable(
+                "Auto could not be persisted; this approval remains pending in Manual."
+            )
+            return False
+        self._approval_mode = ApprovalMode.AUTO
+        self._auto_approve = False
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
-            self._session_state.auto_approve = True
-            if not await self._write_live_approval_mode():
-                self._warn_live_approval_mode_unavailable(
-                    "Auto-approve could not sync to the running agent; "
-                    "approval prompts may continue."
-                )
-        await self._auto_accept_pending_goal_rubric()
+            self._session_state.approval_mode = ApprovalMode.AUTO
+        self.notify(
+            _AUTO_MODE_ENABLED_WARNING,
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+        return True
+
+    async def _switch_to_manual_from_fallback(self) -> bool:
+        """Persist Manual before asking again about a fallback action.
+
+        Returns:
+            `True` when Manual is active.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if not await self._write_live_approval_mode(ApprovalMode.MANUAL):
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted; the active run was cancelled "
+                "for safety."
+            )
+            self._force_interrupt_active_work()
+            return False
+        self._approval_mode_blocked = False
+        self._approval_mode = ApprovalMode.MANUAL
+        self._auto_approve = False
+        if self._session_state:
+            self._session_state.approval_mode = ApprovalMode.MANUAL
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+        return True
 
     async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
@@ -13259,6 +13510,14 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        if self._approval_mode_blocked:
+            await self._mount_message(
+                ErrorMessage(
+                    "Manual approval mode has not been persisted. Press Ctrl+T "
+                    "to retry before starting another run."
+                )
+            )
+            return
         from deepagents_code.config import settings
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
@@ -13349,9 +13608,6 @@ class DeepAgentsApp(App):
                 on_rubric_evaluation_end=(
                     _record_goal_grading_run if goal_backed_grading else None
                 ),
-                # `auto_approve` is intentionally omitted here: execute_task_textual
-                # writes it into this context from `session_state.auto_approve` at
-                # the top of every stream iteration, so seeding it would be dead.
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
@@ -15576,6 +15832,39 @@ class DeepAgentsApp(App):
         if panel is not None:
             panel.on_subagent_event(event)
 
+    async def _on_auto_mode_event(self, event: dict[str, Any]) -> None:
+        """Render one compact sanitized Auto event in the transcript.
+
+        Args:
+            event: Validated custom-stream event from the server middleware.
+        """
+        kind = event.get("event")
+        reason = str(event.get("reason") or "")
+        if kind == "fallback":
+            if event.get("mode") == "manual":
+                from deepagents_code.approval_mode import ApprovalMode
+
+                persisted = await self._write_live_approval_mode(ApprovalMode.MANUAL)
+                self._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                if not persisted:
+                    logger.warning("Could not persist server-requested Manual fallback")
+                text = f"Auto fell back to Manual: {reason}"
+                self.notify(text, severity="warning", timeout=10, markup=False)
+            else:
+                text = (
+                    "Auto fallback: human approval required "
+                    f"(denials {event.get('consecutive_denials', 0)}, "
+                    f"unavailable {event.get('consecutive_unavailable', 0)}, "
+                    f"total {event.get('total_denials', 0)})."
+                )
+        elif kind == "denial":
+            text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
+        elif kind == "unavailable":
+            text = f"Auto classifier unavailable: {reason}"
+        else:
+            text = f"Auto warning: {reason}"
+        await self._mount_message(AppMessage(text))
+
     def action_toggle_subagent_panel(self) -> None:
         """Expand or collapse the subagent fan-out panel."""
         panel = self._get_subagent_panel()
@@ -15583,11 +15872,10 @@ class DeepAgentsApp(App):
             panel.toggle()
 
     async def action_toggle_auto_approve(self) -> None:
-        """Toggle auto-approve mode for the current session.
+        """Toggle between Manual and Auto after Store acknowledgement.
 
-        When enabled, all tool calls (shell execution, file writes/edits,
-        web search, URL fetch) run without prompting. Updates the status
-        bar indicator and session state.
+        A session launched in YOLO moves to Manual; normal key navigation never
+        enters unrestricted mode.
         """
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
@@ -15641,34 +15929,55 @@ class DeepAgentsApp(App):
         if self._pending_ask_user_widget is not None:
             self._pending_ask_user_widget.action_previous_question()
             return
-        self._auto_approve = not self._auto_approve
-        if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=self._auto_approve)
-        if self._session_state:
-            self._session_state.auto_approve = self._auto_approve
-            if not await self._write_live_approval_mode():
-                if self._auto_approve:
-                    self._warn_live_approval_mode_unavailable(
-                        "Auto-approve could not sync to the running agent; "
-                        "approval prompts may continue."
-                    )
-                elif self._agent_running:
-                    # Switching to manual mid-run, but the agent never saw it:
-                    # cancel the active run rather than let it keep auto-approving.
-                    self._session_state.approval_mode_key = None
-                    self._warn_live_approval_mode_unavailable(
-                        "Manual approval could not sync to the running agent; "
-                        "the active run was cancelled for safety."
-                    )
-                    self._force_interrupt_active_work()
-                else:
-                    self._warn_live_approval_mode_unavailable(
-                        "Manual approval could not sync to the running agent; "
-                        "start a new run before continuing."
-                    )
+        from deepagents_code.approval_mode import ApprovalMode
 
-        if self._live_goal_auto_approve_enabled():
-            await self._auto_accept_pending_goal_rubric()
+        if self._approval_mode is ApprovalMode.MANUAL:
+            if not self._auto_mode_eligible:
+                self._warn_live_approval_mode_unavailable(
+                    "Auto is available only in the opt-in local TUI beta."
+                )
+                return
+            target = ApprovalMode.AUTO
+        else:
+            target = ApprovalMode.MANUAL
+
+        # With no usable agent/session pair there is no running graph to update.
+        # Stage the selection locally; `execute_task_textual` persists it before
+        # the first `astream` after connection. This is also important for an
+        # initial prompt, which can run before generic deferred actions drain.
+        should_persist_live = (
+            self._agent is not None and self._session_state is not None
+        )
+        if should_persist_live and not await self._write_live_approval_mode(target):
+            if target is ApprovalMode.AUTO:
+                self._warn_live_approval_mode_unavailable(
+                    "Auto could not be persisted; remaining in Manual."
+                )
+                return
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted; active work was cancelled and "
+                "new runs are blocked."
+            )
+            if self._agent_running:
+                self._force_interrupt_active_work()
+            return
+
+        self._approval_mode_blocked = False
+        self._approval_mode = target
+        self._auto_approve = target is ApprovalMode.YOLO
+        if self._session_state:
+            self._session_state.approval_mode = target
+        if self._status_bar:
+            self._status_bar.set_approval_mode(target.value)
+        if target is ApprovalMode.AUTO:
+            self.notify(
+                "Automated review (beta) is enabled. It checks approval-gated "
+                "actions, but may not catch every issue.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""
@@ -15761,17 +16070,26 @@ class DeepAgentsApp(App):
         return focused.id == "chat-input" or focused in self._chat_input.walk_children()
 
     def action_approval_yes(self) -> None:
-        """Handle yes/1 in approval menu."""
+        """Handle the semantic approve key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
+    def action_approval_position(self, position: int) -> None:
+        """Select an approval option by its visible position.
+
+        Args:
+            position: Zero-based position of the displayed option.
+        """
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_position(position)
+
     def action_approval_auto(self) -> None:
-        """Handle auto/2 in approval menu."""
+        """Handle the semantic Auto key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
 
     def action_approval_no(self) -> None:
-        """Handle no/3 in approval menu."""
+        """Handle the semantic reject key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
@@ -17204,9 +17522,51 @@ class DeepAgentsApp(App):
                 self._build_debug_snapshot(),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
+                click_to_copy=self._debug_console_click_to_copy,
+                on_click_to_copy_change=self._persist_debug_console_click_to_copy,
             ),
             handle_result,
         )
+
+    def _persist_debug_console_click_to_copy(self, enabled: bool) -> None:
+        r"""Persist the Debug Console click-to-copy toggle off the UI thread.
+
+        Keeps the in-memory preference in sync so a reopened console reflects
+        the latest choice, and writes `[ui].debug_console_click_to_copy` off the
+        UI thread via `asyncio.to_thread` so a slow disk never blocks the toggle.
+        A write failure degrades to a toast rather than losing the session-level
+        change.
+
+        Args:
+            enabled: The new click-to-copy state to persist.
+        """
+        self._debug_console_click_to_copy = enabled
+
+        async def _persist() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    _save_debug_console_click_to_copy_result, enabled
+                )
+                if result.message is not None:
+                    self.notify(
+                        result.message,
+                        severity=result.severity,
+                        timeout=6,
+                        markup=False,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to persist debug console click-to-copy preference",
+                    exc_info=True,
+                )
+                self.notify(
+                    "Click-to-copy toggled for this session but could not be saved.",
+                    severity="error",
+                    timeout=6,
+                    markup=False,
+                )
+
+        self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
         """Capture a point-in-time session/runtime snapshot for the console.
@@ -17219,7 +17579,7 @@ class DeepAgentsApp(App):
             Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
-        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
@@ -17283,7 +17643,11 @@ class DeepAgentsApp(App):
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
             _thread_field(),
             _safe("CWD", lambda: self._cwd),
-            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Approval mode", lambda: self._approval_mode.value),
+            _safe(
+                "Experimental",
+                lambda: "on" if is_env_truthy(EXPERIMENTAL) else "off",
+            ),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),
@@ -21079,7 +21443,8 @@ async def run_textual_app(
     agent: Any = None,  # noqa: ANN401
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
-    auto_approve: bool = False,
+    approval_mode: ApprovalMode | str = "manual",
+    auto_approve: bool | None = None,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     resume_thread: str | None = None,
@@ -21110,7 +21475,8 @@ async def run_textual_app(
         agent: Pre-configured LangGraph agent (optional).
         assistant_id: Agent identifier for memory storage.
         backend: Backend for file operations.
-        auto_approve: Whether to start with auto-approve enabled.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for the previous Boolean API.
         cwd: Current working directory to display.
         thread_id: Thread ID for the session.
 
@@ -21168,6 +21534,7 @@ async def run_textual_app(
         agent=agent,
         assistant_id=assistant_id,
         backend=backend,
+        approval_mode=approval_mode,
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,

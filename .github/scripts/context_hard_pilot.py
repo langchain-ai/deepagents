@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
 import json
 import math
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -29,6 +32,7 @@ MAX_RAW_JSONL_BYTES = 64 * 1024
 MAX_VERIFICATION_QUERY_BYTES = 8 * 1024
 LETTA_REPOSITORY = "https://github.com/letta-ai/letta-evals.git"
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+_DATABASE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _JACCARD_SIMILARITY_THRESHOLD = 0.8
 _NUMERIC_ABSOLUTE_TOLERANCE = Decimal("0.01")
 _GIT_TIMEOUT_SECONDS = 60
@@ -43,6 +47,27 @@ _SQLITE_MAX_VM_STEPS = 10_000
 _SQLITE_MAX_QUERY_SECONDS = 0.1
 _RAW_OUTPUT_NAME = "agent_generated_questions.jsonl"
 _PARSED_OUTPUT_NAME = "agent_generated_questions_parsed.jsonl"
+_CANDIDATES_OUTPUT_NAME = "candidates.jsonl"
+_MANIFEST_OUTPUT_NAME = "manifest.json"
+_MANIFEST_SCHEMA_VERSION = 1
+_HARD_POLICY_VERSION = "1"
+_PILOT_CANDIDATE_COUNT = 5
+_DATABASE_HASH_CHUNK_BYTES = 1024 * 1024
+_INNER_RUN_TIMEOUT_SECONDS = 300
+_MAX_RAW_CANDIDATE_FILE_BYTES = _PILOT_CANDIDATE_COUNT * MAX_RAW_JSONL_BYTES
+_VENDOR_CLOUD_QUESTION_COUNT = 100
+_PARSED_CANDIDATE_FIELDS = frozenset({"input", "ground_truth", "agent_args"})
+_PARSED_AGENT_ARGS_FIELDS = frozenset({"tags", "extra"})
+_PARSED_EXTRA_FIELDS = frozenset(
+    {
+        "required_files",
+        "question_type",
+        "difficulty",
+        "verification_query",
+        "sql_queries",
+        "source",
+    }
+)
 _HARD_MODE_PROMPT = """
 Hard-mode requirements: use at least six distinct source files and at least six SQL
 steps. Build two sequential, indirect dependency chains that converge in a final
@@ -52,6 +77,7 @@ The verification query must start with SELECT and use nested subqueries, not CTE
 """.strip()
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
+Checkout = Callable[..., Path]
 
 _TRUSTED_MODULE_ORDER = (
     "display",
@@ -593,8 +619,227 @@ def run_upstream_checkout(
         sys.dont_write_bytecode = original_dont_write_bytecode
 
 
+def write_manifest(
+    output_dir: Path,
+    *,
+    candidates: list[dict[str, object]],
+    revision: str,
+    model: str,
+    database_path: Path,
+) -> dict[str, object]:
+    """Write a reproducible provenance manifest for the quarantined candidates.
+
+    Args:
+        output_dir: Directory receiving `manifest.json`.
+        candidates: Ordered raw hard-mode candidates to validate before writing.
+        revision: Immutable Letta generator commit SHA.
+        model: Generator model identifier.
+        database_path: SQLite fixture used for local answer verification.
+
+    Returns:
+        The manifest written to `output_dir`.
+
+    Raises:
+        HardModeValidationError: If provenance inputs are not safe or reproducible.
+    """
+    _validate_revision(revision)
+    _validate_model(model)
+    _validate_database_path(database_path)
+    _validate_pilot_candidates(candidates, database_path=database_path, verify_answers=True)
+    database_sha256 = _sha256_file(database_path)
+    manifest = _build_manifest(
+        candidates,
+        revision=revision,
+        model=model,
+        database_sha256=database_sha256,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / _MANIFEST_OUTPUT_NAME
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def materialize_quarantine(
+    output_dir: Path,
+    *,
+    candidates: list[dict[str, object]],
+    revision: str,
+    model: str,
+    database_path: Path,
+) -> dict[str, object]:
+    """Validate and atomically write the five-candidate calibration quarantine.
+
+    Args:
+        output_dir: New destination directory for the candidate JSONL and manifest.
+        candidates: Raw records accepted by the trusted inner generator.
+        revision: Immutable Letta generator commit SHA.
+        model: Generator model identifier.
+        database_path: SQLite fixture used to reverify each answer.
+
+    Returns:
+        The written manifest.
+
+    Raises:
+        HardModeValidationError: If inputs violate policy or `output_dir` is unsafe.
+    """
+    _validate_revision(revision)
+    _validate_model(model)
+    _validate_pilot_candidates(candidates, database_path=database_path, verify_answers=True)
+    parsed_records = [_parsed_candidate_record(candidate) for candidate in candidates]
+
+    output_parent = output_dir.parent
+    output_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=output_parent,
+        prefix=f".{output_dir.name}.staging-",
+    ) as staging_directory:
+        staging_path = Path(staging_directory)
+        _write_jsonl(staging_path / _CANDIDATES_OUTPUT_NAME, parsed_records)
+        manifest = write_manifest(
+            staging_path,
+            candidates=candidates,
+            revision=revision,
+            model=model,
+            database_path=database_path,
+        )
+        _prepare_empty_output_directory(output_dir)
+        staging_path.replace(output_dir)
+    return manifest
+
+
+def run_generation_pilot(
+    *,
+    revision: str,
+    output_dir: Path,
+    model: str,
+    candidate_count: int,
+    checkout: Checkout = checkout_letta_generator,
+    run: Run = subprocess.run,
+    script_path: Path | None = None,
+) -> dict[str, object]:
+    """Generate exactly five candidates in a temporary pinned Letta checkout.
+
+    Args:
+        revision: Immutable Letta generator commit SHA.
+        output_dir: New calibration quarantine directory.
+        model: Generator model identifier.
+        candidate_count: Required pilot candidate count, fixed at five.
+        checkout: Checkout helper injected by tests.
+        run: Process runner injected by tests.
+        script_path: Script path used for the isolated inner subprocess.
+
+    Returns:
+        The manifest for the atomically materialized quarantine.
+
+    Raises:
+        HardModeValidationError: If the request or trusted fixture is invalid.
+        subprocess.CalledProcessError: If checkout or inner generation fails.
+    """
+    _validate_revision(revision)
+    _validate_model(model)
+    _validate_candidate_count(candidate_count)
+    resolved_script_path = (script_path or Path(__file__)).resolve()
+    with tempfile.TemporaryDirectory(prefix="context-hard-pilot-") as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        generator_directory = checkout(
+            revision,
+            temporary_path / "upstream-checkout",
+            run=run,
+        )
+        source_database_path = generator_directory / "data" / "letta_file_bench.db"
+        _validate_database_path(source_database_path)
+        copied_database_path = temporary_path / "generation" / "letta_file_bench.db"
+        copied_database_path.parent.mkdir()
+        shutil.copy2(source_database_path, copied_database_path)
+        raw_output_path = temporary_path / _RAW_OUTPUT_NAME
+        run(
+            [
+                sys.executable,
+                str(resolved_script_path),
+                "--run-upstream-checkout",
+                "--generator-directory",
+                str(generator_directory),
+                "--database-path",
+                str(copied_database_path),
+                "--output-path",
+                str(raw_output_path),
+                "--model",
+                model,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_INNER_RUN_TIMEOUT_SECONDS,
+            shell=False,
+        )
+        candidates = _read_raw_candidates(raw_output_path)
+        return materialize_quarantine(
+            output_dir,
+            candidates=candidates,
+            revision=revision,
+            model=model,
+            database_path=copied_database_path,
+        )
+
+
+def validate_quarantine(input_dir: Path, *, database_path: Path, model: str) -> None:
+    """Deterministically revalidate an existing quarantine without running a model.
+
+    Args:
+        input_dir: Directory containing a materialized candidate JSONL and manifest.
+        database_path: Original SQLite fixture used to verify every candidate answer.
+        model: Generator model identifier that must exactly match manifest provenance.
+
+    Raises:
+        HardModeValidationError: If the quarantine does not retain its policy evidence.
+    """
+    _validate_model(model)
+    if input_dir.is_symlink() or not input_dir.is_dir():
+        msg = "input directory must be an existing non-symlink directory"
+        raise HardModeValidationError(msg)
+    manifest = _read_manifest(input_dir / _MANIFEST_OUTPUT_NAME)
+    source = manifest.get("source")
+    if not isinstance(source, Mapping):
+        msg = "manifest source must be a mapping"
+        raise HardModeValidationError(msg)
+    revision = source.get("letta_revision")
+    manifest_model = source.get("generator_model")
+    database_sha256 = source.get("database_sha256")
+    if not isinstance(revision, str):
+        msg = "manifest must contain a Letta revision"
+        raise HardModeValidationError(msg)
+    if not isinstance(manifest_model, str):
+        msg = "manifest must contain a generator model"
+        raise HardModeValidationError(msg)
+    if not isinstance(database_sha256, str) or not _DATABASE_SHA256_RE.fullmatch(database_sha256):
+        msg = "manifest must contain a SHA-256 database hash"
+        raise HardModeValidationError(msg)
+    _validate_revision(revision)
+    _validate_model(manifest_model)
+    if model != manifest_model:
+        msg = "model does not match the manifest generator model"
+        raise HardModeValidationError(msg)
+    if _sha256_file(database_path) != database_sha256:
+        msg = "database hash does not match the manifest"
+        raise HardModeValidationError(msg)
+    candidates = _read_parsed_candidates(input_dir / _CANDIDATES_OUTPUT_NAME)
+    _validate_pilot_candidates(candidates, database_path=database_path, verify_answers=True)
+    expected_manifest = _build_manifest(
+        candidates,
+        revision=revision,
+        model=manifest_model,
+        database_sha256=database_sha256,
+    )
+    if manifest != expected_manifest:
+        msg = "manifest does not match the candidate records"
+        raise HardModeValidationError(msg)
+
+
 def main(argv: list[str] | None = None) -> None:
-    """Run the internal pinned-upstream generator mode.
+    """Run inner generation, outer pilot materialization, or deterministic validation.
 
     Args:
         argv: Optional CLI argument list, using process arguments by default.
@@ -610,25 +855,427 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--database-path", type=Path)
     parser.add_argument("--output-path", type=Path)
     parser.add_argument("--model")
+    parser.add_argument("--letta-revision")
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--candidate-count", type=int)
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--input-dir", type=Path)
     arguments = parser.parse_args(argv)
-    if not arguments.run_upstream_checkout:
-        parser.error("--run-upstream-checkout is required")
+    if arguments.run_upstream_checkout:
+        required_arguments = (
+            arguments.generator_directory,
+            arguments.database_path,
+            arguments.output_path,
+            arguments.model,
+        )
+        if any(argument is None for argument in required_arguments):
+            parser.error(
+                "--generator-directory, --database-path, --output-path, and --model are required"
+            )
+        run_upstream_checkout(
+            arguments.generator_directory,
+            arguments.database_path,
+            arguments.output_path,
+            arguments.model,
+        )
+        return
+    if arguments.validate_only:
+        if arguments.input_dir is None:
+            parser.error("--input-dir is required with --validate-only")
+        if arguments.database_path is None:
+            parser.error("--database-path is required with --validate-only")
+        if arguments.model is None:
+            parser.error("--model is required with --validate-only")
+        try:
+            validate_quarantine(
+                arguments.input_dir,
+                database_path=arguments.database_path,
+                model=arguments.model,
+            )
+        except HardModeValidationError as error:
+            parser.error(str(error))
+        return
     required_arguments = (
-        arguments.generator_directory,
-        arguments.database_path,
-        arguments.output_path,
+        arguments.letta_revision,
+        arguments.output_dir,
         arguments.model,
+        arguments.candidate_count,
     )
     if any(argument is None for argument in required_arguments):
-        parser.error(
-            "--generator-directory, --database-path, --output-path, and --model are required"
+        parser.error("--letta-revision, --output-dir, --model, and --candidate-count are required")
+    try:
+        run_generation_pilot(
+            revision=arguments.letta_revision,
+            output_dir=arguments.output_dir,
+            model=arguments.model,
+            candidate_count=arguments.candidate_count,
         )
-    run_upstream_checkout(
-        arguments.generator_directory,
-        arguments.database_path,
-        arguments.output_path,
-        arguments.model,
+    except HardModeValidationError as error:
+        parser.error(str(error))
+
+
+def _build_manifest(
+    candidates: list[dict[str, object]],
+    *,
+    revision: str,
+    model: str,
+    database_sha256: str,
+) -> dict[str, object]:
+    """Build deterministic manifest data after candidate validation has passed."""
+    manifest_candidates = [
+        _manifest_candidate(candidate, index) for index, candidate in enumerate(candidates, start=1)
+    ]
+    return {
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "candidate_count": len(candidates),
+        "source": {
+            "owner": "deepagents",
+            "candidate_source": "deepagents-context-hard",
+            "letta_revision": revision,
+            "generator_model": model,
+            "database_sha256": database_sha256,
+        },
+        "hard_policy_version": _HARD_POLICY_VERSION,
+        "candidate_ids": [candidate["id"] for candidate in manifest_candidates],
+        "validation": {
+            "result": "passed",
+            "duplicate_screen": {
+                "result": "passed",
+                "vendor_question_count": _VENDOR_CLOUD_QUESTION_COUNT,
+                "candidate_question_count": len(candidates),
+            },
+        },
+        "candidates": manifest_candidates,
+    }
+
+
+def _manifest_candidate(candidate: Mapping[str, object], index: int) -> dict[str, object]:
+    """Build non-authoring provenance metadata for one validated candidate."""
+    return {
+        "id": _candidate_identifier(index),
+        "source": "deepagents-context-hard",
+        "question_type": candidate["question_type"],
+        "required_files": candidate["required_files"],
+        "answer": candidate["answer"],
+        "verification_query": candidate["verification_query"],
+        "parsed_record_sha256": _canonical_json_sha256(_parsed_candidate_record(candidate)),
+        "validation": {
+            "candidate": "passed",
+            "answer": "passed",
+            "duplicate_screen": {
+                "result": "passed",
+                "vendor_question_count": _VENDOR_CLOUD_QUESTION_COUNT,
+                "earlier_candidate_question_count": index - 1,
+            },
+        },
+    }
+
+
+def _canonical_json_sha256(record: Mapping[str, object]) -> str:
+    """Return the SHA-256 digest of a stable, compact JSON candidate record."""
+    try:
+        serialized_record = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        msg = "parsed candidate record must be canonical JSON"
+        raise HardModeValidationError(msg) from error
+    return hashlib.sha256(serialized_record.encode("utf-8")).hexdigest()
+
+
+def _candidate_identifier(index: int) -> str:
+    """Return the stable display identifier for an ordered pilot candidate."""
+    return f"context-hard-{index:03d}"
+
+
+def _validate_pilot_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    database_path: Path | None,
+    verify_answers: bool,
+) -> None:
+    """Revalidate the fixed composition, vendor duplicates, and answer evidence."""
+    _validate_candidate_count(len(candidates))
+    question_type_counts = dict.fromkeys(HARD_TYPES, 0)
+    vendor_questions = _load_vendor_questions()
+    existing_questions = list(vendor_questions)
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            msg = "each candidate must be a JSON object"
+            raise HardModeValidationError(msg)
+        if "answer_reasoning" in candidate:
+            _validate_answer_reasoning(candidate["answer_reasoning"])
+        validate_candidate(candidate, existing_questions=existing_questions)
+        question_type = candidate["question_type"]
+        if not isinstance(question_type, str):
+            msg = "question_type must be a string"
+            raise HardModeValidationError(msg)
+        question_type_counts[question_type] += 1
+        if verify_answers:
+            if database_path is None:
+                msg = "database path is required to verify candidate answers"
+                raise HardModeValidationError(msg)
+            verify_answer(
+                database_path,
+                _require_nonempty_string(candidate, "verification_query"),
+                _require_nonempty_string(candidate, "answer"),
+            )
+        existing_questions.append(_require_nonempty_string(candidate, "question"))
+    if question_type_counts != {
+        "multi_hop_chain": 3,
+        "multi_entity_comparison": 2,
+    }:
+        msg = (
+            "pilot must contain exactly 3 multi_hop_chain and 2 multi_entity_comparison candidates"
+        )
+        raise HardModeValidationError(msg)
+
+
+def _validate_candidate_count(candidate_count: int) -> None:
+    """Require the single approved five-candidate pilot size."""
+    if candidate_count != _PILOT_CANDIDATE_COUNT:
+        msg = f"candidate count must be exactly {_PILOT_CANDIDATE_COUNT}"
+        raise HardModeValidationError(msg)
+
+
+def _load_vendor_questions() -> list[str]:
+    """Load every original cloud question as immutable duplicate-screen input."""
+    vendor_path = (
+        Path(__file__).resolve().parents[2]
+        / "libs/evals/harbor_adapters/contextbench/vendor/filesystem_cloud.jsonl"
     )
+    if vendor_path.is_symlink() or not vendor_path.is_file():
+        msg = "vendor cloud question source must be a regular file"
+        raise HardModeValidationError(msg)
+    questions: list[str] = []
+    with vendor_path.open(encoding="utf-8") as vendor_file:
+        for line in vendor_file:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                msg = "vendor cloud question source contains invalid JSONL"
+                raise HardModeValidationError(msg) from error
+            if not isinstance(record, Mapping):
+                msg = "vendor cloud question source contains a non-object record"
+                raise HardModeValidationError(msg)
+            question = record.get("input")
+            if not isinstance(question, str) or not question.strip():
+                msg = "vendor cloud question source contains an invalid input"
+                raise HardModeValidationError(msg)
+            questions.append(question)
+    if len(questions) != _VENDOR_CLOUD_QUESTION_COUNT:
+        msg = "vendor cloud question source must contain exactly 100 questions"
+        raise HardModeValidationError(msg)
+    return questions
+
+
+def _parsed_candidate_record(candidate: Mapping[str, object]) -> dict[str, object]:
+    """Convert raw generator output to a ContextBench-compatible candidate record."""
+    return {
+        "input": candidate["question"],
+        "ground_truth": candidate["answer"],
+        "agent_args": {
+            "tags": [],
+            "extra": {
+                "required_files": candidate["required_files"],
+                "question_type": candidate["question_type"],
+                "difficulty": "hard",
+                "verification_query": candidate["verification_query"],
+                "sql_queries": candidate["sql_queries"],
+                "source": "deepagents-context-hard",
+            },
+        },
+    }
+
+
+def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    """Write deterministic, newline-delimited JSON records into hidden staging."""
+    with path.open("w", encoding="utf-8") as output_file:
+        for record in records:
+            output_file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _read_raw_candidates(raw_output_path: Path) -> list[dict[str, object]]:
+    """Read a bounded raw JSONL file produced by the isolated inner process."""
+    return _read_jsonl_candidates(raw_output_path, parsed=False)
+
+
+def _read_parsed_candidates(candidate_path: Path) -> list[dict[str, object]]:
+    """Reconstruct raw validation fields from compatible quarantine JSONL records."""
+    parsed_records = _read_jsonl_candidates(candidate_path, parsed=True)
+    candidates: list[dict[str, object]] = []
+    for parsed_record in parsed_records:
+        _validate_exact_mapping_keys(
+            parsed_record,
+            _PARSED_CANDIDATE_FIELDS,
+            "parsed candidate record",
+        )
+        agent_args = parsed_record.get("agent_args")
+        if not isinstance(agent_args, Mapping):
+            msg = "candidate agent_args must be a mapping"
+            raise HardModeValidationError(msg)
+        _validate_exact_mapping_keys(
+            agent_args,
+            _PARSED_AGENT_ARGS_FIELDS,
+            "candidate agent_args",
+        )
+        extra = agent_args.get("extra")
+        if not isinstance(extra, Mapping):
+            msg = "candidate agent_args extra must be a mapping"
+            raise HardModeValidationError(msg)
+        _validate_exact_mapping_keys(
+            extra,
+            _PARSED_EXTRA_FIELDS,
+            "candidate agent_args extra",
+        )
+        _validate_parsed_candidate_metadata(agent_args, extra)
+        candidates.append(
+            {
+                "question": parsed_record.get("input"),
+                "answer": parsed_record.get("ground_truth"),
+                "question_type": extra.get("question_type"),
+                "required_files": extra.get("required_files"),
+                "verification_query": extra.get("verification_query"),
+                "sql_queries": extra.get("sql_queries"),
+            }
+        )
+    return candidates
+
+
+def _validate_exact_mapping_keys(
+    value: Mapping[str, object], expected_keys: frozenset[str], location: str
+) -> None:
+    """Require one parsed candidate mapping to have no missing or unknown fields."""
+    actual_keys = set(value)
+    unknown_keys = actual_keys - expected_keys
+    if unknown_keys:
+        msg = f"{location} contains unexpected fields: {sorted(unknown_keys)}"
+        raise HardModeValidationError(msg)
+    missing_keys = expected_keys - actual_keys
+    if missing_keys:
+        msg = f"{location} is missing required fields: {sorted(missing_keys)}"
+        raise HardModeValidationError(msg)
+
+
+def _validate_parsed_candidate_metadata(
+    agent_args: Mapping[str, object], extra: Mapping[str, object]
+) -> None:
+    """Require stable Deep Agents provenance before reconstructing candidate fields."""
+    if agent_args.get("tags") != []:
+        msg = "candidate agent_args tags must be an empty list"
+        raise HardModeValidationError(msg)
+    if extra.get("difficulty") != "hard":
+        msg = "candidate difficulty must be hard"
+        raise HardModeValidationError(msg)
+    if extra.get("source") != "deepagents-context-hard":
+        msg = "candidate source must be deepagents-context-hard"
+        raise HardModeValidationError(msg)
+
+
+def _read_jsonl_candidates(path: Path, *, parsed: bool) -> list[dict[str, object]]:
+    """Read at most five bounded JSON object records from an untrusted JSONL path."""
+    if path.is_symlink() or not path.is_file():
+        msg = "candidate JSONL must be a regular file"
+        raise HardModeValidationError(msg)
+    if path.stat().st_size > _MAX_RAW_CANDIDATE_FILE_BYTES:
+        msg = "candidate JSONL exceeds the aggregate byte limit"
+        raise HardModeValidationError(msg)
+    records: list[dict[str, object]] = []
+    with path.open(encoding="utf-8") as candidate_file:
+        for line in candidate_file:
+            _validate_raw_jsonl_size(line)
+            if not line.strip():
+                msg = "candidate JSONL must not contain blank records"
+                raise HardModeValidationError(msg)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                msg = "candidate JSONL contains invalid JSON"
+                raise HardModeValidationError(msg) from error
+            if not isinstance(record, dict):
+                msg = "candidate JSONL records must be objects"
+                raise HardModeValidationError(msg)
+            records.append(record)
+            if len(records) > _PILOT_CANDIDATE_COUNT:
+                msg = "candidate JSONL must contain at most 5 records"
+                raise HardModeValidationError(msg)
+    if parsed and not records:
+        msg = "candidate JSONL must contain records"
+        raise HardModeValidationError(msg)
+    return records
+
+
+def _read_manifest(path: Path) -> dict[str, object]:
+    """Read one bounded JSON manifest without following symlinks."""
+    if path.is_symlink() or not path.is_file():
+        msg = "manifest must be a regular file"
+        raise HardModeValidationError(msg)
+    if path.stat().st_size > MAX_RAW_JSONL_BYTES:
+        msg = "manifest exceeds the aggregate byte limit"
+        raise HardModeValidationError(msg)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        msg = "manifest contains invalid JSON"
+        raise HardModeValidationError(msg) from error
+    if not isinstance(manifest, dict):
+        msg = "manifest must be an object"
+        raise HardModeValidationError(msg)
+    return manifest
+
+
+def _prepare_empty_output_directory(output_dir: Path) -> None:
+    """Remove only an existing verified-empty real directory before atomic replacement."""
+    if output_dir.is_symlink():
+        msg = "output directory must not be a symlink"
+        raise HardModeValidationError(msg)
+    if not output_dir.exists():
+        return
+    if not output_dir.is_dir():
+        msg = "output directory must be a directory"
+        raise HardModeValidationError(msg)
+    try:
+        next(output_dir.iterdir())
+    except StopIteration:
+        output_dir.rmdir()
+        return
+    msg = "output directory must be empty"
+    raise HardModeValidationError(msg)
+
+
+def _validate_revision(revision: str) -> None:
+    """Require the fixed immutable revision format used by checkout and manifests."""
+    if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+        msg = "revision must be a 40-character commit SHA in lowercase hexadecimal"
+        raise HardModeValidationError(msg)
+
+
+def _validate_model(model: str) -> None:
+    """Require a non-empty model identifier without consulting environment state."""
+    if not isinstance(model, str) or not model.strip():
+        msg = "model must be a non-empty string"
+        raise HardModeValidationError(msg)
+
+
+def _validate_database_path(database_path: Path) -> None:
+    """Require the copied or checked-out fixture to be a regular SQLite file."""
+    if database_path.is_symlink() or not database_path.is_file():
+        msg = "database path must be a regular file"
+        raise HardModeValidationError(msg)
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the chunked SHA-256 digest of a trusted regular fixture file."""
+    _validate_database_path(path)
+    digest = hashlib.sha256()
+    with path.open("rb") as database_file:
+        while chunk := database_file.read(_DATABASE_HASH_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _tool_result(

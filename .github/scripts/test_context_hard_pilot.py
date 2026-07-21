@@ -8,8 +8,8 @@ import sqlite3
 import subprocess
 import sys
 from decimal import Decimal
+from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
 
 import context_hard_pilot
 import pytest
@@ -22,15 +22,15 @@ from context_hard_pilot import (
     HardModeValidationError,
     ReadOnlySQLTool,
     checkout_letta_generator,
+    materialize_quarantine,
+    run_generation_pilot,
     run_upstream_checkout,
     validate_candidate,
+    validate_quarantine,
     validate_readonly_sql,
     verify_answer,
+    write_manifest,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 _EXPENSIVE_RECURSIVE_CTE = """
 WITH RECURSIVE counter(value) AS (
@@ -117,6 +117,490 @@ def _large_value_database(tmp_path: Path) -> Path:
     finally:
         connection.close()
     return database_path
+
+
+def _five_candidates() -> list[dict[str, object]]:
+    """Build the fixed five-record pilot composition with distinct questions."""
+    candidates: list[dict[str, object]] = []
+    for index in range(5):
+        candidate = _candidate(
+            question=f"Determine chronicle{index} marker{index} from sourcegraph{index}.",
+            question_type=("multi_hop_chain" if index < 3 else "multi_entity_comparison"),
+        )
+        candidates.append(candidate)
+    return candidates
+
+
+def test_write_manifest_records_reproducible_deepagents_provenance_and_database_hash(
+    tmp_path: Path,
+) -> None:
+    """Manifests own the candidates while retaining immutable generator provenance."""
+    output_dir = tmp_path / "quarantine"
+    database_path = _database(tmp_path)
+
+    manifest = write_manifest(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+
+    written_manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert written_manifest == manifest
+    assert manifest["schema_version"] == 1
+    assert manifest["candidate_count"] == 5
+    assert manifest["source"]["owner"] == "deepagents"
+    assert manifest["source"]["candidate_source"] == "deepagents-context-hard"
+    assert manifest["source"]["letta_revision"] == "a" * 40
+    assert manifest["source"]["generator_model"] == "example-model"
+    assert len(manifest["source"]["database_sha256"]) == 64
+    assert manifest["candidate_ids"] == [
+        "context-hard-001",
+        "context-hard-002",
+        "context-hard-003",
+        "context-hard-004",
+        "context-hard-005",
+    ]
+    assert all(
+        candidate["source"] == "deepagents-context-hard" for candidate in manifest["candidates"]
+    )
+    assert all(len(candidate["parsed_record_sha256"]) == 64 for candidate in manifest["candidates"])
+    duplicate_evidence = [
+        candidate["validation"]["duplicate_screen"] for candidate in manifest["candidates"]
+    ]
+    assert [evidence["earlier_candidate_question_count"] for evidence in duplicate_evidence] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert all(evidence["vendor_question_count"] == 100 for evidence in duplicate_evidence)
+    assert manifest["validation"]["duplicate_screen"]["candidate_question_count"] == 5
+
+
+def test_materialize_rejects_an_incomplete_five_candidate_pilot(tmp_path: Path) -> None:
+    """Quarantine materialization accepts neither partial nor overfull pilots."""
+    with pytest.raises(HardModeValidationError, match="exactly 5"):
+        materialize_quarantine(
+            tmp_path / "quarantine",
+            candidates=_five_candidates()[:4],
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+
+
+def test_write_manifest_rejects_an_incomplete_candidate_composition(tmp_path: Path) -> None:
+    """Direct manifest writes enforce the fixed five-candidate policy before output."""
+    output_dir = tmp_path / "manifest"
+
+    with pytest.raises(HardModeValidationError, match="exactly 5"):
+        write_manifest(
+            output_dir,
+            candidates=_five_candidates()[:4],
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+
+    assert not output_dir.exists()
+
+
+def test_write_manifest_rejects_a_vendor_duplicate_before_writing(tmp_path: Path) -> None:
+    """Direct manifest writes use the original cloud pool for duplicate screening."""
+    output_dir = tmp_path / "manifest"
+    vendor_path = (
+        Path(__file__).resolve().parents[2]
+        / "libs/evals/harbor_adapters/contextbench/vendor/filesystem_cloud.jsonl"
+    )
+    candidates = _five_candidates()
+    candidates[0]["question"] = json.loads(vendor_path.read_text(encoding="utf-8").splitlines()[0])[
+        "input"
+    ]
+
+    with pytest.raises(HardModeValidationError, match="duplicates an existing question"):
+        write_manifest(
+            output_dir,
+            candidates=candidates,
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+
+    assert not output_dir.exists()
+
+
+def test_write_manifest_rechecks_candidate_answers_before_writing(tmp_path: Path) -> None:
+    """Direct manifest writes reject a candidate whose answer fails its source query."""
+    output_dir = tmp_path / "manifest"
+    candidates = _five_candidates()
+    candidates[0]["answer"] = "Bob"
+
+    with pytest.raises(HardModeValidationError, match="does not match"):
+        write_manifest(
+            output_dir,
+            candidates=candidates,
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+
+    assert not output_dir.exists()
+
+
+def test_materialize_rejects_a_question_duplicating_the_original_cloud_pool(
+    tmp_path: Path,
+) -> None:
+    """The vendor's original 100 questions are part of every duplicate screen."""
+    vendor_path = (
+        Path(__file__).resolve().parents[2]
+        / "libs/evals/harbor_adapters/contextbench/vendor/filesystem_cloud.jsonl"
+    )
+    original_question = json.loads(vendor_path.read_text(encoding="utf-8").splitlines()[0])["input"]
+    candidates = _five_candidates()
+    candidates[0]["question"] = original_question
+
+    with pytest.raises(HardModeValidationError, match="duplicates an existing question"):
+        materialize_quarantine(
+            tmp_path / "quarantine",
+            candidates=candidates,
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+
+
+def test_materialize_creates_a_new_quarantine_atomically_and_accepts_an_empty_target(
+    tmp_path: Path,
+) -> None:
+    """A successful materialization replaces an existing empty non-symlink directory."""
+    output_dir = tmp_path / "quarantine"
+    output_dir.mkdir()
+    database_path = _database(tmp_path)
+
+    manifest = materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+
+    assert output_dir.is_dir()
+    assert (output_dir / "candidates.jsonl").is_file()
+    assert json.loads((output_dir / "manifest.json").read_text(encoding="utf-8")) == manifest
+    parsed_records = [
+        json.loads(line)
+        for line in (output_dir / "candidates.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(parsed_records) == 5
+    assert all(
+        record["agent_args"]["extra"]["source"] == "deepagents-context-hard"
+        for record in parsed_records
+    )
+
+
+def test_materialize_rejects_a_nonempty_target_without_removing_its_contents(
+    tmp_path: Path,
+) -> None:
+    """A nonempty target must remain untouched when materialization is rejected."""
+    output_dir = tmp_path / "quarantine"
+    output_dir.mkdir()
+    sentinel_path = output_dir / "keep.txt"
+    sentinel_path.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(HardModeValidationError, match="must be empty"):
+        materialize_quarantine(
+            output_dir,
+            candidates=_five_candidates(),
+            revision="a" * 40,
+            model="example-model",
+            database_path=_database(tmp_path),
+        )
+    assert sentinel_path.read_text(encoding="utf-8") == "keep"
+
+
+def test_validate_only_requires_a_database_path(tmp_path: Path) -> None:
+    """The CLI rejects deterministic revalidation requests without source data."""
+    with pytest.raises(SystemExit, match="2"):
+        context_hard_pilot.main(["--validate-only", "--input-dir", str(tmp_path)])
+
+
+def test_validate_only_requires_a_model(tmp_path: Path) -> None:
+    """The CLI rejects deterministic revalidation requests without a model binding."""
+    with pytest.raises(SystemExit, match="2"):
+        context_hard_pilot.main(
+            [
+                "--validate-only",
+                "--input-dir",
+                str(tmp_path),
+                "--database-path",
+                str(_database(tmp_path)),
+            ]
+        )
+
+
+def test_validate_only_translates_an_invalid_input_directory_to_a_parser_error(
+    tmp_path: Path,
+) -> None:
+    """The CLI handles deterministic validation failures without a traceback."""
+    with pytest.raises(SystemExit, match="2"):
+        context_hard_pilot.main(
+            [
+                "--validate-only",
+                "--input-dir",
+                str(tmp_path / "missing"),
+                "--database-path",
+                str(_database(tmp_path)),
+                "--model",
+                "example-model",
+            ]
+        )
+
+
+def test_validate_quarantine_rejects_a_database_with_a_different_manifest_hash(
+    tmp_path: Path,
+) -> None:
+    """Validate-only detects a regular database that is not the materialized fixture."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+    wrong_database_directory = tmp_path / "wrong-database"
+    wrong_database_directory.mkdir()
+    wrong_database_path = _database(wrong_database_directory)
+    connection = sqlite3.connect(wrong_database_path)
+    try:
+        connection.execute("CREATE TABLE distinct_fixture (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO distinct_fixture (value) VALUES ('different')")
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(HardModeValidationError, match="database hash"):
+        validate_quarantine(
+            output_dir,
+            database_path=wrong_database_path,
+            model="example-model",
+        )
+
+
+def test_validate_quarantine_rejects_a_model_that_differs_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Validate-only binds the requested model exactly to manifest provenance."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+
+    with pytest.raises(HardModeValidationError, match="model"):
+        validate_quarantine(
+            output_dir,
+            database_path=database_path,
+            model="different-model",
+        )
+
+
+def test_validate_quarantine_rechecks_tampered_candidate_answers(tmp_path: Path) -> None:
+    """Validate-only re-executes answer verification before accepting the manifest."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+    candidate_path = output_dir / "candidates.jsonl"
+    parsed_records = [
+        json.loads(line) for line in candidate_path.read_text(encoding="utf-8").splitlines()
+    ]
+    parsed_records[0]["ground_truth"] = "Bob"
+    candidate_path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in parsed_records),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HardModeValidationError, match="does not match"):
+        validate_quarantine(output_dir, database_path=database_path, model="example-model")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("tags", ["tampered"], "tags"),
+        ("difficulty", "medium", "difficulty"),
+        ("source", "letta-context-hard", "source"),
+    ],
+)
+def test_validate_quarantine_rejects_tampered_parsed_provenance_metadata(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    """Parsed candidate provenance must be checked before raw reconstruction."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+    candidate_path = output_dir / "candidates.jsonl"
+    parsed_records = [
+        json.loads(line) for line in candidate_path.read_text(encoding="utf-8").splitlines()
+    ]
+    if field == "tags":
+        parsed_records[0]["agent_args"]["tags"] = value
+    else:
+        parsed_records[0]["agent_args"]["extra"][field] = value
+    candidate_path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in parsed_records),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HardModeValidationError, match=message):
+        validate_quarantine(output_dir, database_path=database_path, model="example-model")
+
+
+@pytest.mark.parametrize("tampered_field", ["input", "sql_queries"])
+def test_validate_quarantine_rejects_any_parsed_candidate_record_change(
+    tmp_path: Path,
+    tampered_field: str,
+) -> None:
+    """Canonical parsed-record hashes detect question and reasoning-query changes."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+    candidate_path = output_dir / "candidates.jsonl"
+    parsed_records = [
+        json.loads(line) for line in candidate_path.read_text(encoding="utf-8").splitlines()
+    ]
+    if tampered_field == "input":
+        parsed_records[0]["input"] = "Determine a different nonduplicate source record."
+    else:
+        parsed_records[0]["agent_args"]["extra"]["sql_queries"][0]["query"] = "SELECT 2"
+    candidate_path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in parsed_records),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HardModeValidationError, match="manifest does not match"):
+        validate_quarantine(output_dir, database_path=database_path, model="example-model")
+
+
+@pytest.mark.parametrize("location", ["root", "extra"])
+def test_validate_quarantine_rejects_unknown_parsed_candidate_fields(
+    tmp_path: Path,
+    location: str,
+) -> None:
+    """Parsed quarantine records reject unknown root and nested provenance fields."""
+    database_path = _database(tmp_path)
+    output_dir = tmp_path / "quarantine"
+    materialize_quarantine(
+        output_dir,
+        candidates=_five_candidates(),
+        revision="a" * 40,
+        model="example-model",
+        database_path=database_path,
+    )
+    candidate_path = output_dir / "candidates.jsonl"
+    parsed_records = [
+        json.loads(line) for line in candidate_path.read_text(encoding="utf-8").splitlines()
+    ]
+    if location == "root":
+        parsed_records[0]["unknown_root"] = "tampered"
+    else:
+        parsed_records[0]["agent_args"]["extra"]["unknown_extra"] = "tampered"
+    candidate_path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in parsed_records),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HardModeValidationError, match="unexpected fields"):
+        validate_quarantine(output_dir, database_path=database_path, model="example-model")
+
+
+def test_outer_runner_uses_an_argument_array_for_the_inner_checkout_invocation(
+    tmp_path: Path,
+) -> None:
+    """The outer pilot runner invokes the inner mode without a shell or interpolation."""
+    revision = "a" * 40
+    generation_directory = tmp_path / "generation"
+    fixture_directory = generation_directory / "data"
+    fixture_directory.mkdir(parents=True)
+    fixture_database = fixture_directory / "letta_file_bench.db"
+    _database(fixture_directory).replace(fixture_database)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_checkout(checkout_revision: str, destination: Path, *, run: object) -> Path:
+        """Return the controlled generator directory instead of cloning Letta."""
+        assert checkout_revision == revision
+        assert destination.name == "upstream-checkout"
+        assert callable(run)
+        return generation_directory
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Write deterministic raw generation output in place of the inner process."""
+        calls.append((args, kwargs))
+        raw_output_path = Path(args[args.index("--output-path") + 1])
+        raw_output_path.write_text(
+            "".join(json.dumps(candidate) + "\n" for candidate in _five_candidates()),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    output_dir = tmp_path / "quarantine"
+    run_generation_pilot(
+        revision=revision,
+        output_dir=output_dir,
+        model="example-model",
+        candidate_count=5,
+        checkout=fake_checkout,
+        run=fake_run,
+        script_path=Path(__file__).with_name("context_hard_pilot.py"),
+    )
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:3] == [
+        sys.executable,
+        str(Path(__file__).with_name("context_hard_pilot.py")),
+        "--run-upstream-checkout",
+    ]
+    assert args[args.index("--model") + 1] == "example-model"
+    assert isinstance(args, list)
+    assert kwargs == {
+        "check": True,
+        "capture_output": True,
+        "text": True,
+        "timeout": 300,
+        "shell": False,
+    }
+    assert (output_dir / "candidates.jsonl").is_file()
 
 
 def test_checkout_rejects_unpinned_revision_without_starting_a_process(

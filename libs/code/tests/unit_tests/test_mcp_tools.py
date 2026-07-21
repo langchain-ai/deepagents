@@ -4513,6 +4513,7 @@ class TestSelectiveProjectMcpTrust:
         *,
         user_config: Path,
         trust_project_mcp: bool | None,
+        additional_configs: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any] | None:
         """Run resolution and return the merged config passed to the loader.
 
@@ -4534,6 +4535,7 @@ class TestSelectiveProjectMcpTrust:
         await resolve_and_load_mcp_tools(
             project_context=ctx,
             trust_project_mcp=trust_project_mcp,
+            additional_configs=additional_configs,
         )
         if not loader.called:
             return None
@@ -5188,6 +5190,151 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_installed_plugin_config_is_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Installing a plugin implicitly trusts its bundled MCP servers."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin", "other"}
+
+    async def test_disabled_plugin_server_stays_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit deny overrides the trust granted at plugin install."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+        self._write_user_approvals(
+            user_config, project, servers, [], disabled=["other"]
+        )
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin"}
+
+    async def test_unreadable_policy_does_not_implicitly_trust_plugin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plugin trust fails closed when a saved disable cannot be read."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[[not valid toml", encoding="utf-8")
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": {"plugin": self._stdio()}},),
+        )
+
+        assert merged is None
+
+    async def test_multiple_plugin_configs_all_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every entry in `additional_configs` is filtered, not only the first."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=(
+                {"mcpServers": {"alpha": self._stdio()}},
+                {"mcpServers": {"beta": self._stdio("run")}},
+            ),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"alpha", "beta"}
+
+    async def test_disabled_plugin_server_logs_drop(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Dropping a disabled plugin server emits a warning that names it."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+        self._write_user_approvals(
+            user_config, project, servers, [], disabled=["other"]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+            merged = await self._resolve_merged(
+                project,
+                monkeypatch,
+                user_config=user_config,
+                trust_project_mcp=False,
+                additional_configs=({"mcpServers": servers},),
+            )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin"}
+        assert any(
+            "other" in record.getMessage()
+            and "plugin MCP servers" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_malformed_plugin_servers_surfaced_as_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-mapping plugin `mcpServers` is surfaced, not silently skipped."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _, _, server_infos = await resolve_and_load_mcp_tools(
+            project_context=ctx,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": ["not", "a", "mapping"]},),
+        )
+
+        assert any(
+            info.status == "error" and "mcpServers" in (info.error or "")
+            for info in server_infos
+        )
 
 
 class TestProjectRootForMcpConfigPath:

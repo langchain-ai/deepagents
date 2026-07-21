@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1699,37 +1699,6 @@ class TestGetSystemPromptPlaceholderValidation:
         assert not re.findall(r"\{[a-z_]+\}", prompt)
 
 
-class TestGetSystemPromptFilesystemTools:
-    """Tests for filesystem allowlist guidance in the generated prompt."""
-
-    def test_restricted_prompt_omits_unavailable_tools(self) -> None:
-        mock_settings = Mock()
-        mock_settings.model_name = None
-
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent", fs_tools=["read_file", "grep"])
-
-        assert "`read_file` over" in prompt
-        assert "`grep` tool over" in prompt
-        assert "`edit_file` over" not in prompt
-        assert "`write_file` over" not in prompt
-        assert "`glob` over" not in prompt
-
-    @pytest.mark.parametrize("fs_tools", [None, "all"])
-    def test_unrestricted_prompt_retains_all_tool_guidance(
-        self, fs_tools: Literal["all"] | None
-    ) -> None:
-        mock_settings = Mock()
-        mock_settings.model_name = None
-
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent", fs_tools=fs_tools)
-
-        assert "`edit_file` over" in prompt
-        assert "`write_file` over" in prompt
-        assert "`glob` over" in prompt
-
-
 class TestCreateCliAgentInteractiveForwarding:
     """Tests for interactive parameter forwarding in create_cli_agent."""
 
@@ -1790,7 +1759,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_called_once()
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
-        assert kwargs["fs_tools"] == ["read_file", "grep"]
+        assert "fs_tools" not in kwargs
         assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
         assert (
             mock_create_deep_agent.call_args.kwargs["context_schema"]

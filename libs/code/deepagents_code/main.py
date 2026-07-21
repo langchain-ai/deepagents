@@ -2938,7 +2938,7 @@ def _run_project_mcp_server_checkbox_picker(
 
     Returns:
         Selected server names. Empty means the user confirmed no selections;
-        `CANCELLED` means the user pressed Esc to cancel the approval;
+        `CANCELLED` means the user pressed Esc to abort the launch;
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """
@@ -2987,7 +2987,7 @@ def _run_project_mcp_server_checkbox_picker(
                         f"{len(selected_names)} selected\n"
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
                         "Space toggle · a select all · c clear · Enter confirm · "
-                        "Esc cancel\n"
+                        "Esc abort\n"
                     ),
                 ),
             ]
@@ -3123,7 +3123,7 @@ def _select_project_servers_with_numbers(
             highlight=False,
         )
     try:
-        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to cancel: ")
+        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
     except KeyboardInterrupt:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     except EOFError:
@@ -4506,6 +4506,12 @@ def cli_main() -> None:
             if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
             if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; no project MCP servers loaded.[/dim]",
+                    highlight=False,
+                )
                 return
 
             # Run Textual TUI

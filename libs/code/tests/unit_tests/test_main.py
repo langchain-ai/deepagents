@@ -996,7 +996,9 @@ class TestStartupAutoUpdate:
         assert exc_info.value.code == 130
         launch.assert_not_called()
 
-    def test_project_mcp_server_selection_cancel_aborts_before_tui(self) -> None:
+    def test_project_mcp_server_selection_cancel_aborts_before_tui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """Esc in the server selector cancels launch before Textual starts."""
         from deepagents_code.main import _ProjectMcpTrustPromptOutcome
 
@@ -1018,6 +1020,7 @@ class TestStartupAutoUpdate:
             cli_main()
 
         launch.assert_not_called()
+        assert "aborted" in capsys.readouterr().err.lower()
 
 
 class TestAutoUpdateDefaultMigration:
@@ -3567,6 +3570,8 @@ class TestSelectProjectServersToPersist:
                 captured.update(kwargs)
 
             def run(self) -> _ProjectMcpTrustPromptOutcome:
+                from prompt_toolkit.keys import Keys
+
                 bindings = captured["key_bindings"].bindings
                 holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
                 event = SimpleNamespace(
@@ -3577,7 +3582,7 @@ class TestSelectProjectServersToPersist:
                 abort = next(
                     binding.handler
                     for binding in bindings
-                    if binding.handler.__name__ == "_abort"
+                    if Keys.Escape in binding.keys
                 )
                 abort(event)
                 return holder["value"]
@@ -3591,6 +3596,27 @@ class TestSelectProjectServersToPersist:
         )
         assert "Esc abort" in rendered
         assert "Esc deny" not in rendered
+
+    def test_select_action_forwards_picker_cancelled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A CANCELLED outcome from the inline picker passes straight through."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _select_project_mcp_trust_action,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_project_mcp_trust_action_picker",
+            lambda _console: _ProjectMcpTrustPromptOutcome.CANCELLED,
+        )
+
+        result = _select_project_mcp_trust_action(Console(stderr=True))
+
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
 
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3880,10 +3906,10 @@ class TestSelectProjectServersToPersist:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Esc cancels the approval, distinct from confirming an empty selection.
+        """Esc aborts the launch, distinct from confirming an empty selection.
 
-        Both paths deny rather than silently granting session trust, while Ctrl+C
-        remains a separate launch interruption.
+        Confirming an empty selection denies and continues; Esc aborts the launch
+        entirely, while Ctrl+C remains a separate launch interruption.
         """
         from rich.console import Console
 
@@ -3902,6 +3928,8 @@ class TestSelectProjectServersToPersist:
                 captured.update(kwargs)
 
             def run(self) -> list[str]:
+                from prompt_toolkit.keys import Keys
+
                 bindings = captured["key_bindings"].bindings
                 holder: dict[str, list[str]] = {}
                 event = SimpleNamespace(
@@ -3912,7 +3940,7 @@ class TestSelectProjectServersToPersist:
                 cancel = next(
                     binding.handler
                     for binding in bindings
-                    if binding.handler.__name__ == "_cancel"
+                    if Keys.Escape in binding.keys
                 )
                 cancel(event)
                 return holder["value"]

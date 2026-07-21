@@ -796,7 +796,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         backend: BackendProtocol | BackendFactory,
         subagents: Sequence[SubAgent | CompiledSubAgent],
-        system_prompt: str | None = TASK_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,

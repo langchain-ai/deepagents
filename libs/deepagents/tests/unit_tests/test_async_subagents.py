@@ -100,11 +100,14 @@ class TestAsyncSubAgentMiddleware:
         }
 
     def test_system_prompt_includes_agent_descriptions(self) -> None:
+        # The default is lean (no system prompt); when a prompt is supplied, the
+        # available agent descriptions are appended to it.
         mw = AsyncSubAgentMiddleware(
             async_subagents=[
                 _make_spec("alpha", description="Alpha agent"),
                 _make_spec("beta", description="Beta agent"),
-            ]
+            ],
+            system_prompt="Async subagent guidance.",
         )
         assert "alpha" in mw.system_prompt
         assert "beta" in mw.system_prompt

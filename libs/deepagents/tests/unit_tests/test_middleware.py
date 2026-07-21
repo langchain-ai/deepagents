@@ -2731,26 +2731,6 @@ class TestFilesystemMiddleware:
         assert "rg '<regex>'" not in rewritten_grep["description"]
         assert "LITERAL text pattern" in rewritten_grep["description"]
 
-    def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
-        """Dynamic system prompt only mentions tools registered on `self.tools`."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            tools=["read_file", "ls"],
-        )
-        request = MagicMock()
-        request.tools = middleware.tools
-        request.system_message = None
-        request.override.return_value = request
-
-        middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
-        content = system_message_override.kwargs["system_message"].content
-        system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
-        assert "ls" in system_text
-        assert "read_file" in system_text
-        assert "write_file" not in system_text
-
     def test_delete_invalid_path_returns_error(self):
         """The sync delete tool rejects a traversal path before deleting."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")

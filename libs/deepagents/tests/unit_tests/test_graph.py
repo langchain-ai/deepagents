@@ -670,16 +670,17 @@ _ABSENT = object()
 
 
 class TestDuplicateToolPromptTrimming:
-    """`create_deep_agent` trims the built-in tool-usage guidance prose.
+    """`create_deep_agent` ships the built-in tool-usage guidance prose trimmed.
 
-    The usage-guidance middleware (Todo, Filesystem, SubAgent, AsyncSubAgent)
-    are built with their tool-usage prose trimmed: `system_prompt=""` for those
-    that always append (Todo, Filesystem) and `system_prompt=None` for those
-    whose `None` means "no fragment" (SubAgent, AsyncSubAgent).
+    The deepagents-owned middleware (Filesystem, SubAgent, AsyncSubAgent) default
+    to emitting no tool-usage prose, so `create_deep_agent` passes them no
+    `system_prompt` override. `TodoListMiddleware` is from langchain and defaults
+    to its full prompt, so it is the one middleware passed `system_prompt=""`.
 
     Skills and Memory are never trimmed: their fragment is the only channel that
     surfaces the loaded skill index / memory content, so they always emit it
-    (kwarg omitted).
+    (kwarg omitted). The lean middleware defaults themselves are covered by the
+    per-middleware unit tests and `TestFilesystemRoutingPrompt`.
     """
 
     def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
@@ -725,14 +726,17 @@ class TestDuplicateToolPromptTrimming:
             "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
         }
 
-    def test_usage_prose_trimmed(self) -> None:
+    def test_todo_blanked_others_use_lean_defaults(self) -> None:
         captured = self._capture_middleware_kwargs(**self._create_kwargs())
 
+        # The write_todos prompt is langchain's (full default), so it is blanked.
         assert captured["TodoListMiddleware"], "expected TodoListMiddleware to be built"
         assert all(v == "" for v in captured["TodoListMiddleware"])
-        assert all(v == "" for v in captured["FilesystemMiddleware"])
-        assert all(v is None for v in captured["SubAgentMiddleware"])
-        assert all(v is None for v in captured["AsyncSubAgentMiddleware"])
+        # deepagents-owned middleware are lean by default; no override is passed.
+        for name in ("FilesystemMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} should use its lean default"
 
     def test_skills_and_memory_never_trimmed(self) -> None:
         """Regression guard for the skills/memory content channel.

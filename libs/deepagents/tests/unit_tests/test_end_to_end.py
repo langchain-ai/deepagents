@@ -4663,11 +4663,10 @@ class TestFilesystemMiddlewareToolsAllowlist:
 
         return _ToolSpyMiddleware(), captured
 
-    def test_allowlist_removes_tools_from_request_and_system_prompt(self) -> None:
-        """tools=[...] on FilesystemMiddleware restricts both request.tools and the system prompt."""
+    def test_allowlist_removes_tools_from_request(self) -> None:
+        """tools=[...] on FilesystemMiddleware restricts the tools on the wire."""
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
         spy, captured_tool_sets = self._make_spy_middleware()
-        capturing = SystemMessageCapturingMiddleware()
 
         agent = create_deep_agent(
             model=model,
@@ -4677,7 +4676,6 @@ class TestFilesystemMiddlewareToolsAllowlist:
                     tools=["read_file", "ls"],
                 ),
                 spy,
-                capturing,
             ],
         )
 
@@ -4690,17 +4688,6 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "ls" in tool_names
         for disabled in ("write_file", "edit_file", "delete", "glob", "grep", "execute"):
             assert disabled not in tool_names, f"{disabled!r} should have been filtered out"
-
-        # --- system prompt tool header only lists allowed tools ---
-        # Check backtick-wrapped names as they appear in the tool header/description section.
-        # (Some tool names may appear in static template text; backtick-wrapped ones are
-        # the tool listing that changes based on the allowlist.)
-        assert capturing.captured_system_messages, "system message must have been set"
-        prompt = str(capturing.captured_system_messages[0].content)
-        assert "`read_file`" in prompt
-        assert "`ls`" in prompt
-        for disabled in ("write_file", "edit_file", "delete", "glob"):
-            assert f"`{disabled}`" not in prompt, f"`{disabled}` should not appear in system prompt tool list"
 
     def test_excluded_tool_call_fails_instead_of_executing(self) -> None:
         """An excluded tool referenced in a `ToolCall` errors instead of executing.

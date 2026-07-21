@@ -917,7 +917,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         async_subagents: list[AsyncSubAgent],
-        system_prompt: str | None = ASYNC_TASK_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()

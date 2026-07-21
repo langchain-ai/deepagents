@@ -3,20 +3,16 @@
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.middleware.filesystem import (
-    EXECUTION_SYSTEM_PROMPT,
     GREP_TOOL_DESCRIPTION,
     READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
@@ -39,52 +35,6 @@ class TestLargeToolResultGuidanceInToolDescriptions:
         assert "large_tool_results/" in GREP_TOOL_DESCRIPTION
         # Must not imply the root-only path; it is under the artifacts root.
         assert "artifacts root" in GREP_TOOL_DESCRIPTION
-
-
-class TestDynamicSystemPromptCache:
-    """`_build_dynamic_system_prompt` caches per `include_execution` flag."""
-
-    def test_returns_identical_cached_object(self) -> None:
-        mw = FilesystemMiddleware(backend=StateBackend())
-        first = mw._build_dynamic_system_prompt(include_execution=False)
-        second = mw._build_dynamic_system_prompt(include_execution=False)
-        assert first is second
-
-    def test_execution_flag_changes_output(self) -> None:
-        mw = FilesystemMiddleware(backend=StateBackend())
-        without = mw._build_dynamic_system_prompt(include_execution=False)
-        with_exec = mw._build_dynamic_system_prompt(include_execution=True)
-        assert without != with_exec
-        assert EXECUTION_SYSTEM_PROMPT not in without
-        assert EXECUTION_SYSTEM_PROMPT in with_exec
-
-    async def test_awrap_model_call_emits_dynamic_prompt(self) -> None:
-        """`awrap_model_call` appends the same memoized prompt as the sync path.
-
-        The cache call site is duplicated across `wrap_model_call` and
-        `awrap_model_call`; this guards the async path against drift.
-        """
-        mw = FilesystemMiddleware(backend=StateBackend())
-        # StateBackend has no execution support, so the execute tool (if any)
-        # is filtered out and `include_execution` resolves to False.
-        expected = mw._build_dynamic_system_prompt(include_execution=False)
-
-        captured: list[ModelRequest] = []
-
-        async def handler(request: ModelRequest) -> ModelResponse:
-            captured.append(request)
-            return ModelResponse(result=[AIMessage(content="ok")])
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
-            messages=[HumanMessage(content="hi")],
-            tools=list(mw.tools),
-        )
-
-        await mw.awrap_model_call(request, handler)
-
-        assert len(captured) == 1
-        assert captured[0].system_prompt == expected
 
 
 class TestFilesystemMiddlewareInit:

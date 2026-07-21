@@ -746,17 +746,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend = backend if backend is not None else StateBackend()
 
     # The built-in tool-usage guidance prose duplicates the tools' own schema
-    # descriptions, so it is trimmed on every stack below (main agent, subagents,
-    # general-purpose subagent) via each middleware's `system_prompt`:
-    #   - `TodoListMiddleware` and `FilesystemMiddleware` always append, so `""`
-    #     trims their prose. Filesystem's host-path routing section is preserved
-    #     regardless (see `_filter_unsupported_tools_and_apply_prompt`).
-    #   - subagent / async-subagent treat `None` as "no fragment", so `None`
-    #     trims. The available-agent list still reaches the model through the
-    #     `task` tool / async tools, so only the duplicate usage prose is dropped.
-    # Skills and Memory are never trimmed: their fragment is the only channel that
-    # surfaces the loaded skill index / memory content (no tool carries it), and
-    # both are built only when the caller passes `skills=` / `memory=`.
+    # descriptions, so the deepagents-owned middleware (filesystem / subagent /
+    # async-subagent) default to emitting none of it; only the essential dynamic
+    # bits remain (filesystem's host-path routing, empty for non-composite
+    # backends; the available-agent list, which reaches the model through the
+    # `task` tool / async tools). `TodoListMiddleware` is from langchain and
+    # defaults to its full prompt, so it is the one middleware passed
+    # `system_prompt=""` here to trim it. Skills and Memory keep their fragment:
+    # it is the only channel that surfaces the loaded skill index / memory
+    # content, and both are built only when the caller passes `skills=` /
+    # `memory=`.
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -790,7 +789,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
-                    system_prompt="",
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -877,7 +875,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
-                system_prompt="",
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -948,7 +945,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
-            system_prompt="",
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
@@ -963,7 +959,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
-            system_prompt=None,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
@@ -976,7 +971,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, system_prompt=None))
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

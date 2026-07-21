@@ -1502,11 +1502,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
-        # Cache for dynamic system prompts keyed on the `include_execution`
-        # flag. The text depends only on that flag and immutable config, so it
-        # is computed at most twice per instance.
-        self._dynamic_system_prompt_cache: dict[bool, str] = {}
-
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
@@ -1545,33 +1540,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
         self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
-
-    def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
-        """Build (and memoize) the dynamic system prompt.
-
-        The result depends only on `include_execution` and immutable config,
-        so it is cached per instance to avoid rebuilding on every model call.
-        The cache is intentionally lock-free even though sync and async model
-        calls share it: writes are idempotent (a given flag always yields the
-        same string), so a race at worst recomputes and re-stores that value.
-        """
-        cached = self._dynamic_system_prompt_cache.get(include_execution)
-        if cached is not None:
-            return cached
-        visible = set(self._enabled_tools) if self._enabled_tools is not None else set(_FS_TOOL_ORDER)
-        tool_header, tool_descriptions = _build_fs_tools_section(visible)
-        prompt_parts = [
-            _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                large_tool_results_prefix=self._large_tool_results_prefix,
-                tool_header=tool_header,
-                tool_descriptions=tool_descriptions,
-            )
-        ]
-        if include_execution:
-            prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-        system_prompt = "\n\n".join(prompt_parts).strip()
-        self._dynamic_system_prompt_cache[include_execution] = system_prompt
-        return system_prompt
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -2797,38 +2765,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if described_tools is not visible_tools:
             request = request.override(tools=described_tools)
 
-        # A `system_prompt` override (including `""` suppression) replaces only the
-        # usage-guidance prose. The host-path routing section is essential
-        # per-backend config (virtual->host path mapping for the `execute` shell),
-        # not prose, so it is still appended when the execute tool is active — even
-        # when the prose is overridden or suppressed.
-        if self._custom_system_prompt is not None:
-            prompt_parts = [self._custom_system_prompt] if self._custom_system_prompt else []
-            if execution_active:
-                route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
-                if route_prompt:
-                    prompt_parts.append(route_prompt)
-            system_prompt = "\n\n".join(prompt_parts).strip()
-        else:
-            # Build dynamic system prompt reflecting only the tools that survived filtering
-            visible_fs = {n for n in (tool_names - unsupported) if n is not None}
-            tool_header, tool_descriptions = _build_fs_tools_section(visible_fs)
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                    tool_header=tool_header,
-                    tool_descriptions=tool_descriptions,
-                )
-            ]
-
-            # Add execution instructions only if the execute tool survived filtering
-            if execution_active:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-                route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
-                if route_prompt:
-                    prompt_parts.append(route_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
+        # `system_prompt` (default `None`) is the caller's tool-usage prose; the
+        # built-in tool-usage guidance is intentionally not generated, since it
+        # duplicates the tools' own schema descriptions (see FILESYSTEM_SYSTEM_PROMPT
+        # / EXECUTION_SYSTEM_PROMPT to restore it). The host-path routing section is
+        # essential per-backend config (virtual->host path mapping for the `execute`
+        # shell), not prose, so it is appended when the execute tool is active
+        # regardless of the prose. Routing is empty for non-composite backends.
+        prompt_parts = [self._custom_system_prompt] if self._custom_system_prompt else []
+        if execution_active:
+            route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
+            if route_prompt:
+                prompt_parts.append(route_prompt)
+        system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

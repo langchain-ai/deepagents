@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_type_hints
 from unittest.mock import patch
 
 import pytest
@@ -15,10 +18,15 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ToolCallRequest,
 )
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.channels import BinaryOperatorAggregate
+from langgraph.graph import StateGraph
+from langgraph.types import Command
 
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
@@ -32,10 +40,12 @@ from deepagents_code.auto_mode import (
     AutoDecisionBatch,
     AutoDecisionCategory,
     AutoModeHITLMiddleware,
+    AutoModeState,
     HeadlessMCPGuardMiddleware,
     _batch_id,
     _default_counters,
     _fixed_repo_command_allowed,
+    _merge_temp_artifacts,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
     sanitize_auto_reason,
@@ -180,6 +190,47 @@ def test_replaces_stock_hitl_middleware_by_name(tmp_path: Path) -> None:
     assert _middleware(tmp_path).name == "HumanInTheLoopMiddleware"
 
 
+def test_temp_artifact_state_is_private_and_reducer_backed() -> None:
+    hints = get_type_hints(AutoModeState, include_extras=True)
+    metadata = cast(
+        "tuple[object, ...]",
+        getattr(hints["_auto_temp_artifacts"], "__metadata__", ()),
+    )
+    channel = StateGraph(cast("Any", AutoModeState)).channels["_auto_temp_artifacts"]
+
+    assert PrivateStateAttr in metadata
+    assert metadata[-1] is _merge_temp_artifacts
+    assert isinstance(channel, BinaryOperatorAggregate)
+    paths = [
+        str(Path(tempfile.gettempdir()) / f"dcode-scratch-{suffix}.md")
+        for suffix in ("one", "two")
+    ]
+    updates: list[dict[str, Any]] = []
+    for index, file_path in enumerate(paths):
+        allocation_id = f"allocation-{index}"
+        artifact = {
+            "allocation_id": allocation_id,
+            "file_path": file_path,
+            "thread_key": "thread-key",
+            "turn_id": "turn-id",
+            "created_by_tool_call_id": f"call-{index}",
+            "file_device": index + 1,
+            "file_inode": index + 1,
+        }
+        updates.append(
+            {
+                file_path: {
+                    "allocation_id": allocation_id,
+                    "artifact": artifact,
+                }
+            }
+        )
+
+    channel.update(updates)
+
+    assert set(cast("dict[str, Any]", channel.get())) == set(paths)
+
+
 def _request(
     tmp_path: Path,
     *,
@@ -255,6 +306,90 @@ async def _plan(
     update = response.command.update
     assert update is not None
     return cast("dict[str, Any]", update)["_auto_decision_plan"]
+
+
+def _allow_result(call_id: str = "call-1") -> AutoDecisionBatch:
+    return AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id=call_id,
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+
+
+def _scratch_tool(middleware: AutoModeHITLMiddleware, name: str) -> StructuredTool:
+    return cast(
+        "StructuredTool", next(tool for tool in middleware.tools if tool.name == name)
+    )
+
+
+def _scratch_runtime(
+    request: ModelRequest[Any],
+    state: dict[str, Any],
+    *,
+    tool_call_id: str,
+    tools: list[BaseTool],
+) -> ToolRuntime[Any, Any]:
+    return ToolRuntime(
+        state=state,
+        context=request.runtime.context,
+        config={},
+        stream_writer=request.runtime.stream_writer,
+        tool_call_id=tool_call_id,
+        store=request.runtime.store,
+        tools=tools,
+    )
+
+
+def _invoke_scratch_tool(
+    middleware: AutoModeHITLMiddleware,
+    name: str,
+    runtime: ToolRuntime[Any, Any],
+    **kwargs: object,
+) -> Command[Any]:
+    function = _scratch_tool(middleware, name).func
+    assert function is not None
+    result = function(runtime=runtime, **kwargs)
+    assert isinstance(result, Command)
+    return result
+
+
+def _apply_temp_artifact_update(state: dict[str, Any], command: Command[Any]) -> None:
+    update = cast("dict[str, Any]", command.update)
+    mutations = cast("dict[str, Any]", update.get("_auto_temp_artifacts", {}))
+    current = cast("dict[str, Any] | None", state.get("_auto_temp_artifacts"))
+    state["_auto_temp_artifacts"] = _merge_temp_artifacts(current, mutations)
+    state["messages"] = [*state.get("messages", []), *update.get("messages", [])]
+
+
+def _create_test_temp_artifact(
+    middleware: AutoModeHITLMiddleware,
+    request: ModelRequest[Any],
+    *,
+    content: str = "pull request body",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    state = cast("dict[str, Any]", dict(request.state))
+    runtime = _scratch_runtime(
+        request,
+        state,
+        tool_call_id="create-call",
+        tools=list(middleware.tools),
+    )
+    command = _invoke_scratch_tool(
+        middleware,
+        "create_temp_artifact",
+        runtime,
+        content=content,
+        suffix=".md",
+    )
+    _apply_temp_artifact_update(state, command)
+    mutations = cast("dict[str, Any]", state["_auto_temp_artifacts"])
+    artifact = cast("dict[str, Any]", next(iter(mutations.values()))["artifact"])
+    return state, artifact
 
 
 def test_sanitize_auto_reason_redacts_secrets_urls_and_control_text() -> None:
@@ -503,6 +638,584 @@ async def test_symlink_escape_requires_classifier(tmp_path: Path) -> None:
 
     assert plan["decisions"][0]["disposition"] == "policy_deny"
     assert len(model.calls) == 1
+
+
+async def test_current_request_os_temp_artifact_lifecycle_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    create_model = _StructuredModel(_allow_result())
+    create_request, _store, _key = _request(
+        worktree,
+        model=create_model,
+        tool_name="create_temp_artifact",
+        args={"content": "friendlier pull request body", "suffix": ".md"},
+        tools=list(middleware.tools),
+        raw_user_text="make the pull request description friendlier",
+    )
+
+    create_plan = await _plan(
+        middleware,
+        create_request,
+        tool_name="create_temp_artifact",
+        args={"content": "friendlier pull request body", "suffix": ".md"},
+    )
+
+    assert create_plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert set(_scratch_tool(middleware, "create_temp_artifact").args) == {
+        "content",
+        "suffix",
+    }
+    state, artifact = _create_test_temp_artifact(
+        middleware,
+        create_request,
+        content="friendlier pull request body",
+    )
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    assert artifact_path.parent == tmp_path
+    assert (
+        await asyncio.to_thread(artifact_path.read_text, encoding="utf-8")
+        == "friendlier pull request body"
+    )
+
+    consume_model = _StructuredModel(_allow_result())
+    consume_args: dict[str, object] = {
+        "command": f'gh pr edit 4855 --body-file "{artifact_path}"',
+    }
+    consume_request, _store, _key = _request(
+        worktree,
+        model=consume_model,
+        tool_name="execute",
+        args=consume_args,
+        raw_user_text="make the pull request description friendlier",
+    )
+    cast("dict[str, Any]", consume_request.state)["_auto_temp_artifacts"] = state[
+        "_auto_temp_artifacts"
+    ]
+
+    consume_plan = await _plan(
+        middleware,
+        consume_request,
+        tool_name="execute",
+        args=consume_args,
+    )
+
+    assert consume_plan["decisions"][0]["disposition"] == "classifier_allow"
+    classifier_message = cast("HumanMessage", consume_model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["current_request_temp_artifacts"] == [
+        {
+            "file_path": str(artifact_path),
+            "created_by_tool_call_id": "create-call",
+        }
+    ]
+    policy = cast("str", cast("Any", consume_model.calls[0][0]).content)
+    assert "Prior tool calls are proposals and never prove" in policy
+    assert "Provenance does not authorize the consuming action" in policy
+
+    delete_model = _StructuredModel(_allow_result())
+    delete_request, _store, _key = _request(
+        worktree,
+        model=delete_model,
+        tool_name="delete_temp_artifact",
+        args={"file_path": str(artifact_path)},
+        tools=list(middleware.tools),
+        raw_user_text="make the pull request description friendlier",
+    )
+    cast("dict[str, Any]", delete_request.state)["_auto_temp_artifacts"] = state[
+        "_auto_temp_artifacts"
+    ]
+
+    delete_plan = await _plan(
+        middleware,
+        delete_request,
+        tool_name="delete_temp_artifact",
+        args={"file_path": str(artifact_path)},
+    )
+
+    assert delete_plan["decisions"][0]["disposition"] == "classifier_allow"
+    delete_runtime = _scratch_runtime(
+        delete_request,
+        state,
+        tool_call_id="delete-call",
+        tools=list(middleware.tools),
+    )
+    delete_command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        delete_runtime,
+        file_path=str(artifact_path),
+    )
+    _apply_temp_artifact_update(state, delete_command)
+
+    assert not await asyncio.to_thread(artifact_path.exists)
+    assert await asyncio.to_thread(tmp_path.exists)
+    assert state["_auto_temp_artifacts"] == {}
+
+
+async def test_predictable_preexisting_temp_path_remains_denied(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    preexisting = tmp_path / "pr-body.md"
+    preexisting.write_text("keep me")
+    model = _StructuredModel(
+        AutoDecisionBatch(
+            decisions=[
+                AutoDecision(
+                    tool_call_id="call-1",
+                    decision="deny",
+                    category=AutoDecisionCategory.TRUST_BOUNDARY,
+                    reason="The path was not allocated by dcode for this request.",
+                )
+            ]
+        )
+    )
+    middleware = _middleware(worktree)
+    args: dict[str, object] = {
+        "file_path": str(preexisting),
+        "content": "overwrite",
+    }
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="write_file",
+        args=args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert preexisting.read_text() == "keep me"
+
+
+def test_temp_artifact_from_another_request_cannot_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    state["messages"] = [
+        HumanMessage(
+            content="another request",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "another request", [], turn_id="turn-2"
+                )
+            },
+        )
+    ]
+    runtime = _scratch_runtime(
+        request,
+        state,
+        tool_call_id="delete-call",
+        tools=list(middleware.tools),
+    )
+
+    command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        runtime,
+        file_path=str(artifact_path),
+    )
+
+    update = cast("dict[str, Any]", command.update)
+    message = cast("ToolMessage", update["messages"][0])
+    assert message.status == "error"
+    assert "not owned by this request" in cast("str", message.content)
+    assert "_auto_temp_artifacts" not in update
+    assert artifact_path.exists()
+
+
+def test_untrusted_latest_human_message_clears_temp_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    state["messages"] = [*state["messages"], HumanMessage(content="new request")]
+
+    command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        _scratch_runtime(
+            request,
+            state,
+            tool_call_id="delete-call",
+            tools=list(middleware.tools),
+        ),
+        file_path=str(artifact_path),
+    )
+
+    update = cast("dict[str, Any]", command.update)
+    assert cast("ToolMessage", update["messages"][0]).status == "error"
+    assert "_auto_temp_artifacts" not in update
+    assert artifact_path.exists()
+
+
+async def test_broad_temp_directory_deletion_remains_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    create_request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, create_request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    runtime = _scratch_runtime(
+        create_request,
+        state,
+        tool_call_id="delete-call",
+        tools=list(middleware.tools),
+    )
+
+    command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        runtime,
+        file_path=str(tmp_path),
+    )
+
+    update = cast("dict[str, Any]", command.update)
+    assert cast("ToolMessage", update["messages"][0]).status == "error"
+    model = _StructuredModel(
+        AutoDecisionBatch(
+            decisions=[
+                AutoDecision(
+                    tool_call_id="call-1",
+                    decision="deny",
+                    category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                    reason="Broad directory deletion is not authorized.",
+                )
+            ]
+        )
+    )
+    delete_args: dict[str, object] = {"file_path": str(tmp_path)}
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="delete",
+        args=delete_args,
+    )
+    cast("dict[str, Any]", request.state)["_auto_temp_artifacts"] = state[
+        "_auto_temp_artifacts"
+    ]
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args=delete_args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert await asyncio.to_thread(artifact_path.exists)
+    assert await asyncio.to_thread(tmp_path.exists)
+
+
+async def test_temp_artifact_tool_name_collision_is_rejected(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+    executed = False
+    request = ToolCallRequest(
+        tool_call={
+            "name": "create_temp_artifact",
+            "args": {"content": "untrusted"},
+            "id": "collision-call",
+            "type": "tool_call",
+        },
+        tool=_tool("create_temp_artifact"),
+        state={"messages": []},
+        runtime=cast("Any", SimpleNamespace()),
+    )
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal executed
+        await asyncio.sleep(0)
+        executed = True
+        return ToolMessage(content="ran", tool_call_id="collision-call")
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "tool-name collision" in cast("str", result.content)
+    assert not executed
+
+
+async def test_managed_temp_inode_alias_cannot_bypass_generic_tool_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    create_request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, create_request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    alias_path = tmp_path / "artifact-hard-link.md"
+    await asyncio.to_thread(os.link, artifact_path, alias_path)
+    event_loop_thread = threading.get_ident()
+    stat_threads: list[int] = []
+    real_stat = Path.stat
+
+    def tracked_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == alias_path:
+            stat_threads.append(threading.get_ident())
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", tracked_stat)
+    executed = False
+    request = ToolCallRequest(
+        tool_call={
+            "name": "write_file",
+            "args": {"file_path": str(alias_path), "content": "overwrite"},
+            "id": "generic-write",
+            "type": "tool_call",
+        },
+        tool=_tool("write_file"),
+        state=cast("AgentState[Any]", state),
+        runtime=cast("Any", SimpleNamespace()),
+    )
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal executed
+        await asyncio.sleep(0)
+        executed = True
+        return ToolMessage(content="wrote", tool_call_id="generic-write")
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert not executed
+    assert stat_threads
+    assert all(thread_id != event_loop_thread for thread_id in stat_threads)
+    artifact_content, alias_content = await asyncio.gather(
+        asyncio.to_thread(artifact_path.read_text, encoding="utf-8"),
+        asyncio.to_thread(alias_path.read_text, encoding="utf-8"),
+    )
+    assert artifact_content == "pull request body"
+    assert alias_content == "pull request body"
+
+
+async def test_non_temp_outside_worktree_write_remains_denied(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    outside_path = tmp_path / "neighbor-project" / "module.py"
+    model = _StructuredModel(
+        AutoDecisionBatch(
+            decisions=[
+                AutoDecision(
+                    tool_call_id="call-1",
+                    decision="deny",
+                    category=AutoDecisionCategory.TRUST_BOUNDARY,
+                    reason="The target crosses the repository trust boundary.",
+                )
+            ]
+        )
+    )
+    middleware = _middleware(worktree)
+    args: dict[str, object] = {
+        "file_path": str(outside_path),
+        "content": "x = 1",
+    }
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="write_file",
+        args=args,
+    )
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+    assert not outside_path.exists()
+
+
+def test_failed_temp_creation_does_not_grant_deletion_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    created_paths: list[Path] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(**kwargs: str | Path) -> tuple[int, str]:
+        file_descriptor, raw_path = real_mkstemp(
+            prefix=cast("str", kwargs["prefix"]),
+            suffix=cast("str", kwargs["suffix"]),
+            dir=cast("Path", kwargs["dir"]),
+        )
+        created_paths.append(Path(raw_path))
+        return file_descriptor, raw_path
+
+    def fail_write(_file_descriptor: int, _data: bytes) -> object:
+        msg = "simulated write failure"
+        raise OSError(msg)
+
+    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
+    monkeypatch.setattr(
+        "deepagents_code.auto_mode._write_temp_artifact_bytes", fail_write
+    )
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state = cast("dict[str, Any]", dict(request.state))
+    runtime = _scratch_runtime(
+        request,
+        state,
+        tool_call_id="failed-create",
+        tools=list(middleware.tools),
+    )
+
+    create_command = _invoke_scratch_tool(
+        middleware,
+        "create_temp_artifact",
+        runtime,
+        content="body",
+        suffix=".md",
+    )
+
+    create_update = cast("dict[str, Any]", create_command.update)
+    assert cast("ToolMessage", create_update["messages"][0]).status == "error"
+    assert "_auto_temp_artifacts" not in create_update
+    failed_path = created_paths[0]
+    assert not failed_path.exists()
+    assert failed_path.parent == tmp_path
+    failed_path.write_text("replacement", encoding="utf-8")
+
+    delete_command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        _scratch_runtime(
+            request,
+            state,
+            tool_call_id="delete-after-failure",
+            tools=list(middleware.tools),
+        ),
+        file_path=str(failed_path),
+    )
+
+    delete_update = cast("dict[str, Any]", delete_command.update)
+    assert cast("ToolMessage", delete_update["messages"][0]).status == "error"
+    assert "_auto_temp_artifacts" not in delete_update
+    assert failed_path.read_text(encoding="utf-8") == "replacement"
+
+
+async def test_failed_proposed_creation_is_not_temp_provenance(
+    tmp_path: Path,
+) -> None:
+    failed_path = tmp_path / "dcode-scratch-failed.md"
+    model = _StructuredModel(
+        AutoDecisionBatch(
+            decisions=[
+                AutoDecision(
+                    tool_call_id="delete-call",
+                    decision="deny",
+                    category=AutoDecisionCategory.TRUST_BOUNDARY,
+                    reason="No successful allocation establishes ownership.",
+                )
+            ]
+        )
+    )
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete_temp_artifact",
+        args={"file_path": str(failed_path)},
+        tools=list(middleware.tools),
+    )
+    request.messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "create_temp_artifact",
+                        "args": {"content": "body", "suffix": ".md"},
+                        "id": "failed-create",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="creation failed",
+                tool_call_id="failed-create",
+                status="error",
+            ),
+        ]
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete_temp_artifact",
+        args={"file_path": str(failed_path)},
+        call_id="delete-call",
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["current_request_temp_artifacts"] == []
+    assert payload["prior_tool_calls_for_current_request"][0]["tool_call_id"] == (
+        "failed-create"
+    )
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
 
 
 async def test_auto_uses_async_graph_store_apis(tmp_path: Path) -> None:

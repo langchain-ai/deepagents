@@ -4,24 +4,28 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
-from uuid import UUID  # noqa: TC003 - Pydantic resolves model annotations at runtime.
+from uuid import (
+    UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
+)
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from deepagents_code.hooks.models.domain import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.hooks.models.domain import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     EffortLevel,
     HookEvent,
     SessionEndCause,
     SessionStartCause,
 )
-from deepagents_code.json_types import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     JsonObject,
     JsonValue,
 )
 
 
 class _WireModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Ignore unknown keys on external wire ingress so newer protocol fields do
+    # not fail validation. HookWireOutput separately uses extra="allow".
+    model_config = ConfigDict(extra="ignore")
 
 
 class WirePermissionMode(StrEnum):
@@ -55,14 +59,23 @@ class Effort(_WireModel):
 
 
 class PermissionRule(_WireModel):
-    """Permission rule returned by a hook."""
+    """Permission rule returned by a hook.
+
+    Part of the compatible `updatedPermissions` vocabulary. Parsed today;
+    persistent rule application is not wired yet.
+    """
 
     tool_name: str = Field(alias="toolName")
     rule_content: str | None = Field(default=None, alias="ruleContent")
 
 
 class PermissionDestination(StrEnum):
-    """Configuration scope targeted by a permission update."""
+    """Configuration scope targeted by a permission update.
+
+    External wire vocabulary (`session`, `localSettings`, `projectSettings`,
+    `userSettings`). Recognized for parse and diagnostics; persistent
+    destination writes are not applied yet.
+    """
 
     SESSION = "session"
     LOCAL = "localSettings"
@@ -71,7 +84,10 @@ class PermissionDestination(StrEnum):
 
 
 class AddRulesUpdate(_WireModel):
-    """Permission update that adds rules."""
+    """Permission update that adds rules.
+
+    Parsed for wire compatibility; not applied to permission stores yet.
+    """
 
     type: Literal["addRules"]
     rules: list[PermissionRule]
@@ -80,7 +96,10 @@ class AddRulesUpdate(_WireModel):
 
 
 class ReplaceRulesUpdate(_WireModel):
-    """Permission update that replaces rules."""
+    """Permission update that replaces rules.
+
+    Parsed for wire compatibility; not applied to permission stores yet.
+    """
 
     type: Literal["replaceRules"]
     rules: list[PermissionRule]
@@ -89,7 +108,10 @@ class ReplaceRulesUpdate(_WireModel):
 
 
 class RemoveRulesUpdate(_WireModel):
-    """Permission update that removes rules."""
+    """Permission update that removes rules.
+
+    Parsed for wire compatibility; not applied to permission stores yet.
+    """
 
     type: Literal["removeRules"]
     rules: list[PermissionRule]
@@ -98,7 +120,10 @@ class RemoveRulesUpdate(_WireModel):
 
 
 class SetModeUpdate(_WireModel):
-    """Permission update that changes the active mode."""
+    """Permission update that changes the active mode.
+
+    Parsed for wire compatibility; inbound mode changes are not applied yet.
+    """
 
     type: Literal["setMode"]
     mode: WirePermissionMode | Literal["manual"]
@@ -106,7 +131,10 @@ class SetModeUpdate(_WireModel):
 
 
 class AddDirectoriesUpdate(_WireModel):
-    """Permission update that adds allowed directories."""
+    """Permission update that adds allowed directories.
+
+    Parsed for wire compatibility; not applied to permission stores yet.
+    """
 
     type: Literal["addDirectories"]
     directories: list[str]
@@ -114,7 +142,10 @@ class AddDirectoriesUpdate(_WireModel):
 
 
 class RemoveDirectoriesUpdate(_WireModel):
-    """Permission update that removes allowed directories."""
+    """Permission update that removes allowed directories.
+
+    Parsed for wire compatibility; not applied to permission stores yet.
+    """
 
     type: Literal["removeDirectories"]
     directories: list[str]
@@ -133,7 +164,11 @@ PermissionUpdate: TypeAlias = Annotated[
 
 
 class BackgroundTaskWire(_WireModel):
-    """Background task snapshot exposed to hook handlers."""
+    """Background task snapshot exposed to hook handlers.
+
+    Optional Stop/SubagentStop wire field. Omit or leave empty until a
+    trustworthy background-task source exists.
+    """
 
     id: str
     type: str
@@ -147,7 +182,11 @@ class BackgroundTaskWire(_WireModel):
 
 
 class SessionCronWire(_WireModel):
-    """Scheduled session prompt exposed to hook handlers."""
+    """Scheduled session prompt exposed to hook handlers.
+
+    Optional Stop/SubagentStop wire field. Omit or leave empty until a
+    trustworthy session-cron source exists.
+    """
 
     id: str
     schedule: str
@@ -170,7 +209,11 @@ class BaseHookWireInput(_WireModel):
 
 
 class SessionStartWireInput(BaseHookWireInput):
-    """Wire input for `SessionStart`."""
+    """Wire input for `SessionStart`.
+
+    Client-owned event: the terminal client still needs this envelope when it
+    runs command handlers locally.
+    """
 
     hook_event_name: Literal[HookEvent.SESSION_START]
     source: SessionStartCause
@@ -179,14 +222,22 @@ class SessionStartWireInput(BaseHookWireInput):
 
 
 class SessionEndWireInput(BaseHookWireInput):
-    """Wire input for `SessionEnd`."""
+    """Wire input for `SessionEnd`.
+
+    Client-owned event: the terminal client still needs this envelope when it
+    runs command handlers locally.
+    """
 
     hook_event_name: Literal[HookEvent.SESSION_END]
     reason: SessionEndCause
 
 
 class PermissionRequestWireInput(BaseHookWireInput):
-    """Wire input for `PermissionRequest`."""
+    """Wire input for `PermissionRequest`.
+
+    Client-owned event: the terminal client still needs this envelope when it
+    runs command handlers locally.
+    """
 
     hook_event_name: Literal[HookEvent.PERMISSION_REQUEST]
     tool_name: str
@@ -195,7 +246,12 @@ class PermissionRequestWireInput(BaseHookWireInput):
 
 
 class NotificationWireInput(BaseHookWireInput):
-    """Wire input for `Notification`."""
+    """Wire input for `Notification`.
+
+    Client-owned event: the terminal client still needs this envelope when it
+    runs command handlers locally. Wire notification types without a matching
+    lifecycle seam are not emitted.
+    """
 
     hook_event_name: Literal[HookEvent.NOTIFICATION]
     message: str

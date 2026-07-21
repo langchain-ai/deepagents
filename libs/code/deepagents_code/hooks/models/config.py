@@ -6,17 +6,23 @@ from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from deepagents_code.hooks.models.domain import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.hooks.models.domain import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     HookEvent,
 )
 
 
 class _ConfigModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Ignore unknown keys so newer external handler fields do not fail config load.
+    model_config = ConfigDict(extra="ignore")
 
 
 class CommandHandlerSpec(_ConfigModel):
-    """Configuration for a synchronous command hook."""
+    """Configuration for a synchronous command hook.
+
+    Currently only `type: "command"` is supported. Additional handler types
+    remain a discriminated-union extension point and are rejected until
+    implemented.
+    """
 
     type: Literal["command"]
     command: str

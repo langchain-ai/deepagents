@@ -120,11 +120,22 @@ def test_wire_inputs_round_trip_with_exact_keys(payload: dict[str, object]) -> N
     )
 
 
-def test_wire_input_rejects_unknown_fields() -> None:
+def test_wire_input_ignores_unknown_fields() -> None:
     payload = {**_WIRE_INPUTS[0], "unknown": True}
 
-    with pytest.raises(ValidationError):
-        HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
+    parsed = HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
+
+    assert parsed.hook_event_name is HookEvent.SESSION_START
+    assert (
+        HOOK_WIRE_INPUT_ADAPTER.dump_python(
+            parsed,
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        == _WIRE_INPUTS[0]
+    )
 
 
 _SPECIFIC_OUTPUTS = [
@@ -217,13 +228,30 @@ def test_wire_output_does_not_apply_internal_field_names() -> None:
     assert parsed.model_extra == {"continue_": False}
 
 
-def test_wire_output_rejects_mismatched_specific_discriminator() -> None:
+def test_wire_specific_output_ignores_unknown_fields() -> None:
+    parsed = HOOK_WIRE_OUTPUT_ADAPTER.validate_python(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "decision": {"behavior": "deny"},
+            }
+        }
+    )
+
+    specific = parsed.hook_specific_output
+    assert specific is not None
+    assert specific.hook_event_name == "PreToolUse"
+    assert specific.permission_decision == "deny"
+
+
+def test_wire_specific_output_rejects_invalid_permission_decision() -> None:
     with pytest.raises(ValidationError):
         HOOK_WIRE_OUTPUT_ADAPTER.validate_python(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "decision": {"behavior": "deny"},
+                    "permissionDecision": "not-a-decision",
                 }
             }
         )
@@ -313,6 +341,32 @@ def test_hooks_config_validates_event_keys_and_aliases() -> None:
         )
         == payload
     )
+
+
+def test_hooks_config_ignores_unknown_handler_fields() -> None:
+    payload = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "./check.sh",
+                            "async": True,
+                            "futureHandlerField": "keep-parsing",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    config = HOOKS_CONFIG_ADAPTER.validate_python(payload)
+
+    handler = config.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0]
+    assert handler.command == "./check.sh"
+    assert handler.timeout is None
 
 
 def test_hooks_config_rejects_unsupported_handler_type() -> None:

@@ -4,26 +4,32 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import (
-    Path,  # noqa: TC003 - Pydantic resolves model annotations at runtime.
+    Path,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 from typing import Annotated, Literal, TypeAlias
-from uuid import UUID  # noqa: TC003 - Pydantic resolves model annotations at runtime.
+from uuid import (
+    UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
+)
 
-from langchain_core.messages import (  # noqa: TC002 - Pydantic runtime annotation.
+from langchain_core.messages import (  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
     ToolMessage,
 )
-from langgraph.types import Command  # noqa: TC002 - Pydantic runtime annotation.
+from langgraph.types import (
+    Command,  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
+)
 from pydantic import BaseModel, ConfigDict, Field
 
-from deepagents_code.approval_mode import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     ApprovalMode,
 )
-from deepagents_code.json_types import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     JsonObject,
 )
 
 
 class _DomainModel(BaseModel):
+    # Domain objects are constructed by lifecycle code, not parsed from external
+    # hook JSON. Keep unknown fields forbidden so typos fail loudly.
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
 
@@ -68,7 +74,7 @@ class SessionEndCause(StrEnum):
     OTHER = "other"
 
 
-EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
+EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
 
 class ToolCallData(_DomainModel):
@@ -95,7 +101,11 @@ class DcodeNotification(_DomainModel):
 
 
 class BackgroundTaskSnapshot(_DomainModel):
-    """Background task state captured for a hook invocation."""
+    """Background task state captured for a hook invocation.
+
+    Compatible Stop/SubagentStop wire context. Omit or leave empty until a
+    trustworthy background-task source exists.
+    """
 
     id: str
     type: str
@@ -109,7 +119,11 @@ class BackgroundTaskSnapshot(_DomainModel):
 
 
 class SessionCronSnapshot(_DomainModel):
-    """Scheduled session prompt captured for a hook invocation."""
+    """Scheduled session prompt captured for a hook invocation.
+
+    Compatible Stop/SubagentStop wire context. Omit or leave empty until a
+    trustworthy session-cron source exists.
+    """
 
     id: str
     schedule: str
@@ -175,7 +189,11 @@ class PostToolUseEvent(_DomainModel):
 
 
 class StopEvent(_DomainModel):
-    """Domain payload for `Stop`."""
+    """Domain payload for `Stop`.
+
+    `background_tasks` and `session_crons` are optional wire-compat fields;
+    omit or leave empty until they can be sourced.
+    """
 
     event: Literal[HookEvent.STOP]
     continuation_count: int
@@ -192,7 +210,11 @@ class SubagentStartEvent(_DomainModel):
 
 
 class SubagentStopEvent(_DomainModel):
-    """Domain payload for `SubagentStop`."""
+    """Domain payload for `SubagentStop`.
+
+    `background_tasks` and `session_crons` are optional wire-compat fields.
+    Blocking or resumable SubagentStop effects are not applied yet.
+    """
 
     event: Literal[HookEvent.SUBAGENT_STOP]
     agent: AgentIdentity

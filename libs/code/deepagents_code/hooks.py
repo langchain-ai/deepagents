@@ -59,9 +59,15 @@ there is no cross-event delivery-ordering guarantee for the tool events. Most
 non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
 `context.offload`, `context.compact`, `permission.request`) fire in program order.
 They are dispatched with an awaited `dispatch_hook`, except `session.end` on the
-interactive TUI, which is dispatched synchronously via `_dispatch_hook_sync` at
-shutdown (the event loop is already tearing down); that path is still blocking and
-in-order, so the program-order guarantee holds. `input.required` and
+interactive TUI, which is dispatched via `_dispatch_hook_sync` at shutdown. That
+dispatch runs on a worker thread (`asyncio.to_thread`) inside the coordinated
+teardown in `app.py` so a slow hook can't block rendering or delay agent
+cancellation — it overlaps agent cleanup and server shutdown, and teardown awaits
+it before stopping the event loop, so it is dispatched once (never duplicated) and
+after every prior non-tool event; the program-order guarantee therefore holds.
+Delivery is at-most-once: a force-quit second exit can stop the loop before the
+dispatch completes and drop it.
+`input.required` and
 `user.name.set` are the exceptions with no program-order guarantee:
 `user.name.set` is always dispatched fire-and-forget, and `input.required` is
 fire-and-forget on the headless surface (awaited only in the interactive TUI).

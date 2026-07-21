@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-21-unified-evals-skill-design.md
+  s_7ee81ca4f74719::t_9678a353f3d573 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2b84a5bd2c00b6c23431859ea83bf569e575b040",
+  "prompts": {},
+  "sessions": {
+    "s_7ee81ca4f74719": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8687-b70f-7e03-8ecf-b2467b5d93a2",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

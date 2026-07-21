@@ -334,6 +334,49 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "openai_matrix" not in lines
 
 
+def test_main_filters_lite_profile_to_exact_tasks(tmp_path, monkeypatch):
+    import json as _j
+
+    monkeypatch.setattr(up, "_resolve_branch_sha", lambda branch: "a" * 40)
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare")
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-5,cb-cloud-26,cb-cloud-10")
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    assert up.main([]) == 0
+
+    matrix = _j.loads(
+        next(
+            line for line in out.read_text().splitlines() if line.startswith("eval_matrix=")
+        ).split("=", 1)[1]
+    )["include"]
+    assert {entry["branch"] for entry in matrix} == {"main", "feature"}
+    for entry in matrix:
+        flat = _j.loads(entry["flat_matrix"])["include"]
+        assert [item["include_tasks"] for item in flat] == [
+            "cb-cloud-5",
+            "cb-cloud-26",
+            "cb-cloud-10",
+        ]
+
+
+def test_main_rejects_unknown_included_task(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-does-not-exist")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+
+    with pytest.raises(SystemExit, match="UNIFIED_INCLUDE_TASKS"):
+        up.main([])
+
+
 def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
     import pytest
 

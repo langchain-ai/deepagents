@@ -26,6 +26,10 @@ on:
         options:
           - full
           - lite
+      include_tasks:
+        description: "Optional comma-separated exact task names. Filters the tasks resolved by the selected categories and profile; unknown names fail during prep before evals start."
+        type: string
+        default: ""
       rollouts:
         type: string
         default: "3"
@@ -180,6 +184,7 @@ jobs:
           UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
           UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
+          UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           # Set by the enumerate step above for the full profile only; empty
@@ -204,6 +209,7 @@ jobs:
           RESOLVED_SOURCES: ${{ steps.p.outputs.sources }}
           RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
+          IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
@@ -245,6 +251,7 @@ jobs:
             echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
             echo "| resolved branch commits | \`${RESOLVED_SOURCES:-(prep did not complete)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
+            echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"

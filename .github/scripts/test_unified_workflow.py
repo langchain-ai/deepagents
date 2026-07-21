@@ -222,6 +222,18 @@ def test_combine_receives_expected_leaves() -> None:
     assert "expected_leaves: ${{ steps.p.outputs.expected_leaves }}" in reusable
 
 
+def test_unified_dispatch_forwards_exact_task_filter() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    prep = _indented_block(workflow, "  prep:")
+    parse = _indented_block(
+        prep, '      - name: "🧮 Parse models + build the per-model flat matrix"'
+    )
+
+    assert "include_tasks:" in workflow.split("permissions:", 1)[0]
+    assert "UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in parse
+    assert "IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in prep
+
+
 def test_combine_generates_allocation_driven_comparison_report() -> None:
     workflow = UNIFIED_WORKFLOW.read_text()
     combine = _indented_block(workflow, "  combine:")

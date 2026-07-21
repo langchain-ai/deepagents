@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import Select, Static
+from textual.widgets import Checkbox, Select, Static
 from textual.widgets._select import SelectOverlay
 
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
@@ -711,7 +711,7 @@ class TestDebugConsoleScreen:
 
         assert "debug-console-enter-copy-marker" in captured["text"]
 
-    async def test_tab_cycles_between_level_filter_and_log_lines(self) -> None:
+    async def test_tab_cycles_through_toolbar_controls_and_log_lines(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
             screen = DebugConsoleScreen(_snapshot())
@@ -719,15 +719,30 @@ class TestDebugConsoleScreen:
             await pilot.pause()
             log = screen.query_one("#debug-log", _DebugLogView)
             select = screen.query_one("#debug-level-filter", Select)
+            checkbox = screen.query_one("#debug-click-to-copy", Checkbox)
             log.focus()
 
+            # Forward: log -> filter -> checkbox -> log.
             await pilot.press("tab")
             await pilot.pause()
             assert screen.focused is select
 
-            await pilot.press("shift+tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen.focused is checkbox
+
+            await pilot.press("tab")
             await pilot.pause()
             assert screen.focused is log
+
+            # Reverse walks back through the checkbox.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is checkbox
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is select
 
     async def test_tab_moves_open_level_dropdown_highlight(self) -> None:
         app = _Harness()
@@ -888,6 +903,9 @@ class TestDebugConsoleScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            screen.query_one("#debug-click-to-copy", Checkbox).value = True
+            await pilot.pause()
+
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
             # Single "Thread" field: label (6 chars) + 2-space gutter puts the
             # value at column 8, so an x offset of 10 lands inside the copyable
@@ -896,6 +914,125 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
         assert captured["text"] == "thread-abc"
+
+    async def test_click_to_copy_defaults_off_and_ignores_snapshot_click(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen.query_one("#debug-click-to-copy", Checkbox).value is False
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            await pilot.click(snapshot_widget, offset=(10, 0))
+            await pilot.pause()
+
+        assert "text" not in captured
+
+    async def test_click_line_ignored_when_click_to_copy_off_but_enter_copies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        logger.info("debug-console-click-off-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            index = next(
+                index
+                for index, record in enumerate(log.records)
+                if "debug-console-click-off-marker" in record.message
+            )
+            log._select_record(index)
+
+            # A click selects but does not copy while the checkbox is unchecked.
+            await pilot.click(log)
+            await pilot.pause()
+            assert "text" not in captured
+
+            # Enter still copies the selected record regardless of the checkbox.
+            log.focus()
+            log._select_record(index)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert "debug-console-click-off-marker" in captured["text"]
+
+    async def test_toggling_checkbox_propagates_to_child_widgets(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            log = screen.query_one("#debug-log", _DebugLogView)
+            snapshot_view = screen.query_one(
+                ".debug-console-snapshot", debug_console_mod._SnapshotView
+            )
+            assert log.click_to_copy is False
+            assert snapshot_view.click_to_copy is False
+
+            screen.query_one("#debug-click-to-copy", Checkbox).value = True
+            await pilot.pause()
+            assert screen._click_to_copy is True
+            assert log.click_to_copy is True
+            assert snapshot_view.click_to_copy is True
+
+            screen.query_one("#debug-click-to-copy", Checkbox).value = False
+            await pilot.pause()
+            assert log.click_to_copy is False
+            assert snapshot_view.click_to_copy is False
+
+    async def test_initial_click_to_copy_restores_checkbox_and_children(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot(), click_to_copy=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen.query_one("#debug-click-to-copy", Checkbox).value is True
+            assert screen.query_one("#debug-log", _DebugLogView).click_to_copy is True
+
+    async def test_toggling_checkbox_invokes_persist_callback(self) -> None:
+        changes: list[bool] = []
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                _snapshot(), on_click_to_copy_change=changes.append
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.query_one("#debug-click-to-copy", Checkbox).value = True
+            await pilot.pause()
+            screen.query_one("#debug-click-to-copy", Checkbox).value = False
+            await pilot.pause()
+
+        assert changes == [True, False]
 
     async def test_copyable_value_carries_copy_meta_span(self) -> None:
         app = _Harness()
@@ -1082,6 +1219,49 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
         # The link branch wins and returns early: the trace opens, no copy fires.
+        assert len(opened) == 1
+        assert copied == []
+
+    async def test_clicking_langsmith_link_opens_it_even_with_click_to_copy_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        opened: list[object] = []
+        monkeypatch.setattr(
+            debug_console_mod, "open_style_link", lambda event: opened.append(event)
+        )
+        copied: list[str] = []
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [
+                    SnapshotField(
+                        "Thread", "thread-abc", copyable=True, thread_id="thread-abc"
+                    )
+                ],
+                click_to_copy=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._langsmith_urls["thread-abc"] = url
+            screen._refresh_snapshot()
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            # "(langsmith)" starts at col 20 (see the toggle-off test); x=22 is
+            # inside it.
+            await pilot.click(snapshot_widget, offset=(22, 0))
+            await pilot.pause()
+
+        # The link branch still returns early even though click-to-copy is on.
         assert len(opened) == 1
         assert copied == []
 

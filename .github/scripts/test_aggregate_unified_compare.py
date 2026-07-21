@@ -283,6 +283,7 @@ def test_missing_task_file_marks_comparison_incomplete(tmp_path: Path) -> None:
     comparison = result["comparisons"][0]
     assert comparison["status"] == "incomplete"
     assert comparison["task_outcomes"]["context"]["missing"] == 1
+    assert result["issues"][0]["code"] == "missing_per_task_data"
 
 
 def test_compare_rejects_actual_source_sha_mismatch(tmp_path: Path) -> None:
@@ -300,24 +301,26 @@ def test_compare_rejects_actual_source_sha_mismatch(tmp_path: Path) -> None:
         )
 
 
-def test_compare_rejects_malformed_per_task_data(tmp_path: Path) -> None:
+def test_compare_quarantines_malformed_per_task_data(tmp_path: Path) -> None:
     sources = [{"branch": "main", "sha": "a" * 40}]
     allocations = {"bare": ["context"], "dcode": ["context"]}
     _populate(tmp_path, sources, allocations)
     path = next(tmp_path.rglob("per_task.jsonl"))
     path.write_text("not-json\n")
 
-    with pytest.raises(ValueError, match="invalid per-task JSON"):
-        compare.compare(
-            tmp_path,
-            sources=sources,
-            expected_leaves=_expected(sources, allocations=allocations),
-            categories=["context"],
-            rollouts=ROLLOUTS,
-        )
+    result = compare.compare(
+        tmp_path,
+        sources=sources,
+        expected_leaves=_expected(sources, allocations=allocations),
+        categories=["context"],
+        rollouts=ROLLOUTS,
+    )
+
+    assert result["comparisons"][0]["status"] == "incomplete"
+    assert result["issues"][0]["code"] == "malformed_per_task_data"
 
 
-def test_write_outputs_skips_single_subject(tmp_path: Path) -> None:
+def test_write_outputs_emits_diagnostic_for_single_subject(tmp_path: Path) -> None:
     sources = [{"branch": "main", "sha": "a" * 40}]
     allocations = {"bare": ["context"]}
     _populate(tmp_path, sources, allocations)
@@ -330,8 +333,9 @@ def test_write_outputs_skips_single_subject(tmp_path: Path) -> None:
     )
 
     out = tmp_path / "out"
-    assert compare.write_outputs(result, out) is False
-    assert not out.exists()
+    assert compare.write_outputs(result, out) is True
+    assert (out / "comparison_summary.json").is_file()
+    assert (out / "comparison.md").is_file()
 
 
 def test_write_outputs_emits_json_markdown_and_step_summary(
@@ -358,3 +362,29 @@ def test_write_outputs_emits_json_markdown_and_step_summary(
     assert (out / "comparison_summary.json").is_file()
     assert "Different models are never compared" in (out / "comparison.md").read_text()
     assert "deterministic comparisons" in summary.read_text()
+
+
+def test_main_writes_diagnostic_report_for_invalid_inputs(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+
+    rc = compare.main(
+        [
+            str(tmp_path),
+            "--sources-json",
+            "not-json",
+            "--expected-leaves-json",
+            "[]",
+            "--categories-json",
+            "[]",
+            "--rollouts",
+            str(ROLLOUTS),
+            "--out-dir",
+            str(out),
+        ]
+    )
+
+    assert rc == 0
+    result = json.loads((out / "comparison_summary.json").read_text())
+    assert result["comparisons"] == []
+    assert result["issues"][0]["code"] == "comparison_input_error"
+    assert "## Analysis warnings" in (out / "comparison.md").read_text()

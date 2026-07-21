@@ -17408,7 +17408,7 @@ class DeepAgentsApp(App):
             Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
-        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
@@ -17473,6 +17473,10 @@ class DeepAgentsApp(App):
             _thread_field(),
             _safe("CWD", lambda: self._cwd),
             _safe("Approval mode", lambda: self._approval_mode.value),
+            _safe(
+                "Experimental",
+                lambda: "on" if is_env_truthy(EXPERIMENTAL) else "off",
+            ),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),

@@ -37,6 +37,46 @@ class LeafRecord(NamedTuple):
     leaf: dict[str, object]
 
 
+def analysis_issue(
+    stage: str,
+    code: str,
+    message: str,
+    *,
+    leaf: dict[str, str] | None = None,
+    path: Path | None = None,
+) -> dict[str, object]:
+    """Build one structured warning emitted by post-run analysis."""
+    issue: dict[str, object] = {
+        "stage": stage,
+        "code": code,
+        "message": message,
+    }
+    if leaf is not None:
+        issue["leaf"] = leaf
+    if path is not None:
+        issue["path"] = str(path)
+    return issue
+
+
+def read_download_issues(root: Path, stage: str) -> list[dict[str, object]]:
+    """Read an artifact-download error left by a warning-only workflow step."""
+    path = root / "artifact-download-error.log"
+    if not path.is_file():
+        return []
+    try:
+        message = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        message = f"Artifact download failed and its error log was unreadable: {exc}"
+    return [
+        analysis_issue(
+            stage,
+            "artifact_download_failed",
+            message or "Artifact download failed after three attempts.",
+            path=path.relative_to(root),
+        )
+    ]
+
+
 def _require_object(value: object, field: str) -> dict[str, object]:
     if not isinstance(value, dict):
         msg = f"{field} must be a JSON object"
@@ -51,7 +91,33 @@ def _require_integer(value: object, field: str, *, minimum: int) -> int:
     return value
 
 
-def _require_metric(summary: dict[str, object], field: str, *, tasks: int) -> float | None:
+def _is_analysis_issue(value: object) -> bool:
+    """Return whether a decoded value has the required warning fields."""
+    if not isinstance(value, dict):
+        return False
+    issue = cast(dict[str, object], value)
+    return all(
+        isinstance(issue.get(field), str) for field in ("stage", "code", "message")
+    )
+
+
+def _markdown_warning(value: object) -> str:
+    """Flatten and escape untrusted text for a Markdown warning bullet."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def _require_metric(
+    summary: dict[str, object], field: str, *, tasks: int
+) -> float | None:
     if field not in summary:
         msg = f"{field} is required"
         raise _LeafSummaryError(msg)
@@ -88,7 +154,9 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         msg = f"summary.json is not valid JSON: {exc}"
         raise _LeafSummaryError(msg) from exc
     summary = _require_object(raw, "summary")
-    k = _require_integer(summary.get("rollouts_per_task"), "rollouts_per_task", minimum=1)
+    k = _require_integer(
+        summary.get("rollouts_per_task"), "rollouts_per_task", minimum=1
+    )
     if expected_rollouts is not None and k != expected_rollouts:
         msg = f"rollouts_per_task is {k}; expected {expected_rollouts}"
         raise _LeafSummaryError(msg)
@@ -125,6 +193,12 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if not isinstance(incomplete, bool):
         msg = "incomplete must be a boolean"
         raise _LeafSummaryError(msg)
+    raw_issues = summary.get("issues", [])
+    if not isinstance(raw_issues, list) or not all(
+        _is_analysis_issue(issue) for issue in raw_issues
+    ):
+        msg = "issues must be a list of objects with stage, code, and message strings"
+        raise _LeafSummaryError(msg)
     return {
         "model": model or "unknown",
         "category": category or "unknown",
@@ -136,6 +210,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "tasks": tasks,
         "passed": passed,
         "incomplete": incomplete,
+        "issues": raw_issues,
     }
 
 
@@ -148,7 +223,11 @@ def combine(
     leaves: list[dict],
     expected_leaves: list[LeafKey | dict[str, str]] | None = None,
     expected_categories: list[str] | None = None,
+    issues: list[dict[str, object]] | None = None,
 ) -> dict:
+    issues_out = list(issues or [])
+    for leaf in leaves:
+        issues_out.extend(cast(list[dict[str, object]], leaf.get("issues", [])))
     present_cats = {leaf["category"] for leaf in leaves}
     if expected_categories:
         categories = list(expected_categories)
@@ -175,16 +254,41 @@ def combine(
 
     by_row: dict[RowKey, list[dict]] = {}
     seen: set[LeafKey] = set()
+    quarantined: set[LeafKey] = set()
     for leaf in leaves:
         row = RowKey(leaf["model"], leaf["branch"], leaf["config"])
-        identity = LeafKey(leaf["model"], leaf["branch"], leaf["config"], leaf["category"])
+        identity = LeafKey(
+            leaf["model"], leaf["branch"], leaf["config"], leaf["category"]
+        )
+        if identity in quarantined:
+            continue
         if identity in seen:
+            quarantined.add(identity)
+            by_row[row] = [
+                existing
+                for existing in by_row.get(row, [])
+                if existing["category"] != leaf["category"]
+            ]
             msg = (
                 f"Duplicate leaf for model {leaf['model']!r}, branch "
                 f"{leaf['branch']!r}, config {leaf['config']!r}, category "
-                f"{leaf['category']!r}"
+                f"{leaf['category']!r}; all copies were quarantined"
             )
-            raise ValueError(msg)
+            print(f"::warning::{msg}")
+            issues_out.append(
+                analysis_issue(
+                    "unified_aggregation",
+                    "duplicate_leaf",
+                    msg,
+                    leaf={
+                        "model": leaf["model"],
+                        "branch": leaf["branch"],
+                        "config": leaf["config"],
+                        "category": leaf["category"],
+                    },
+                )
+            )
+            continue
         seen.add(identity)
         by_row.setdefault(row, []).append(leaf)
         if row not in required_by_row:
@@ -197,7 +301,9 @@ def combine(
         model, branch, config = row
         row_leaves = by_row.get(row, [])
         required = required_by_row.get(row, set())
-        scored = [leaf for leaf in row_leaves if not required or leaf["category"] in required]
+        scored = [
+            leaf for leaf in row_leaves if not required or leaf["category"] in required
+        ]
         cats = {
             leaf["category"]: {
                 "pass_at_k": leaf["pass_at_k"],
@@ -216,12 +322,14 @@ def combine(
         # Validated None metrics have zero tasks, so None-as-zero is neutral in
         # these task-weighted numerators.
         micro_pass = (
-            sum((leaf["pass_at_k"] or 0.0) * leaf["tasks"] for leaf in scored) / total_tasks
+            sum((leaf["pass_at_k"] or 0.0) * leaf["tasks"] for leaf in scored)
+            / total_tasks
             if total_tasks
             else None
         )
         micro_avg = (
-            sum((leaf["avg_at_k"] or 0.0) * leaf["tasks"] for leaf in scored) / total_tasks
+            sum((leaf["avg_at_k"] or 0.0) * leaf["tasks"] for leaf in scored)
+            / total_tasks
             if total_tasks
             else None
         )
@@ -242,7 +350,7 @@ def combine(
                 ),
             }
         )
-    return {"rows": rows_out, "categories": categories}
+    return {"rows": rows_out, "categories": categories, "issues": issues_out}
 
 
 def _fmt(v: float | None) -> str:
@@ -282,7 +390,9 @@ def render_markdown(combined: dict, k: int) -> str:
         cells = [label + (" ⚠️" if r["incomplete"] else "")]
         for c in cats:
             cat = r["categories"].get(c)
-            cells.append(f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—")
+            cells.append(
+                f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—"
+            )
         cells += [
             _fmt(r["macro"]["pass_at_k"]),
             _fmt(r["macro"]["avg_at_k"]),
@@ -302,8 +412,18 @@ def render_markdown(combined: dict, k: int) -> str:
         md += "\n> ⚠️ **Ranked on partial data** — treat these rows with caution:\n"
         for r in incompletes:
             miss = r.get("missing_categories") or []
-            note = _incomplete_note(has_leaves=bool(r["categories"]), missing_categories=miss)
+            note = _incomplete_note(
+                has_leaves=bool(r["categories"]), missing_categories=miss
+            )
             md += f"> - `{r['model']} / {r['branch']} / {r['config']}` — {note}\n"
+    issues = cast(list[dict[str, object]], combined.get("issues", []))
+    if issues:
+        md += "\n## Analysis warnings\n\n"
+        for issue in issues:
+            md += (
+                f"- `{_markdown_warning(issue['code'])}`: "
+                f"{_markdown_warning(issue['message'])}\n"
+            )
     return md
 
 
@@ -311,13 +431,19 @@ def radar_results(combined: dict) -> list[dict]:
     out = []
     for r in combined["rows"]:
         scores = {
-            c: v["pass_at_k"] for c, v in r["categories"].items() if v.get("pass_at_k") is not None
+            c: v["pass_at_k"]
+            for c, v in r["categories"].items()
+            if v.get("pass_at_k") is not None
         }
-        out.append({"model": f"{r['model']} / {r['branch']} / {r['config']}", "scores": scores})
+        out.append(
+            {"model": f"{r['model']} / {r['branch']} / {r['config']}", "scores": scores}
+        )
     return out
 
 
-def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str | None) -> None:
+def write_outputs(
+    combined: dict, k: int, out_dir: Path, step_summary_path: str | None
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "unified_summary.json").write_text(json.dumps(combined, indent=2) + "\n")
     # Radar needs >= 3 axes to be meaningful. Emit its input only then; the
@@ -345,10 +471,21 @@ def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str 
 
 
 def discover_leaf_records(
-    root: Path, *, expected_rollouts: int | None = None
+    root: Path,
+    *,
+    expected_rollouts: int | None = None,
+    issues: list[dict[str, object]] | None = None,
 ) -> list[LeafRecord]:
     """Discover validated leaf summaries while retaining their artifact paths."""
     records: list[LeafRecord] = []
+    if not root.is_dir():
+        msg = f"Eval artifact directory does not exist: {root}"
+        print(f"::warning::{msg}")
+        if issues is not None:
+            issues.append(
+                analysis_issue("unified_aggregation", "missing_artifact_directory", msg)
+            )
+        return records
     if (root / "summary.json").exists():
         candidates = [root]
     else:
@@ -370,14 +507,30 @@ def discover_leaf_records(
             print(
                 f"::warning::Skipping malformed eval summary at {leaf_dir / 'summary.json'}: {exc}"
             )
+            if issues is not None:
+                issues.append(
+                    analysis_issue(
+                        "unified_aggregation",
+                        "malformed_leaf_summary",
+                        str(exc),
+                        path=(leaf_dir / "summary.json").relative_to(root),
+                    )
+                )
     return records
 
 
-def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> list[dict]:
+def _discover_leaves(
+    root: Path,
+    *,
+    expected_rollouts: int | None = None,
+    issues: list[dict[str, object]] | None = None,
+) -> list[dict]:
     """Discover validated leaf summaries for the unified scorecard."""
     return [
         record.leaf
-        for record in discover_leaf_records(root, expected_rollouts=expected_rollouts)
+        for record in discover_leaf_records(
+            root, expected_rollouts=expected_rollouts, issues=issues
+        )
     ]
 
 
@@ -432,17 +585,45 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--rollouts must be >= 1")
     out_dir = args.out_dir or args.root
 
-    leaves = _discover_leaves(args.root, expected_rollouts=args.rollouts)
-    expected_leaves = _load_leaves_env("EXPECTED_LEAVES")
+    issues = read_download_issues(args.root, "unified_aggregation")
+    leaves = _discover_leaves(args.root, expected_rollouts=args.rollouts, issues=issues)
+    if not leaves:
+        msg = "No usable eval leaf summaries were found; reporting an incomplete run."
+        print(f"::warning::{msg}")
+        issues.append(
+            analysis_issue("unified_aggregation", "no_usable_leaf_summaries", msg)
+        )
+    try:
+        expected_leaves = _load_leaves_env("EXPECTED_LEAVES")
+    except SystemExit as exc:
+        expected_leaves = None
+        msg = str(exc)
+        print(f"::warning::{msg}")
+        issues.append(
+            analysis_issue("unified_aggregation", "invalid_expected_leaves", msg)
+        )
+    try:
+        expected_categories = _load_list_env("EXPECTED_CATEGORIES")
+    except SystemExit as exc:
+        expected_categories = None
+        msg = str(exc)
+        print(f"::warning::{msg}")
+        issues.append(
+            analysis_issue("unified_aggregation", "invalid_expected_categories", msg)
+        )
     combined = combine(
         leaves,
         cast(list[LeafKey | dict[str, str]] | None, expected_leaves),
-        _load_list_env("EXPECTED_CATEGORIES"),
+        expected_categories,
+        issues,
     )
-    write_outputs(combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY"))
-    if not leaves:
-        print("::error::No usable eval leaf summaries were found; failing the run.")
-        return 1
+    try:
+        write_outputs(
+            combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY")
+        )
+    except (OSError, UnicodeError) as exc:
+        print(f"::warning::Could not write unified analysis outputs: {exc}")
+        return 0
     rows = combined["rows"]
     # Incompleteness is surfaced per row in write_outputs (a ::warning:: plus the
     # ⚠️ markers in the table) and does not fail a run that has usable leaves. A

@@ -147,10 +147,16 @@ def _read_tasks(path: Path, rollouts: int) -> tuple[dict[str, float], bool]:
     return tasks, True
 
 
-def _actual_leaves(root: Path, rollouts: int) -> dict[LeafKey, LeafData]:
+def _actual_leaves(
+    root: Path, rollouts: int
+) -> tuple[dict[LeafKey, LeafData], list[dict[str, object]]]:
     """Index validated result leaves by their complete evaluation identity."""
     output: dict[LeafKey, LeafData] = {}
-    for record in unified.discover_leaf_records(root, expected_rollouts=rollouts):
+    issues = unified.read_download_issues(root, "comparison")
+    quarantined: set[LeafKey] = set()
+    for record in unified.discover_leaf_records(
+        root, expected_rollouts=rollouts, issues=issues
+    ):
         leaf = record.leaf
         key = LeafKey(
             cast(str, leaf["model"]),
@@ -158,12 +164,69 @@ def _actual_leaves(root: Path, rollouts: int) -> dict[LeafKey, LeafData]:
             cast(str, leaf["config"]),
             cast(str, leaf["category"]),
         )
+        issues.extend(cast(list[dict[str, object]], leaf.get("issues", [])))
+        if key in quarantined:
+            continue
         if key in output:
-            msg = f"duplicate actual leaf: {key!r}"
-            raise ValueError(msg)
-        tasks, has_tasks = _read_tasks(record.path / "per_task.jsonl", rollouts)
+            output.pop(key)
+            quarantined.add(key)
+            msg = f"duplicate actual leaf: {key!r}; all copies were quarantined"
+            print(f"::warning::{msg}")
+            issues.append(
+                unified.analysis_issue(
+                    "comparison",
+                    "duplicate_leaf",
+                    msg,
+                    leaf={
+                        "model": key.model,
+                        "branch": key.branch,
+                        "config": key.config,
+                        "category": key.category,
+                    },
+                )
+            )
+            continue
+        task_path = record.path / "per_task.jsonl"
+        try:
+            tasks, has_tasks = _read_tasks(task_path, rollouts)
+        except (OSError, UnicodeError, ValueError) as exc:
+            tasks, has_tasks = {}, False
+            msg = f"Could not trust task-level results: {exc}"
+            print(f"::warning::{msg}")
+            issues.append(
+                unified.analysis_issue(
+                    "comparison",
+                    "malformed_per_task_data",
+                    msg,
+                    leaf={
+                        "model": key.model,
+                        "branch": key.branch,
+                        "config": key.config,
+                        "category": key.category,
+                    },
+                    path=task_path.relative_to(root),
+                )
+            )
+        if not has_tasks and not any(
+            issue.get("path") == str(task_path.relative_to(root)) for issue in issues
+        ):
+            msg = f"Task-level result file is missing: {task_path.relative_to(root)}"
+            issues.append(
+                unified.analysis_issue(
+                    "comparison",
+                    "missing_per_task_data",
+                    msg,
+                    leaf={
+                        "model": key.model,
+                        "branch": key.branch,
+                        "config": key.config,
+                        "category": key.category,
+                    },
+                    path=task_path.relative_to(root),
+                )
+            )
         output[key] = LeafData(leaf, tasks, has_tasks)
-    return output
+    return output, issues
 
 
 def _source_index(sources: list[dict[str, str]]) -> dict[str, str]:
@@ -422,11 +485,13 @@ def _make_comparison(
         return None, _not_comparable(
             kind, first_identity, second_identity, "no_shared_categories"
         )
+    outcomes = _task_outcomes(baseline_tasks, candidate_tasks, shared)
     incomplete = (
         bool(baseline["incomplete"])
         or bool(candidate["incomplete"])
         or any(not baseline_task_files.get(category, False) for category in shared)
         or any(not candidate_task_files.get(category, False) for category in shared)
+        or any(counts["missing"] for counts in outcomes.values())
     )
     return (
         {
@@ -436,7 +501,7 @@ def _make_comparison(
             "shared_categories": shared,
             "status": "incomplete" if incomplete else "complete",
             "metrics": _comparison_metrics(baseline, candidate, shared),
-            "task_outcomes": _task_outcomes(baseline_tasks, candidate_tasks, shared),
+            "task_outcomes": outcomes,
         },
         None,
     )
@@ -451,8 +516,26 @@ def compare(
     rollouts: int,
 ) -> dict[str, object]:
     """Build every controlled branch and config comparison from the run allocation."""
-    actual = _actual_leaves(root, rollouts)
+    actual, issues = _actual_leaves(root, rollouts)
     subjects, tasks, task_files = _build_subjects(actual, expected_leaves, sources)
+    for subject in subjects:
+        missing = cast(list[str], subject["missing_categories"])
+        if not missing:
+            continue
+        identity = _subject_identity(subject)
+        issues.append(
+            unified.analysis_issue(
+                "comparison",
+                "missing_leaf_summaries",
+                f"Missing leaf summaries for categories: {', '.join(missing)}",
+                leaf={
+                    "model": identity["model"],
+                    "branch": identity["branch"],
+                    "config": identity["config"],
+                    "category": ",".join(missing),
+                },
+            )
+        )
     by_key = {
         SubjectKey(
             cast(str, subject["branch"]),
@@ -543,6 +626,25 @@ def compare(
                 if omitted is not None:
                     not_comparable.append(omitted)
 
+    for comparison in comparisons_out:
+        outcomes = cast(dict[str, dict[str, int]], comparison["task_outcomes"])
+        missing = {
+            category: counts["missing"]
+            for category, counts in outcomes.items()
+            if counts["missing"]
+        }
+        if missing:
+            baseline = cast(dict[str, str], comparison["baseline"])
+            candidate = cast(dict[str, str], comparison["candidate"])
+            issues.append(
+                unified.analysis_issue(
+                    "comparison",
+                    "task_coverage_mismatch",
+                    f"Task coverage differs for {baseline['branch']}/{baseline['config']} "
+                    f"and {candidate['branch']}/{candidate['config']}: {missing}",
+                )
+            )
+
     return {
         "schema_version": 1,
         "rollouts_per_task": rollouts,
@@ -550,6 +652,7 @@ def compare(
         "subjects": subjects,
         "comparisons": comparisons_out,
         "not_comparable": not_comparable,
+        "issues": issues,
     }
 
 
@@ -562,7 +665,15 @@ def _fmt(value: float | None, *, signed: bool = False) -> str:
 
 def _md(value: object) -> str:
     """Escape a scalar for a Markdown table cell."""
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
 
 
 def _identity_label(identity: dict[str, str]) -> str:
@@ -688,15 +799,18 @@ def render_markdown(result: dict[str, object]) -> str:
                 f"| {_md(item['kind'])} | {_md(label)} | {_md(baseline['model'])} | "
                 f"{_md(item['reason'])} |"
             )
+    issues = cast(list[dict[str, object]], result.get("issues", []))
+    if issues:
+        lines.extend(["", "## Analysis warnings", ""])
+        for issue in issues:
+            lines.append(f"- `{_md(issue['code'])}`: {_md(issue['message'])}")
     return "\n".join(lines) + "\n"
 
 
 def write_outputs(result: dict[str, object], out_dir: Path) -> bool:
-    """Write comparison outputs when at least one meaningful pair exists."""
-    comparisons_out = cast(list[dict[str, object]], result["comparisons"])
-    if not comparisons_out:
-        print("No comparable Unified Eval subjects; no comparison artifact written.")
-        return False
+    """Write comparison outputs, including diagnostic-only reports."""
+    if not result["comparisons"]:
+        print("No comparable Unified Eval subjects; writing a diagnostic report.")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "comparison_summary.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8"
@@ -707,6 +821,25 @@ def write_outputs(result: dict[str, object], out_dir: Path) -> bool:
         with open(summary, "a", encoding="utf-8") as handle:
             handle.write("\n" + markdown)
     return True
+
+
+def _diagnostic_result(rollouts: int, exc: BaseException) -> dict[str, object]:
+    """Build a comparison report when allocation or input parsing cannot proceed."""
+    return {
+        "schema_version": 1,
+        "rollouts_per_task": rollouts,
+        "sources": [],
+        "subjects": [],
+        "comparisons": [],
+        "not_comparable": [],
+        "issues": [
+            unified.analysis_issue(
+                "comparison",
+                "comparison_input_error",
+                str(exc),
+            )
+        ],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -730,8 +863,12 @@ def main(argv: list[str] | None = None) -> int:
             rollouts=args.rollouts,
         )
     except (OSError, UnicodeError, ValueError) as exc:
-        parser.error(str(exc))
-    write_outputs(result, args.out_dir)
+        print(f"::warning::Comparison could not use its inputs: {exc}")
+        result = _diagnostic_result(args.rollouts, exc)
+    try:
+        write_outputs(result, args.out_dir)
+    except (OSError, UnicodeError) as exc:
+        print(f"::warning::Could not write comparison outputs: {exc}")
     return 0
 
 

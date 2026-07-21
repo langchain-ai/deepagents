@@ -784,23 +784,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     Args:
         backend: Backend for file operations and execution.
-        subagents: Inline declarative or compiled subagent configs. When
-            `default_model` is supplied, declarative configs inherit the parent
-            defaults and are normalized before compilation.
-        default_model: Parent model used to normalize declarative subagents and
-            construct the implicit general-purpose subagent.
-        default_tools: Parent tools inherited by declarative subagents that do
-            not declare `tools`.
-        default_permissions: Parent filesystem permissions inherited by
-            declarative subagents that do not declare `permissions`.
-        default_interrupt_on: Parent interrupt configuration inherited by
-            declarative subagents that do not declare `interrupt_on`.
-        profile: Parent harness profile governing the implicit general-purpose
-            subagent.
-        skills: Parent skill sources used by the implicit general-purpose
-            subagent.
-        inherited_middleware: Parent middleware candidates eligible to replace
-            matching general-purpose middleware slots.
+        subagents: Fully specified declarative or compiled subagent configs.
+            Declarative specs must provide `model` and `tools`; use
+            `BuiltInSubAgentMiddleware` for Deep Agents default construction.
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
@@ -845,59 +831,17 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
-        default_model: BaseChatModel | None = None,
-        default_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
-        default_permissions: list[FilesystemPermission] | None = None,
-        default_interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
-        profile: HarnessProfile | None = None,
-        skills: list[str] | None = None,
-        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
     ) -> None:
-        """Initialize the `SubAgentMiddleware`."""
+        """Initialize the public dispatcher from fully specified subagent specs."""
         super().__init__()
+        if not subagents:
+            msg = "At least one subagent must be specified"
+            raise ValueError(msg)
         self._backend = backend
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
-        self._profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-        self._profile_matched_names: set[str] = set()
-
-        if default_model is None:
-            normalized_subagents = list(subagents)
-        else:
-            normalized_subagents = [
-                spec
-                if "runnable" in spec
-                else self._normalize_subagent(
-                    spec,
-                    backend=backend,
-                    default_model=default_model,
-                    default_tools=default_tools,
-                    default_permissions=default_permissions,
-                    default_interrupt_on=default_interrupt_on,
-                )
-                for spec in subagents
-            ]
-
-            parent_profile = profile or HarnessProfile()
-            general_purpose = self._build_general_purpose_subagent(
-                normalized_subagents,
-                backend=backend,
-                model=default_model,
-                tools=default_tools,
-                permissions=default_permissions,
-                interrupt_on=default_interrupt_on,
-                profile=parent_profile,
-                skills=skills,
-                inherited_middleware=inherited_middleware,
-            )
-            if general_purpose is not None:
-                normalized_subagents.insert(0, general_purpose)
-
-        if not normalized_subagents:
-            msg = "At least one subagent must be specified"
-            raise ValueError(msg)
-        self._subagents = tuple(normalized_subagents)
+        self._subagents = tuple(subagents)
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in self._subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -1139,9 +1083,79 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return await handler(request)
 
 
+class BuiltInSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
+    """Deep Agents' default subagent construction policy.
+
+    This subclass normalizes declarative specs and synthesizes the implicit
+    general-purpose subagent from the parent agent's configuration. The public
+    ``SubAgentMiddleware`` remains a dispatcher for fully specified specs.
+    """
+
+    @property
+    def name(self) -> str:
+        """Share the public middleware replacement slot."""
+        return SubAgentMiddleware.__name__
+
+    def __init__(
+        self,
+        *,
+        backend: BackendProtocol | BackendFactory,
+        subagents: Sequence[SubAgent | CompiledSubAgent],
+        model: BaseChatModel,
+        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+        permissions: list[FilesystemPermission] | None,
+        interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+        profile: HarnessProfile,
+        skills: list[str] | None,
+        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+        system_prompt: str | None = TASK_SYSTEM_PROMPT,
+        task_description: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
+        state_schema: type | None = None,
+    ) -> None:
+        """Normalize parent-derived subagents before initializing the dispatcher."""
+        self._profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+        self._profile_matched_names: set[str] = set()
+        normalized_subagents = [
+            spec
+            if "runnable" in spec
+            else self._normalize_subagent(
+                spec,
+                backend=backend,
+                default_model=model,
+                default_tools=tools,
+                default_permissions=permissions,
+                default_interrupt_on=interrupt_on,
+            )
+            for spec in subagents
+        ]
+        general_purpose = self._build_general_purpose_subagent(
+            normalized_subagents,
+            backend=backend,
+            model=model,
+            tools=tools,
+            permissions=permissions,
+            interrupt_on=interrupt_on,
+            profile=profile,
+            skills=skills,
+            inherited_middleware=inherited_middleware,
+        )
+        if general_purpose is not None:
+            normalized_subagents.insert(0, general_purpose)
+        super().__init__(
+            backend=backend,
+            subagents=normalized_subagents,
+            system_prompt=system_prompt,
+            task_description=task_description,
+            private_state_keys=private_state_keys,
+            state_schema=state_schema,
+        )
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
+    (BuiltInSubAgentMiddleware, (SubAgentMiddleware.__name__,)),
 )
 """Scaffolding middleware that core deep agent features depend on.
 

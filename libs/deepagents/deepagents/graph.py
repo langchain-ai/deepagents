@@ -55,9 +55,9 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
+    BuiltInSubAgentMiddleware,
     CompiledSubAgent,
     SubAgent,
-    SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
@@ -649,13 +649,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
-    sub_agent_middleware = SubAgentMiddleware(
+    sub_agent_middleware = BuiltInSubAgentMiddleware(
         backend=backend,
         subagents=inline_subagent_specs,
-        default_model=model,
-        default_tools=tools,
-        default_permissions=permissions,
-        default_interrupt_on=interrupt_on,
+        model=model,
+        tools=tools,
+        permissions=permissions,
+        interrupt_on=interrupt_on,
         profile=_profile,
         skills=skills,
         inherited_middleware=middleware,

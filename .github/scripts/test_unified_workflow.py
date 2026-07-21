@@ -274,6 +274,24 @@ def test_post_run_analysis_jobs_are_warning_only() -> None:
     assert 'echo "## Analysis warnings"' in aggregate
 
 
+def test_combine_prepares_uv_cache_for_cleanup(tmp_path: Path) -> None:
+    """Keep setup-uv cleanup valid when optional chart dependencies are skipped."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(workflow, "  combine:")
+    prepare = _indented_block(combine, '      - name: "🗂️ Prepare UV cache directory"')
+    cache = tmp_path / "uv-cache"
+    env = {**os.environ, "UV_CACHE_DIR": str(cache)}
+
+    script = _step_script(prepare)
+    subprocess.run(["bash", "-e", "-c", script], env=env, check=True)
+    subprocess.run(["bash", "-e", "-c", script], env=env, check=True)
+
+    assert cache.is_dir()
+    assert combine.index("🗂️ Prepare UV cache directory") < combine.index(
+        "⬇️ Download leaf summaries"
+    )
+
+
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:
     """Only a genuine empty-artifact response may let combine continue."""
     workflow = UNIFIED_WORKFLOW.read_text()

@@ -328,6 +328,10 @@ jobs:
           cache-suffix: unified-combine
           working-directory: libs/evals
 
+      - name: "🗂️ Prepare UV cache directory"
+        run: |
+          mkdir -p "$UV_CACHE_DIR"
+
       - name: "⬇️ Download leaf summaries"
         id: download-leaves
         continue-on-error: true

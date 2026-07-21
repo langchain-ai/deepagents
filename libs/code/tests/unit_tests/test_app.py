@@ -15786,6 +15786,81 @@ class TestExitGracefulWorkerHandoff:
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
 
+    async def test_exit_does_not_cancel_message_loop_after_inline_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completed inline restart must not make the app loop a teardown target."""
+        restart_finished = asyncio.Event()
+        message_loop_task: asyncio.Task[Any] | None = None
+        server_proc = MagicMock()
+        server_proc.restart = AsyncMock()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _run_inline_restart(_value: str, _mode: str) -> None:
+                nonlocal message_loop_task
+                message_loop_task = asyncio.current_task()
+                await app._restart_server_process(server_proc)
+                restart_finished.set()
+
+            monkeypatch.setattr(app, "_submit_input", _run_inline_restart)
+            app.post_message(ChatInput.Submitted("/reload", "command"))
+            await asyncio.wait_for(restart_finished.wait(), timeout=2.0)
+
+            assert message_loop_task is not None
+            assert message_loop_task not in app._server_restart_tasks
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                if app._graceful_exit_task is not None:
+                    await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await asyncio.sleep(0)
+
+            assert not message_loop_task.done()
+            super_exit.assert_called_once()
+
+    async def test_exit_cancels_and_awaits_textual_restart_worker(self) -> None:
+        """A live Textual restart worker finishes cleanup before server shutdown."""
+        restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def blocked_restart() -> None:
+            restart_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+
+        server_proc = MagicMock()
+        server_proc.restart = AsyncMock(side_effect=blocked_restart)
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            app.run_worker(app._restart_server_process(server_proc))
+            await asyncio.wait_for(restart_started.wait(), timeout=2.0)
+
+            assert len(app._server_restart_tasks) == 1
+            restart_task = next(iter(app._server_restart_tasks))
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+                server_proc.stop.assert_not_called()
+
+                release_cleanup.set()
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            assert restart_task.done()
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
     async def test_submission_is_rejected_during_graceful_exit(self) -> None:
         """A responsive UI cannot start work after shutdown begins."""
         stop_started = threading.Event()
@@ -26009,13 +26084,16 @@ class TestRestartCommand:
 class TestRespawnServer:
     """Direct coverage of `_respawn_server` — invoked via `_restart_server_manual`."""
 
-    async def test_restart_is_registered_until_cleanup_finishes(self) -> None:
-        """Every caller is visible to shutdown for the full restart await."""
+    async def test_unregistered_detached_restart_is_not_implicitly_tracked(
+        self,
+    ) -> None:
+        """Plain tasks must register at their restart scheduling site."""
         started = asyncio.Event()
+        release = asyncio.Event()
 
         async def blocked_restart() -> None:
             started.set()
-            await asyncio.Event().wait()
+            await release.wait()
 
         server_proc = MagicMock()
         server_proc.restart = AsyncMock(side_effect=blocked_restart)
@@ -26023,15 +26101,10 @@ class TestRespawnServer:
 
         task = asyncio.create_task(app._restart_server_process(server_proc))
         await started.wait()
-        assert task in app._server_restart_tasks
-
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        # Removal is via the `_track_server_restart_task` done-callback, which
-        # fires on the loop turn after the task completes.
-        await asyncio.sleep(0)
         assert task not in app._server_restart_tasks
+
+        release.set()
+        await task
 
     async def test_restart_stays_tracked_through_caller_tail(self) -> None:
         """A caller stays tracked while its post-restart tail runs.
@@ -26089,6 +26162,77 @@ class TestRespawnServer:
         app._server_kwargs = {}
         app._mcp_preload_kwargs = {}
         return proc
+
+    async def test_reload_does_not_leave_restart_task_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/reload` may restart inline without retaining its message-loop caller."""
+        from deepagents_code import theme
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            proc = await self._prepare(app)
+            app._plugin_fingerprints = {}
+
+            async def restart_manual() -> bool:
+                await app._restart_server_process(proc)
+                return True
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(theme, "reload_registry", lambda: None)
+            monkeypatch.setattr(app, "_register_custom_themes", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.app._load_theme_preference", lambda: app.theme
+            )
+            monkeypatch.setattr(app, "_discover_skills", AsyncMock(return_value=True))
+            monkeypatch.setattr(
+                app,
+                "_discover_plugins_with_fingerprints",
+                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", restart_manual)
+            monkeypatch.setattr(
+                app,
+                "_maybe_start_deferred_server_from_default",
+                AsyncMock(return_value=False),
+            )
+
+            caller = asyncio.current_task()
+            await app._handle_command("/reload")
+
+            proc.restart.assert_awaited_once()
+            assert caller not in app._server_restart_tasks
+            assert not app._server_restart_tasks
+
+    async def test_pending_mcp_reconnect_does_not_leave_restart_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pending `/mcp reconnect` may respawn inline without tracking its caller."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            proc = await self._prepare(app)
+            app._pending_mcp_login_reconnect = True
+            app._sync_pending_mcp_reconnect()
+
+            async def preload(**_: Any) -> list[str]:  # noqa: RUF029
+                return []
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info", preload
+            )
+
+            caller = asyncio.current_task()
+            await app._handle_command("/mcp reconnect")
+
+            proc.restart.assert_awaited_once()
+            assert caller not in app._server_restart_tasks
+            assert not app._server_restart_tasks
 
     async def test_happy_path_posts_server_ready(
         self, monkeypatch: pytest.MonkeyPatch

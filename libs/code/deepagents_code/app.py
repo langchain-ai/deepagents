@@ -46,6 +46,7 @@ from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from textual.worker import NoActiveWorker, get_current_worker
 from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
@@ -2941,12 +2942,12 @@ class DeepAgentsApp(App):
         mid-flight and lets tests await it deterministically."""
 
         self._server_restart_tasks: set[asyncio.Task[Any]] = set()
-        """Tasks that can restart the owned server subprocess.
+        """Background tasks that can restart the owned server subprocess.
 
-        Every restart path registers here, including Textual workers and
-        detached MCP callbacks, so shutdown can cancel and await all of them
-        before stopping the server. (The initial boot is not tracked here; it
-        is cleaned up by the outer `finally` in `run_textual_app`.)
+        Textual restart workers and detached restart callbacks register here so
+        shutdown can cancel and await them before stopping the server. Inline
+        callers on Textual's long-lived message loop are deliberately excluded.
+        (The initial boot is cleaned up by `run_textual_app` instead.)
         """
 
         self._pending_mcp_reconnect: bool = False
@@ -17046,6 +17047,7 @@ class DeepAgentsApp(App):
         (`_maybe_offer_deferred_web_search_restart`, via `call_after_refresh`).
         """
         task = asyncio.create_task(self._offer_restart_for_web_search())
+        self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
 
     async def _resume_server_after_auth_change(self) -> None:
@@ -20264,17 +20266,14 @@ class DeepAgentsApp(App):
         *,
         timeout: float | None = None,  # noqa: ASYNC109
     ) -> None:
-        """Run one tracked server restart unless app teardown has begun.
+        """Run one server restart unless app teardown has begun.
 
-        The current task stays registered in `_server_restart_tasks` for its
-        whole lifetime, not just the `restart()` await: callers
-        (`_respawn_server`, `_restart_server_for_agent_swap`) do server-touching
-        work *after* this returns — MCP metadata preload, agent rebuild,
-        `ServerReady` — and teardown must still be able to cancel and await the
-        task through that tail. Removal is therefore left to the
-        `_track_server_restart_task` done-callback (fires on task completion),
-        not an eager discard here. A task a scheduling site already registered
-        is left as-is so it does not accrue a duplicate done-callback.
+        Textual workers register their underlying task here because `run_worker`
+        does not expose it at the scheduling site. The task stays registered for
+        its whole lifetime so shutdown can cancel and await server-touching work
+        after `restart()` returns, such as MCP preload or agent rebuilding.
+        Detached `asyncio.create_task` callers register at their scheduling site;
+        inline callers on Textual's long-lived message loop remain untracked.
 
         Args:
             server_proc: Owned server process to restart.
@@ -20288,9 +20287,14 @@ class DeepAgentsApp(App):
         if self._exiting:
             raise asyncio.CancelledError
 
-        task = asyncio.current_task()
-        if task is not None and task not in self._server_restart_tasks:
-            self._track_server_restart_task(task)
+        try:
+            get_current_worker()
+        except NoActiveWorker:
+            pass
+        else:
+            task = asyncio.current_task()
+            if task is not None and task not in self._server_restart_tasks:
+                self._track_server_restart_task(task)
         restart = server_proc.restart()
         if timeout is None:
             await restart

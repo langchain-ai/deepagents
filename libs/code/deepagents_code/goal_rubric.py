@@ -586,7 +586,7 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
 
 
 class _WebSearchBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
-    """Limit web searches independently for each goal-criteria operation."""
+    """Limit web searches independently for each nested context operation."""
 
     def __init__(self) -> None:
         """Initialize bounded per-operation search counters."""
@@ -616,8 +616,8 @@ class _WebSearchBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
         """Return a bounded search-budget error."""
         return ToolMessage(
             content=(
-                "Web search limit reached. Draft the acceptance criteria using "
-                "the explicit goal and context already gathered."
+                "Web search limit reached. Continue using the available evidence "
+                "and context already gathered."
             ),
             name=request.tool_call["name"],
             tool_call_id=request.tool_call["id"],

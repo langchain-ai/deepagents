@@ -426,7 +426,11 @@ class TestWebSearchBudgetMiddleware:
         )
 
         assert isinstance(exhausted, ToolMessage)
-        assert "Web search limit reached" in exhausted.text
+        assert exhausted.text == (
+            "Web search limit reached. Continue using the available evidence "
+            "and context already gathered."
+        )
+        assert "acceptance criteria" not in exhausted.text
         assert isinstance(independent, ToolMessage)
         assert independent.text == "result"
 

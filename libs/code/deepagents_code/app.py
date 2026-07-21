@@ -2941,11 +2941,12 @@ class DeepAgentsApp(App):
         mid-flight and lets tests await it deterministically."""
 
         self._server_restart_tasks: set[asyncio.Task[Any]] = set()
-        """Tasks that can start or restart the owned server subprocess.
+        """Tasks that can restart the owned server subprocess.
 
         Every restart path registers here, including Textual workers and
         detached MCP callbacks, so shutdown can cancel and await all of them
-        before stopping the server.
+        before stopping the server. (The initial boot is not tracked here; it
+        is cleaned up by the outer `finally` in `run_textual_app`.)
         """
 
         self._pending_mcp_reconnect: bool = False
@@ -15883,9 +15884,18 @@ class DeepAgentsApp(App):
                         return
                     phase_start = time.monotonic()
                     try:
-                        results = await asyncio.gather(
-                            *restart_tasks,
-                            return_exceptions=True,
+                        # Bound the wait for symmetry with the agent-cleanup and
+                        # hook-drain phases: the tasks were already cancelled in
+                        # `exit()` and their cleanup is internally bounded (the
+                        # shielded `_stop_process` thread, ~`_SHUTDOWN_TIMEOUT` +
+                        # SIGKILL grace), but a wedged cancellation must not stall
+                        # shutdown longer than the other phases' explicit budgets.
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                *restart_tasks,
+                                return_exceptions=True,
+                            ),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
                         )
                         for restart_result in results:
                             if isinstance(restart_result, asyncio.CancelledError):
@@ -15900,6 +15910,12 @@ class DeepAgentsApp(App):
                                         restart_result.__traceback__,
                                     ),
                                 )
+                    except TimeoutError:
+                        logger.warning(
+                            "Server restart cleanup did not finish within %ss "
+                            "before app exit",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
                     finally:
                         logger.debug(
                             "Teardown phase 'server restart cleanup' (%d tasks) "
@@ -20249,28 +20265,36 @@ class DeepAgentsApp(App):
     ) -> None:
         """Run one tracked server restart unless app teardown has begun.
 
+        The current task stays registered in `_server_restart_tasks` for its
+        whole lifetime, not just the `restart()` await: callers
+        (`_respawn_server`, `_restart_server_for_agent_swap`) do server-touching
+        work *after* this returns — MCP metadata preload, agent rebuild,
+        `ServerReady` — and teardown must still be able to cancel and await the
+        task through that tail. Removal is therefore left to the
+        `_track_server_restart_task` done-callback (fires on task completion),
+        not an eager discard here. A task a scheduling site already registered
+        is left as-is so it does not accrue a duplicate done-callback.
+
         Args:
             server_proc: Owned server process to restart.
             timeout: Optional outer timeout for the full restart.
 
         Raises:
             asyncio.CancelledError: If app teardown has already begun.
-        """
+            RuntimeError: Propagated from `server_proc.restart()` on failure.
+            TimeoutError: If `timeout` is set and the restart exceeds it.
+        """  # noqa: DOC502  # RuntimeError/TimeoutError propagate from restart()
         if self._exiting:
             raise asyncio.CancelledError
 
         task = asyncio.current_task()
-        if task is not None:
+        if task is not None and task not in self._server_restart_tasks:
             self._track_server_restart_task(task)
-        try:
-            restart = server_proc.restart()
-            if timeout is None:
-                await restart
-            else:
-                await asyncio.wait_for(restart, timeout=timeout)
-        finally:
-            if task is not None:
-                self._server_restart_tasks.discard(task)
+        restart = server_proc.restart()
+        if timeout is None:
+            await restart
+        else:
+            await asyncio.wait_for(restart, timeout=timeout)
 
     async def _respawn_server(
         self,
@@ -20316,6 +20340,15 @@ class DeepAgentsApp(App):
                     server_proc,
                     timeout=restart_timeout,
                 )
+            # `asyncio.CancelledError` is intentionally NOT caught here (it is a
+            # `BaseException`): `_restart_server_process` raises it only when app
+            # teardown has begun or a terminal `stop()` bumped the server's stop
+            # generation mid-restart — i.e. only during shutdown. Letting it
+            # propagate means the `_connecting`/`_reconnecting` reset below is
+            # skipped, but that is safe because UI state no longer matters during
+            # shutdown and the `/restart` caller (`_run_restart_respawn`) resets
+            # those flags in its own `finally`. If a future edit ever lets this
+            # fire outside teardown, add a reset on the cancellation path.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False

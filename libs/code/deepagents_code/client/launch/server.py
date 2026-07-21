@@ -624,6 +624,12 @@ class ServerProcess:
                 return Path(self._log_file.name).read_text(
                     encoding="utf-8", errors="replace"
                 )
+            # `ValueError` covers a flush/read on a closed handle ("I/O
+            # operation on closed file"): re-checking `is None` under
+            # `_state_lock` makes a closed-but-non-None handle nearly
+            # unreachable, so this is defensive. `read_text(errors="replace")`
+            # cannot raise `ValueError` for decoding, so the catch stays narrow
+            # in practice.
             except (OSError, ValueError):
                 logger.warning(
                     "Failed to read server log file %s",
@@ -684,12 +690,14 @@ class ServerProcess:
                 # the health check returns). A `finally` rather than `except
                 # Exception` is deliberate: `asyncio.CancelledError` is a
                 # `BaseException`, so an `except Exception` guard would skip this
-                # and orphan the process. The inner guard stops a `stop()` error
-                # from masking the exception already propagating; `stop()` is
-                # effectively non-raising today, so if it does fire it signals an
-                # unexpected leak — hence `error`, not `warning`.
+                # and orphan the process. Offload `stop()` because terminating a
+                # subprocess can block for several seconds; restart cancellation
+                # runs this path on Textual's event loop. The inner guard stops a
+                # `stop()` error from masking the exception already propagating;
+                # `stop()` is effectively non-raising today, so if it does fire it
+                # signals an unexpected leak — hence `error`, not `warning`.
                 try:
-                    self.stop()
+                    await asyncio.to_thread(self.stop)
                 except Exception:
                     logger.exception(
                         "Error stopping server during startup cleanup",
@@ -935,10 +943,13 @@ class ServerProcess:
                     self._temp_dir.cleanup()
                 except OSError:
                     # Debug, not warning (unlike the config dir below): a
-                    # `TemporaryDirectory` under the OS temp root has a
-                    # finalizer/reaper that retries, so a failure here is not
-                    # the unrecoverable, never-retried leak that the config dir
-                    # would be.
+                    # directory under the OS temp root is eventually reclaimed
+                    # by the OS temp reaper (systemd-tmpfiles / tmpwatch / the
+                    # macOS periodic cleanup), so a failure here is not the
+                    # unrecoverable, never-retried leak the config dir would be.
+                    # (`TemporaryDirectory.cleanup()` detaches its finalizer
+                    # before removal, so a failed explicit cleanup is not
+                    # retried at GC — the OS reaper is what reclaims it.)
                     logger.debug("Failed to clean up temp dir", exc_info=True)
                 self._temp_dir = None
 

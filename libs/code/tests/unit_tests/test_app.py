@@ -15499,11 +15499,12 @@ class TestExitGracefulWorkerHandoff:
 
                 # Agent cleanup runs even though session.end is still blocked.
                 await asyncio.wait_for(agent_wait_started.wait(), timeout=1.0)
-                for _ in range(1000):
-                    if session_end_started.is_set():
-                        break
-                    await asyncio.sleep(0.001)
-                assert session_end_started.is_set()
+                # Bridge the cross-thread `threading.Event` into the loop with a
+                # bounded wait (mirrors the force-quit sibling test) rather than
+                # a busy-poll loop.
+                assert await asyncio.wait_for(
+                    asyncio.to_thread(session_end_started.wait, 2.0), timeout=3.0
+                )
                 # Teardown is still waiting on the blocked session.end hook.
                 assert not app._graceful_exit_task.done()
 
@@ -15725,8 +15726,8 @@ class TestExitGracefulWorkerHandoff:
             with patch.object(App, "exit") as super_exit:
                 app.exit()
                 assert app._graceful_exit_task is not None
-                await cleanup_started.wait()
-                await other_cleanup_started.wait()
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+                await asyncio.wait_for(other_cleanup_started.wait(), timeout=2.0)
 
                 server_proc.stop.assert_not_called()
                 release_cleanup.set()
@@ -15735,6 +15736,44 @@ class TestExitGracefulWorkerHandoff:
                 release_other_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
 
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+    async def test_exit_handles_restart_task_in_both_collections(self) -> None:
+        """A `/restart` task tracked in both places is handled once by teardown.
+
+        `_handle_restart_command` registers the same task in both
+        `_restart_respawn_task` and `_server_restart_tasks`. `exit()` unions
+        them into a set, so the task is cancelled and awaited once and teardown
+        still stops the server and exits exactly once.
+        """
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def respawn() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            task = asyncio.create_task(respawn())
+            # Present in BOTH collections, mirroring `_handle_restart_command`.
+            app._restart_respawn_task = task
+            app._track_server_restart_task(task)
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            await asyncio.wait_for(cancelled.wait(), timeout=2.0)
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
 
@@ -15795,6 +15834,47 @@ class TestExitGracefulWorkerHandoff:
 
             process.assert_not_awaited()
             assert len(app._pending_messages) == 1
+
+    async def test_submit_input_is_rejected_during_graceful_exit(self) -> None:
+        """`_submit_input` bails at its `_exiting` guard before doing any work.
+
+        A distinct entry point from `on_chat_input_submitted` and the queue
+        drain: the guard stops external / `force_bypass` callers from starting
+        work after teardown begins. `_dismiss_startup_tip` is the first thing
+        past the guard, so its not being awaited proves the early return fired.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._exiting = True
+
+            with patch.object(
+                app, "_dismiss_startup_tip", new_callable=AsyncMock
+            ) as dismiss:
+                await app._submit_input("do work", "normal", force_bypass=True)
+
+            dismiss.assert_not_awaited()
+
+    async def test_initial_submission_is_rejected_during_graceful_exit(
+        self,
+    ) -> None:
+        """The `-m/--skill/--goal` startup path bails once teardown begins.
+
+        This guard is the one that matters for a fast Ctrl-D racing the startup
+        prompt submission.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._initial_prompt = "hello"
+            app._exiting = True
+
+            with patch.object(
+                app, "_dismiss_startup_tip", new_callable=AsyncMock
+            ) as dismiss:
+                await app._submit_initial_submission()
+
+            dismiss.assert_not_awaited()
 
     async def test_server_stop_failure_does_not_abort_teardown(
         self, caplog: pytest.LogCaptureFixture
@@ -16005,11 +16085,14 @@ class TestExitGracefulWorkerHandoff:
             for record in caplog.records
             if record.levelno == logging.DEBUG
         ]
-        assert any("Teardown phase 'agent cleanup'" in m for m in debug_messages)
-        assert any("Teardown phase 'session.end hooks'" in m for m in debug_messages)
-        assert any("Teardown phase 'pending-hook drain'" in m for m in debug_messages)
-        assert any("Teardown phase 'server shutdown'" in m for m in debug_messages)
-        assert any("Teardown total took" in m for m in debug_messages)
+        # Assert per-phase timing logs are emitted by count, plus the total,
+        # rather than pinning each exact phase name — the phase names are
+        # observability strings, and the four phases (agent cleanup,
+        # session.end, hook drain, server shutdown) are covered behaviorally by
+        # the other tests in this class.
+        phase_logs = [m for m in debug_messages if m.startswith("Teardown phase ")]
+        assert len(phase_logs) >= 4
+        assert any(m.startswith("Teardown total took") for m in debug_messages)
 
     @staticmethod
     def _shutdown_toast() -> str:
@@ -25936,6 +26019,44 @@ class TestRespawnServer:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        # Removal is via the `_track_server_restart_task` done-callback, which
+        # fires on the loop turn after the task completes.
+        await asyncio.sleep(0)
+        assert task not in app._server_restart_tasks
+
+    async def test_restart_stays_tracked_through_caller_tail(self) -> None:
+        """A caller stays tracked while its post-restart tail runs.
+
+        `_respawn_server` and `_restart_server_for_agent_swap` do
+        server-touching work (MCP preload, agent rebuild, `ServerReady`) *after*
+        `_restart_server_process` returns. Teardown must still see the task
+        during that tail, so `_restart_server_process` must not eagerly discard
+        it when `restart()` completes.
+        """
+        release_tail = asyncio.Event()
+        tail_running = asyncio.Event()
+        server_proc = MagicMock()
+        server_proc.restart = AsyncMock()
+        app = DeepAgentsApp()
+
+        async def reconnect() -> None:
+            await app._restart_server_process(server_proc)
+            # restart() has returned; simulate the server-touching tail.
+            tail_running.set()
+            await release_tail.wait()
+
+        task = asyncio.create_task(reconnect())
+        # A scheduling site (MCP/viewer reconnect) registers the outer task.
+        app._track_server_restart_task(task)
+        await asyncio.wait_for(tail_running.wait(), timeout=2.0)
+
+        # restart() finished but the tail is still running: the task must
+        # remain visible to teardown.
+        assert task in app._server_restart_tasks
+
+        release_tail.set()
+        await asyncio.wait_for(task, timeout=2.0)
+        await asyncio.sleep(0)  # let the done-callback fire
         assert task not in app._server_restart_tasks
 
     async def test_restart_is_rejected_once_exiting(self) -> None:

@@ -375,6 +375,24 @@ class TestServerProcess:
 
         monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
 
+    async def test_start_is_noop_when_already_running(self) -> None:
+        """`start()` on an already-running server spawns no second process.
+
+        The old `if self.running: return` guard now lives inside
+        `_spawn_process` (under `_state_lock`); a regression would double-spawn
+        the subprocess and leak the port.
+        """
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        running_proc = MagicMock()
+        running_proc.poll.return_value = None  # still alive
+        server._process = running_proc
+
+        with patch("deepagents_code.client.launch.server.subprocess.Popen") as popen:
+            await server.start()
+
+        popen.assert_not_called()
+        assert server._process is running_proc
+
     async def test_wait_for_graph_ready_resolves_graph_endpoint(self) -> None:
         """Graph readiness should force LangGraph to resolve graph factories."""
         client = _FakeAsyncClient(SimpleNamespace(status_code=200))
@@ -518,6 +536,14 @@ class TestServerProcess:
         process = MagicMock()
         process.pid = 1234
         process.poll.return_value = None
+        loop_thread_id = threading.get_ident()
+        cleanup_thread_id: int | None = None
+
+        def record_cleanup_thread(*, timeout: float) -> None:  # noqa: ARG001
+            nonlocal cleanup_thread_id
+            cleanup_thread_id = threading.get_ident()
+
+        process.wait.side_effect = record_cleanup_thread
 
         log_file = MagicMock()
         log_file.name = str(log_path)
@@ -547,6 +573,8 @@ class TestServerProcess:
 
         process.send_signal.assert_called_once_with(signal.SIGTERM)
         process.wait.assert_called_once()
+        assert cleanup_thread_id is not None
+        assert cleanup_thread_id != loop_thread_id
         log_file.close.assert_called_once()
         assert server._process is None
         assert server._log_file is None

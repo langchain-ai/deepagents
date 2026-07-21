@@ -339,6 +339,7 @@ async def start_server_and_get_agent(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
             `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
@@ -499,6 +500,7 @@ async def server_session(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
             `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;

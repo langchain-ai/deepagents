@@ -720,14 +720,16 @@ def _parse_allow_fs_tools_flag(
 
     Returns:
         `None` when the flag is absent, the literal string `"all"`, or a
-        list of trimmed, lower-cased tool names. Tool names are matched
-        case-insensitively (like the `"all"` sentinel), so `READ_FILE` and
-        `read_file` are equivalent.
+            list of trimmed, lower-cased tool names.
 
-        Calls `sys.exit(2)` when the value is empty, contains only blank
-        tokens, combines the `"all"` sentinel with other tool names, includes
-        an unknown tool name, or is an explicit list that omits `"read_file"`
-        — `FilesystemMiddleware` requires it.
+            Tool names are matched case-insensitively
+            (like the `"all"` sentinel), so `READ_FILE` and `read_file`
+            are equivalent.
+
+            Calls `sys.exit(2)` when the value is empty, contains only blank
+            tokens, combines the `"all"` sentinel with other tool names,
+            includes an unknown tool name, or is an explicit list that
+            omits `"read_file"` — `FilesystemMiddleware` requires it.
     """
     if raw is None:
         return None
@@ -2322,7 +2324,9 @@ async def run_textual_cli_async(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
-            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2479,7 +2483,9 @@ async def _run_acp_cli_async(
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
-            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
 
     Returns:
         Exit code for ACP mode.

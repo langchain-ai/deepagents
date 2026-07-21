@@ -97,7 +97,7 @@ def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
 
     Returns:
         `None` (absent), `"all"`, or a non-empty list of filesystem tool-name
-        strings, each a valid `FsToolName`.
+            strings, each a valid `FsToolName`.
 
     Raises:
         ValueError: If the variable parses to anything other than `None`,
@@ -330,8 +330,9 @@ class ServerConfig:
     behaviorally downstream (see `create_cli_agent`): `None` inherits the SDK's
     own default `FilesystemMiddleware` (no replacement), while `"all"` actively
     reinstalls an unrestricted instance. A list is an explicit allowlist of
-    filesystem tool names and must include `"read_file"`. Do not collapse
-    `"all"` into `None`: they install different middleware.
+    filesystem tool names and must include `"read_file"`.
+
+    Do not collapse `"all"` into `None`: they install different middleware.
     """
 
     rubric_model: str | None = None

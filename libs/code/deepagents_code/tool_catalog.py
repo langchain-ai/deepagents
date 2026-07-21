@@ -48,14 +48,16 @@ Emitted verbatim in the `--json` output, so it is a public contract; keep it a
 BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
 
-# Mirror of the SDK's `FsToolName` literal members, used to identify which
-# enumerated tools the `fs_tools` allowlist governs. Kept as a literal set (the
-# `get_args(FsToolName)` drift guard in `test_tool_catalog` pins it) so a new or
-# renamed SDK filesystem tool fails the test instead of silently escaping the
-# post-filter below.
 _FILESYSTEM_TOOL_NAMES = frozenset(
     {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 )
+"""Mirror of the SDK's `FsToolName` literal members, used to identify which
+enumerated tools the `fs_tools` allowlist governs.
+
+Kept as a literal set (the `get_args(FsToolName)` drift guard
+in `test_tool_catalog` pins it) so a new or renamed SDK filesystem tool fails
+the test instead of silently escaping the post-filter below.
+"""
 
 
 @dataclass(frozen=True, slots=True)

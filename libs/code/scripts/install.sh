@@ -1468,15 +1468,15 @@ fix_install_log_owner
 #      ~/.local/bin to the user's shell profile (.zshrc, .bashrc,
 #      .bash_profile, or config.fish). Prompt interactively before writing;
 #      auto-add in non-interactive mode (CI, cron, piped install).
-#   3. Skip the whole thing if the binary is already on PATH or uv's env file
-#      exists (uv's installer already handles PATH setup in that case).
+#   3. Skip the whole thing if the binary was already on PATH or uv's env file
+#      exposes a binary installed under ~/.local/bin.
 
-# Check if a directory is in PATH.
-dir_in_path() {
+# Check if a directory was in PATH before the installer sourced any env files.
+dir_in_original_path() {
   local check_dir="$1"
   [ -d "$check_dir" ] || return 1
   check_dir=$(cd "$check_dir" 2>/dev/null && pwd) || return 1
-  case ":${PATH:-}:" in
+  case ":${ORIGINAL_PATH:-}:" in
     *":$check_dir:"*) return 0 ;;
     *) return 1 ;;
   esac
@@ -1494,7 +1494,7 @@ try_symlink_in_path() {
   local preferred_dirs=("$HOME/.local/bin" "$HOME/bin" "$HOME/.bin")
   local dir symlink_path
   for dir in "${preferred_dirs[@]}"; do
-    if dir_in_path "$dir"; then
+    if dir_in_original_path "$dir"; then
       mkdir -p "$dir" 2>/dev/null || continue
       symlink_path="$dir/$binary_name"
       if paths_are_same_file "$binary_path" "$symlink_path"; then

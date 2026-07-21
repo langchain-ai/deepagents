@@ -2288,7 +2288,10 @@ def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
 
 
 def _invoke_with_local_uv_not_on_path(
-    tmp_path: Path, *, env_file_content: str | None = None
+    tmp_path: Path,
+    *,
+    env_file_content: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run with uv present only in ~/.local/bin, absent from PATH."""
     bin_dir, home, uv = _write_fake_tools(
@@ -2315,6 +2318,7 @@ def _invoke_with_local_uv_not_on_path(
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{path_without_uv}",
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        **(extra_env or {}),
     }
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -2349,6 +2353,33 @@ def test_install_script_sources_uv_env_file_defensively(tmp_path: Path) -> None:
     assert uv_args.exists()
     assert "uv not found — installing" not in proc.stdout + proc.stderr
     assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_custom_bin_from_sourced_uv_persists_path(
+    tmp_path: Path,
+) -> None:
+    """Sourcing uv's env cannot hide that its custom tool bin needs PATH setup."""
+    tool_bin = tmp_path / "home/custom-bin"
+    proc, uv_args = _invoke_with_local_uv_not_on_path(
+        tmp_path,
+        env_file_content='export PATH="$HOME/.local/bin:$PATH"\n',
+        extra_env={
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_UV_TOOL_BIN_DIR": str(tool_bin),
+            "SHELL": "/bin/zsh",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert uv_args.exists()
+    installed = tool_bin / "dcode"
+    exposed = tmp_path / "home/.local/bin/dcode"
+    assert installed.is_file()
+    assert exposed.is_symlink()
+    assert exposed.resolve() == installed.resolve()
+    profile = tmp_path / "home/.zshrc"
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in profile.read_text()
+    assert "Added ~/.local/bin to PATH" in proc.stdout
 
 
 def test_install_script_rejects_invalid_uv_bin_without_installing(

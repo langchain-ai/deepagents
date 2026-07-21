@@ -15749,16 +15749,15 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # A second exit() while shutdown is already underway means the user is
-        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set at
-        # the top of the first exit() below, before it decides whether to defer,
-        # so this guard fires for both the deferred and immediate first paths.
-        # Tear down immediately rather than arming another bounded wait — the
-        # first call already ran cleanup and cancelled the worker, so re-running
-        # it would only make the force-quit wait out another window.
+        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set by
+        # the first exit() below, before it decides whether to defer, so this
+        # guard fires for both the deferred and immediate first paths. Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
         if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
-        self._exiting = True
 
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
@@ -15829,6 +15828,7 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
+        self._exiting = True
 
         # Defer super().exit() so teardown can overlap independent slow phases
         # instead of serializing them, while keeping the Textual event loop
@@ -20380,10 +20380,12 @@ class DeepAgentsApp(App):
             timeout: Optional outer timeout for the full restart.
 
         Raises:
-            asyncio.CancelledError: If app teardown has already begun.
+            asyncio.CancelledError: If app teardown has already begun, or if
+                `server_proc.restart()` is cancelled because a terminal `stop()`
+                bumped the stop generation mid-restart.
             RuntimeError: Propagated from `server_proc.restart()` on failure.
             TimeoutError: If `timeout` is set and the restart exceeds it.
-        """  # noqa: DOC502  # RuntimeError/TimeoutError propagate from restart()
+        """  # noqa: DOC502  # restart() raises RuntimeError; wait_for() times out.
         if self._exiting:
             raise asyncio.CancelledError
 
@@ -20448,12 +20450,9 @@ class DeepAgentsApp(App):
             # `asyncio.CancelledError` is intentionally NOT caught here (it is a
             # `BaseException`): `_restart_server_process` raises it only when app
             # teardown has begun or a terminal `stop()` bumped the server's stop
-            # generation mid-restart — i.e. only during shutdown. Letting it
-            # propagate means the `_connecting`/`_reconnecting` reset below is
-            # skipped, but that is safe because UI state no longer matters during
-            # shutdown and the `/restart` caller (`_run_restart_respawn`) resets
-            # those flags in its own `finally`. If a future edit ever lets this
-            # fire outside teardown, add a reset on the cancellation path.
+            # generation mid-restart — i.e. only during shutdown. Let it propagate
+            # to the outer `BaseException` handler below, which resets
+            # `_connecting`/`_reconnecting`, syncs connection status, and re-raises.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False

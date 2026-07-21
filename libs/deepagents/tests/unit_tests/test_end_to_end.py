@@ -562,8 +562,6 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        # The default base prompt is empty, so no authored base prose is added.
-        assert "You are a deep agent" not in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -583,8 +581,6 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        # The default base prompt is empty, so no authored base prose is added.
-        assert "You are a deep agent" not in content
 
     @pytest.mark.parametrize(
         ("system_prompt", "ordered", "absent"),
@@ -685,8 +681,6 @@ class TestDeepAgentEndToEnd:
         cached = [b for b in blocks if b.get("text") == "__cached_prefix__"]
         assert cached, f"cached prefix block missing: {blocks}"
         assert cached[0].get("cache_control") == {"type": "ephemeral"}
-        # The default base prompt is empty, so no authored base prose is added.
-        assert not any("You are a deep agent" in (b.get("text") or "") for b in blocks)
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -3124,15 +3118,9 @@ class TestFilesystemRoutingPrompt:
         The filesystem usage prose and base prose are suppressed.
         """
         content = self._capture_system_prompt(self._routed_backend())
-        assert "Shell paths vs. virtual paths" in content, "routing section must survive suppression"
-        assert "## Following Conventions" not in content, "filesystem usage prose should be suppressed"
-        assert "You are a deep agent" not in content, "base prose should be suppressed"
-
-    def test_routing_still_present_when_prose_kept(self) -> None:
-        content = self._capture_system_prompt(self._routed_backend(), trim_duplicate_tool_prompts=False)
-        assert "Shell paths vs. virtual paths" in content
-        # With trimming disabled, the filesystem usage prose returns alongside routing.
-        assert "## Following Conventions" in content
+        assert "Shell paths vs. virtual paths" in content, "routing section must survive trimming"
+        assert "## Following Conventions" not in content, "filesystem usage prose should be trimmed"
+        assert "You are a deep agent" not in content, "base prose should be absent"
 
     def test_no_routing_section_for_non_composite_backend(self) -> None:
         """A single backend has no routes, so no routing section is added.
@@ -3146,8 +3134,8 @@ class TestFilesystemRoutingPrompt:
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""
 
-    def test_deep_agent_artifacts_root_system_prompt_and_eviction(self) -> None:
-        """Custom artifacts_root flows through to system prompt and eviction paths."""
+    def test_deep_agent_artifacts_root_eviction(self) -> None:
+        """Custom artifacts_root flows through to the eviction paths."""
 
         @tool(description="Returns a very large string")
         def big_tool() -> str:
@@ -3160,8 +3148,6 @@ class TestArtifactsRoot:
             routes={},
             artifacts_root="/workspace",
         )
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
 
         model = FixedGenericFakeChatModel(
             messages=iter(
@@ -3186,18 +3172,9 @@ class TestArtifactsRoot:
             model=model,
             tools=[big_tool],
             backend=backend,
-            middleware=[capturing_middleware],
-            # The filesystem guidance (which references artifacts_root) is
-            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
-            trim_duplicate_tool_prompts=False,
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
-
-        # Verify system prompt references the custom artifacts_root
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/workspace/large_tool_results/" in system_content
-        assert "/large_tool_results/<tool_call_id>" not in system_content or "/workspace/large_tool_results/<tool_call_id>" in system_content
 
         # Verify the evicted tool result was written under the custom prefix
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
@@ -3317,38 +3294,38 @@ class TestArtifactsRoot:
         assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
     def test_create_deep_agent_no_composite_backend(self) -> None:
-        """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
-        backend = StateBackend()
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
-            # The filesystem guidance (which references artifacts_root) is
-            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
-            trim_duplicate_tool_prompts=False,
+        """A non-composite backend defaults artifacts_root to '/' (root prefix)."""
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return "x" * 500_000
+
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "big_tool", "args": {}, "id": "call_big", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
         )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
+        agent = create_deep_agent(model=model, tools=[big_tool], backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
+
+        # With no artifacts_root, evicted results land under the "/" root prefix.
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
+        assert "/large_tool_results/call_big" in evicted_msg.content
+        assert "/workspace/" not in evicted_msg.content
 
     def test_create_deep_agent_composite_backend_default_artifacts_root(self) -> None:
         """create_deep_agent with CompositeBackend without artifacts_root defaults to '/'."""
         backend = CompositeBackend(default=StateBackend(), routes={})
         assert backend.artifacts_root == "/"
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
-            # The filesystem guidance (which references artifacts_root) is
-            # trimmed by default; keep it (trim_duplicate_tool_prompts=False) here.
-            trim_duplicate_tool_prompts=False,
-        )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
 
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""

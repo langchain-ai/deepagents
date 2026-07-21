@@ -135,11 +135,9 @@ The final system prompt sent to the model is assembled, in order, from:
 1. `prefix` — caller text placed before the base (the `system_prompt=`
     argument, or its `prefix` key). Always first, so caller instructions
     take precedence.
-2. `base` — this constant by default (empty); replaced by the `system_prompt`
+2. `base` — this constant by default; replaced by the `system_prompt`
     config's `base` key, or (when that key is absent) by
     `HarnessProfile.base_system_prompt`. Setting `base` to `None` drops it.
-    Pass [`DEFAULT_AGENT_PROMPT`][deepagents.DEFAULT_AGENT_PROMPT] as the `base`
-    to restore the built-in authored prompt.
 3. `suffix` — caller text placed after the base (the `system_prompt`
     config's `suffix` key).
 4. `HarnessProfile.system_prompt_suffix` — model-tuning guidance appended
@@ -391,7 +389,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
-    trim_duplicate_tool_prompts: bool = True,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -463,38 +460,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         system_prompt: Custom system instructions.
 
             A `str` or `SystemMessage` is placed at the front of the system
-            prompt, before the base prompt (empty by default) and any
-            model-tuning suffix from a registered `HarnessProfile`.
+            prompt, before the SDK's default base prompt and any model-tuning
+            suffix from a registered `HarnessProfile` (`system_prompt=None`
+            uses the default base on its own).
 
             For more control, pass a
             [`SystemPromptConfig`][deepagents.SystemPromptConfig] with any of:
 
             - `prefix`: text before the base (same as passing a bare string).
-            - `base`: replace the base prompt; omit the key to keep the default
-                (empty), or set it to `None` to drop the base entirely. Pass
-                [`DEFAULT_AGENT_PROMPT`][deepagents.DEFAULT_AGENT_PROMPT] to
-                restore the built-in authored prompt.
+            - `base`: replace the built-in base prompt; omit the key to keep
+                it, or set it to `None` to drop the base entirely.
             - `suffix`: text after the base (before any profile suffix).
 
             The assembly order is `prefix` -> `base` -> `suffix` ->
             profile suffix, joined by blank lines. Any part may be a
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
-        trim_duplicate_tool_prompts: Whether to drop the built-in tool-usage
-            guidance prose that largely duplicates the tools' own descriptions.
-
-            `True` (default): the todo, filesystem, and subagent middleware are
-            built without their usage-guidance prose, on every stack (main agent,
-            subagents, and the general-purpose subagent). The tools and their own
-            schema descriptions are unaffected, so the model still knows how to
-            call them; only the redundant prose is trimmed. Set this to `False`
-            to keep the full built-in guidance.
-
-            This is deliberately narrow. It only trims prose that repeats the
-            tool schemas. It never touches content that the schemas do not carry:
-            the skills index and memory content (emitted whenever `skills=` /
-            `memory=` are set) and the filesystem host-path routing section
-            always remain, regardless of this flag.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -764,29 +745,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
-    # Trim the built-in tool-usage guidance prose that duplicates the tool
-    # schemas. When `trim_duplicate_tool_prompts` (the default), todo /
-    # filesystem / subagent / async-subagent are constructed with that prose
-    # dropped, on every stack below (main agent, subagents, general-purpose
-    # subagent). The trim value depends on how the middleware treats
-    # `system_prompt`:
-    #   - `TodoListMiddleware` always appends, so `""` trims; omitting the kwarg
-    #     (empty dict) keeps its built-in prose.
-    #   - `FilesystemMiddleware` builds its prose when `system_prompt is None`,
-    #     so it is passed explicitly at each call site (`""` to trim, `None` to
-    #     keep). Its host-path routing section is preserved either way (see
-    #     `_filter_unsupported_tools_and_apply_prompt`).
+    # The built-in tool-usage guidance prose duplicates the tools' own schema
+    # descriptions, so it is trimmed on every stack below (main agent, subagents,
+    # general-purpose subagent) via each middleware's `system_prompt`:
+    #   - `TodoListMiddleware` and `FilesystemMiddleware` always append, so `""`
+    #     trims their prose. Filesystem's host-path routing section is preserved
+    #     regardless (see `_filter_unsupported_tools_and_apply_prompt`).
     #   - subagent / async-subagent treat `None` as "no fragment", so `None`
-    #     trims; omitting the kwarg keeps it. The available-agent list still
-    #     reaches the model through the `task` tool / async tools, so only the
-    #     duplicate usage prose is dropped.
-    # Skills and Memory are intentionally never trimmed: their fragment is the
-    # only channel that surfaces the loaded skill index / memory content (no tool
-    # carries it), and both are built only when the caller explicitly passes
-    # `skills=` / `memory=`. Trimming them would silently disable an opted-into
-    # feature, so they always emit their built-in fragment.
-    _empty_prompt_kwargs: dict[str, str] = {"system_prompt": ""} if trim_duplicate_tool_prompts else {}
-    _none_prompt_kwargs: dict[str, None] = {"system_prompt": None} if trim_duplicate_tool_prompts else {}
+    #     trims. The available-agent list still reaches the model through the
+    #     `task` tool / async tools, so only the duplicate usage prose is dropped.
+    # Skills and Memory are never trimmed: their fragment is the only channel that
+    # surfaces the loaded skill index / memory content (no tool carries it), and
+    # both are built only when the caller passes `skills=` / `memory=`.
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -815,12 +785,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(**_empty_prompt_kwargs),
+                TodoListMiddleware(system_prompt=""),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
-                    system_prompt="" if trim_duplicate_tool_prompts else None,
+                    system_prompt="",
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -902,12 +872,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(**_empty_prompt_kwargs),
+            TodoListMiddleware(system_prompt=""),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
-                system_prompt="" if trim_duplicate_tool_prompts else None,
+                system_prompt="",
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -969,7 +939,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(**_empty_prompt_kwargs),
+        TodoListMiddleware(system_prompt=""),
     ]
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
@@ -978,7 +948,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
-            system_prompt="" if trim_duplicate_tool_prompts else None,
+            system_prompt="",
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
@@ -993,7 +963,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
-            **_none_prompt_kwargs,
+            system_prompt=None,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
@@ -1006,7 +976,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, **_none_prompt_kwargs))
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, system_prompt=None))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

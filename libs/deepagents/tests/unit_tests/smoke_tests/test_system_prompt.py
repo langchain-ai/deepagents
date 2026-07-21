@@ -166,9 +166,9 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
         routes={"/common/": route, "/legacy/": legacy, "/notes/": StateBackend()},
     )
-    # This snapshot documents the filesystem routing guidance, which the SDK
-    # trims by default; keep it (trim_duplicate_tool_prompts=False) to assert on it.
-    agent = create_deep_agent(model=model, backend=backend, trim_duplicate_tool_prompts=False)
+    # The filesystem routing section is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
+    agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -211,9 +211,9 @@ def test_system_prompt_snapshot_with_sandbox_default(snapshots_dir: Path, *, upd
         default=_SnapshotSandbox(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
         routes={"/common/": route},
     )
-    # This snapshot documents the filesystem mount guidance, which the SDK
-    # trims by default; keep it (trim_duplicate_tool_prompts=False) to assert on it.
-    agent = create_deep_agent(model=model, backend=backend, trim_duplicate_tool_prompts=False)
+    # The filesystem mount guidance is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
+    agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
@@ -297,12 +297,12 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
     model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
-    # This snapshot documents the subagent (`task` tool) guidance, which the SDK
-    # trims by default; keep it (trim_duplicate_tool_prompts=False) to assert on it.
+    # The subagent usage prose is trimmed by default; the available agents still
+    # reach the model via the `task` tool description, so this snapshots the
+    # trimmed system prompt for that setup.
     agent = create_deep_agent(
         model=model,
         backend=backend,
-        trim_duplicate_tool_prompts=False,
         subagents=[
             {
                 "name": "code-reviewer",
@@ -352,10 +352,9 @@ def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_sna
     model = _smoke_model()
 
     # Skills and memory are opt-in features whose fragments are the only channel
-    # for their content, so they emit even on the trimmed default (no
-    # `trim_duplicate_tool_prompts=False`). This snapshot guards that: the skill
-    # index and memory content appear, while the trimmed todo/filesystem usage
-    # prose does not.
+    # for their content, so they are never trimmed. This snapshot guards that:
+    # the skill index and memory content appear, while the trimmed todo/filesystem
+    # usage prose does not.
     agent = create_deep_agent(
         model=model,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],

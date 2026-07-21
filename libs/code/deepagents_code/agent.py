@@ -2352,9 +2352,6 @@ def create_cli_agent(
     agent = create_deep_agent(
         model=model,
         system_prompt=resolved_system_prompt,
-        # The SDK trims the built-in tool-usage guidance prose by default; the
-        # CLI keeps it to preserve its shipped behavior.
-        trim_duplicate_tool_prompts=False,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

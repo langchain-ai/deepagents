@@ -669,20 +669,17 @@ class TestSystemPromptAssembly:
 _ABSENT = object()
 
 
-class TestTrimDuplicateToolPrompts:
-    """`create_deep_agent(trim_duplicate_tool_prompts=...)` trims duplicate prose.
+class TestDuplicateToolPromptTrimming:
+    """`create_deep_agent` trims the built-in tool-usage guidance prose.
 
     The usage-guidance middleware (Todo, Filesystem, SubAgent, AsyncSubAgent)
-    have their tool-usage prose trimmed by default and kept when
-    `trim_duplicate_tool_prompts=False`: trimming passes `system_prompt=""` for
-    those that always append (Todo, Filesystem) and `system_prompt=None` for
-    those whose `None` means "no fragment" (SubAgent, AsyncSubAgent). Keeping
-    omits the kwarg (or passes `None` to Filesystem, whose built-in prose is its
-    `None` default).
+    are built with their tool-usage prose trimmed: `system_prompt=""` for those
+    that always append (Todo, Filesystem) and `system_prompt=None` for those
+    whose `None` means "no fragment" (SubAgent, AsyncSubAgent).
 
     Skills and Memory are never trimmed: their fragment is the only channel that
     surfaces the loaded skill index / memory content, so they always emit it
-    (kwarg omitted) regardless of the flag.
+    (kwarg omitted).
     """
 
     def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
@@ -728,7 +725,7 @@ class TestTrimDuplicateToolPrompts:
             "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
         }
 
-    def test_usage_prose_trimmed_by_default(self) -> None:
+    def test_usage_prose_trimmed(self) -> None:
         captured = self._capture_middleware_kwargs(**self._create_kwargs())
 
         assert captured["TodoListMiddleware"], "expected TodoListMiddleware to be built"
@@ -737,36 +734,17 @@ class TestTrimDuplicateToolPrompts:
         assert all(v is None for v in captured["SubAgentMiddleware"])
         assert all(v is None for v in captured["AsyncSubAgentMiddleware"])
 
-    def test_usage_prose_kept_when_disabled(self) -> None:
-        captured = self._capture_middleware_kwargs(
-            trim_duplicate_tool_prompts=False,
-            **self._create_kwargs(),
-        )
-
-        # Filesystem's built-in prose is its `system_prompt=None` default, so it
-        # is passed `None` explicitly; the others omit the kwarg entirely.
-        assert captured["FilesystemMiddleware"], "expected FilesystemMiddleware to be built"
-        assert all(v is None for v in captured["FilesystemMiddleware"])
-        for name in ("TodoListMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
-            values = captured[name]
-            assert values, f"expected {name} to be built"
-            assert all(v is _ABSENT for v in values), f"{name} should not receive system_prompt"
-
     def test_skills_and_memory_never_trimmed(self) -> None:
         """Regression guard for the skills/memory content channel.
 
-        Their fragments carry the feature's only content, so they must emit even
-        on the trimmed default (kwarg omitted, never `None`), for either flag value.
+        Their fragments carry the feature's only content, so they must emit
+        (kwarg omitted, never `None`) rather than be trimmed like usage prose.
         """
-        for flag in (False, True):
-            captured = self._capture_middleware_kwargs(
-                trim_duplicate_tool_prompts=flag,
-                **self._create_kwargs(),
-            )
-            for name in ("SkillsMiddleware", "MemoryMiddleware"):
-                values = captured[name]
-                assert values, f"expected {name} to be built (flag={flag})"
-                assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed (flag={flag})"
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+        for name in ("SkillsMiddleware", "MemoryMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed"
 
 
 class TestToolExclusionMiddleware:

@@ -181,3 +181,22 @@ def _build_interrupt_on_from_permissions(
             when=_make_fs_when_predicate(rules, op, arg, scope, pattern_arg),
         )
     return result
+
+
+def _merge_fs_interrupt_on(
+    fs_interrupt_on: dict[str, InterruptOnConfig],
+    user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+) -> dict[str, bool | InterruptOnConfig] | None:
+    """Combine filesystem-permission configs with user-defined interrupts.
+
+    User-defined `interrupt_on` entries take precedence over generated
+    filesystem-permission entries with the same tool name. Returns `None` when
+    there are no interrupts to configure, allowing `HumanInTheLoopMiddleware` to
+    be omitted.
+    """
+    if not fs_interrupt_on and not user_interrupt_on:
+        return None
+    merged: dict[str, bool | InterruptOnConfig] = {**fs_interrupt_on}
+    if user_interrupt_on:
+        merged.update(user_interrupt_on)
+    return merged

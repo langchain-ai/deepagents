@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -172,7 +173,8 @@ async def _communicate_bounded(
     try:
         await process.wait()
         stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
-        await stdin_task
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            await stdin_task
     except BaseException:
         stdin_task.cancel()
         stdout_task.cancel()

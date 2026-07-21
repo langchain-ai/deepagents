@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code import model_config
+from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     DEFAULT_STARTUP_MODE,
     PROVIDER_API_KEY_ENV,
@@ -7017,7 +7018,7 @@ class TestAddEnabledProjectMcpServers:
     """Tests for persisting the approval prompt's "always allow" choice."""
 
     @staticmethod
-    def _server_configs() -> dict[str, object]:
+    def _server_configs() -> JsonObject:
         return {
             "docs": {"command": "echo", "args": ["docs"]},
             "reference": {"type": "http", "url": "https://example.test/mcp"},

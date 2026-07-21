@@ -1182,7 +1182,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         review_calls: list[ToolCall] = []
         deterministic_dispositions: dict[str, str] = {}
         for call in gated_calls:
-            if _deterministic_allow(
+            if await asyncio.to_thread(
+                _deterministic_allow,
                 self._worktree_root,
                 call,
                 tools.get(call["name"]),

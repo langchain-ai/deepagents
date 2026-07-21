@@ -28,16 +28,8 @@ from deepagents_code import _env_vars, auth_store
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from typing import TypeAlias
 
-    # A parsed-JSON value. An MCP server definition is one of these (in practice
-    # a dict), but a malformed `.mcp.json` entry can be any JSON scalar/array, so
-    # the trust helpers accept the whole shape rather than lying with `Mapping`.
-    # String form keeps the recursive reference valid on Python 3.11 (no PEP 695
-    # `type` statement).
-    JSONValue: TypeAlias = (
-        "str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | None"
-    )
+    from deepagents_code.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 
@@ -3427,7 +3419,7 @@ class McpProjectServerApproval:
 
     @classmethod
     def create(
-        cls, *, project_root: str | Path | None, name: str, server: JSONValue
+        cls, *, project_root: str | Path | None, name: str, server: JsonValue
     ) -> McpProjectServerApproval | None:
         """Build an approval, normalizing the root and fingerprinting `server`.
 
@@ -3546,7 +3538,7 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
         return None
 
 
-def fingerprint_mcp_server_config(server: JSONValue) -> str:
+def fingerprint_mcp_server_config(server: JsonValue) -> str:
     """Return a stable fingerprint for an MCP server definition.
 
     The contract is a JSON-serializable value (in practice the `dict` parsed
@@ -3671,7 +3663,7 @@ class McpServerTrustLists:
         name: str,
         *,
         project_root: str | Path | None,
-        server: JSONValue,
+        server: JsonValue,
     ) -> bool:
         """Return whether `server` is approved by name or scoped fingerprint.
 
@@ -3995,7 +3987,7 @@ def add_enabled_project_mcp_servers(
     config_path: Path | None = None,
     *,
     project_root: str | Path | None = None,
-    server_configs: Mapping[str, JSONValue] | None = None,
+    server_configs: Mapping[str, JsonValue] | None = None,
 ) -> bool:
     """Persist project-scoped MCP server approvals.
 

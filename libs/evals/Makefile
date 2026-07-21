@@ -42,7 +42,7 @@ test_watch: ## Run tests in watch mode
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
 HARBOR_AGENT_IMPL ?= dcode
-HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
+HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)
 HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
 HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
 HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)

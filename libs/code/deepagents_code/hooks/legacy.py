@@ -72,7 +72,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess  # noqa: S404
+import subprocess  # ruff:ignore[suspicious-subprocess-import]
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -118,7 +118,7 @@ def _load_hooks() -> list[dict[str, Any]]:
         An empty list when the file is missing or malformed so that normal
             execution is never interrupted.
     """
-    global _hooks_config  # noqa: PLW0603
+    global _hooks_config  # ruff:ignore[global-statement]
     if _hooks_config is not None:
         return _hooks_config
 
@@ -173,7 +173,7 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
         payload_bytes: JSON payload to write to the command's stdin.
     """
     try:
-        subprocess.run(  # noqa: S603
+        subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]
             command,
             input=payload_bytes,
             stdout=subprocess.DEVNULL,

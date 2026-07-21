@@ -28,6 +28,8 @@ from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-
 
 
 class _DomainModel(BaseModel):
+    # Domain objects are constructed by lifecycle code, not parsed from external
+    # hook JSON. Keep unknown fields forbidden so typos fail loudly.
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
 
@@ -99,7 +101,11 @@ class DcodeNotification(_DomainModel):
 
 
 class BackgroundTaskSnapshot(_DomainModel):
-    """Background task state captured for a hook invocation."""
+    """Background task state captured for a hook invocation.
+
+    Compatible Stop/SubagentStop wire context. Omit or leave empty until a
+    trustworthy background-task source exists.
+    """
 
     id: str
     type: str
@@ -113,7 +119,11 @@ class BackgroundTaskSnapshot(_DomainModel):
 
 
 class SessionCronSnapshot(_DomainModel):
-    """Scheduled session prompt captured for a hook invocation."""
+    """Scheduled session prompt captured for a hook invocation.
+
+    Compatible Stop/SubagentStop wire context. Omit or leave empty until a
+    trustworthy session-cron source exists.
+    """
 
     id: str
     schedule: str
@@ -179,7 +189,11 @@ class PostToolUseEvent(_DomainModel):
 
 
 class StopEvent(_DomainModel):
-    """Domain payload for `Stop`."""
+    """Domain payload for `Stop`.
+
+    `background_tasks` and `session_crons` are optional wire-compat fields;
+    omit or leave empty until they can be sourced.
+    """
 
     event: Literal[HookEvent.STOP]
     continuation_count: int
@@ -196,7 +210,11 @@ class SubagentStartEvent(_DomainModel):
 
 
 class SubagentStopEvent(_DomainModel):
-    """Domain payload for `SubagentStop`."""
+    """Domain payload for `SubagentStop`.
+
+    `background_tasks` and `session_crons` are optional wire-compat fields.
+    Blocking or resumable SubagentStop effects are not applied yet.
+    """
 
     event: Literal[HookEvent.SUBAGENT_STOP]
     agent: AgentIdentity

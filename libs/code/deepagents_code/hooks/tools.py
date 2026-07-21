@@ -36,56 +36,48 @@ def _edit_input(args: JsonObject) -> JsonObject:
     return _select(args, "file_path", "old_string", "new_string", "replace_all")
 
 
-def _read_input(args: JsonObject) -> JsonObject:
-    result = _select(args, "file_path", "limit")
-    if "offset" in args:
-        offset = args["offset"]
-        result["offset"] = (
-            offset + 1
-            if isinstance(offset, int) and not isinstance(offset, bool)
-            else offset
-        )
-    return result
-
-
-def _glob_input(args: JsonObject) -> JsonObject:
-    return _select(args, "pattern", "path")
-
-
-def _grep_input(args: JsonObject) -> JsonObject:
-    result = _select(args, "path", "glob", "output_mode")
-    if "pattern" in args:
-        pattern = args["pattern"]
-        result["pattern"] = re.escape(pattern) if isinstance(pattern, str) else pattern
-    if "max_count" in args:
-        result["head_limit"] = args["max_count"]
-    return result
-
-
-def _ls_input(args: JsonObject) -> JsonObject:
-    return _select(args, "path")
-
-
 _NATIVE_TO_WIRE: dict[str, tuple[str, Callable[[JsonObject], JsonObject]]] = {
     "execute": ("Bash", _bash_input),
     "write_file": ("Write", _write_input),
     "edit_file": ("Edit", _edit_input),
-    "read_file": ("Read", _read_input),
-    "glob": ("Glob", _glob_input),
-    "grep": ("Grep", _grep_input),
-    "ls": ("LS", _ls_input),
 }
 
+_MCP_WIRE_RE = re.compile(r"^mcp__.+__.+$")
 
-def to_wire_tool_name(name: str) -> str:
+
+def format_mcp_wire_name(server: str, tool: str) -> str:
+    """Format a compatible MCP wire tool name.
+
+    Args:
+        server: MCP server name.
+        tool: Bare MCP tool name.
+
+    Returns:
+        `mcp__{server}__{tool}`.
+    """
+    return f"mcp__{server}__{tool}"
+
+
+def to_wire_tool_name(
+    name: str,
+    *,
+    mcp_server: str | None = None,
+) -> str:
     """Map a native tool name to the compatible wire tool name.
 
     Args:
         name: Native dcode or already-compatible tool name.
+        mcp_server: Owning MCP server when known from tool metadata.
 
     Returns:
         The Claude-compatible tool name used for matchers and wire payloads.
     """
+    if _MCP_WIRE_RE.fullmatch(name) is not None:
+        return name
+    if mcp_server is not None:
+        prefix = f"{mcp_server}_"
+        tool = name.removeprefix(prefix) if name.startswith(prefix) else name
+        return format_mcp_wire_name(mcp_server, tool)
     adapter = _NATIVE_TO_WIRE.get(name)
     return adapter[0] if adapter is not None else name
 
@@ -101,10 +93,12 @@ def to_wire_tool_input(name: str, args: JsonObject) -> JsonObject:
         JSON object suitable for `tool_input` on the wire.
     """
     adapter = _NATIVE_TO_WIRE.get(name)
-    return adapter[1](args) if adapter is not None else args
+    return adapter[1](args) if adapter is not None else dict(args)
 
 
-def to_wire_call(call: ToolCallData) -> tuple[str, JsonObject]:
+def to_wire_call(
+    call: ToolCallData,
+) -> tuple[str, JsonObject]:
     """Project a native tool call into compatible wire name and input.
 
     Args:
@@ -113,4 +107,7 @@ def to_wire_call(call: ToolCallData) -> tuple[str, JsonObject]:
     Returns:
         `(tool_name, tool_input)` for matchers and wire projection.
     """
-    return to_wire_tool_name(call.name), to_wire_tool_input(call.name, call.args)
+    name = to_wire_tool_name(call.name, mcp_server=call.mcp_server)
+    if call.mcp_server is not None or _MCP_WIRE_RE.fullmatch(call.name) is not None:
+        return name, dict(call.args)
+    return name, to_wire_tool_input(call.name, call.args)

@@ -9,6 +9,7 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
+    HookDiagnostic,
     HookEvent,
     NotificationEvent,
     PermissionRequestEvent,
@@ -49,53 +50,65 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.wire import HookWireInput
 
 
-class _CommonWireFields(TypedDict):
+class _CoreWireFields(TypedDict):
     session_id: str
     transcript_path: str
     cwd: str
-    prompt_id: NotRequired[UUID | None]
-    permission_mode: WirePermissionMode
-    effort: NotRequired[Effort | None]
+    permission_mode: NotRequired[WirePermissionMode]
+    prompt_id: NotRequired[UUID]
+    effort: NotRequired[Effort]
 
 
-def project_hook_input(invocation: HookInvocation) -> HookWireInput:
+class _CommonWireFields(_CoreWireFields):
+    agent_id: NotRequired[str]
+    agent_type: NotRequired[str]
+
+
+def project_hook_input(
+    invocation: HookInvocation,
+    *,
+    transcript_path: Path | None = None,
+    agent_transcript_path: Path | None = None,
+) -> HookWireInput:
     """Project a native hook invocation into the compatible wire contract.
 
     Args:
         invocation: Native lifecycle invocation.
+        transcript_path: Materialized client transcript path.
+        agent_transcript_path: Materialized subagent transcript path.
 
     Returns:
         A validated event-specific wire input.
 
     Raises:
         TypeError: If the invocation carries an unsupported event model.
+        ValueError: If a required materialized transcript path is missing.
     """
-    context = invocation.context
     event = invocation.event
     if isinstance(event, SessionStartEvent):
         result = SessionStartWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.SESSION_START,
             source=event.cause,
             model=event.model,
         )
     elif isinstance(event, SessionEndEvent):
         result = SessionEndWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.SESSION_END,
             reason=event.cause,
         )
     elif isinstance(event, PermissionRequestEvent):
         tool_name, tool_input = to_wire_call(event.call)
         result = PermissionRequestWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.PERMISSION_REQUEST,
             tool_name=tool_name,
             tool_input=tool_input,
         )
     elif isinstance(event, NotificationEvent):
         result = NotificationWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.NOTIFICATION,
             message=event.notification.message,
             title=event.notification.title,
@@ -104,7 +117,7 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
     elif isinstance(event, PreToolUseEvent):
         tool_name, tool_input = to_wire_call(event.call)
         result = PreToolUseWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.PRE_TOOL_USE,
             tool_name=tool_name,
             tool_input=tool_input,
@@ -113,7 +126,7 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
     elif isinstance(event, PostToolUseEvent):
         tool_name, tool_input = to_wire_call(event.call)
         result = PostToolUseWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.POST_TOOL_USE,
             tool_name=tool_name,
             tool_input=tool_input,
@@ -123,7 +136,7 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
         )
     elif isinstance(event, StopEvent):
         result = StopWireInput(
-            **_common_fields(invocation),
+            **_common_fields(invocation, transcript_path),
             hook_event_name=HookEvent.STOP,
             stop_hook_active=event.continuation_count > 0,
             last_assistant_message=event.last_assistant_message,
@@ -138,19 +151,22 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
         )
     elif isinstance(event, SubagentStartEvent):
         result = SubagentStartWireInput(
-            **_common_fields(invocation),
+            **_core_fields(invocation, transcript_path),
             hook_event_name=HookEvent.SUBAGENT_START,
             agent_id=event.agent.id,
             agent_type=event.agent.name,
         )
     elif isinstance(event, SubagentStopEvent):
+        if agent_transcript_path is None:
+            msg = "SubagentStop requires a materialized agent transcript path"
+            raise ValueError(msg)
         result = SubagentStopWireInput(
-            **_common_fields(invocation),
+            **_core_fields(invocation, transcript_path),
             hook_event_name=HookEvent.SUBAGENT_STOP,
             stop_hook_active=event.continuation_count > 0,
             agent_id=event.agent.id,
             agent_type=event.agent.name,
-            agent_transcript_path=str(_transcript_path(context.cwd, event.agent.id)),
+            agent_transcript_path=str(agent_transcript_path),
             last_assistant_message=event.last_assistant_message,
             background_tasks=[
                 BackgroundTaskWire.model_validate(task.model_dump())
@@ -174,38 +190,89 @@ def project_hook_input(invocation: HookInvocation) -> HookWireInput:
     return HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
 
 
-def _common_fields(invocation: HookInvocation) -> _CommonWireFields:
+def _core_fields(
+    invocation: HookInvocation,
+    transcript_path: Path | None,
+) -> _CoreWireFields:
     context = invocation.context
-    return {
+    if transcript_path is None:
+        msg = "HookInvocation requires a materialized transcript path"
+        raise ValueError(msg)
+    fields: _CoreWireFields = {
         "session_id": context.thread_id,
-        "transcript_path": str(_transcript_path(context.cwd, context.thread_id)),
+        "transcript_path": str(transcript_path),
         "cwd": str(context.cwd),
-        "prompt_id": context.prompt_id,
-        "permission_mode": _permission_mode(context.approval_mode),
-        "effort": Effort(level=context.effort) if context.effort is not None else None,
     }
+    permission_mode = _permission_mode(context.approval_mode)
+    if permission_mode is not None:
+        fields["permission_mode"] = permission_mode
+    if context.prompt_id is not None:
+        fields["prompt_id"] = context.prompt_id
+    if context.effort is not None:
+        fields["effort"] = Effort(level=context.effort)
+    return fields
 
 
-def serialize_hook_input(invocation: HookInvocation) -> bytes:
+def _common_fields(
+    invocation: HookInvocation,
+    transcript_path: Path | None,
+) -> _CommonWireFields:
+    fields: _CommonWireFields = {**_core_fields(invocation, transcript_path)}
+    agent = invocation.context.agent
+    if agent is not None:
+        fields["agent_id"] = agent.id
+        fields["agent_type"] = agent.name
+    return fields
+
+
+def serialize_hook_input(
+    invocation: HookInvocation,
+    *,
+    transcript_path: Path | None = None,
+    agent_transcript_path: Path | None = None,
+) -> bytes:
     """Serialize a hook invocation as validated compatible JSON.
 
     Args:
         invocation: Native lifecycle invocation.
+        transcript_path: Materialized client transcript path.
+        agent_transcript_path: Materialized subagent transcript path.
 
     Returns:
         Compact JSON bytes suitable for command stdin.
     """
     return HOOK_WIRE_INPUT_ADAPTER.dump_json(
-        project_hook_input(invocation),
+        project_hook_input(
+            invocation,
+            transcript_path=transcript_path,
+            agent_transcript_path=agent_transcript_path,
+        ),
         by_alias=True,
         exclude_none=True,
     )
 
 
-def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
+def projection_diagnostics(invocation: HookInvocation) -> tuple[HookDiagnostic, ...]:
+    """Return visible diagnostics for lossy domain-to-wire projection."""
+    if invocation.context.approval_mode is ApprovalMode.AUTO:
+        return (
+            HookDiagnostic(
+                code="unsupported_permission_mode",
+                severity="warning",
+                message=(
+                    "AUTO approval mode has no proven compatible hook permission "
+                    "mode and was omitted"
+                ),
+                field="permission_mode",
+            ),
+        )
+    return ()
+
+
+def _permission_mode(mode: ApprovalMode) -> WirePermissionMode | None:
     return {
         ApprovalMode.MANUAL: WirePermissionMode.DEFAULT,
-        ApprovalMode.AUTO: WirePermissionMode.AUTO,
+        ApprovalMode.AUTO: None,
         ApprovalMode.YOLO: WirePermissionMode.BYPASS_PERMISSIONS,
     }[mode]
 
@@ -213,12 +280,9 @@ def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
 def _notification_type(value: str) -> WireNotificationType:
     try:
         return WireNotificationType(value)
-    except ValueError:
-        return WireNotificationType.AGENT_NEEDS_INPUT
-
-
-def _transcript_path(cwd: Path, identifier: str) -> Path:
-    return cwd / ".deepagents" / "transcripts" / f"{identifier}.jsonl"
+    except ValueError as exc:
+        msg = f"Unsupported notification type: {value}"
+        raise ValueError(msg) from exc
 
 
 def _tool_result(result: ToolMessage | Command[str]) -> JsonValue:

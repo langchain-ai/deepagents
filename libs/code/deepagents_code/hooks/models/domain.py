@@ -4,21 +4,25 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import (
-    Path,  # noqa: TC003 - Pydantic resolves model annotations at runtime.
+    Path,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 from typing import Annotated, Literal, TypeAlias
-from uuid import UUID  # noqa: TC003 - Pydantic resolves model annotations at runtime.
+from uuid import (
+    UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
+)
 
-from langchain_core.messages import (  # noqa: TC002 - Pydantic runtime annotation.
+from langchain_core.messages import (  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
     ToolMessage,
 )
-from langgraph.types import Command  # noqa: TC002 - Pydantic runtime annotation.
+from langgraph.types import (
+    Command,  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
+)
 from pydantic import BaseModel, ConfigDict, Field
 
-from deepagents_code.approval_mode import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     ApprovalMode,
 )
-from deepagents_code.json_types import (  # noqa: TC001 - Pydantic runtime annotation.
+from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     JsonObject,
 )
 
@@ -68,7 +72,7 @@ class SessionEndCause(StrEnum):
     OTHER = "other"
 
 
-EffortLevel: TypeAlias = Literal["low", "medium", "high", "xhigh", "max"]
+EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
 
 class ToolCallData(_DomainModel):

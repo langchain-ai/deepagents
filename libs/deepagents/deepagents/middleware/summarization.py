@@ -134,16 +134,6 @@ class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
 
 
-SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
-
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.
-"""
-
-
 class SummarizationEvent(TypedDict):
     """Represents a summarization event."""
 

@@ -56,6 +56,7 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
 )
 from langchain_core.tools import StructuredTool, tool
+from typing_extensions import override
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -419,6 +420,103 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if (rejection := self._validate_tool_call(request)) is not None:
             return rejection
         return await handler(request)
+
+
+def _redact_tool_message(message: ToolMessage) -> ToolMessage:
+    """Redact credential values from a `read_file`/`execute` tool message.
+
+    Returns:
+        The redacted `ToolMessage`, or the original when nothing matched.
+    """
+    from deepagents_code.file_ops import redact_secret_file_content
+
+    if getattr(message, "name", None) not in {"read_file", "execute"}:
+        return message
+    if getattr(message, "status", "success") != "success":
+        return message
+
+    content = message.content
+    if not isinstance(content, str) or not content:
+        return message
+
+    redacted = redact_secret_file_content(content)
+    if redacted == content:
+        return message
+    message.content = redacted
+    return message
+
+
+def _tool_call_targets_secret(request: ToolCallRequest) -> bool:
+    """Return whether a tool call reads or prints a credential file.
+
+    Returns:
+        `True` when the call targets a credential-shaped file or dumps env vars.
+    """
+    from deepagents_code.file_ops import is_sensitive_file_path
+
+    name = request.tool_call["name"]
+    args = request.tool_call.get("args") or {}
+    if name == "read_file":
+        path = args.get("file_path") or args.get("path")
+        return isinstance(path, str) and is_sensitive_file_path(path)
+    if name == "execute":
+        command = args.get("command", "")
+        if not isinstance(command, str):
+            return False
+        lowered = command.lower()
+        if "printenv" in lowered or "env |" in lowered:
+            return True
+        return any(is_sensitive_file_path(token) for token in command.split())
+    return False
+
+
+class SecretRedactionMiddleware(AgentMiddleware):
+    """Redact credential values from `read_file` / `execute` tool results.
+
+    An unprompted `read_file` on a `.env` (or other credential file), or a shell
+    command that prints one (`cat .env`, `printenv`, `grep` on a secret file),
+    otherwise streams raw secret values straight into model context. This wraps
+    those two tools' results and swaps assignment values for
+    `<redacted:N chars>` placeholders — variable names and file structure survive,
+    the values do not. The tracing layer's after-the-fact `[SECRET_DETECTED]`
+    redaction does not prevent the raw value from entering context; this does.
+    """
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Run the tool, then redact credential values from its result.
+
+        Returns:
+            The tool result, with credential-file values redacted when relevant.
+        """
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        result = handler(request)
+        if isinstance(result, LCToolMessage) and _tool_call_targets_secret(request):
+            return _redact_tool_message(result)
+        return result
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Run the tool, then redact credential values from its result.
+
+        Returns:
+            The tool result, with credential-file values redacted when relevant.
+        """
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        result = await handler(request)
+        if isinstance(result, LCToolMessage) and _tool_call_targets_secret(request):
+            return _redact_tool_message(result)
+        return result
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
@@ -1918,6 +2016,9 @@ def create_cli_agent(
         # Experimental: mirror the main agent and drop TodoListMiddleware /
         # write_todos from subagent stacks too. No-op unless the flag is set.
         middleware.extend(_todo_list_middleware_override())
+        # Redact credential-file values from read_file/execute results so
+        # subagents never pull raw secrets into context either.
+        middleware.append(SecretRedactionMiddleware())
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
@@ -1993,6 +2094,9 @@ def create_cli_agent(
         # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
         # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
         *_todo_list_middleware_override(),
+        # Redact credential-file values out of read_file/execute results before
+        # they enter model context (unprompted `.env` reads, `cat .env`, etc.).
+        SecretRedactionMiddleware(),
     ]
     if not interactive and mcp_tools:
         from deepagents_code.auto_mode import (

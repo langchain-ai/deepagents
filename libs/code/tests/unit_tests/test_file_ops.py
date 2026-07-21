@@ -10,6 +10,7 @@ from deepagents_code.file_ops import (
     FileOpTracker,
     build_approval_preview,
     is_sensitive_file_path,
+    redact_secret_file_content,
 )
 
 
@@ -72,6 +73,28 @@ def test_is_sensitive_file_path_fails_closed_on_unparseable_path() -> None:
     from leaking as a non-sensitive file.
     """
     assert is_sensitive_file_path(cast("str", 123)) is True
+
+
+def test_redact_secret_file_content_hides_values_keeps_keys() -> None:
+    """A .env value is redacted while the key name and structure survive."""
+    content = "API_TOKEN=secretvalue\n# comment\nDEBUG=true\n"
+    redacted = redact_secret_file_content(content)
+
+    assert "API_TOKEN=" in redacted
+    assert "secretvalue" not in redacted
+    assert "<redacted:11 chars>" in redacted
+    assert "# comment" in redacted
+
+
+def test_redact_secret_file_content_handles_read_file_gutter_and_quotes() -> None:
+    """Redaction survives the read_file line gutter and quoted values."""
+    content = '     1\tSECRET_KEY="hunter2"\n     2\texport TOKEN=abc\n'
+    redacted = redact_secret_file_content(content)
+
+    assert "hunter2" not in redacted
+    assert "abc" not in redacted
+    assert "SECRET_KEY=" in redacted
+    assert "export TOKEN=" in redacted
 
 
 def test_tracker_records_read_lines(tmp_path: Path) -> None:

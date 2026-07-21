@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -181,13 +182,17 @@ _SENSITIVE_FILE_SUFFIXES = (
 )
 """File suffixes (lowercased) for private keys / keystores that hold secrets."""
 
+_SENSITIVE_NAME_MARKERS = ("credential", "secret", "token", "apikey")
+"""Substrings in a basename that flag a file as credential-bearing."""
+
 
 def is_sensitive_file_path(path_str: str | None) -> bool:
     """Return whether a path points at a credential/secret file.
 
     Best-effort, filename-based, case-insensitive heuristic. It matches `.env`
-    and its variants (e.g. `.env.local`), well-known credential filenames, and
-    private-key/keystore suffixes, and is used to suppress diff/content
+    and its variants (e.g. `.env.local`), well-known credential filenames,
+    private-key/keystore suffixes, and basenames containing markers like
+    `credential`/`secret`/`token`/`apikey`. It is used to suppress diff/content
     rendering for those files so their contents are not shown in the terminal
     UI or scrollback. It classifies by name only, not content, so
     secret-bearing files with unrecognized names still render.
@@ -218,7 +223,76 @@ def is_sensitive_file_path(path_str: str | None) -> bool:
         return True
     if name in _SENSITIVE_FILE_NAMES:
         return True
-    return name.endswith(_SENSITIVE_FILE_SUFFIXES)
+    if name.endswith(_SENSITIVE_FILE_SUFFIXES):
+        return True
+    return any(marker in name for marker in _SENSITIVE_NAME_MARKERS)
+
+
+_REDACTED_LINE_RE = re.compile(
+    r"""
+    ^(?P<prefix>\s*(?:\d+(?:\.\d+)?[ \t]+)?)   # optional read_file line gutter
+    (?P<export>export\s+)?                       # optional shell `export`
+    (?P<key>[A-Za-z_][A-Za-z0-9_.\-]*)          # KEY / variable name
+    (?P<sep>\s*[:=]\s*)                          # `=` or `:` assignment
+    (?P<value>.*)$                               # value to redact
+    """,
+    re.VERBOSE,
+)
+"""Match a `KEY=value` / `KEY: value` assignment line (with optional gutter)."""
+
+_MIN_QUOTED_LEN = 2
+"""Shortest value (`""`) that can carry a matching open/close quote pair."""
+
+
+def _redact_value(value: str) -> str:
+    """Return a length-annotated placeholder for a stripped credential value.
+
+    Returns:
+        A ``<redacted:N chars>`` placeholder preserving surrounding quotes.
+    """
+    stripped = value.strip()
+    quote = ""
+    if (
+        len(stripped) >= _MIN_QUOTED_LEN
+        and stripped[0] in "\"'"
+        and stripped[-1] == stripped[0]
+    ):
+        quote = stripped[0]
+        stripped = stripped[1:-1]
+    if not stripped:
+        return value
+    return f"{quote}<redacted:{len(stripped)} chars>{quote}"
+
+
+def redact_secret_file_content(content: str) -> str:
+    """Replace credential values with placeholders, preserving key names.
+
+    For each ``KEY=value`` / ``KEY: value`` line the value is swapped for a
+    ``<redacted:N chars>`` placeholder so the agent sees variable names and file
+    structure but never a raw secret. Comments, blank lines, and non-assignment
+    lines pass through unchanged.
+
+    Args:
+        content: Raw file contents (may include a ``read_file`` line gutter).
+
+    Returns:
+        The content with assignment values redacted.
+    """
+    redacted_lines: list[str] = []
+    for line in content.splitlines():
+        match = _REDACTED_LINE_RE.match(line)
+        if match is None or match.group("value").lstrip().startswith("#"):
+            redacted_lines.append(line)
+            continue
+        redacted_lines.append(
+            f"{match.group('prefix')}{match.group('export') or ''}"
+            f"{match.group('key')}{match.group('sep')}"
+            f"{_redact_value(match.group('value'))}"
+        )
+    result = "\n".join(redacted_lines)
+    if content.endswith("\n"):
+        result += "\n"
+    return result
 
 
 def format_display_path(path_str: str | None) -> str:

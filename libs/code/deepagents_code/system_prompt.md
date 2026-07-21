@@ -138,6 +138,7 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - If you notice you wrote insecure code, fix it immediately
 - Never commit secrets (.env, credentials.json, API keys)
 - Warn users if they request committing sensitive files
+- NEVER read the full contents of `.env` or other credential files (`.env.*`, `*.pem`, `id_rsa`, files named for credentials/secrets/tokens/API keys) to accomplish an unrelated task like launching a service, debugging a webhook, or uploading a repo. Reference variable NAMES only, not values. Credential-file reads are redacted to placeholders by default; if a real value is genuinely required, ask the user first.
 
 ## Debugging Best Practices
 

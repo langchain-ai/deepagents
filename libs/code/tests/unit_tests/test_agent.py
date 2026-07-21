@@ -3172,6 +3172,85 @@ class TestShellAllowListMiddleware:
             ShellAllowListMiddleware(allow_list=SHELL_ALLOW_ALL)
 
 
+class TestSecretRedactionMiddleware:
+    """Tests for credential-value redaction of tool results."""
+
+    def test_redacts_env_read_result_sync(self) -> None:
+        """read_file on a .env returns key names but not raw secret values."""
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.agent import SecretRedactionMiddleware
+
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {
+            "name": "read_file",
+            "args": {"file_path": "/proj/.env"},
+            "id": "tc-env",
+        }
+        message = ToolMessage(
+            content="     1\tAPI_TOKEN=secretvalue\n",
+            tool_call_id="tc-env",
+            name="read_file",
+        )
+        handler = Mock(return_value=message)
+
+        result = middleware.wrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert "API_TOKEN" in result.content
+        assert "secretvalue" not in result.content
+
+    def test_leaves_regular_file_read_untouched_sync(self) -> None:
+        """A non-credential file read passes through unchanged."""
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.agent import SecretRedactionMiddleware
+
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {
+            "name": "read_file",
+            "args": {"file_path": "/proj/config.py"},
+            "id": "tc-cfg",
+        }
+        message = ToolMessage(
+            content="     1\tAPI_TOKEN=secretvalue\n",
+            tool_call_id="tc-cfg",
+            name="read_file",
+        )
+        handler = Mock(return_value=message)
+
+        result = middleware.wrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert "secretvalue" in result.content
+
+    async def test_redacts_cat_env_shell_output(self) -> None:
+        """`cat .env` shell output has its secret values redacted."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.agent import SecretRedactionMiddleware
+
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "cat .env"},
+            "id": "tc-cat",
+        }
+        message = ToolMessage(
+            content="API_TOKEN=secretvalue\n",
+            tool_call_id="tc-cat",
+            name="execute",
+        )
+        handler = AsyncMock(return_value=message)
+
+        result = await middleware.awrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert "secretvalue" not in result.content
+
+
 class TestCreateCliAgentShellMiddlewareWiring:
     """Verify `create_cli_agent` wires `ShellAllowListMiddleware` correctly."""
 
@@ -3514,7 +3593,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
         clobber the pinned model.
         """
-        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.agent import (
+            SecretRedactionMiddleware,
+            ShellAllowListMiddleware,
+        )
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
@@ -3569,14 +3651,15 @@ class TestCreateCliAgentShellMiddlewareWiring:
         }
 
         # Implicit-model subagents (and the general-purpose fallback) get
-        # configurable-model and shell middlewares, with the configurable-model
-        # swap ordered before the shell gate so a runtime `/model` switch applies
-        # before tools are filtered.
+        # secret-redaction, configurable-model, and shell middlewares, with the
+        # configurable-model swap ordered before the shell gate so a runtime
+        # `/model` switch applies before tools are filtered.
         for name in ("researcher", "general-purpose"):
             middleware_types = [
                 type(mw) for mw in subagents_by_name[name]["middleware"]
             ]
             assert middleware_types == [
+                SecretRedactionMiddleware,
                 ConfigurableModelMiddleware,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"

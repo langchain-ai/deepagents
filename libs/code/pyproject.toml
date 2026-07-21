@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.43"
+version = "0.1.44"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -70,7 +70,7 @@ dependencies = [
     "uuid-utils>=0.16.2,<1.0.0",
     "python-dotenv>=1.2.2,<2.0.0",
     "requests>=2.34.2,<3.0.0",
-    "pillow>=12.2.0,<13.0.0",
+    "pillow>=12.3.0,<13.0.0",
     "pyyaml>=6.0.3",
     "aiosqlite>=0.22.1,<1.0.0",
     "tomli-w>=1.2.0,<2.0.0",
@@ -133,7 +133,7 @@ all-sandboxes = [
 ]
 
 # Standalone integrations
-media = ["av>=17.0.0,<18.0.0", "pillow>=12.2.0,<13.0.0"]
+media = ["av>=17.0.0,<18.0.0", "pillow>=12.3.0,<13.0.0"]
 # (quickjs kept for backwards-compatible install commands)
 quickjs = []
 
@@ -172,6 +172,9 @@ test = [
     "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.26.1,<1.0.0",
     "twine>=6.2.0,<7.0.0",
+    # Detect blocking calls on the event loop in startup smoke tests; mirrors the
+    # Blockbuster instance langgraph-runtime-inmem activates at runtime.
+    "blockbuster>=1.5.26,<1.6",
 ]
 
 [tool.hatch.build.hooks.custom]

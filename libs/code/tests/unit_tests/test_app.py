@@ -14,7 +14,7 @@ import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
@@ -12093,6 +12093,211 @@ class TestScrollbarToggle:
         assert result.message is not None
 
 
+class TestDebugConsoleClickToCopyPreference:
+    """Tests for the persisted Debug Console click-to-copy preference."""
+
+    @pytest.mark.parametrize(
+        ("ok", "message", "severity"),
+        [
+            (True, "Replaced malformed [ui] configuration.", "warning"),
+            (False, "Click-to-copy preference could not be saved.", "error"),
+        ],
+    )
+    async def test_persist_notifies_with_result_severity(
+        self,
+        ok: bool,
+        message: str,
+        severity: Literal["warning", "error"],
+    ) -> None:
+        """Repairs and failures are surfaced with their reported severity."""
+        from deepagents_code.app import _ConfigWriteResult
+
+        app = DeepAgentsApp()
+        result = _ConfigWriteResult(ok, message, severity)
+
+        with (
+            patch.object(app, "call_later") as call_later_mock,
+            patch.object(app, "notify") as notify_mock,
+            patch(
+                "deepagents_code.app.asyncio.to_thread",
+                new=AsyncMock(return_value=result),
+            ),
+        ):
+            app._persist_debug_console_click_to_copy(True)
+            persist = call_later_mock.call_args.args[0]
+            await persist()
+
+        assert app._debug_console_click_to_copy is True
+        notify_mock.assert_called_once_with(
+            message,
+            severity=severity,
+            timeout=6,
+            markup=False,
+        )
+
+    def test_load_defaults_false_when_config_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing config yields the off default."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _load_debug_console_click_to_copy() is False
+
+    def test_load_reads_saved_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `true` preference is read back."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_debug_console_click_to_copy() is True
+
+    def test_load_ignores_non_boolean(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-boolean preference is ignored with a warning."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ndebug_console_click_to_copy = "yes"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_debug_console_click_to_copy() is False
+        assert any(
+            "debug_console_click_to_copy" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_env_var_overrides_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var takes priority over the config.toml value."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = false\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY", "1")
+        assert _load_debug_console_click_to_copy() is True
+
+    def test_invalid_env_var_falls_back_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unrecognized env var value does not mask the saved preference."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY", "maybe")
+        assert _load_debug_console_click_to_copy() is True
+
+    def test_empty_env_var_falls_back_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty/whitespace env var is ignored, not treated as falsy."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY", "   ")
+        assert _load_debug_console_click_to_copy() is True
+
+    def test_load_ignores_non_table_ui(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A `[ui]` value that is not a table degrades to the off default."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text('ui = "not-a-table"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_debug_console_click_to_copy() is False
+        assert any("[ui]" in record.getMessage() for record in caplog.records)
+
+    def test_load_handles_unreadable_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Malformed TOML degrades to the off default with a warning."""
+        from deepagents_code.app import _load_debug_console_click_to_copy
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ndebug_console_click_to_copy = tru\n")  # invalid TOML
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_debug_console_click_to_copy() is False
+        assert any("click-to-copy" in record.getMessage() for record in caplog.records)
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_debug_console_click_to_copy,
+            _save_debug_console_click_to_copy_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_debug_console_click_to_copy_result(True).ok is True
+        assert _load_debug_console_click_to_copy() is True
+        assert _save_debug_console_click_to_copy_result(False).ok is True
+        assert _load_debug_console_click_to_copy() is False
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_debug_console_click_to_copy_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_debug_console_click_to_copy_result(True).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["debug_console_click_to_copy"] is True
+
+    def test_save_failure_reports_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unwritable target yields an error result instead of raising."""
+        from deepagents_code.app import _save_debug_console_click_to_copy_result
+
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            blocker / "config.toml",
+        )
+
+        result = _save_debug_console_click_to_copy_result(True)
+        assert result.ok is False
+        assert result.severity == "error"
+        assert result.message is not None
+
+
 class TestAppBlurPausesCursorBlink:
     """Test `on_app_blur` pauses cursor blink without changing widget focus."""
 
@@ -13420,6 +13625,52 @@ class TestInterruptApprovalPriority:
         assert app._quit_pending is False
 
 
+class TestApprovalPositionBindings:
+    """Tests for app-level approval fallback shortcuts."""
+
+    @pytest.mark.parametrize(
+        ("key", "action"),
+        [
+            ("1", "approval_position(0)"),
+            ("2", "approval_position(1)"),
+            ("3", "approval_position(2)"),
+        ],
+    )
+    def test_numeric_bindings_route_by_visible_position(
+        self, key: str, action: str
+    ) -> None:
+        """Each app fallback number maps to the matching display position."""
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == key
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == action
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_numeric_position_delegates_to_visible_option(self, position: int) -> None:
+        """Fallback number actions use the widget's visible option positions."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+
+        app.action_approval_position(position)
+
+        approval.action_select_position.assert_called_once_with(position)
+
+    def test_numeric_position_is_no_op_without_pending_approval(self) -> None:
+        """Fallback number actions do nothing outside an approval prompt."""
+        app = DeepAgentsApp()
+        assert app._pending_approval_widget is None
+
+        # Must not raise despite there being no widget to delegate to.
+        app.action_approval_position(1)
+
+        assert app._pending_approval_widget is None
+
+
 class TestIsUserTyping:
     """Unit tests for `_is_user_typing()` threshold logic."""
 
@@ -13579,6 +13830,45 @@ class TestRequestApprovalBranching:
         assert ApprovalMenu in mounted_types, (
             f"Expected ApprovalMenu to be mounted, got {mounted_types}"
         )
+
+    @pytest.mark.parametrize("eligible", [True, False])
+    async def test_menu_receives_auto_mode_eligibility(self, *, eligible: bool) -> None:
+        """The app forwards `_auto_mode_eligible` into the mounted ApprovalMenu.
+
+        Guards the load-bearing seam: if this kwarg were dropped or hardcoded,
+        the Auto option would (dis)appear regardless of session eligibility, and
+        the widget-level tests — which pass the flag themselves — would not catch
+        it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+        app._auto_mode_eligible = eligible
+
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, _widget: object
+        ) -> None:
+            return None
+
+        app._mount_before_queued = fake_mount_before_queued  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.query_one = MagicMock(return_value=MagicMock())  # ty: ignore
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/e.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(asyncio, "get_running_loop") as mock_loop,
+            patch.object(app, "_reveal_pending_tool_calls"),
+        ):
+            mock_loop.return_value.create_future.return_value = future
+            await app._request_approval(action_requests, None)
+
+        # For a non-fallback request `_show_auto_option` equals the eligibility
+        # flag, so this asserts the value actually crossed the app→widget seam.
+        assert app._pending_approval_widget is not None
+        assert app._pending_approval_widget._show_auto_option is eligible
 
 
 class TestDeferredShowApproval:

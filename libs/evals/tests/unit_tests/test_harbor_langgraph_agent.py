@@ -17,9 +17,9 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     config = json.loads(config_path.read_text())
 
     assert config["graphs"] == {
-        "deepagent": "./langgraph_agent.py:make_graph",
-        "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
-        "tau3_deepagent": "./langgraph_agent.py:make_tau3_graph",
+        "dcode": "./langgraph_agent.py:make_graph",
+        "bare": "./langgraph_agent.py:make_bare_graph",
+        "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 

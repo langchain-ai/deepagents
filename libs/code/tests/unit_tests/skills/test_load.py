@@ -678,6 +678,29 @@ class TestListSkillsBuiltIn:
         assert "deepagents-code-version" in remember["metadata"]
         assert remember["metadata"]["deepagents-code-version"] == _cli_version
 
+    def test_real_thread_inspector_skill_ships(self) -> None:
+        """Verify the built-in thread inspector and its script load from the package."""
+        built_in_dir = Settings.get_built_in_skills_dir()
+        skill_dir = built_in_dir / "deepagents-thread-inspector"
+        skill_md = skill_dir / "SKILL.md"
+        script = skill_dir / "scripts" / "inspect_sessions.py"
+        assert skill_md.exists(), f"Expected {skill_md} to exist"
+        assert script.exists(), f"Expected {script} to exist"
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        inspector = next(
+            skill for skill in skills if skill["name"] == "deepagents-thread-inspector"
+        )
+        assert inspector["source"] == "built-in"
+        assert len(inspector["description"]) > 0
+        assert inspector["license"] == "MIT"
+        assert inspector["compatibility"] == "designed for deepagents-code"
+        assert inspector["metadata"]["deepagents-code-version"] == _cli_version
+
     def test_oserror_in_one_source_does_not_break_others(self, tmp_path: Path) -> None:
         """An OSError in one source should not prevent other sources from loading.
 

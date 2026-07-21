@@ -90,6 +90,30 @@ The REPL has **many** text-entry surfaces, so "the input" / "the input box" is a
 
 Rule of thumb: say **chat input** for the main composer and name any other surface by its owner (`<owner> field` / `<owner> filter`). Reserve bare "input box" for the chat input only.
 
+## Editing files and inspecting whitespace
+
+`edit_file` does exact byte-for-byte matching, and files that use tabs (e.g. Go, Makefiles) break the moment an anchor's indentation drifts by even one tab. Follow these rules to avoid the "String not found in file" retry loops that stall dead-code removal and other multi-edit turns.
+
+### Anchor discipline
+
+- Copy the `old_string` anchor verbatim from a fresh `read_file` of the exact target lines. Never hand-type it or re-indent it from memory — a 2-tab guess against a 3-tab line fails.
+- Indentation must match byte-for-byte: tabs vs spaces, and the exact tab count. `read_file` renders real tabs, so trust its output over your assumptions.
+- Keep anchors small and unique. A short, distinctive line matches more reliably than a large block you reconstructed by hand.
+
+### Failure recovery — never retry the same anchor
+
+On `String not found in file`, **do not re-submit the same `old_string`.** Re-issuing an anchor that already failed will fail identically. Instead:
+
+1. `read_file` the target region again to capture the exact whitespace.
+2. Rebuild the anchor byte-for-byte from that output.
+3. If it still won't match, fall back to a shorter unique anchor or use `replace_all`.
+
+Never submit the same failing anchor twice in a turn.
+
+### Shell portability
+
+Do not use GNU-only flags; the sandbox may be BSD/macOS, where they error with `illegal option`. To reveal whitespace use `cat -v`, `sed -n 'A,Bp' file | cat -v`, or `od -c` — **not** `cat -A`. On any `illegal option` or `command not found`, switch to a portable equivalent immediately rather than re-running the same command.
+
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.

@@ -4,6 +4,10 @@
 
 For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
+## Built-in skills
+
+Skills that ship with the package live in `deepagents_code/built_in_skills/<name>/SKILL.md` and load at lowest precedence (user/project skills override them). For visual/front-end build tasks — HTML/CSS/JS pages, self-contained webpages, decks, and follow-up cosmetic tweaks (alignment, spacing, centering, wording in a rendered layout) — follow the `visual-build` skill, which encodes a render-then-verify loop (start a local preview, screenshot, batch related edits, re-render and confirm) to avoid resolving one-line cosmetic requests with dozens of blind `edit_file` guesses.
+
 ## Textual (terminal UI framework)
 
 `deepagents-code` uses [Textual](https://textual.textualize.io/).

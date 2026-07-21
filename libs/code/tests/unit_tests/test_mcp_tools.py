@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from deepagents_code import model_config
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
+    from types import ModuleType
 
     from langchain_mcp_adapters.client import Connection
 
@@ -34,6 +36,7 @@ from deepagents_code.mcp_tools import (
     _json_error_snippet,
     _load_tools_from_config,
     _normalize_mcp_arguments,
+    _warm_mcp_adapter_imports,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_project_server_summaries,
@@ -3203,8 +3206,80 @@ class TestLoadToolsConcurrency:
         assert manager is not None
         await manager.cleanup()
 
+    def test_warmup_imports_adapter_and_auth_modules(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Warmup eagerly imports every module used later on the event loop."""
+        import langchain_mcp_adapters
+
+        import deepagents_code
+
+        module_names = {
+            "deepagents_code.mcp_auth",
+            "langchain_mcp_adapters.sessions",
+            "langchain_mcp_adapters.tools",
+        }
+        for module_name in module_names:
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+        monkeypatch.delattr(deepagents_code, "mcp_auth", raising=False)
+        monkeypatch.delattr(langchain_mcp_adapters, "sessions", raising=False)
+        monkeypatch.delattr(langchain_mcp_adapters, "tools", raising=False)
+
+        _warm_mcp_adapter_imports()
+
+        assert module_names <= sys.modules.keys()
+
+    def test_warmup_swallows_failing_auth_import(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failing `mcp_auth` warmup logs and returns without propagating.
+
+        `mcp_auth` is only used on per-server paths, so a warmup failure must
+        not escape `_warm_mcp_adapter_imports` and abort loading for every
+        server (e.g. stdio-only configs that never import it); the real use
+        site re-raises and reports the failure per server.
+        """
+        import builtins
+
+        import deepagents_code
+
+        monkeypatch.delitem(sys.modules, "deepagents_code.mcp_auth", raising=False)
+        monkeypatch.delattr(deepagents_code, "mcp_auth", raising=False)
+
+        original_import = builtins.__import__
+
+        def _failing_auth_import(
+            name: str,
+            globals_: dict[str, object] | None = None,
+            locals_: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> ModuleType:
+            cold_auth_import = "deepagents_code.mcp_auth" not in sys.modules and (
+                name == "deepagents_code.mcp_auth"
+                or (name == "deepagents_code" and "mcp_auth" in fromlist)
+            )
+            if cold_auth_import:
+                msg = "simulated broken mcp_auth import"
+                raise ImportError(msg)
+            return original_import(name, globals_, locals_, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _failing_auth_import)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+            _warm_mcp_adapter_imports()  # must not raise
+
+        assert "deepagents_code.mcp_auth" not in sys.modules
+        assert any(
+            "Failed to warm mcp_auth import" in record.getMessage()
+            for record in caplog.records
+        )
+
     async def test_warmup_runs_off_loop_before_discovery(self) -> None:
-        """Adapter warmup runs, off the event loop, before any discovery."""
+        """MCP warmup runs, off the event loop, before any discovery."""
         loop_thread_id = threading.get_ident()
         events: list[tuple[str, int]] = []
 

@@ -209,6 +209,46 @@ def parse_int_input(
     return value
 
 
+def parse_nonnegative_integer_input(name: str, raw: str) -> int:
+    """Parse a decimal integer greater than or equal to zero.
+
+    Args:
+        name: Input name to include in validation errors.
+        raw: Raw workflow input.
+
+    Returns:
+        The parsed integer.
+
+    Raises:
+        SystemExit: If `raw` is not an unsigned decimal integer.
+    """
+    value = raw.strip()
+    if not re.fullmatch(r"[0-9]+", value):
+        msg = f"{name} must be a non-negative integer, got {raw!r}"
+        raise SystemExit(msg)
+    return int(value)
+
+
+def parse_positive_decimal_input(name: str, raw: str) -> str:
+    """Validate and normalize a strictly positive decimal workflow input.
+
+    Args:
+        name: Input name to include in validation errors.
+        raw: Raw workflow input.
+
+    Returns:
+        The stripped decimal string for lossless forwarding.
+
+    Raises:
+        SystemExit: If `raw` is not a positive non-scientific decimal.
+    """
+    value = raw.strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value) or not value.strip("0."):
+        msg = f"{name} must be a positive decimal, got {raw!r}"
+        raise SystemExit(msg)
+    return value
+
+
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
@@ -437,6 +477,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     rollouts = parse_int_input(
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
+    )
+    parse_nonnegative_integer_input(
+        "UNIFIED_N_RETRIES", os.environ.get("UNIFIED_N_RETRIES", "0")
+    )
+    parse_positive_decimal_input(
+        "UNIFIED_AGENT_TIMEOUT_MULTIPLIER",
+        os.environ.get("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", "1.0"),
     )
 
     # Comma list of code harnesses; empty defaults to the bare create_deep_agent

@@ -1020,7 +1020,7 @@ class TestStartupAutoUpdate:
             cli_main()
 
         launch.assert_not_called()
-        assert "aborted" in capsys.readouterr().err.lower()
+        assert "Aborted; no project MCP servers loaded" in capsys.readouterr().err
 
 
 class TestAutoUpdateDefaultMigration:
@@ -2517,6 +2517,7 @@ class TestCheckMcpProjectTrustPrompt:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Esc aborts the launch without recording a denial decision."""
+        from deepagents_code import model_config
         from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
         from deepagents_code.main import (
             _check_mcp_project_trust,
@@ -2525,6 +2526,8 @@ class TestCheckMcpProjectTrustPrompt:
 
         project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
         monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
 
         with (
             patch(
@@ -2548,6 +2551,50 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
         assert "denied" not in capsys.readouterr().err.lower()
+        assert not user_config.exists()
+
+    def test_explicit_deny_action_reports_denial(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The menu Deny action reports a denial and continues (distinct from Esc).
+
+        Positive companion to the abort tests: their `"denied" not in ...` guards
+        only mean something if the explicit-Deny path actually emits the wording.
+        """
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _ProjectMcpTrustAction,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_project_mcp_trust_action",
+                return_value=_ProjectMcpTrustAction.DENY,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        assert "denied" in capsys.readouterr().err.lower()
 
     def test_prompt_is_concise(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
@@ -3954,6 +4001,10 @@ class TestSelectProjectServersToPersist:
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        help_control = captured["layout"].container.children[0].content
+        rendered = "".join(text for _style, text in help_control.text())
+        assert "Esc abort" in rendered
+        assert "Esc cancel" not in rendered
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_ctrl_c_returns_interrupted(

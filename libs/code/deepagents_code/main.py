@@ -65,7 +65,8 @@ class _ProjectMcpTrustPromptOutcome(Enum):
     """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
 
     CANCELLED = "cancelled"
-    """The user backed out of a nested prompt; the caller aborts the launch."""
+    """The user backed out of the trust prompt (Esc in the action or remember
+    picker, or blank/EOF in the text fallback); the caller aborts the launch."""
 
 
 _PROJECT_MCP_PICKER_VISIBLE_ROWS = 8
@@ -2938,7 +2939,7 @@ def _run_project_mcp_server_checkbox_picker(
 
     Returns:
         Selected server names. Empty means the user confirmed no selections;
-        `CANCELLED` means the user pressed Esc to abort the launch;
+        `CANCELLED` means the user backed out (Esc or Ctrl+D) to abort the launch;
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """

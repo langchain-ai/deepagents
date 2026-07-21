@@ -69,14 +69,14 @@ class TestCollectBuiltInTools:
             assert "\n" not in tool.description
 
     def test_respects_filesystem_allowlist(self) -> None:
-        """The catalog post-filter narrows the listing to the allowlist.
+        """The catalog listing is narrowed to an explicit allowlist.
 
-        Scope: this validates `collect_built_in_tools`'s own post-filter (the
-        `/tools` display contract), NOT the runtime `FilesystemMiddleware`
-        enforcement. `FilesystemMiddleware` leaves all filesystem tools bound to
-        the node and only hides them at model-call time, so this list would look
-        the same even without the middleware — the agent-level enforcement is
-        covered in `test_agent.py`.
+        Scope: this validates the `/tools` display contract for
+        `collect_built_in_tools`, NOT runtime `FilesystemMiddleware` enforcement
+        (covered in `test_agent.py`). The narrowing is produced by the SDK
+        middleware, which omits disallowed tools from the node entirely; the
+        `collect_built_in_tools` post-filter is a defensive backstop over the
+        same result. Either way the listing must exclude the disallowed names.
         """
         names = {
             tool.name for tool in collect_built_in_tools(fs_tools=["ls", "read_file"])

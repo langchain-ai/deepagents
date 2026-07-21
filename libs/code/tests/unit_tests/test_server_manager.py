@@ -115,6 +115,26 @@ class TestServerConfigRoundTrip:
             ):
                 ServerConfig.from_env()
 
+    def test_from_env_rejects_unknown_allow_fs_tools_name(self) -> None:
+        """A well-shaped list with an unrecognized tool name fails closed.
+
+        The parent CLI (`_parse_allow_fs_tools_flag`) already rejects unknown
+        names, but the server subprocess re-validates independently: a tampered
+        value like `["read_file", "evil_tool"]` is a non-empty list of strings
+        (so it passes the shape guard) yet must still raise here rather than be
+        cast to `list[FsToolName]` and have the bogus name silently dropped
+        downstream. This keeps the `cast` in `_read_env_allow_fs_tools` honest.
+        """
+        with (
+            patch.dict(
+                os.environ,
+                {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": '["read_file", "evil_tool"]'},
+                clear=True,
+            ),
+            pytest.raises(ValueError, match="unknown filesystem tool name"),
+        ):
+            ServerConfig.from_env()
+
     def test_trust_project_mcp_none_round_trips(self) -> None:
         """None trust_project_mcp should survive a round trip."""
         original = ServerConfig(trust_project_mcp=None)

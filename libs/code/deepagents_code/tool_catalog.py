@@ -211,12 +211,13 @@ def collect_built_in_tools(
             appears when the default agent would bind it. Callers should pass
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
             the list matches the tools the agent actually binds.
-        fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent for
-            construction parity and then applied as a post-filter below.
-            `FilesystemMiddleware` binds *all* filesystem tools to the node and
-            only hides the disallowed ones from the model at call time, so
-            forwarding alone leaves them in the enumeration; the post-filter is
-            what makes the listing match the configured session.
+        fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent so
+            it is built exactly like the runtime session, then applied as a
+            defensive post-filter below. The SDK's `FilesystemMiddleware` omits
+            disallowed tools from the node entirely, so forwarding alone already
+            narrows the enumeration; the post-filter is a backstop that keeps
+            the listing correct if that ever stops holding (see the comment on
+            the filter below).
 
     Returns:
         Built-in tools in bind order.
@@ -248,13 +249,16 @@ def collect_built_in_tools(
     if tools is None:
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
-    # Load-bearing, not redundant with the `fs_tools=fs_tools` forwarding above:
-    # `FilesystemMiddleware` registers all filesystem tools on the node and only
-    # hides the disallowed ones from the model at call time (it does not unbind
-    # them), so `collect_tools_from_agent` returns every filesystem tool
-    # regardless of the allowlist. This filter is the only thing that makes the
-    # `/tools` / `dcode tools list` output reflect an explicit allowlist. Do not
-    # remove it. (`"all"` and `None` intentionally skip filtering.)
+    # Defensive backstop, normally a no-op: the SDK's `FilesystemMiddleware`
+    # omits disallowed filesystem tools from the node entirely (its own source
+    # comment: "Excluded tools are omitted here entirely, not just hidden from
+    # the model's schema"), so `collect_tools_from_agent` already returns only
+    # the allowlisted filesystem tools. This filter is kept as belt-and-braces
+    # so `/tools` / `dcode tools list` still reflects an explicit allowlist if
+    # that SDK behavior changes, or if the by-name middleware replacement ever
+    # left a second, unrestricted `FilesystemMiddleware` bound. Since it only
+    # ever removes already-absent tools, it is safe to keep and safe to drop.
+    # (`"all"` and `None` intentionally skip filtering.)
     if isinstance(fs_tools, list):
         enabled = frozenset(fs_tools)
         return [

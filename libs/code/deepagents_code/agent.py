@@ -223,8 +223,9 @@ def _inject_fs_tools_into_subagents(
 
     Raises:
         ValueError: If a `CompiledSubAgent` (identified by a `"runnable"` key,
-            per the SDK's discriminator in `subagents._compile_subagent`) is
-            present. Such a spec is used as-is by the SDK and its `middleware`
+            matching the SDK's own `"runnable" in spec` discriminator in
+            `deepagents.middleware.subagents`) is present. Such a spec is used
+            as-is by the SDK and its `middleware`
             key is never read, so we cannot enforce the restriction on it. dcode
             adds only raw `SubAgent` dicts today, but the declared type admits
             compiled specs: fail loud rather than silently exposing an
@@ -2438,11 +2439,13 @@ def create_cli_agent(
             )
         )
         # Caller-supplied subagents never inherit the main agent's `middleware=`
-        # (the SDK only auto-inherits it into the *auto-created* `general-purpose`
-        # subagent, which dcode always supplies itself — see the general-purpose
-        # subagent assembly / `_gp_inheritable` in `deepagents.graph`). So the
-        # restriction must be injected into each subagent's own `middleware` list,
-        # or delegating via `task` could bypass `--allow-fs-tools`.
+        # (the SDK auto-inherits only into the *auto-created* `general-purpose`
+        # subagent, and even there only middleware whose `.name` overrides a
+        # default GP slot — see `_gp_inheritable` in `deepagents.graph`). dcode
+        # always supplies its own `general-purpose` spec, so that inheritance
+        # path never fires here. The restriction must therefore be injected into
+        # each subagent's own `middleware` list, or delegating via `task` could
+        # bypass `--allow-fs-tools`.
         _inject_fs_tools_into_subagents(
             custom_subagents,
             fs_tools=fs_tools,

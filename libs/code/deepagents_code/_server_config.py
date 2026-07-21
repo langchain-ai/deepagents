@@ -85,21 +85,42 @@ def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
     The empty list is rejected here too so the fail-closed guarantee is
     self-contained rather than relying on downstream behavior: a legitimate
     allowlist is always non-empty (it must include `"read_file"`), so `[]` can
-    only be tampering. Per-name validity and the `"read_file"` requirement
-    remain enforced downstream by `FilesystemMiddleware`.
+    only be tampering. Unknown tool names are rejected here as well — each is
+    validated against the SDK's `FsToolName` — so the returned list genuinely
+    satisfies its `list[FsToolName]` type instead of relying on
+    `FilesystemMiddleware` silently dropping unrecognized names (which would
+    make the `cast` below assert membership that was never checked). Importing
+    `deepagents` here is fine: this runs only in the server subprocess, which
+    already imports the SDK to build the agent (not the arg-parsing hot path
+    guarded in `main`). The `"read_file"` requirement itself stays enforced
+    downstream by `FilesystemMiddleware`, which raises when it is absent.
 
     Returns:
         `None` (absent), `"all"`, or a non-empty list of filesystem tool-name
-        strings.
+        strings, each a valid `FsToolName`.
 
     Raises:
         ValueError: If the variable parses to anything other than `None`,
-            `"all"`, or a non-empty list of strings.
+            `"all"`, or a non-empty list of strings, or if any list element is
+            not a recognized filesystem tool name.
     """
     raw = _read_env_json("ALLOW_FS_TOOLS")
     if raw is None or raw == "all":
         return raw
     if isinstance(raw, list) and raw and all(isinstance(name, str) for name in raw):
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        valid_names = frozenset(get_args(FsToolName))
+        unknown = [name for name in raw if name not in valid_names]
+        if unknown:
+            msg = (
+                f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: unknown "
+                f"filesystem tool name(s) {unknown!r}; valid names are "
+                f"{sorted(valid_names)}."
+            )
+            raise ValueError(msg)
         return cast("list[FsToolName]", raw)
     msg = (
         f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: {raw!r}; expected "

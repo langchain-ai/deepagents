@@ -749,7 +749,7 @@ def _parse_allow_fs_tools_flag(
             "non-empty tool name.\n"
         )
         sys.exit(2)
-    if any(name.lower() == "all" for name in names):
+    if "all" in names:  # `names` are already lower-cased above.
         sys.stderr.write(
             "Error: --allow-fs-tools 'all' cannot be combined with other tool "
             "names; pass 'all' on its own.\n"

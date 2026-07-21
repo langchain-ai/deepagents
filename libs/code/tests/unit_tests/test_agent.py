@@ -4116,6 +4116,67 @@ class TestCreateCliAgentFsToolsWiring:
                 in read_file.description
             )
 
+    def test_explicit_list_narrows_effective_tools_main_and_subagent(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit allowlist narrows the *effective* filesystem tool set.
+
+        The sibling wiring tests mock `create_deep_agent` and assert only the
+        `tools=` kwarg dcode forwards. This one reads the `FilesystemMiddleware`
+        instances dcode actually constructs — on the main agent and on the
+        injected `general-purpose` subagent — and asserts their model-visible
+        `.tools` contain exactly the allowlist and none of the disallowed names.
+        `.tools` is public and already omits disallowed tools, so this pins the
+        end-to-end restriction contract rather than just the constructor input.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        main_filesystem = next(
+            m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
+        )
+        general_purpose = next(
+            s for s in kwargs["subagents"] if s["name"] == "general-purpose"
+        )
+        subagent_filesystem = next(
+            m
+            for m in general_purpose["middleware"]
+            if isinstance(m, FilesystemMiddleware)
+        )
+
+        disallowed = {"write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        for filesystem in (main_filesystem, subagent_filesystem):
+            names = {tool.name for tool in filesystem.tools}
+            assert names == {"ls", "read_file"}
+            assert not (disallowed & names)
+
     def test_explicit_list_restricts_general_purpose_subagent(
         self, tmp_path: Path
     ) -> None:

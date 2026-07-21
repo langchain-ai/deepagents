@@ -3,7 +3,7 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -755,7 +755,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
 
 
 def _merge_fs_interrupt_on(
-    fs_interrupt_on: dict[str, bool | InterruptOnConfig],
+    fs_interrupt_on: Mapping[str, bool | InterruptOnConfig],
     user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
 ) -> dict[str, bool | InterruptOnConfig] | None:
     """Merge generated filesystem approval rules with explicit tool rules."""
@@ -786,7 +786,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         backend: Backend for file operations and execution.
         subagents: Fully specified declarative or compiled subagent configs.
             Declarative specs must provide `model` and `tools`; use
-            `BuiltInSubAgentMiddleware` for Deep Agents default construction.
+            `DefaultSubAgentMiddleware` for Deep Agents default construction.
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
@@ -858,6 +858,113 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
         self.tools = [task_tool]
+
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before invoking subagents."""
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+        task_tool = _build_task_tool(
+            self._subagents,
+            task_description=self._task_description,
+            private_state_keys=value,
+            state_schema=self._state_schema,
+        )
+        self.tools = [task_tool]
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        """Update the system message to include instructions on using subagents."""
+        if self.system_prompt is not None:
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            return handler(request.override(system_message=new_system_message))
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
+        """(async) Update the system message to include instructions on using subagents."""
+        if self.system_prompt is not None:
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            return await handler(request.override(system_message=new_system_message))
+        return await handler(request)
+
+
+class DefaultSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
+    """Deep Agents' default subagent construction policy.
+
+    This subclass normalizes declarative specs and synthesizes the implicit
+    general-purpose subagent from the parent agent's configuration. The public
+    ``SubAgentMiddleware`` remains a dispatcher for fully specified specs.
+    """
+
+    @property
+    def name(self) -> str:
+        """Share the public middleware replacement slot."""
+        return SubAgentMiddleware.__name__
+
+    def __init__(
+        self,
+        *,
+        backend: BackendProtocol | BackendFactory,
+        subagents: Sequence[SubAgent | CompiledSubAgent],
+        model: BaseChatModel,
+        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+        permissions: list[FilesystemPermission] | None,
+        interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+        profile: HarnessProfile,
+        skills: list[str] | None,
+        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+        system_prompt: str | None = TASK_SYSTEM_PROMPT,
+        task_description: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
+        state_schema: type | None = None,
+    ) -> None:
+        """Normalize parent-derived subagents before initializing the dispatcher."""
+        self._profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+        self._profile_matched_names: set[str] = set()
+        normalized_subagents = [
+            spec
+            if "runnable" in spec
+            else self._normalize_subagent(
+                spec,
+                backend=backend,
+                default_model=model,
+                default_tools=tools,
+                default_permissions=permissions,
+                default_interrupt_on=interrupt_on,
+            )
+            for spec in subagents
+        ]
+        general_purpose = self._build_general_purpose_subagent(
+            normalized_subagents,
+            backend=backend,
+            model=model,
+            tools=tools,
+            permissions=permissions,
+            interrupt_on=interrupt_on,
+            profile=profile,
+            skills=skills,
+            inherited_middleware=inherited_middleware,
+        )
+        if general_purpose is not None:
+            normalized_subagents.insert(0, general_purpose)
+        super().__init__(
+            backend=backend,
+            subagents=normalized_subagents,
+            system_prompt=system_prompt,
+            task_description=task_description,
+            private_state_keys=private_state_keys,
+            state_schema=state_schema,
+        )
 
     def _normalize_subagent(
         self,
@@ -974,9 +1081,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> SubAgent | None:
         """Build the implicit general-purpose subagent when the profile enables it."""
         general_purpose_profile = profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-        if general_purpose_profile.enabled is False or any(
-            spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in declared_subagents
-        ):
+        if general_purpose_profile.enabled is False or any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in declared_subagents):
             return None
 
         middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -1044,118 +1149,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Return root-profile exclusions matched while building the GP subagent."""
         return self._profile_matched_classes, self._profile_matched_names
 
-    @property
-    def private_state_keys(self) -> frozenset[str]:
-        """State keys stripped from parent state before invoking subagents."""
-        return self._private_state_keys
-
-    @private_state_keys.setter
-    def private_state_keys(self, value: frozenset[str]) -> None:
-        self._private_state_keys = value
-        task_tool = _build_task_tool(
-            self._subagents,
-            task_description=self._task_description,
-            private_state_keys=value,
-            state_schema=self._state_schema,
-        )
-        self.tools = [task_tool]
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        """Update the system message to include instructions on using subagents."""
-        if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return handler(request.override(system_message=new_system_message))
-        return handler(request)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
-        """(async) Update the system message to include instructions on using subagents."""
-        if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return await handler(request.override(system_message=new_system_message))
-        return await handler(request)
-
-
-class BuiltInSubAgentMiddleware(SubAgentMiddleware[ContextT, ResponseT]):
-    """Deep Agents' default subagent construction policy.
-
-    This subclass normalizes declarative specs and synthesizes the implicit
-    general-purpose subagent from the parent agent's configuration. The public
-    ``SubAgentMiddleware`` remains a dispatcher for fully specified specs.
-    """
-
-    @property
-    def name(self) -> str:
-        """Share the public middleware replacement slot."""
-        return SubAgentMiddleware.__name__
-
-    def __init__(
-        self,
-        *,
-        backend: BackendProtocol | BackendFactory,
-        subagents: Sequence[SubAgent | CompiledSubAgent],
-        model: BaseChatModel,
-        tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-        permissions: list[FilesystemPermission] | None,
-        interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-        profile: HarnessProfile,
-        skills: list[str] | None,
-        inherited_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
-        system_prompt: str | None = TASK_SYSTEM_PROMPT,
-        task_description: str | None = None,
-        private_state_keys: frozenset[str] | None = None,
-        state_schema: type | None = None,
-    ) -> None:
-        """Normalize parent-derived subagents before initializing the dispatcher."""
-        self._profile_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-        self._profile_matched_names: set[str] = set()
-        normalized_subagents = [
-            spec
-            if "runnable" in spec
-            else self._normalize_subagent(
-                spec,
-                backend=backend,
-                default_model=model,
-                default_tools=tools,
-                default_permissions=permissions,
-                default_interrupt_on=interrupt_on,
-            )
-            for spec in subagents
-        ]
-        general_purpose = self._build_general_purpose_subagent(
-            normalized_subagents,
-            backend=backend,
-            model=model,
-            tools=tools,
-            permissions=permissions,
-            interrupt_on=interrupt_on,
-            profile=profile,
-            skills=skills,
-            inherited_middleware=inherited_middleware,
-        )
-        if general_purpose is not None:
-            normalized_subagents.insert(0, general_purpose)
-        super().__init__(
-            backend=backend,
-            subagents=normalized_subagents,
-            system_prompt=system_prompt,
-            task_description=task_description,
-            private_state_keys=private_state_keys,
-            state_schema=state_schema,
-        )
-
 
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
-    (BuiltInSubAgentMiddleware, (SubAgentMiddleware.__name__,)),
+    (DefaultSubAgentMiddleware, (SubAgentMiddleware.__name__,)),
 )
 """Scaffolding middleware that core deep agent features depend on.
 

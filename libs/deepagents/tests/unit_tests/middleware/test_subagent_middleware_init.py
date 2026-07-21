@@ -20,7 +20,7 @@ from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     TASK_SYSTEM_PROMPT,
-    BuiltInSubAgentMiddleware,
+    DefaultSubAgentMiddleware,
     SubAgentMiddleware,
     _build_task_tool,
     create_sub_agent,
@@ -101,7 +101,7 @@ class TestSubagentMiddlewareInit:
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
 
-    def test_public_middleware_replaces_built_in_subagent_middleware(self) -> None:
+    def test_public_middleware_replaces_default_subagent_middleware(self) -> None:
         """The public dispatcher retains the built-in middleware replacement slot."""
         backend = StateBackend()
         custom = SubAgentMiddleware(
@@ -115,7 +115,7 @@ class TestSubagentMiddlewareInit:
             ],
         )
         model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
-        built_in = BuiltInSubAgentMiddleware(
+        built_in = DefaultSubAgentMiddleware(
             backend=backend,
             subagents=[],
             model=model,

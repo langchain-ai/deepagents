@@ -9,4 +9,6 @@ When using the write_todos tool:
 5. For simple 1-step tasks, just do them directly
 {todo_guidance}
 
+There is no `read_todos` tool. After any `write_todos` call the current todo list stays visible to you in context — never call `read_todos` or any other read-side todo tool; simply re-read the most recent todo list already present in the conversation.
+
 The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.

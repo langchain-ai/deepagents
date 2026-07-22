@@ -15149,7 +15149,10 @@ class TestToolsSlashCommand:
 
         app = DeepAgentsApp(agent=MagicMock())
         app._assistant_id = "agent"
-        app._server_kwargs = {"enable_interpreter": False}
+        app._server_kwargs = {
+            "enable_interpreter": False,
+            "allow_fs_tools": ["ls", "read_file"],
+        }
         app._mcp_server_info = [
             MCPServerInfo(
                 name="docs",
@@ -15167,7 +15170,11 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
+        collect.assert_called_once_with(
+            assistant_id="agent",
+            enable_interpreter=False,
+            fs_tools=["ls", "read_file"],
+        )
         assert mount.await_count == 2
         first, second = (c.args[0] for c in mount.await_args_list)
         assert isinstance(first, UserMessage)
@@ -15417,7 +15424,9 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=True)
+        collect.assert_called_once_with(
+            assistant_id="agent", enable_interpreter=True, fs_tools=None
+        )
         assert mount.await_count == 2
         assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
 

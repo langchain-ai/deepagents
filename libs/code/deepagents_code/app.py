@@ -9475,6 +9475,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
@@ -257,7 +258,6 @@ class TestToolDescriptionOverrideWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
@@ -545,7 +545,6 @@ class TestSystemPromptAssembly:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -727,7 +726,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -759,7 +757,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -792,7 +789,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -1637,14 +1633,12 @@ class TestStringFormExcludedMiddleware:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_entry_matching_only_gp_subagent_stack_is_accepted(self) -> None:
-        """An entry matching only the GP subagent stack (not the main stack) is accepted.
+    def test_excluding_non_default_todo_middleware_raises_coverage_error(self) -> None:
+        """Excluding `TodoListMiddleware` now raises, since it is no longer a default.
 
-        Coverage is aggregated across all stacks the profile applies to, so a
-        profile-level exclusion only has to match somewhere — not in every
-        stack. `TodoListMiddleware` is added unconditionally to the GP
-        subagent stack; excluding it should work even though the main agent
-        also has one (both count as matches).
+        Todos are opt-in: `TodoListMiddleware` is not added to any default stack,
+        so a profile excluding it matches nothing across the main and GP subagent
+        stacks and trips the coverage guard — a typo/stale-profile signal.
         """
         original = dict(_HARNESS_PROFILES)
         try:
@@ -1653,17 +1647,11 @@ class TestStringFormExcludedMiddleware:
                 HarnessProfile(excluded_middleware=frozenset({"TodoListMiddleware"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-            fake_agent = MagicMock()
-            fake_agent.with_config.return_value = "compiled-agent"
-
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
-                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+                pytest.raises(ValueError, match="matched no middleware"),
             ):
                 create_deep_agent(model="strexcprov:some-model")
-
-            mw_stack = mock_create.call_args.kwargs["middleware"]
-            assert not any(type(m).__name__ == "TodoListMiddleware" for m in mw_stack)
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -2648,6 +2636,79 @@ class TestSubagentMiddlewareIsolation:
         _, sub_mw = self._setup([custom], enable_gp=True)
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(m is custom for m in gp_spec["middleware"])
+
+    # ── TodoListMiddleware is opt-in (no longer a default) ─────────────────────
+
+    def test_default_has_no_todos_in_main_or_gp(self) -> None:
+        """With no opt-in, neither the main agent nor the GP subagent has todos."""
+        main_stack, sub_mw = self._setup([], enable_gp=True)
+        assert not any(isinstance(m, TodoListMiddleware) for m in main_stack)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_main_opt_in_todos_mirrors_to_gp(self) -> None:
+        """A caller-supplied TodoListMiddleware lands on the main agent and the GP subagent."""
+        custom = TodoListMiddleware()
+        main_stack, sub_mw = self._setup([custom], enable_gp=True)
+        main_todos = [m for m in main_stack if isinstance(m, TodoListMiddleware)]
+        assert len(main_todos) == 1
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        gp_todos = [m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]
+        assert len(gp_todos) == 1
+        # Mirrored by reference so any caller configuration carries over.
+        assert gp_todos[0] is custom
+
+    def test_declarative_subagent_todos_opt_in(self) -> None:
+        """A declarative subagent gets todos when its own spec includes the middleware."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [TodoListMiddleware()],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert len([m for m in helper_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+
+    def test_declarative_subagent_does_not_inherit_main_opt_in(self) -> None:
+        """Main-agent opt-in mirrors to the GP subagent only, not to declarative subagents."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([TodoListMiddleware()], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, TodoListMiddleware) for m in helper_spec["middleware"])
+
+    def test_profile_extra_middleware_todos_on_main_and_gp(self) -> None:
+        """A profile that supplies todos via `extra_middleware` gets it on both stacks.
+
+        This is the mechanism the GLM-5.2 and Codex profiles rely on to keep
+        `write_todos` after the SDK default was removed.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "todoprof",
+                HarnessProfile(extra_middleware=lambda: [TodoListMiddleware()]),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="todoprof:some-model")
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            assert len([m for m in main_stack if isinstance(m, TodoListMiddleware)]) == 1
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+            assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
     def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
         """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""

@@ -398,10 +398,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     By default, this agent has access to the following tools:
 
-    - `write_todos`: manage a todo list
     - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
     - `execute`: run shell commands
     - `task`: call subagents
+
+    Todo-list support (the `write_todos` tool) is opt-in: pass
+    [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
+    via `middleware=` to enable it. When enabled on the main agent it is also
+    mirrored onto the automatic general-purpose subagent.
 
     The `execute` tool allows running shell commands if the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
@@ -440,7 +444,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         tools: Additional tools the agent should have access to.
 
             These are merged with the built-in tool suite listed above
-            (`write_todos`, filesystem tools, `execute`, and `task`).
+            (filesystem tools, `execute`, and `task`).
 
             Passing tools here is additive — it never removes a built-in.
             To drop a built-in tool, register a
@@ -466,11 +470,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware. The full ordering is:
+            but before the tail middleware.
+
+            Todo-list support is opt-in here: passing a
+            [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
+            instance enables the `write_todos` tool on the main agent and
+            mirrors it onto the automatic general-purpose subagent.
+
+            The full ordering is:
 
             Base stack:
 
-            - [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
             - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
             - [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
             - [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]
@@ -761,7 +771,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
@@ -847,7 +856,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
@@ -859,6 +867,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
+        # Core names captured before the tail so an inherited main-agent
+        # middleware (e.g. an opt-in TodoListMiddleware) splices in after the
+        # real tools, ahead of the profile/prompt-caching tail.
+        _gp_core_names = {m.name for m in gp_middleware}
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
@@ -870,10 +882,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
-        # Inherit only middleware that overrides a default GP slot (including excluded
+        # Inherit middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
-        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
+        # TodoListMiddleware is a special case: it is no longer a GP default, but a
+        # caller-supplied instance on the main agent is mirrored here so the todo
+        # list is shared between the main agent and the general-purpose subagent.
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or isinstance(m, TodoListMiddleware)]
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, core_names=_gp_core_names)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
@@ -912,9 +927,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.append(

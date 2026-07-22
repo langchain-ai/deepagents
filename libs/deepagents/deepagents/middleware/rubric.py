@@ -674,11 +674,13 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         # `Exception`, so they propagate up the call stack and preserve
         # normal Python interrupt / asyncio cancellation semantics.
         logger.exception("RubricMiddleware grader failed")
+        status_code = getattr(exc, "status_code", None)
+        status_suffix = f" (HTTP {status_code})" if isinstance(status_code, int) and not isinstance(status_code, bool) else ""
         evaluation: RubricEvaluation = {
             "grading_run_id": grading_run_id,
             "iteration": iteration,
             "result": "grader_error",
-            "explanation": f"Grader raised {type(exc).__name__}: {exc}",
+            "explanation": f"Grader raised {type(exc).__name__}{status_suffix}: {exc}",
             "criteria": [],
         }
         self._emit(runtime, "rubric_evaluation_end", grading_run_id, iteration, evaluation)

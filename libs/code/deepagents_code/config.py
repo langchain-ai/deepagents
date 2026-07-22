@@ -509,20 +509,29 @@ class _LangSmithProfileConfig(Protocol):
     """OAuth refresh token from the active LangSmith profile."""
 
 
-def _quiet_sdk_tracing_logging() -> None:
-    """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
+_QUIET_SDK_LOGGER_NAMES = (
+    "deepagents.profiles.harness.harness_profiles",
+    "langchain",
+    "langsmith",
+)
 
-    These SDK loggers emit ingestion/auth errors (e.g. repeated 401s) on their
-    own loggers. With no handler attached they reach Python's last-resort stderr
-    handler and bleed onto the alternate-screen TUI. Route them to the debug log
-    when `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they
-    stay off the terminal.
+
+def _quiet_sdk_logging() -> None:
+    """Keep non-actionable SDK diagnostics off the terminal.
+
+    The harness-profile resolver and tracing SDKs emit diagnostics on their own
+    logger hierarchies. With no handler attached, warnings reach Python's
+    last-resort stderr handler and can bleed into command output or the
+    alternate-screen TUI. Route them to the debug log when
+    `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
+    off the terminal. Other Deep Agents loggers remain untouched so actionable
+    runtime warnings are still visible.
     """
     from deepagents_code._debug import configure_debug_logging
     from deepagents_code._env_vars import DEBUG, is_env_truthy
 
     debug_enabled = is_env_truthy(DEBUG)
-    for name in ("langsmith", "langchain"):
+    for name in _QUIET_SDK_LOGGER_NAMES:
         sdk_logger = logging.getLogger(name)
         if debug_enabled:
             configure_debug_logging(sdk_logger)
@@ -674,7 +683,7 @@ def _disable_orphaned_tracing() -> None:
     `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
     `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
     API key, so those explicitly configured targets are trusted and left alone.
-    The SDK loggers are quieted separately by `_quiet_sdk_tracing_logging`, so
+    The SDK loggers are quieted separately by `_quiet_sdk_logging`, so
     any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
@@ -773,7 +782,7 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     startup-perf budget). So a stored-but-invalid key (typo'd, revoked, or for
     the wrong workspace) still force-enables tracing, and its traces are then
     silently dropped at ingest with only SDK-internal 401s — which
-    `_quiet_sdk_tracing_logging` routes away from the TUI. `_disable_orphaned_tracing`
+    `_quiet_sdk_logging` routes away from the TUI. `_disable_orphaned_tracing`
     and `consume_orphaned_tracing_disabled_notice` guard only the *absent*-key
     case, not the invalid-key case. If traces never appear, the key is the first
     thing to re-check via `/auth`.
@@ -926,9 +935,9 @@ def _ensure_bootstrap() -> None:
 
             configure_debug_logging(logging.getLogger("deepagents_code"))
 
-            # Keep LangSmith/LangChain SDK logging off the TUI (route to the
-            # debug log when enabled, else swallow via NullHandler).
-            _quiet_sdk_tracing_logging()
+            # Keep dependency logging out of command output and the TUI. Route it
+            # to the debug log when enabled, otherwise swallow it via NullHandler.
+            _quiet_sdk_logging()
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.

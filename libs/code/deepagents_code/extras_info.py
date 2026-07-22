@@ -234,7 +234,7 @@ class VersionReport:
     @property
     def effective_sdk_version(self) -> str | None:
         """SDK version diagnostics should present as effective."""
-        return _effective_sdk_version(self.sdk, self.sdk_requirement)
+        return _effective_sdk_version(self.cli, self.sdk, self.sdk_requirement)
 
     @property
     def sdk_requirement_mismatch(self) -> bool:
@@ -466,21 +466,61 @@ def _parse_version(value: str | None) -> Version | None:
         return None
 
 
+def _resolve_source_path(path: str | None) -> Path | None:
+    """Resolve an editable source path for workspace-shape comparisons.
+
+    Returns:
+        The resolved path, or `None` when the path is absent or unusable.
+    """
+    if path is None:
+        return None
+    try:
+        return Path(path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        logger.debug("Could not resolve editable source path %r", path, exc_info=True)
+        return None
+
+
+def _editable_sdk_is_cli_workspace_sibling(
+    cli: DistributionVersion, sdk: DistributionVersion
+) -> bool:
+    """Whether editable SDK and dcode installs are sibling monorepo packages.
+
+    Returns:
+        `True` for the known `<repo>/libs/code` and `<repo>/libs/deepagents`
+        checkout shape.
+    """
+    if not cli.editable or not sdk.editable:
+        return False
+    cli_path = _resolve_source_path(cli.source_path)
+    sdk_path = _resolve_source_path(sdk.source_path)
+    if cli_path is None or sdk_path is None:
+        return False
+    return (
+        cli_path.name == "code"
+        and sdk_path.name == "deepagents"
+        and cli_path.parent == sdk_path.parent
+        and cli_path.parent.name == "libs"
+    )
+
+
 def _uses_exact_requirement_as_effective_version(
-    sdk: DistributionVersion, requirement: Requirement | None
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> bool:
     """Whether an exact `deepagents-code` pin should override editable SDK markers.
 
-    Main does not track every SDK alpha release in `libs/deepagents`, so an
-    editable SDK checkout can still carry the previous stable marker while
-    `deepagents-code` intentionally declares a newer exact alpha requirement. In
-    that case the exact requirement is the better client SDK generation for
-    diagnostics. Ranged requirements are never inferred this way.
+    Main does not track every SDK alpha release in `libs/deepagents`, so the
+    sibling SDK package in the same monorepo checkout can carry the previous
+    stable marker while `deepagents-code` intentionally declares a newer exact
+    alpha requirement. In that case the exact requirement is the better client
+    SDK generation for diagnostics. Ranged requirements and unrelated editable
+    SDK checkouts are never inferred this way.
 
     Returns:
-        `True` when the exact pin is newer than every known editable SDK marker.
+        `True` when the exact pin is newer than every known editable SDK marker
+        and the SDK checkout is the monorepo sibling of the dcode checkout.
     """
-    if not sdk.editable:
+    if not _editable_sdk_is_cli_workspace_sibling(cli, sdk):
         return False
     pinned = _parse_version(_exact_pin(requirement))
     if pinned is None:
@@ -494,23 +534,23 @@ def _uses_exact_requirement_as_effective_version(
 
 
 def _effective_sdk_version(
-    sdk: DistributionVersion, requirement: Requirement | None
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> str | None:
     """Return the SDK version diagnostics should treat as effective."""
     pinned = _exact_pin(requirement)
-    if _uses_exact_requirement_as_effective_version(sdk, requirement):
+    if _uses_exact_requirement_as_effective_version(cli, sdk, requirement):
         return pinned
     return sdk.primary_version
 
 
 def _sdk_requirement_comparison_version(
-    sdk: DistributionVersion, requirement: Requirement | None
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> str | None:
     """Return the SDK version to compare against the declared requirement."""
     if sdk.status != "resolved":
         return None
     if sdk.editable:
-        return _effective_sdk_version(sdk, requirement)
+        return _effective_sdk_version(cli, sdk, requirement)
     return sdk.metadata_version
 
 
@@ -555,7 +595,7 @@ def collect_version_report() -> VersionReport:
     sdk = collect_sdk_version_info()
     requirement = sdk_requirement_from_cli()
     satisfied = _requirement_satisfied(
-        requirement, _sdk_requirement_comparison_version(sdk, requirement)
+        requirement, _sdk_requirement_comparison_version(cli, sdk, requirement)
     )
     return VersionReport(
         cli=cli,
@@ -643,7 +683,9 @@ def format_sdk_version_annotation(report: VersionReport) -> str:
         parts.append(f"installed metadata: {info.metadata_version}")
     if (
         report.sdk_requirement is not None
-        and _uses_exact_requirement_as_effective_version(info, report.sdk_requirement)
+        and _uses_exact_requirement_as_effective_version(
+            report.cli, info, report.sdk_requirement
+        )
     ):
         required = _format_requirement_display(report.sdk_requirement)
         parts.append(f"required by deepagents-code: {required}")
@@ -668,11 +710,12 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
         `(version, status)`. `version` is the resolved version string when
             `status` is `"resolved"`, otherwise `None`.
     """
-    info = collect_sdk_version_info()
-    if info.status != "resolved":
-        return None, info.status
+    cli = collect_cli_version_info()
+    sdk = collect_sdk_version_info()
+    if sdk.status != "resolved":
+        return None, sdk.status
     requirement = sdk_requirement_from_cli()
-    return _effective_sdk_version(info, requirement), "resolved"
+    return _effective_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

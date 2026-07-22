@@ -139,10 +139,20 @@ class TestDiagnosticsVersionReport:
 
         report = VersionReport(
             cli=DistributionVersion(
-                "deepagents-code", __version__, __version__, True, "~/src", "resolved"
+                "deepagents-code",
+                __version__,
+                __version__,
+                True,
+                "/repo/libs/code",
+                "resolved",
             ),
             sdk=DistributionVersion(
-                "deepagents", "0.6.12", "0.6.12", True, "~/src/sdk", "resolved"
+                "deepagents",
+                "0.6.12",
+                "0.6.12",
+                True,
+                "/repo/libs/deepagents",
+                "resolved",
             ),
             sdk_requirement=Requirement("deepagents==0.7.0a8"),
             sdk_requirement_satisfied=True,

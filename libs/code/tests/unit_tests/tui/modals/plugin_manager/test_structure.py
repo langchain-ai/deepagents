@@ -1306,7 +1306,7 @@ async def test_details_navigation_starts_at_matching_edge(
         assert options.get_option_at_index(highlighted).id == expected_option_id
 
 
-async def test_installed_details_divider_refits_on_resize() -> None:
+async def test_installed_details_divider_refits_without_resetting_selection() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = PluginManagerScreen()
@@ -1329,12 +1329,17 @@ async def test_installed_details_divider_refits_on_resize() -> None:
         box = get_glyphs().box_horizontal
         wide_width = str(options.get_option_at_index(2).prompt).count(box)
         assert wide_width > 0
+        selected_option_id = "details-back"
+        options.highlighted = options.get_option_index(selected_option_id)
 
         await pilot.resize_terminal(60, 40)
         await pilot.pause()
 
         narrow_width = str(options.get_option_at_index(2).prompt).count(box)
         assert 0 < narrow_width < wide_width
+        highlighted = options.highlighted
+        assert highlighted is not None
+        assert options.get_option_at_index(highlighted).id == selected_option_id
 
 
 async def test_marketplace_divider_refits_on_resize() -> None:

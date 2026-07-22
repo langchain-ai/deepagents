@@ -13,7 +13,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
-from textual.widgets.option_list import Option
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from deepagents_code.tui.widgets.loading import Spinner
 
@@ -441,12 +441,24 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             search_input.display = False
             source_input.display = False
             options.display = True
+            highlighted = options.highlighted
+            highlighted_id = (
+                None
+                if highlighted is None
+                else options.get_option_at_index(highlighted).id
+            )
             options.clear_options()
             detail_options = self._active_details_options()
             for option in detail_options:
                 options.add_option(option)
             if options.option_count:
-                options.highlighted = self._nearest_enabled_index(options, 0)
+                candidate = 0
+                if highlighted_id is not None:
+                    try:
+                        candidate = options.get_option_index(highlighted_id)
+                    except OptionDoesNotExist:
+                        candidate = 0
+                options.highlighted = self._nearest_enabled_index(options, candidate)
             options.focus()
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "

@@ -1165,6 +1165,73 @@ class TestCreateGoalCriteriaAgent:
             for item in kwargs["middleware"]
         )
 
+    def test_parent_allowlist_restricts_repository_tools(self) -> None:
+        """Nested criteria generation cannot bypass the parent fs allowlist."""
+        backend = MagicMock()
+        filesystem = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=filesystem,
+            ) as filesystem_type,
+            patch("langchain.agents.create_agent", return_value=graph),
+        ):
+            _create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=backend,
+                repository_root="/workspace",
+                context_tools=[],
+                auto_mode_enabled=True,
+                fs_tools=["read_file"],
+            )
+
+        filesystem_type.assert_called_once_with(
+            backend=backend,
+            tools=["read_file"],
+            grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
+            tool_token_limit_before_evict=None,
+        )
+
+    def test_parent_allowlist_intersects_with_repository_tools(self) -> None:
+        """The criteria agent keeps only allowed *repository* tools.
+
+        The repository tool set is `["ls", "read_file", "glob", "grep"]`. Given
+        an allowlist that overlaps it partially and also names a non-repository
+        tool (`write_file`), the result must be the intersection in repository
+        order — multiple repository names survive, the disallowed repository
+        names (`glob`, `grep`) drop, and the non-repository name never appears.
+        """
+        backend = MagicMock()
+        filesystem = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=filesystem,
+            ) as filesystem_type,
+            patch("langchain.agents.create_agent", return_value=graph),
+        ):
+            _create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=backend,
+                repository_root="/workspace",
+                context_tools=[],
+                auto_mode_enabled=True,
+                fs_tools=["ls", "read_file", "write_file"],
+            )
+
+        filesystem_type.assert_called_once_with(
+            backend=backend,
+            tools=["ls", "read_file"],
+            grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
+            tool_token_limit_before_evict=None,
+        )
+
     @staticmethod
     def _async_hitl(*, auto_mode_enabled: bool = True) -> AsyncApprovalHITLMiddleware:
         from deepagents_code.agent import AsyncApprovalHITLMiddleware

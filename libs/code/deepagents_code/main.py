@@ -23,9 +23,10 @@ import traceback
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
+    from deepagents import FsToolName
     from rich.console import Console
 
     from deepagents_code.app import AppResult
@@ -696,6 +697,85 @@ def _parse_interpreter_tools_flag(
         )
         sys.exit(2)
     return names
+
+
+# Aliased from the dependency-free `_constants` module (see its docstring for
+# why the set is hardcoded, how the drift guard pins it, and why importing it
+# here keeps the arg-parsing hot path free of a `deepagents` import).
+from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
+
+
+def _parse_allow_fs_tools_flag(
+    raw: str | None,
+) -> "list[FsToolName] | None":
+    """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"all"`, or a
+            comma-separated list of filesystem tool names.
+
+    Returns:
+        `None` when the flag is absent *or* the value is `"all"` (both mean
+            "leave the SDK default filesystem middleware in place — all tools"),
+            or a list of trimmed, lower-cased tool names.
+
+            Tool names are matched case-insensitively
+            (like the `"all"` sentinel), so `READ_FILE` and `read_file`
+            are equivalent.
+
+            Calls `sys.exit(2)` when the value is empty, contains only blank
+            tokens, combines the `"all"` sentinel with other tool names,
+            includes an unknown tool name, or is an explicit list that
+            omits `"read_file"` — `FilesystemMiddleware` requires it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --allow-fs-tools requires a value: 'all', or a "
+            "comma-separated list of filesystem tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized == "all":
+        # `"all"` collapses to `None`: both mean "all filesystem tools". `None`
+        # leaves the SDK's own default `FilesystemMiddleware` untouched, which is
+        # strictly safer than reinstalling a hand-built unrestricted instance
+        # (that would have to re-derive descriptions/permissions and could drift
+        # from the SDK default). Only an explicit sub-list installs a
+        # replacement middleware.
+        return None
+    # Lower-case each token so tool names are case-insensitive, matching the
+    # `"all"` sentinel above. SDK `FsToolName` members are all lower-case.
+    names = [token.strip().lower() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if "all" in names:  # `names` are already lower-cased above.
+        sys.stderr.write(
+            "Error: --allow-fs-tools 'all' cannot be combined with other tool "
+            "names; pass 'all' on its own.\n"
+        )
+        sys.exit(2)
+    unknown = [name for name in names if name not in _FS_TOOL_NAMES]
+    if unknown:
+        sys.stderr.write(
+            f"Error: --allow-fs-tools has unknown tool name(s): "
+            f"{', '.join(unknown)}. Valid names: "
+            f"{', '.join(sorted(_FS_TOOL_NAMES))}.\n"
+        )
+        sys.exit(2)
+    if "read_file" not in names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must include 'read_file'; it is "
+            "required by FilesystemMiddleware.\n"
+        )
+        sys.exit(2)
+    return cast("list[FsToolName]", names)
 
 
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
@@ -1999,6 +2079,17 @@ def parse_args() -> argparse.Namespace:
         "list of tool names (which may include the 'safe' preset, e.g. "
         "'safe,task'). Default is 'safe' (read-only file tools).",
     )
+    parser.add_argument(
+        "--allow-fs-tools",
+        dest="allow_fs_tools",
+        metavar="LIST",
+        help="Allowlist of filesystem tools to expose to the agent: 'all', or "
+        "a comma-separated list of tool names (ls, read_file, write_file, "
+        "edit_file, delete, glob, grep, execute). 'read_file' must be "
+        "included in an explicit list. Note 'execute' is the shell tool: "
+        "omitting it from the list removes shell access even if shell is "
+        "otherwise enabled. Default is 'all'.",
+    )
 
     parser.add_argument(
         "--update",
@@ -2174,6 +2265,7 @@ async def run_textual_cli_async(
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: "list[FsToolName] | None" = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2236,6 +2328,10 @@ async def run_textual_cli_async(
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2315,6 +2411,7 @@ async def run_textual_cli_async(
         "enable_interpreter": enable_interpreter,
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
+        "allow_fs_tools": allow_fs_tools,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -2375,6 +2472,7 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    allow_fs_tools: "list[FsToolName] | None" = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2389,6 +2487,10 @@ async def _run_acp_cli_async(
         no_mcp: Disable all MCP tool loading.
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
 
     Returns:
         Exit code for ACP mode.
@@ -2484,6 +2586,7 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            fs_tools=allow_fs_tools,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -3424,6 +3527,9 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        allow_fs_tools = _parse_allow_fs_tools_flag(
+            getattr(args, "allow_fs_tools", None)
+        )
 
         if _show_bare_command_group_help(args):
             return
@@ -3570,6 +3676,7 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    allow_fs_tools=allow_fs_tools,
                 )
             )
             sys.exit(exit_code)
@@ -4418,6 +4525,7 @@ def cli_main() -> None:
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
+                            allow_fs_tools=allow_fs_tools,
                             max_turns=getattr(args, "max_turns", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
@@ -4572,6 +4680,7 @@ def cli_main() -> None:
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
+                        allow_fs_tools=allow_fs_tools,
                     )
                 )
                 return_code = result.return_code

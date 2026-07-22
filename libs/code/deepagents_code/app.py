@@ -9477,6 +9477,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
@@ -10611,12 +10612,6 @@ class DeepAgentsApp(App):
                     "Goal is paused. It remains saved, but it will not drive work or "
                     "grading until resumed."
                 )
-            lines.append(
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>"
-            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(

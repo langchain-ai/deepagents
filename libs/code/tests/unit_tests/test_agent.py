@@ -1730,6 +1730,11 @@ class TestCreateCliAgentInteractiveForwarding:
 
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
+        call_order: list[str] = []
+
+        def create_agent(**_kwargs: Any) -> Mock:
+            call_order.append("create_agent")
+            return mock_agent
 
         fake_model = _make_fake_chat_model()
         with (
@@ -1737,7 +1742,12 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+                "deepagents_code.agent._ensure_glm_5p2_profile_registered",
+                side_effect=lambda: call_order.append("register_profile"),
+                create=True,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent", side_effect=create_agent
             ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
@@ -1767,6 +1777,7 @@ class TestCreateCliAgentInteractiveForwarding:
         assert mock_create_deep_agent.call_args.kwargs["system_prompt"] == {
             "base": "mocked prompt"
         }
+        assert call_order == ["register_profile", "create_agent"]
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt is forwarded verbatim, ignoring interactive."""
@@ -3568,10 +3579,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
             subagent["name"]: subagent for subagent in kwargs["subagents"]
         }
 
-        # Implicit-model subagents (and the general-purpose fallback) get
-        # configurable-model and shell middlewares, with the configurable-model
-        # swap ordered before the shell gate so a runtime `/model` switch applies
-        # before tools are filtered.
         for name in ("researcher", "general-purpose"):
             middleware_types = [
                 type(mw) for mw in subagents_by_name[name]["middleware"]
@@ -3581,8 +3588,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
 
-        # The pinned subagent keeps shell restriction but is NOT given the
-        # configurable-model middleware, so its model stays fixed.
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
         pinned_middleware = pinned["middleware"]
@@ -4254,6 +4259,106 @@ class TestCreateCliAgentInterpreterWiring:
         assert rubrics[0].max_iterations == 5
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_glm_headless_uses_terminal_stall_guard_without_completion_agent(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from deepagents_code._glm_5p2_profile import _GlmTerminalStallRecovery
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fireworks:accounts/fireworks/models/glm-5p2",
+                assistant_id="test",
+                interactive=False,
+                auto_approve=True,
+                enable_ask_user=False,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=tmp_path,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware = kwargs["middleware"]
+        completion_agents = [
+            type(item).__name__
+            for item in middleware
+            if type(item).__name__.startswith("_GlmCompletion")
+        ]
+        assert completion_agents == []
+        assert (
+            sum(isinstance(item, _GlmTerminalStallRecovery) for item in middleware) == 1
+        )
+        for subagent in kwargs["subagents"]:
+            assert (
+                sum(
+                    isinstance(item, _GlmTerminalStallRecovery)
+                    for item in subagent["middleware"]
+                )
+                == 1
+            )
+
+    def test_glm_interactive_omits_terminal_stall_recovery(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from deepagents_code._glm_5p2_profile import _GlmTerminalStallRecovery
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fireworks:accounts/fireworks/models/glm-5p2",
+                assistant_id="test",
+                interactive=True,
+                auto_approve=True,
+                enable_ask_user=False,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=tmp_path,
+            )
+
+        _, kwargs = mock_create.call_args
+        assert not any(
+            isinstance(item, _GlmTerminalStallRecovery) for item in kwargs["middleware"]
+        )
+        for subagent in kwargs["subagents"]:
+            assert not any(
+                isinstance(item, _GlmTerminalStallRecovery)
+                for item in subagent["middleware"]
+            )
 
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

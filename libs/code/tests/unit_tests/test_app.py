@@ -6441,6 +6441,43 @@ class TestGoalCommand:
             assert app._goal_review_task is None
             handle.assert_awaited_once_with("created")
 
+    async def test_queued_goal_submits_objective_when_persist_fails(self) -> None:
+        """An unsaved queued goal must not rely on `get_goal` for its objective."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._queued_goal_application = _GoalApplication(
+                "ship login",
+                "- tests pass",
+                "create",
+            )
+            persist = AsyncMock(return_value=False)
+            submit = AsyncMock()
+            continuation = AsyncMock()
+
+            with (
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(app, "_handle_user_message", submit),
+                patch.object(app, "_continue_goal_work", continuation),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task()
+
+            persist.assert_awaited_once()
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._queued_goal_application is None
+            submit.assert_awaited_once_with("ship login")
+            continuation.assert_not_awaited()
+
     async def test_successful_generation_keeps_proposal_when_clear_fails(
         self,
     ) -> None:
@@ -9569,16 +9606,18 @@ class TestGoalCommand:
             request = AsyncMock(
                 return_value=self._goal_review_future({"type": "accepted"})
             )
-            handle = AsyncMock()
+            submit = AsyncMock()
+            continuation = AsyncMock()
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_continue_goal_work", handle),
+                patch.object(app, "_handle_user_message", submit),
+                patch.object(app, "_continue_goal_work", continuation),
             ):
                 await app._review_pending_goal_rubric()
                 for _ in range(20):
                     await pilot.pause()
-                    if handle.await_count:
+                    if submit.await_count:
                         break
 
             # State still applies in-session, but the warning stays concise and
@@ -9595,7 +9634,8 @@ class TestGoalCommand:
             assert not any(
                 "- tests pass" in str(w._content) for w in app.query(ErrorMessage)
             )
-            handle.assert_awaited_once_with("created")
+            submit.assert_awaited_once_with("add refresh tokens")
+            continuation.assert_not_awaited()
 
     async def test_goal_amend_does_not_continue_when_persist_fails(self) -> None:
         """Synthetic continuation must not read an unchanged checkpoint."""

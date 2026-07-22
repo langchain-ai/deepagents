@@ -1893,6 +1893,14 @@ class _GoalApplication:
             raise ValueError(msg)
 
 
+@dataclass(frozen=True, slots=True)
+class _GoalApplicationResult:
+    """Applied goal transition and whether its checkpoint write succeeded."""
+
+    transition: Literal["create", "amended"]
+    persisted: bool
+
+
 def _new_thread_id() -> str:
     """Deferred-import wrapper around `sessions.generate_thread_id`.
 
@@ -11089,18 +11097,17 @@ class DeepAgentsApp(App):
         *,
         continue_work: bool = True,
         at_boundary: bool = False,
-    ) -> Literal["create", "amended"] | None:
+    ) -> _GoalApplicationResult | None:
         """Persist an accepted goal change and continue work when appropriate.
 
-        The returned literals are ephemeral transition verbs, distinct from the
-        persisted `GoalProposalKind` (`create`/`amend`); the tense difference
-        (`amend` -> `amended`) marks the boundary, and only `create` overlaps
-        the two sets by coincidence. Do not compare a return value against a
-        `GoalProposalKind`.
+        The result's transition is an ephemeral verb, distinct from the persisted
+        `GoalProposalKind` (`create`/`amend`); the tense difference (`amend` ->
+        `amended`) marks the boundary, and only `create` overlaps the two sets by
+        coincidence. Do not compare it against a `GoalProposalKind`.
 
         Returns:
-            Continuation kind when the accepted goal should keep running,
-            otherwise `None`.
+            The applied transition and checkpoint-write result when the accepted
+            goal should keep running, otherwise `None`.
         """
         if (
             application.request_id is not None
@@ -11162,14 +11169,35 @@ class DeepAgentsApp(App):
         transition: Literal["create", "amended"] = (
             "amended" if is_amendment else "create"
         )
+        result = _GoalApplicationResult(transition, persisted)
         if continue_work:
             if is_amendment and self._pending_messages:
                 await self._process_next_from_queue()
             elif is_amendment and not self._agent_running:
                 await self._continue_goal_work("amended")
             elif not is_amendment and not self._agent_running:
-                await self._continue_goal_work("created")
-        return transition
+                await self._continue_created_goal_work(
+                    application.objective,
+                    persisted=persisted,
+                )
+        return result
+
+    async def _continue_created_goal_work(
+        self,
+        objective: str,
+        *,
+        persisted: bool,
+    ) -> None:
+        """Continue a new goal from saved state or its unsaved objective.
+
+        Args:
+            objective: Accepted objective to submit when checkpoint persistence failed.
+            persisted: Whether the objective is available through `get_goal`.
+        """
+        if persisted:
+            await self._continue_goal_work("created")
+        else:
+            await self._handle_user_message(objective)
 
     async def _continue_goal_work(
         self,
@@ -13967,7 +13995,7 @@ class DeepAgentsApp(App):
         self._agent_worker = None
         self._active_user_message = None
         self._active_turn_visible_output_started = False
-        queued_transition: Literal["create", "amended"] | None = None
+        queued_result: _GoalApplicationResult | None = None
         queued_objective: str | None = None
         try:
             try:
@@ -14026,7 +14054,7 @@ class DeepAgentsApp(App):
                     # once the apply succeeds.
                     try:
                         queued_objective = application.objective
-                        queued_transition = await self._apply_goal_application(
+                        queued_result = await self._apply_goal_application(
                             application,
                             continue_work=False,
                             at_boundary=True,
@@ -14036,7 +14064,7 @@ class DeepAgentsApp(App):
                             "Failed to apply queued goal update during agent cleanup"
                         )
                         queued_objective = None
-                        queued_transition = None
+                        queued_result = None
                         with suppress(Exception):
                             await self._mount_message(
                                 ErrorMessage(
@@ -14060,11 +14088,18 @@ class DeepAgentsApp(App):
             had_queued_input = bool(self._pending_messages)
             if not self._startup_sequence_running and had_queued_input:
                 await self._process_next_from_queue()
-            if not had_queued_input and not self._agent_running:
-                if queued_transition == "amended":
+            if (
+                not had_queued_input
+                and not self._agent_running
+                and queued_result is not None
+            ):
+                if queued_result.transition == "amended":
                     await self._continue_goal_work("amended")
-                elif queued_transition == "create" and queued_objective is not None:
-                    await self._continue_goal_work("created")
+                elif queued_objective is not None:
+                    await self._continue_created_goal_work(
+                        queued_objective,
+                        persisted=queued_result.persisted,
+                    )
 
             if not self._startup_sequence_running and not had_queued_input:
                 await self._process_next_from_queue()

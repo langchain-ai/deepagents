@@ -871,7 +871,7 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
                     "class:prompt.help",
                     (
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                        "Enter select · Esc Manual\n"
+                        "Enter select · Esc Manual · Ctrl+C quit\n"
                     ),
                 )
             ]
@@ -902,9 +902,16 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
             event.app.exit(result=choices[selected_index][0])
 
         @bindings.add("escape")
-        @bindings.add("c-c")
         def decline(event: KeyPressEvent) -> None:
             event.app.exit(result=False)
+
+        @bindings.add("c-c")
+        @bindings.add("c-d")
+        def abort(event: KeyPressEvent) -> None:
+            # Quit the launch entirely rather than falling back to Manual; the
+            # top-level KeyboardInterrupt handler prints "Interrupted" and exits
+            # without starting the TUI.
+            event.app.exit(exception=KeyboardInterrupt())
 
         app: Application[bool] = Application(
             layout=Layout(
@@ -923,9 +930,11 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
             output=create_output(stdout=sys.stderr),
         )
         return bool(app.run())
-    except (EOFError, KeyboardInterrupt, OSError, RuntimeError, ImportError):
+    except (EOFError, OSError, RuntimeError, ImportError):
         logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
         return False
+    # A KeyboardInterrupt (Ctrl+C/Ctrl+D) deliberately propagates so the launch
+    # aborts instead of falling back to Manual and starting the TUI.
 
 
 def _ensure_yolo_acknowledged(console: "Console") -> bool:

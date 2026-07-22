@@ -845,8 +845,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Inherit middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
         # TodoListMiddleware is a special case: it is no longer a GP default, but a
-        # caller-supplied instance on the main agent is mirrored here so the todo
-        # list is shared between the main agent and the general-purpose subagent.
+        # caller-supplied instance on the main agent is mirrored here so the
+        # general-purpose subagent also gets the `write_todos` tool. The todos
+        # state stays isolated per subagent (see `_EXCLUDED_STATE_KEYS`); each
+        # agent keeps its own list.
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or isinstance(m, TodoListMiddleware)]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, core_names=_gp_core_names)
         gp_middleware = _apply_excluded_middleware(

@@ -45,8 +45,12 @@ REPOSITORY_TOOL_NAMES = frozenset({"ls", "read_file", "glob", "grep"})
 REPOSITORY_PATH_RESULT_PREFIX = "__DEEPAGENTS_REPOSITORY_PATH__"
 
 REPOSITORY_PATH_ERROR = "Repository path is unavailable."
+REPOSITORY_UNAVAILABLE_ERROR = (
+    "Repository is temporarily unavailable; the path could not be verified."
+)
 REPOSITORY_SIZE_ERROR = "Repository file exceeds the size limit."
 REPOSITORY_LISTING_ERROR = "Repository directory exceeds the listing limit."
+REPOSITORY_READ_ONLY_ERROR = "Repository inspection is limited to read-only tools."
 
 # Backend faults that should degrade to a bounded, logged "path unavailable"
 # error rather than crashing the sub-agent.
@@ -170,7 +174,13 @@ class RepositoryBounds:
         )
 
     def sandbox_contains(self, raw_path: str) -> bool:
-        """Return whether the backend resolves a path below the repository root."""
+        """Return whether the backend resolves a path below the repository root.
+
+        For sandbox and local-filesystem backends this performs a canonical
+        (symlink-resolving) containment check. For any other backend there is
+        no canonical check available and this returns `True`, so callers must
+        still apply `safe_path` for the lexical guard.
+        """
         if self._sandbox is None:
             return self._filesystem_contains(raw_path)
         try:
@@ -189,8 +199,14 @@ class RepositoryBounds:
     async def asandbox_contains(self, raw_path: str) -> bool:
         """Asynchronously check canonical backend repository containment.
 
+        For sandbox and local-filesystem backends this performs a canonical
+        (symlink-resolving) containment check. For any other backend there is
+        no canonical check available and this returns `True`, so callers must
+        still apply `safe_path` for the lexical guard.
+
         Returns:
-            `True` when the backend resolves the path below the repository root.
+            `True` when the backend resolves the path below the repository
+            root, or when no canonical check is available for the backend.
         """
         if self._sandbox is None:
             if self._filesystem is None:
@@ -258,9 +274,19 @@ class RepositoryBounds:
     def preflight(self, name: str, args: dict[str, Any]) -> str | None:
         """Reject malformed paths and backend entries that exceed hard limits.
 
+        Rejects any tool name outside the read-only inspection set so the
+        read-only guarantee fails closed rather than depending on callers to
+        wire only read-only tools.
+
         Returns:
             A bounded error message, or `None` when preflight succeeds.
         """
+        if name not in REPOSITORY_TOOL_NAMES:
+            # Read-only invariant: only the four read-only inspection tools are
+            # ever validated here. Reject anything else (e.g. a mis-wired write
+            # tool) instead of falling through and validating it as a path
+            # operation.
+            return REPOSITORY_READ_ONLY_ERROR
         if name in {"glob", "grep"}:
             error = self._validate_search_paths(name, args)
             if error is not None:
@@ -284,20 +310,22 @@ class RepositoryBounds:
             return REPOSITORY_PATH_ERROR
 
         # Scope the guard to the backend call itself: a backend that raises
-        # (outage, serialization fault) is otherwise indistinguishable from a
-        # genuinely absent path. The size/entry bookkeeping below is deliberately
-        # left outside the guard so a defect there surfaces as a real crash
-        # rather than silently degrading every run.
+        # (outage, serialization fault) reports a distinct "temporarily
+        # unavailable" error, so the grader/user can tell an infrastructure
+        # fault apart from a genuinely absent or out-of-bounds path (which
+        # returns REPOSITORY_PATH_ERROR). The size/entry bookkeeping below is
+        # deliberately left outside the guard so a defect there surfaces as a
+        # real crash rather than silently degrading every run.
         try:
             result = self._backend.ls(raw_path if name == "ls" else str(path.parent))
         except _BACKEND_ERRORS:
             logger.warning(
-                "Repository preflight failed for tool %r; treating the path as "
-                "unavailable",
+                "Repository preflight failed for tool %r; treating the "
+                "repository as temporarily unavailable",
                 name,
                 exc_info=True,
             )
-            return REPOSITORY_PATH_ERROR
+            return REPOSITORY_UNAVAILABLE_ERROR
         if result.error is not None:
             return REPOSITORY_PATH_ERROR
         if name == "ls":
@@ -312,9 +340,19 @@ class RepositoryBounds:
     async def apreflight(self, name: str, args: dict[str, Any]) -> str | None:
         """Asynchronously enforce repository path and metadata limits.
 
+        Rejects any tool name outside the read-only inspection set so the
+        read-only guarantee fails closed rather than depending on callers to
+        wire only read-only tools.
+
         Returns:
             A bounded error message, or `None` when preflight succeeds.
         """
+        if name not in REPOSITORY_TOOL_NAMES:
+            # Read-only invariant: only the four read-only inspection tools are
+            # ever validated here. Reject anything else (e.g. a mis-wired write
+            # tool) instead of falling through and validating it as a path
+            # operation.
+            return REPOSITORY_READ_ONLY_ERROR
         if name in {"glob", "grep"}:
             error = self._validate_search_paths(name, args)
             if error is not None:
@@ -345,12 +383,12 @@ class RepositoryBounds:
             )
         except _BACKEND_ERRORS:
             logger.warning(
-                "Repository preflight failed for tool %r; treating the path as "
-                "unavailable",
+                "Repository preflight failed for tool %r; treating the "
+                "repository as temporarily unavailable",
                 name,
                 exc_info=True,
             )
-            return REPOSITORY_PATH_ERROR
+            return REPOSITORY_UNAVAILABLE_ERROR
         if result.error is not None:
             return REPOSITORY_PATH_ERROR
         if name == "ls":

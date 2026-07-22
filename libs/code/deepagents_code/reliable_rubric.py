@@ -11,6 +11,7 @@ from deepagents.middleware.rubric import (
     GraderResponse,
     RubricMiddleware,
     RubricState,
+    _strategy_from_result,  # noqa: PLC2701
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
 from langchain_core.messages import HumanMessage
@@ -208,8 +209,10 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         from langchain.agents import create_agent
 
+        resolved_model = resolve_model(self._model)
+        self._resolved_model = resolved_model
         self._grader = create_agent(
-            model=resolve_model(self._model),
+            model=resolved_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
             middleware=self._grader_middleware,
@@ -245,7 +248,18 @@ class ReliableRubricMiddleware(RubricMiddleware):
         context: object | None,
     ) -> GraderResponse:
         grader = self._ensure_grader()
-        result = grader.invoke(self._grader_input(state, iteration), context=context)
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
+        result = grader.invoke(
+            self._grader_input(state, iteration),
+            config=self._grader_invocation_config(metadata),
+            context=context,
+        )
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
+        )
         return self._extract_graded(result)
 
     async def _agrade_once(
@@ -256,9 +270,17 @@ class ReliableRubricMiddleware(RubricMiddleware):
         context: object | None,
     ) -> GraderResponse:
         grader = self._ensure_grader()
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
         result = await grader.ainvoke(
             self._grader_input(state, iteration),
+            config=self._grader_invocation_config(metadata),
             context=context,
+        )
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
         )
         return self._extract_graded(result)
 

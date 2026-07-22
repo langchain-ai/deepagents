@@ -52,8 +52,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Repository-inspection limits and path rules are shared with the rubric grader;
-# see `deepagents_code._repository_bounds` for the canonical definitions
-# (imported above as `_REPOSITORY_*` for backward compatibility).
+# see `deepagents_code._repository_bounds` for the canonical definitions. The
+# three constants still used in this module are re-imported under their former
+# `_REPOSITORY_*` names to avoid churn here; the rest moved to that module.
 _REPOSITORY_RECURSION_LIMIT = _REPOSITORY_TOOL_CALL_LIMIT * 2 + 2
 _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT = 128
 _STRUCTURED_OUTPUT_TOOL_NAME = "GoalProposal"

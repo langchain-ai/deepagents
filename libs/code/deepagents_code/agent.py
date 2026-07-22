@@ -437,29 +437,68 @@ def _rubric_grader_repository_tool_names(
     return [name for name in _RUBRIC_GRADER_REPOSITORY_TOOL_NAMES if name in allowed]
 
 
-def _rubric_grader_repo_call_count(runtime: ToolRuntime[None, Any]) -> int:
-    """Count prior repository-tool results in the current grading run.
+def _rubric_grader_repo_call_count(
+    runtime: ToolRuntime[None, Any], read_file_prefix: str
+) -> int:
+    """Count prior working-directory tool results in the current grading run.
 
     The grader sub-agent is invoked with a fresh message list per grading run,
     so counting repository `ToolMessage`s already present in state naturally
     scopes the budget to the current run without any external counter.
 
+    The grader's `read_file` tool serves both offloaded tool results and
+    working-directory files. Only working-directory reads are charged to this
+    budget: a `read_file` result is skipped when its originating call targeted
+    a path under `read_file_prefix` (an offloaded-result read), so reading many
+    offloaded artifacts cannot exhaust the working-directory inspection budget.
+    `ls`, `glob`, and `grep` are always working-directory operations. A
+    `read_file` result whose originating call cannot be located is counted, so
+    the budget fails toward the limit rather than treating an unclassifiable
+    read as free.
+
     Returns:
-        The number of repository tool results emitted so far this run.
+        The number of working-directory tool results emitted so far this run.
     """
-    from langchain_core.messages import ToolMessage as LCToolMessage
+    from langchain_core.messages import (
+        AIMessage as LCAIMessage,
+        ToolMessage as LCToolMessage,
+    )
 
     state = getattr(runtime, "state", None)
     if isinstance(state, dict):
         messages = state.get("messages") or []
     else:
         messages = getattr(state, "messages", None) or []
-    return sum(
-        1
-        for message in messages
-        if isinstance(message, LCToolMessage)
-        and getattr(message, "name", None) in REPOSITORY_TOOL_NAMES
-    )
+
+    # Map each `read_file` tool-call id to the path it requested so offloaded
+    # reads can be told apart from working-directory reads after the fact.
+    read_file_paths: dict[str, str] = {}
+    for message in messages:
+        if not isinstance(message, LCAIMessage):
+            continue
+        for call in message.tool_calls:
+            if call.get("name") != "read_file":
+                continue
+            call_id = call.get("id")
+            file_path = (call.get("args") or {}).get("file_path")
+            if isinstance(call_id, str) and isinstance(file_path, str):
+                read_file_paths[call_id] = file_path
+
+    count = 0
+    for message in messages:
+        if not isinstance(message, LCToolMessage):
+            continue
+        name = getattr(message, "name", None)
+        if name not in REPOSITORY_TOOL_NAMES:
+            continue
+        if name == "read_file":
+            requested = read_file_paths.get(getattr(message, "tool_call_id", None))
+            if requested is not None and requested.replace("\\", "/").startswith(
+                read_file_prefix
+            ):
+                continue
+        count += 1
+    return count
 
 
 def _normalize_rubric_grader_context_tools(
@@ -551,9 +590,16 @@ def _create_rubric_grader_tools(
                 repository_root,
             )
         if bounds is not None:
+            # `FilesystemMiddleware` always requires `read_file`, so include it
+            # even when the parent allowlist excludes it; the working-directory
+            # `read_file` tool is only *exposed* to the grader (below) when the
+            # allowlist actually permits it.
+            filesystem_tool_names = list(repository_tool_names)
+            if "read_file" not in filesystem_tool_names:
+                filesystem_tool_names.append("read_file")
             repository_filesystem = FilesystemMiddleware(
                 backend=repository_backend,
-                tools=repository_tool_names,
+                tools=filesystem_tool_names,
                 grep_max_count=REPOSITORY_GREP_MATCH_LIMIT,
                 tool_token_limit_before_evict=None,
             )
@@ -562,7 +608,7 @@ def _create_rubric_grader_tools(
             }
     repository_read_file_func = (
         _fs_func(repository_tools, "read_file")
-        if bounds is not None and "read_file" in repository_tools
+        if bounds is not None and "read_file" in repository_tool_names
         else None
     )
 
@@ -600,9 +646,12 @@ def _create_rubric_grader_tools(
                 offset=offset,
                 limit=limit,
             )
-        if bounds is None:
+        if bounds is None or repository_read_file_func is None:
             return f"Rubric grader can only read files under {read_file_prefix}."
-        if _rubric_grader_repo_call_count(runtime) >= REPOSITORY_TOOL_CALL_LIMIT:
+        if (
+            _rubric_grader_repo_call_count(runtime, read_file_prefix)
+            >= REPOSITORY_TOOL_CALL_LIMIT
+        ):
             return _RUBRIC_GRADER_BUDGET_MESSAGE
         args: dict[str, Any] = {"file_path": file_path, "limit": limit}
         if error := bounds.preflight("read_file", args):
@@ -611,7 +660,7 @@ def _create_rubric_grader_tools(
         return _bound(
             bounds,
             "read_file",
-            active_read_file_func(
+            repository_read_file_func(
                 file_path=file_path,
                 runtime=runtime,
                 offset=offset,
@@ -635,11 +684,14 @@ def _create_rubric_grader_tools(
         return [*grader_tools, *normalized_context_tools]
 
     grader_tools: list[BaseTool] = [read_file]
-    if bounds is None or repository_read_file_func is None:
+    if bounds is None:
         return _with_context_tools(grader_tools)
 
+    # `bounds` is available: expose whichever working-directory search tools the
+    # parent allowlist permits. `read_file`'s working-directory branch is gated
+    # separately (above) on the allowlist including `read_file`, so `ls`,
+    # `glob`, and `grep` remain available even when `read_file` is excluded.
     active_bounds = bounds
-    active_read_file_func = repository_read_file_func
 
     repository_wrapper_tools: list[BaseTool] = []
 
@@ -655,7 +707,10 @@ def _create_rubric_grader_tools(
                 The bounded listing, or an error message when the path is
                 disallowed or the inspection budget is exhausted.
             """
-            if _rubric_grader_repo_call_count(runtime) >= REPOSITORY_TOOL_CALL_LIMIT:
+            if (
+                _rubric_grader_repo_call_count(runtime, read_file_prefix)
+                >= REPOSITORY_TOOL_CALL_LIMIT
+            ):
                 return _RUBRIC_GRADER_BUDGET_MESSAGE
             args: dict[str, Any] = {"path": path}
             if error := active_bounds.preflight("ls", args):
@@ -681,7 +736,10 @@ def _create_rubric_grader_tools(
                 The bounded matches, or an error message when the path/pattern
                 is disallowed or the inspection budget is exhausted.
             """
-            if _rubric_grader_repo_call_count(runtime) >= REPOSITORY_TOOL_CALL_LIMIT:
+            if (
+                _rubric_grader_repo_call_count(runtime, read_file_prefix)
+                >= REPOSITORY_TOOL_CALL_LIMIT
+            ):
                 return _RUBRIC_GRADER_BUDGET_MESSAGE
             args: dict[str, Any] = {"pattern": pattern}
             if path is not None:
@@ -720,7 +778,10 @@ def _create_rubric_grader_tools(
                 path/pattern is disallowed or the inspection budget is
                 exhausted.
             """
-            if _rubric_grader_repo_call_count(runtime) >= REPOSITORY_TOOL_CALL_LIMIT:
+            if (
+                _rubric_grader_repo_call_count(runtime, read_file_prefix)
+                >= REPOSITORY_TOOL_CALL_LIMIT
+            ):
                 return _RUBRIC_GRADER_BUDGET_MESSAGE
             args: dict[str, Any] = {"pattern": pattern}
             if path is not None:
@@ -2913,7 +2974,16 @@ def create_cli_agent(
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
         _ContextToolCallBudgetMiddleware(
-            {grader_tool.name for grader_tool in grader_tools},
+            # `read_file` is bounded separately by the grader's in-tool
+            # working-directory counter, which excludes offloaded-result reads.
+            # Excluding `read_file` here keeps reading offloaded tool results
+            # (the grader's primary evidence source) from consuming this shared
+            # context-call budget.
+            {
+                grader_tool.name
+                for grader_tool in grader_tools
+                if grader_tool.name != "read_file"
+            },
             limit=REPOSITORY_TOOL_CALL_LIMIT,
         ),
         _WebSearchBudgetMiddleware(),

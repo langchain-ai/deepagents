@@ -16,8 +16,10 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_PATH_ERROR,
     REPOSITORY_READ_BYTE_LIMIT,
     REPOSITORY_READ_LINE_LIMIT,
+    REPOSITORY_READ_ONLY_ERROR,
     REPOSITORY_SIZE_ERROR,
     REPOSITORY_TOOL_RESULT_LIMIT,
+    REPOSITORY_UNAVAILABLE_ERROR,
     RepositoryBounds,
 )
 
@@ -209,9 +211,28 @@ class TestPreflight:
         backend = MagicMock()
         backend.ls.side_effect = RuntimeError("outage")
         bounds = RepositoryBounds(backend, root="/")
+        # A raising backend reports a transient-unavailable error, distinct from
+        # the path error used for absent/out-of-bounds paths, so the grader can
+        # tell an outage apart from "the work was not done".
         assert (
             bounds.preflight("read_file", {"file_path": "/src.py"})
-            == REPOSITORY_PATH_ERROR
+            == REPOSITORY_UNAVAILABLE_ERROR
+        )
+
+    def test_rejects_non_read_only_tool(self) -> None:
+        # Read-only invariant: preflight fails closed for any tool outside the
+        # read-only inspection set rather than validating it as a path op.
+        bounds = RepositoryBounds(_backend(), root="/")
+        assert (
+            bounds.preflight("edit_file", {"path": "/src.py"})
+            == REPOSITORY_READ_ONLY_ERROR
+        )
+
+    async def test_rejects_non_read_only_tool_async(self) -> None:
+        bounds = RepositoryBounds(_backend(), root="/")
+        assert (
+            await bounds.apreflight("write_file", {"path": "/src.py"})
+            == REPOSITORY_READ_ONLY_ERROR
         )
 
     def test_allows_valid_read(self) -> None:

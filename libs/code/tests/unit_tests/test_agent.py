@@ -5400,6 +5400,161 @@ class TestCreateCliAgentInterpreterWiring:
 
         assert "inspection limit reached" in result
 
+    @staticmethod
+    def _grader_repo_tools_fs(
+        tmp_path: Path, fs_tools: list[str] | None
+    ) -> tuple[dict[str, Any], Path]:
+        """Build grader tools with a parent filesystem allowlist.
+
+        Returns:
+            A `(tools_by_name, repo_root)` pair for the given `fs_tools`.
+        """
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("print('hello world')\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
+        composite = CompositeBackend(default=backend, routes={})
+        tools = {
+            tool.name: cast("Any", tool)
+            for tool in _create_rubric_grader_tools(
+                composite,
+                repository_backend=backend,
+                repository_root=str(repo),
+                fs_tools=cast("Any", fs_tools),
+            )
+        }
+        return tools, repo
+
+    def test_rubric_grader_allowlist_narrows_to_read_file_only(
+        self, tmp_path: Path
+    ) -> None:
+        # A parent allowlist of just `read_file` exposes only `read_file`, and
+        # its working-directory branch stays enabled.
+        tools, repo = self._grader_repo_tools_fs(tmp_path, ["read_file"])
+
+        assert set(tools) == {"read_file"}
+
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+        read = tools["read_file"].func(file_path=str(repo / "app.py"), runtime=runtime)
+
+        assert "print('hello world')" in read.content
+
+    def test_rubric_grader_allowlist_excluding_read_file_does_not_crash(
+        self, tmp_path: Path
+    ) -> None:
+        # A parent allowlist that keeps search tools but drops `read_file` must
+        # build without crashing (`FilesystemMiddleware` requires `read_file`
+        # internally). `ls`/`grep` stay available; the grader's `read_file`
+        # serves offloaded results only and refuses working-directory reads
+        # rather than raising.
+        tools, repo = self._grader_repo_tools_fs(tmp_path, ["ls", "grep"])
+
+        assert set(tools) == {"read_file", "ls", "grep"}
+
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": []})
+        listing = tools["ls"].func(path=str(repo), runtime=runtime)
+        refused = tools["read_file"].func(
+            file_path=str(repo / "app.py"), runtime=runtime
+        )
+
+        assert "app.py" in listing.content
+        assert "can only read files under" in refused
+
+    def test_offloaded_reads_do_not_erode_working_directory_budget(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+        from langchain_core.messages import (
+            AIMessage as LCAIMessage,
+            ToolMessage as LCToolMessage,
+        )
+
+        from deepagents_code.agent import _rubric_grader_read_file_prefix
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("print('hello world')\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=False)
+        composite = CompositeBackend(default=backend, routes={})
+        prefix = _rubric_grader_read_file_prefix(composite)
+        tools = {
+            tool.name: cast("Any", tool)
+            for tool in _create_rubric_grader_tools(
+                composite,
+                repository_backend=backend,
+                repository_root=str(repo),
+            )
+        }
+
+        # `REPOSITORY_TOOL_CALL_LIMIT` prior *offloaded* reads (paths under the
+        # offload prefix) must not consume the working-directory budget.
+        messages: list[Any] = []
+        for index in range(REPOSITORY_TOOL_CALL_LIMIT):
+            call_id = f"off-{index}"
+            messages.extend(
+                (
+                    LCAIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "id": call_id,
+                                "args": {"file_path": f"{prefix}result-{index}.txt"},
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    LCToolMessage(content="x", tool_call_id=call_id, name="read_file"),
+                )
+            )
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": messages})
+
+        read = tools["read_file"].func(file_path=str(repo / "app.py"), runtime=runtime)
+
+        assert "print('hello world')" in read.content
+
+    def test_working_directory_reads_consume_budget_via_tool_calls(
+        self, tmp_path: Path
+    ) -> None:
+        from langchain_core.messages import (
+            AIMessage as LCAIMessage,
+            ToolMessage as LCToolMessage,
+        )
+
+        tools, repo = self._grader_repo_tools(tmp_path)
+        target = str(repo / "app.py")
+
+        # `REPOSITORY_TOOL_CALL_LIMIT` prior *working-directory* reads (paths
+        # outside the offload prefix) exhaust the budget.
+        messages: list[Any] = []
+        for index in range(REPOSITORY_TOOL_CALL_LIMIT):
+            call_id = f"wd-{index}"
+            messages.extend(
+                (
+                    LCAIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "id": call_id,
+                                "args": {"file_path": target},
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    LCToolMessage(content="x", tool_call_id=call_id, name="read_file"),
+                )
+            )
+        runtime = SimpleNamespace(tool_call_id="g", state={"messages": messages})
+
+        result = tools["read_file"].func(file_path=target, runtime=runtime)
+
+        assert "inspection limit reached" in result
+
     def test_rubric_grader_prompt_describes_available_evidence(self) -> None:
         with_repo = _rubric_grader_system_prompt(
             "/large_tool_results/",

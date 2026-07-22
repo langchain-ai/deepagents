@@ -108,6 +108,18 @@ def _satisfied_result() -> dict[str, Any]:
     }
 
 
+def _tool_satisfied_result() -> dict[str, Any]:
+    return {
+        **_satisfied_result(),
+        "messages": [
+            _grader_call(
+                result="satisfied",
+                explanation="all checks pass",
+            )
+        ],
+    }
+
+
 class TestTransientGraderTransportClassification:
     def test_read_error_is_transient(self) -> None:
         assert _is_transient_grader_transport_error(_read_error()) is True
@@ -220,6 +232,94 @@ class TestReliableRubricMiddleware:
         assert result.result == "satisfied"
         assert grader.invoke.call_count == 2
 
+    def test_sync_grade_preserves_trace_metadata_and_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        grader = MagicMock()
+        grader.invoke.return_value = _tool_satisfied_result()
+        middleware._grader = grader
+        monkeypatch.setattr(
+            middleware,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+        recorded: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            middleware,
+            "_record_grader_trace_metadata",
+            recorded.append,
+        )
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"tenant_id": "tenant-123"}},
+        )
+        context = {"approval_mode": "manual"}
+
+        result = middleware._grade_once(_state(), 0, context=context)
+
+        assert result.result == "satisfied"
+        assert grader.invoke.call_args.kwargs == {
+            "config": {
+                "metadata": {
+                    "tenant_id": "tenant-123",
+                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                    "rubric_grader_effective_strategy": "ProviderStrategy",
+                }
+            },
+            "context": context,
+        }
+        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
+    async def test_async_grade_preserves_trace_metadata_and_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        grader = AsyncMock()
+        grader.ainvoke.return_value = _tool_satisfied_result()
+        middleware._grader = grader
+        monkeypatch.setattr(
+            middleware,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+        recorded: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            middleware,
+            "_record_grader_trace_metadata",
+            recorded.append,
+        )
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"experiment_id": "experiment-123"}},
+        )
+        context = {"approval_mode": "manual"}
+
+        result = await middleware._agrade_once(_state(), 0, context=context)
+
+        assert result.result == "satisfied"
+        assert grader.ainvoke.await_args.kwargs == {
+            "config": {
+                "metadata": {
+                    "experiment_id": "experiment-123",
+                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                    "rubric_grader_effective_strategy": "ProviderStrategy",
+                }
+            },
+            "context": context,
+        }
+        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
     async def test_second_transient_failure_propagates_async(self) -> None:
         # The retry is bounded to one attempt: a second transient failure must
         # surface so the base middleware can report it as a grader_error.
@@ -258,9 +358,16 @@ class TestReliableRubricMiddleware:
         class GraderContext:
             pass
 
+        resolved_model = SimpleNamespace(
+            model_name="claude-sonnet-4-6",
+            profile={"structured_output": True},
+        )
         nested_middleware = AgentMiddleware()
         monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
-        monkeypatch.setattr("deepagents._models.resolve_model", lambda model: model)
+        monkeypatch.setattr(
+            "deepagents._models.resolve_model",
+            lambda _model: resolved_model,
+        )
         middleware = ReliableRubricMiddleware(
             model="fake-model",
             grader_middleware=[nested_middleware],
@@ -271,6 +378,11 @@ class TestReliableRubricMiddleware:
         assert seen["middleware"] == [nested_middleware]
         assert seen["context_schema"] is GraderContext
         assert seen["state_schema"] is RubricGraderState
+        assert middleware._resolved_model is resolved_model
+        assert (
+            middleware._grader_trace_metadata()["rubric_grader_effective_strategy"]
+            == "ProviderStrategy"
+        )
 
     async def test_nested_grader_interrupt_propagates_with_context(
         self,

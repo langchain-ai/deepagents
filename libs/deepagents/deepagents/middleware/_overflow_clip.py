@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 
 from deepagents.middleware._message_eviction import (
     _aoffload_tool_message_content,
+    _build_evicted_content,
     _extract_text_from_message,
     _offload_tool_message_content,
 )
@@ -31,6 +32,13 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.summarization import ContextSize, TokenCounter
 
     from deepagents.backends.protocol import BackendProtocol
+
+_READ_FILE_CLIP_CHARS = 4_000
+"""Head-slice budget for a `read_file` tail ToolMessage.
+
+Results whose text fits within this are left untouched (no truncation notice);
+longer results are head-sliced to this many chars with a recovery notice.
+"""
 
 
 def _derive_overflow_clip_threshold_tokens(keep: ContextSize, max_input_tokens: int | None) -> int:
@@ -73,8 +81,8 @@ def _build_tool_call_index(messages: list[AnyMessage]) -> dict[str, dict[str, An
     return index
 
 
-def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
-    """Slice a `read_file` ToolMessage's content to ~4k head chars and append a path-pointer notice.
+def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage | None:
+    """Head-slice an oversized `read_file` ToolMessage, preserving any media blocks.
 
     `read_file` results don't need a fresh `/large_tool_results/{tcid}` write -- the
     full file is already on the backend at `original_path`, and the agent can
@@ -82,15 +90,26 @@ def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
     truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
     agent encounters a consistent format whether the tool truncated itself
     or the middleware did.
+
+    Returns `None` when the text already fits within `_READ_FILE_CLIP_CHARS`, so
+    the caller keeps the original message untouched -- this avoids appending a
+    misleading truncation notice to a small result. When the text does overflow,
+    only the text is head-sliced; non-text blocks (images/audio/video) are carried
+    through via `_build_evicted_content`, matching the offload/eviction path
+    instead of silently dropping media.
     """
     content = _extract_text_from_message(msg)
+    if len(content) <= _READ_FILE_CLIP_CHARS:
+        # Nothing to truncate; leave the message (and any media blocks) as-is.
+        return None
     notice = (
         f"\n\n[Output was truncated due to context window size limits. "
         f"The full content is at {original_path}. "
         f"Use read_file with offset and limit parameters to retrieve specific portions. "
         f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
     )
-    return msg.model_copy(update={"content": content[:4_000] + notice})
+    sliced_text = content[:_READ_FILE_CLIP_CHARS] + notice
+    return msg.model_copy(update={"content": _build_evicted_content(msg, sliced_text)})
 
 
 def _read_file_original_path(msg: ToolMessage, tc_index: dict[str, dict[str, Any]]) -> str | None:

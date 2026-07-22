@@ -804,7 +804,7 @@ class TestDebugConsoleScreen:
             assert not select.expanded
             assert isinstance(app.screen, DebugConsoleScreen)
 
-    async def test_outside_click_clears_log_selection_highlight(self) -> None:
+    async def test_outside_click_preserves_log_selection_highlight(self) -> None:
         logger.info("debug-console-outside-click-marker")
         app = _Harness()
         async with app.run_test() as pilot:
@@ -821,10 +821,28 @@ class TestDebugConsoleScreen:
             await pilot.pause()
             assert log._selected_index == index
 
-            # A click outside the log view clears the click-to-copy highlight.
             await pilot.click(screen.query_one(".debug-console-title", Static))
             await pilot.pause()
-            assert log._selected_index is None
+            assert log._selected_index == index
+
+    async def test_outside_click_clears_click_to_copy_focus_highlight(
+        self,
+    ) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            checkbox = screen.query_one("#debug-click-to-copy", Checkbox)
+
+            await pilot.click(checkbox)
+            await pilot.pause()
+            assert checkbox.value
+            assert checkbox.has_focus
+
+            await pilot.click(screen.query_one(".debug-console-title", Static))
+            await pilot.pause()
+            assert not checkbox.has_focus
 
     async def test_click_copy_invokes_clipboard_with_logical_record(
         self, monkeypatch: pytest.MonkeyPatch

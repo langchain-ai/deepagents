@@ -418,14 +418,6 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._scroll_selected_visible()
         self.refresh()
 
-    def clear_selection(self) -> None:
-        """Clear the selected-record highlight, if one is set."""
-        if self._selected_index is None:
-            return
-        self._selected_index = None
-        self._render_line_cache.clear()
-        self.refresh()
-
     def _scroll_selected_visible(self) -> None:
         if self._selected_index is None or not self._wrap_prefix:
             return
@@ -576,8 +568,6 @@ class _DebugLogView(ScrollView, can_focus=True):
         _scroll_x, scroll_y = self.scroll_offset
         record = self._record_at_visual_y(scroll_y + event.y)
         if record is None:
-            # A click on empty space below the records clears the highlight.
-            self.clear_selection()
             return
         index = self._content_index_at_visual_y(scroll_y + event.y)
         if index is not None:
@@ -929,12 +919,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         self.focus_previous(_FOCUS_CYCLE)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Dismiss transient overlays when the user clicks outside them.
+        """Dismiss transient control state when the user clicks outside it.
 
-        Clicking a focusable control already blurs (and so closes) the open level
-        dropdown, but clicking a non-focusable area (the snapshot, labels, help,
-        or empty modal space) does not. This mirrors that outside-click dismissal
-        for both the dropdown and the log's click-to-copy selection highlight.
+        Clicking a focusable control already moves focus, but clicking a
+        non-focusable area (the snapshot, labels, help, or empty modal space)
+        does not. Mirror that outside-click behavior for the open level dropdown
+        and the focused "Click to copy" checkbox.
         """
         offset = event.screen_offset
         select = self._level_select()
@@ -946,9 +936,11 @@ class DebugConsoleScreen(ModalScreen[None]):
             # control, leave it there.
             if self.focused is overlay:
                 select.focus()
-        log = self.query_one("#debug-log", _DebugLogView)
-        if not log.region.contains(offset.x, offset.y):
-            log.clear_selection()
+        checkbox = self.query_one(f"#{_CLICK_TO_COPY_ID}", Checkbox)
+        if self.focused is checkbox and not checkbox.region.contains(
+            offset.x, offset.y
+        ):
+            self.set_focus(None)
 
     @staticmethod
     def _point_in_level_select(select: Select[FilterValue], offset: Offset) -> bool:

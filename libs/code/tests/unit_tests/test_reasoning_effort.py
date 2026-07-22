@@ -103,7 +103,7 @@ def _restore_settings(
         # Fireworks routers (`accounts/fireworks/routers/...`) are gated the same
         # as individual models, so effort support keys off the model family.
         (
-            "fireworks:accounts/fireworks/routers/glm-5p1-fast",
+            "fireworks:accounts/fireworks/routers/glm-5p2-fast",
             ("none", "high", "max"),
         ),
         # Recognized provider, wrong model family: the per-provider prefix

@@ -16,6 +16,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionRequestEvent,
     PostToolUseDecision,
     PostToolUseEvent,
+    PreCompactDecision,
+    PreCompactEvent,
     PreToolUseDecision,
     PreToolUseEvent,
     SessionEndDecision,
@@ -28,6 +30,8 @@ from deepagents_code.hooks.models.domain import (
     SubagentStartEvent,
     SubagentStopDecision,
     SubagentStopEvent,
+    UserPromptSubmitDecision,
+    UserPromptSubmitEvent,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +56,7 @@ class PlainOutputPolicy(StrEnum):
 class ExitCodePolicy(StrEnum):
     """How exit code 2 is interpreted for an event."""
 
+    BLOCK = "block"
     DENY = "deny"
     FEEDBACK = "feedback"
     CONTINUE_LOOP = "continue_loop"
@@ -71,7 +76,7 @@ class AggregationPolicy(StrEnum):
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
 MatcherField: TypeAlias = Literal[
-    "cause", "tool_name", "notification_type", "agent_name"
+    "cause", "tool_name", "notification_type", "agent_name", "trigger"
 ]
 
 
@@ -101,6 +106,18 @@ _HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
             matcher_field="cause",
             default_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
             exit_code_policy=ExitCodePolicy.DIAGNOSE,
+            plain_output_policy=PlainOutputPolicy.CONTEXT,
+            aggregation_policy=AggregationPolicy.CONTEXT,
+            supported_handler_types=frozenset({HandlerType.COMMAND}),
+        ),
+        HookEvent.USER_PROMPT_SUBMIT: HookEventSpec(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            owner=HookOwner.CLIENT,
+            event_model=UserPromptSubmitEvent,
+            decision_model=UserPromptSubmitDecision,
+            matcher_field=None,
+            default_timeout_seconds=30.0,
+            exit_code_policy=ExitCodePolicy.BLOCK,
             plain_output_policy=PlainOutputPolicy.CONTEXT,
             aggregation_policy=AggregationPolicy.CONTEXT,
             supported_handler_types=frozenset({HandlerType.COMMAND}),
@@ -165,6 +182,18 @@ _HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
             aggregation_policy=AggregationPolicy.FEEDBACK_AND_CONTEXT,
             supported_handler_types=frozenset({HandlerType.COMMAND}),
         ),
+        HookEvent.PRE_COMPACT: HookEventSpec(
+            event=HookEvent.PRE_COMPACT,
+            owner=HookOwner.CLIENT,
+            event_model=PreCompactEvent,
+            decision_model=PreCompactDecision,
+            matcher_field="trigger",
+            default_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+            exit_code_policy=ExitCodePolicy.BLOCK,
+            plain_output_policy=PlainOutputPolicy.IGNORE,
+            aggregation_policy=AggregationPolicy.SIDE_EFFECT,
+            supported_handler_types=frozenset({HandlerType.COMMAND}),
+        ),
         HookEvent.STOP: HookEventSpec(
             event=HookEvent.STOP,
             owner=HookOwner.SERVER,
@@ -217,6 +246,8 @@ def get_event_spec(event: HookEvent) -> HookEventSpec:
     match event:
         case HookEvent.SESSION_START:
             return _HOOK_EVENT_SPECS[HookEvent.SESSION_START]
+        case HookEvent.USER_PROMPT_SUBMIT:
+            return _HOOK_EVENT_SPECS[HookEvent.USER_PROMPT_SUBMIT]
         case HookEvent.SESSION_END:
             return _HOOK_EVENT_SPECS[HookEvent.SESSION_END]
         case HookEvent.PERMISSION_REQUEST:
@@ -227,6 +258,8 @@ def get_event_spec(event: HookEvent) -> HookEventSpec:
             return _HOOK_EVENT_SPECS[HookEvent.PRE_TOOL_USE]
         case HookEvent.POST_TOOL_USE:
             return _HOOK_EVENT_SPECS[HookEvent.POST_TOOL_USE]
+        case HookEvent.PRE_COMPACT:
+            return _HOOK_EVENT_SPECS[HookEvent.PRE_COMPACT]
         case HookEvent.STOP:
             return _HOOK_EVENT_SPECS[HookEvent.STOP]
         case HookEvent.SUBAGENT_START:

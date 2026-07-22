@@ -226,8 +226,8 @@ def _read_hooks_document(
         ]
         migrated = migrate_legacy_hooks(legacy_entries)
         migration_message = (
-            f"Migrated semantically equivalent session.end hooks from {path}; "
-            "all other legacy events remain unmapped"
+            f"Migrated semantically equivalent legacy hooks from {path}; "
+            "unsupported legacy events remain unmapped"
             if migrated.hooks
             else (
                 f"Legacy hooks at {path} contained no events that are safe to "

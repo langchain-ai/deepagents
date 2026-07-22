@@ -20,13 +20,16 @@ from deepagents_code.hooks.models.domain import HookEvent
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-# Only legacy `session.end` has the same lifecycle boundary and side-effect-only
-# behavior as its Hooks v2 counterpart. Legacy `session.start` runs once per
-# prompt execution, `context.compact` runs before the offload operation, and
-# `permission.request` is a batched observation that cannot return a decision.
 _LEGACY_EVENT_MAP: dict[str, tuple[HookEvent, str | None]] = {
+    "session.start": (HookEvent.USER_PROMPT_SUBMIT, None),
+    "user.prompt": (HookEvent.USER_PROMPT_SUBMIT, None),
+    "task.complete": (HookEvent.STOP, None),
     "session.end": (HookEvent.SESSION_END, None),
+    "context.offload": (HookEvent.PRE_COMPACT, "manual"),
+    "context.compact": (HookEvent.PRE_COMPACT, "manual"),
+    "input.required": (HookEvent.NOTIFICATION, "agent_needs_input"),
 }
+LEGACY_COMMAND_TIMEOUT_SECONDS = 5.0
 
 
 def migrate_legacy_hooks(
@@ -58,19 +61,39 @@ def migrate_legacy_hooks(
             event_names = [name for name in events if isinstance(name, str)]
         else:
             continue
-        shell_command = shlex.join(argv)
-        for event_name in event_names:
-            mapped = _LEGACY_EVENT_MAP.get(event_name)
-            if mapped is None:
-                continue
-            event, matcher = mapped
+        shell_command = _observer_command(argv)
+        targets = dict.fromkeys(
+            mapped
+            for event_name in event_names
+            if (mapped := _LEGACY_EVENT_MAP.get(event_name)) is not None
+        )
+        for event, matcher in targets:
             grouped.setdefault(event, []).append(
                 MatcherGroup(
                     matcher=matcher,
-                    hooks=[CommandHandlerSpec(type="command", command=shell_command)],
+                    hooks=[
+                        CommandHandlerSpec(
+                            type="command",
+                            command=shell_command,
+                            timeout=LEGACY_COMMAND_TIMEOUT_SECONDS,
+                        )
+                    ],
                 )
             )
     return HooksConfig(hooks=grouped)
+
+
+def _observer_command(argv: list[str]) -> str:
+    """Preserve legacy side-effect-only output and exit semantics.
+
+    Args:
+        argv: Legacy command and arguments.
+
+    Returns:
+        A shell command that discards output and normalizes the exit status.
+    """
+    command = shlex.join(argv)
+    return f"({command}) >/dev/null 2>&1 || true"
 
 
 def is_legacy_hooks_document(data: object) -> bool:

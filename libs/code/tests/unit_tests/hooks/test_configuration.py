@@ -17,7 +17,10 @@ from deepagents_code.hooks.loading import (
     compute_snapshot_id,
     load_hooks_config,
 )
-from deepagents_code.hooks.migration import migrate_legacy_hooks
+from deepagents_code.hooks.migration import (
+    LEGACY_COMMAND_TIMEOUT_SECONDS,
+    migrate_legacy_hooks,
+)
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import HookEvent
 from deepagents_code.hooks.snapshot import HooksSnapshot
@@ -35,6 +38,10 @@ def test_registry_covers_all_hook_events() -> None:
         == DEFAULT_COMMAND_TIMEOUT_SECONDS
     )
     assert get_event_spec(HookEvent.PERMISSION_REQUEST).matcher_field == "tool_name"
+    assert get_event_spec(
+        HookEvent.USER_PROMPT_SUBMIT
+    ).default_timeout_seconds == pytest.approx(30.0)
+    assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
 
 
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
@@ -105,22 +112,45 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
     assert canonical_hooks_bytes(loaded.config).startswith(b'{"hooks":')
 
 
-def test_legacy_migration_only_maps_exact_session_end_semantics(
+def test_legacy_migration_maps_equivalent_lifecycle_events(
     tmp_path: Path,
 ) -> None:
     migrated = migrate_legacy_hooks(
         [
-            {"command": ["echo", "start"], "events": ["session.start"]},
-            {"command": ["echo", "compact"], "events": ["context.compact"]},
+            {
+                "command": ["echo", "prompt"],
+                "events": ["session.start", "user.prompt"],
+            },
+            {
+                "command": ["echo", "compact"],
+                "events": ["context.offload", "context.compact"],
+            },
+            {"command": ["echo", "complete"], "events": ["task.complete"]},
             {"command": ["echo", "tool"], "events": ["tool.use"]},
             {"command": ["echo", "end"], "events": ["session.end"]},
+            {"command": ["echo", "input"], "events": ["input.required"]},
             {"command": ["echo", "perm"], "events": ["permission.request"]},
         ]
     )
 
-    assert set(migrated.hooks) == {HookEvent.SESSION_END}
+    assert set(migrated.hooks) == {
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.PRE_COMPACT,
+        HookEvent.STOP,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+    }
+    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 1
+    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 1
+    assert migrated.hooks[HookEvent.PRE_COMPACT][0].matcher == "manual"
+    assert migrated.hooks[HookEvent.NOTIFICATION][0].matcher == "agent_needs_input"
     assert HookEvent.SESSION_START not in migrated.hooks
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
+    for groups in migrated.hooks.values():
+        for group in groups:
+            handler = group.hooks[0]
+            assert handler.timeout == pytest.approx(LEGACY_COMMAND_TIMEOUT_SECONDS)
+            assert handler.command.endswith(">/dev/null 2>&1 || true")
 
     user_dir = tmp_path / "user"
     user_dir.mkdir()
@@ -143,6 +173,7 @@ def test_legacy_migration_only_maps_exact_session_end_semantics(
     )
 
     assert HookEvent.SESSION_START not in loaded.config.hooks
+    assert HookEvent.USER_PROMPT_SUBMIT in loaded.config.hooks
     assert HookEvent.SESSION_END in loaded.config.hooks
     assert HookEvent.PRE_TOOL_USE not in loaded.config.hooks
     assert loaded.diagnostics[0].code == "legacy_deprecated"

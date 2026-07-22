@@ -14,6 +14,7 @@ from deepagents_code.hooks.models.domain import (
     PermissionEffect,
     PermissionRequestDecision,
     PostToolUseDecision,
+    PreCompactDecision,
     PreToolUseDecision,
     SessionEndDecision,
     SessionStartDecision,
@@ -22,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStartDecision,
     SubagentStopDecision,
     SubagentStopEvent,
+    UserPromptSubmitDecision,
 )
 from deepagents_code.hooks.models.wire import (
     PermissionAllow,
@@ -32,6 +34,7 @@ from deepagents_code.hooks.models.wire import (
     StopSpecificOutput,
     SubagentStartSpecificOutput,
     SubagentStopSpecificOutput,
+    UserPromptSubmitSpecificOutput,
 )
 from deepagents_code.hooks.terminal import validate_terminal_sequence
 
@@ -66,6 +69,7 @@ class _Reduction:
         default_factory=lambda: PermissionEffect(behavior="none")
     )
     continue_loop: bool = False
+    suppress_original_prompt: bool = False
 
 
 def reduce_hook_results(
@@ -193,6 +197,11 @@ def _merge_block(
     message = reason or "Blocked by hook"
     event = invocation.event.event
     policy = get_event_spec(event).exit_code_policy
+    if policy is ExitCodePolicy.BLOCK:
+        state.continue_processing = False
+        if state.stop_reason is None:
+            state.stop_reason = message
+        return
     if policy is ExitCodePolicy.DENY:
         _merge_permission(state, PermissionEffect(behavior="deny", reason=message))
         return
@@ -280,6 +289,19 @@ def _merge_specific(
                     message=f"{wire_name} is not supported and was ignored",
                     handler_id=handler_id,
                     field=wire_name,
+                )
+            )
+    elif isinstance(specific, UserPromptSubmitSpecificOutput):
+        _append(state.context, specific.additional_context)
+        state.suppress_original_prompt = specific.suppress_original_prompt
+        if specific.session_title is not None:
+            state.diagnostics.append(
+                HookDiagnostic(
+                    code="unsupported_field",
+                    severity="warning",
+                    message="sessionTitle is not supported and was ignored",
+                    handler_id=handler_id,
+                    field="sessionTitle",
                 )
             )
     elif isinstance(specific, PreToolUseSpecificOutput):
@@ -407,6 +429,13 @@ def _decision(invocation: HookInvocation, state: _Reduction) -> HookDecision:
     event = invocation.event.event
     if event is HookEvent.SESSION_START:
         return SessionStartDecision(event=event, context=state.context, **common)
+    if event is HookEvent.USER_PROMPT_SUBMIT:
+        return UserPromptSubmitDecision(
+            event=event,
+            context=state.context,
+            suppress_original_prompt=state.suppress_original_prompt,
+            **common,
+        )
     if event is HookEvent.SESSION_END:
         return SessionEndDecision(event=event, **common)
     if event is HookEvent.PERMISSION_REQUEST:
@@ -431,6 +460,8 @@ def _decision(invocation: HookInvocation, state: _Reduction) -> HookDecision:
             context=state.context,
             **common,
         )
+    if event is HookEvent.PRE_COMPACT:
+        return PreCompactDecision(event=event, **common)
     if event is HookEvent.STOP:
         return StopDecision(
             event=event,

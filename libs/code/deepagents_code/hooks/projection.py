@@ -14,12 +14,14 @@ from deepagents_code.hooks.models.domain import (
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
     SessionStartEvent,
     StopEvent,
     SubagentStartEvent,
     SubagentStopEvent,
+    UserPromptSubmitEvent,
 )
 from deepagents_code.hooks.models.wire import (
     BackgroundTaskWire,
@@ -27,6 +29,7 @@ from deepagents_code.hooks.models.wire import (
     NotificationWireInput,
     PermissionRequestWireInput,
     PostToolUseWireInput,
+    PreCompactWireInput,
     PreToolUseWireInput,
     SessionCronWire,
     SessionEndWireInput,
@@ -34,6 +37,7 @@ from deepagents_code.hooks.models.wire import (
     StopWireInput,
     SubagentStartWireInput,
     SubagentStopWireInput,
+    UserPromptSubmitWireInput,
     WireNotificationType,
     WirePermissionMode,
 )
@@ -92,6 +96,12 @@ def project_hook_input(
             source=event.cause,
             model=event.model,
         )
+    elif isinstance(event, UserPromptSubmitEvent):
+        result = UserPromptSubmitWireInput(
+            **_common_fields(invocation, transcript_path),
+            hook_event_name=HookEvent.USER_PROMPT_SUBMIT,
+            prompt=event.prompt,
+        )
     elif isinstance(event, SessionEndEvent):
         result = SessionEndWireInput(
             **_common_fields(invocation, transcript_path),
@@ -133,6 +143,13 @@ def project_hook_input(
             tool_response=_tool_result(event.result),
             tool_use_id=event.call.id,
             duration_ms=event.duration_ms,
+        )
+    elif isinstance(event, PreCompactEvent):
+        result = PreCompactWireInput(
+            **_common_fields(invocation, transcript_path),
+            hook_event_name=HookEvent.PRE_COMPACT,
+            trigger=event.trigger,
+            custom_instructions=event.custom_instructions,
         )
     elif isinstance(event, StopEvent):
         result = StopWireInput(

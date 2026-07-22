@@ -16,6 +16,7 @@ from deepagents_code.hooks.models.domain import (
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
     SessionStartEvent,
@@ -231,6 +232,8 @@ def _match_target(
         event, SessionStartEvent | SessionEndEvent
     ):
         return event.cause.value
+    if matcher_field == "trigger" and isinstance(event, PreCompactEvent):
+        return event.trigger.value
     if matcher_field == "agent_name" and isinstance(
         event, SubagentStartEvent | SubagentStopEvent
     ):

@@ -1249,8 +1249,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="mcp.enabled_project_server_approvals",
         group="MCP",
         summary=(
-            "Project MCP server approvals saved by project root, server name, and "
-            "server fingerprint; edited commands/URLs require re-approval. "
+            "Project MCP server approvals shared across one local Git repository's "
+            "worktrees, or saved by exact root outside Git, plus server name and "
+            "fingerprint; edited commands/URLs require re-approval. "
             "Process-wide name allowlist (bypasses project/fingerprint binding): "
             "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
         ),

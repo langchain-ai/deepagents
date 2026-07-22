@@ -68,6 +68,35 @@ from deepagents_code.model_config import (
 )
 
 
+def _create_git_common_dir(common_dir: Path) -> Path:
+    """Create the minimal shared metadata required by Git trust resolution."""
+    (common_dir / "objects").mkdir(parents=True)
+    (common_dir / "refs").mkdir()
+    (common_dir / "worktrees").mkdir()
+    (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (common_dir / "config").write_text("[core]\n\tbare = false\n")
+    return common_dir
+
+
+def _create_git_repository(root: Path) -> Path:
+    """Create a worktree with an in-tree Git common directory."""
+    root.mkdir()
+    return _create_git_common_dir(root / ".git")
+
+
+def _create_git_worktree(common_dir: Path, root: Path, name: str) -> Path:
+    """Create reciprocal linked-worktree metadata under `common_dir`."""
+    root.mkdir()
+    git_entry = root / ".git"
+    git_dir = common_dir / "worktrees" / name
+    git_dir.mkdir()
+    git_entry.write_text(f"gitdir: {git_dir}\n")
+    (git_dir / "commondir").write_text("../..\n")
+    (git_dir / "gitdir").write_text(f"{git_entry}\n")
+    (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+    return git_dir
+
+
 @pytest.fixture(autouse=True)
 def _clear_model_caches() -> Iterator[None]:
     """Clear module-level caches before and after each test."""
@@ -5957,6 +5986,88 @@ class TestNormalizeMcpProjectRoot:
 
         assert normalize_mcp_project_root(link) == normalize_mcp_project_root(target)
 
+    def test_main_and_linked_worktree_use_common_repository_identity(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        common_dir = _create_git_repository(main)
+        _create_git_worktree(common_dir, worktree, "worktree")
+
+        expected = str(common_dir.resolve())
+        assert normalize_mcp_project_root(main) == expected
+        assert normalize_mcp_project_root(worktree) == expected
+        assert normalize_mcp_project_root(common_dir) == expected
+
+    def test_sibling_worktrees_use_common_repository_identity(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = _create_git_repository(main)
+        _create_git_worktree(common_dir, first, "first")
+        _create_git_worktree(common_dir, second, "second")
+
+        assert normalize_mcp_project_root(first) == normalize_mcp_project_root(second)
+        assert normalize_mcp_project_root(first) == str(common_dir.resolve())
+
+    def test_independent_clones_use_distinct_local_identities(
+        self, tmp_path: Path
+    ) -> None:
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        _create_git_repository(first)
+        _create_git_repository(second)
+
+        assert normalize_mcp_project_root(first) != normalize_mcp_project_root(second)
+
+    def test_non_git_roots_keep_exact_resolved_paths(self, tmp_path: Path) -> None:
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+
+        assert normalize_mcp_project_root(first) == str(first.resolve())
+        assert normalize_mcp_project_root(second) == str(second.resolve())
+        assert normalize_mcp_project_root(first) != normalize_mcp_project_root(second)
+
+    def test_missing_worktree_metadata_falls_back_to_exact_root(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        common_dir = _create_git_repository(main)
+        git_dir = _create_git_worktree(common_dir, worktree, "worktree")
+        (git_dir / "commondir").unlink()
+
+        assert normalize_mcp_project_root(worktree) == str(worktree.resolve())
+
+    def test_malformed_worktree_metadata_falls_back_to_exact_root(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        common_dir = _create_git_repository(main)
+        git_dir = _create_git_worktree(common_dir, worktree, "worktree")
+        (git_dir / "commondir").write_text("../..\nunexpected\n")
+
+        assert normalize_mcp_project_root(worktree) == str(worktree.resolve())
+
+    def test_forged_worktree_pointer_falls_back_to_exact_root(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        genuine = tmp_path / "genuine"
+        forged = tmp_path / "forged"
+        common_dir = _create_git_repository(main)
+        git_dir = _create_git_worktree(common_dir, genuine, "genuine")
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {git_dir}\n")
+
+        assert normalize_mcp_project_root(genuine) == str(common_dir.resolve())
+        assert normalize_mcp_project_root(forged) == str(forged.resolve())
+
     def test_oserror_falls_back_to_expanded_unresolved_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -6062,6 +6173,46 @@ class TestMcpProjectServerApproval:
 
         assert restored == runtime
 
+    def test_marked_git_identity_does_not_rebind_when_metadata_is_stale(
+        self, tmp_path: Path
+    ) -> None:
+        outer = tmp_path / "outer"
+        _create_git_repository(outer)
+        nested_common_dir = _create_git_common_dir(outer / "nested.git")
+        worktree = tmp_path / "worktree"
+        _create_git_worktree(nested_common_dir, worktree, "worktree")
+        server = {"command": "echo"}
+        runtime = McpProjectServerApproval.create(
+            project_root=worktree, name="docs", server=server
+        )
+        assert runtime is not None
+        persisted = runtime.as_toml()
+        assert persisted["git_common_dir"] is True
+        (nested_common_dir / "HEAD").unlink()
+
+        restored = McpProjectServerApproval.from_toml(persisted)
+        outer_approval = McpProjectServerApproval.create(
+            project_root=outer, name="docs", server=server
+        )
+
+        assert restored is not None
+        assert restored.project_root == str(nested_common_dir.resolve())
+        assert restored.git_common_dir is True
+        assert restored != outer_approval
+
+    def test_from_toml_rejects_non_boolean_git_marker(self) -> None:
+        assert (
+            McpProjectServerApproval.from_toml(
+                {
+                    "project_root": "/project/.git",
+                    "name": "docs",
+                    "fingerprint": "sha256:value",
+                    "git_common_dir": "true",
+                }
+            )
+            is None
+        )
+
     def test_from_toml_normalizes_unresolved_root(self, tmp_path: Path) -> None:
         """A persisted, not-yet-resolved root is normalized on read.
 
@@ -6082,6 +6233,26 @@ class TestMcpProjectServerApproval:
         )
 
         assert restored == runtime
+
+    def test_legacy_exact_root_does_not_inherit_enclosing_repository(
+        self, tmp_path: Path
+    ) -> None:
+        outer = tmp_path / "outer"
+        _create_git_repository(outer)
+        child = outer / "child"
+        child.mkdir()
+
+        restored = McpProjectServerApproval.from_toml(
+            {
+                "project_root": str(child),
+                "name": "docs",
+                "fingerprint": "sha256:value",
+            }
+        )
+
+        assert restored is not None
+        assert restored.project_root == str(child.resolve())
+        assert restored.git_common_dir is False
 
     def test_from_toml_returns_none_for_malformed(self) -> None:
         """A table missing or blanking any field yields `None` (fail-closed)."""
@@ -6122,6 +6293,65 @@ class TestMcpServerTrustListsIsEnabled:
         )
 
         assert lists.is_enabled("docs", project_root=tmp_path, server=self._server())
+
+    def test_main_approval_enables_linked_worktree(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        common_dir = _create_git_repository(main)
+        _create_git_worktree(common_dir, worktree, "worktree")
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(main, "docs")}),
+        )
+
+        assert lists.is_enabled("docs", project_root=worktree, server=self._server())
+
+    def test_sibling_worktree_approval_is_shared(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = _create_git_repository(main)
+        _create_git_worktree(common_dir, first, "first")
+        _create_git_worktree(common_dir, second, "second")
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(first, "docs")}),
+        )
+
+        assert lists.is_enabled("docs", project_root=second, server=self._server())
+
+    def test_independent_clone_does_not_share_approval(self, tmp_path: Path) -> None:
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        _create_git_repository(first)
+        _create_git_repository(second)
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(first, "docs")}),
+        )
+
+        assert not lists.is_enabled("docs", project_root=second, server=self._server())
+
+    def test_forged_worktree_pointer_cannot_borrow_approval(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        genuine = tmp_path / "genuine"
+        forged = tmp_path / "forged"
+        common_dir = _create_git_repository(main)
+        git_dir = _create_git_worktree(common_dir, genuine, "genuine")
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {git_dir}\n")
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(genuine, "docs")}),
+        )
+
+        assert not lists.is_enabled("docs", project_root=forged, server=self._server())
 
     def test_blank_name_is_not_enabled(self, tmp_path: Path) -> None:
         """A blank server name (only from a malformed config) fails closed.
@@ -6310,6 +6540,47 @@ class TestLoadMcpServerTrustLists:
                 }
             ),
         )
+
+    def test_existing_worktree_approvals_load_and_deduplicate_safely(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        clone = tmp_path / "clone"
+        forged = tmp_path / "forged"
+        common_dir = _create_git_repository(main)
+        first_git_dir = _create_git_worktree(common_dir, first, "first")
+        _create_git_worktree(common_dir, second, "second")
+        clone_common_dir = _create_git_repository(clone)
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {first_git_dir}\n")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo"})
+        roots = [main, first, second, common_dir, clone, forged]
+        entries = ",\n".join(
+            f'  {{ project_root = "{root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}'
+            for root in roots
+        )
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f"[mcp]\nenabled_project_server_approvals = [\n{entries}\n]\n"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        approvals_by_root = {
+            approval.project_root: approval for approval in result.approvals
+        }
+        assert set(approvals_by_root) == {
+            str(common_dir.resolve()),
+            str(clone_common_dir.resolve()),
+            str(forged.resolve()),
+        }
+        assert approvals_by_root[str(common_dir.resolve())].git_common_dir is True
+        assert approvals_by_root[str(clone_common_dir.resolve())].git_common_dir is True
+        assert approvals_by_root[str(forged.resolve())].git_common_dir is False
+        assert result.malformed_approvals == 0
 
     def test_unresolvable_approval_root_is_dropped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -7112,7 +7383,7 @@ class TestAddEnabledProjectMcpServers:
             "github": {"command": "gh", "args": ["api"]},
         }
 
-    def _approvals(self, config_path: Path) -> list[dict[str, str]]:
+    def _approvals(self, config_path: Path) -> list[dict[str, str | bool]]:
         import tomllib
 
         with config_path.open("rb") as f:
@@ -7173,6 +7444,87 @@ class TestAddEnabledProjectMcpServers:
 
         approvals = self._approvals(config_path)
         assert [approval["name"] for approval in approvals] == ["docs", "reference"]
+
+    def test_compacts_equivalent_worktrees_without_deleting_other_roots(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        clone = tmp_path / "clone"
+        forged = tmp_path / "forged"
+        common_dir = _create_git_repository(main)
+        first_git_dir = _create_git_worktree(common_dir, first, "first")
+        _create_git_worktree(common_dir, second, "second")
+        clone_common_dir = _create_git_repository(clone)
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {first_git_dir}\n")
+        server_configs = self._server_configs()
+        fingerprint = fingerprint_mcp_server_config(server_configs["docs"])
+        entries = ",\n".join(
+            f'  {{ project_root = "{root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}'
+            for root in (first, second, clone, forged)
+        )
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f"[mcp]\nenabled_project_server_approvals = [\n{entries}\n]\n"
+        )
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=main,
+            server_configs=server_configs,
+        )
+
+        approvals = self._approvals(config_path)
+        approvals_by_root = {
+            str(approval["project_root"]): approval for approval in approvals
+        }
+        assert set(approvals_by_root) == {
+            str(common_dir.resolve()),
+            str(clone_common_dir.resolve()),
+            str(forged.resolve()),
+        }
+        assert approvals_by_root[str(common_dir.resolve())]["git_common_dir"] is True
+        assert (
+            approvals_by_root[str(clone_common_dir.resolve())]["git_common_dir"] is True
+        )
+        assert "git_common_dir" not in approvals_by_root[str(forged.resolve())]
+
+    def test_nested_external_common_identity_stays_idempotent(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        outer = tmp_path / "outer"
+        _create_git_repository(outer)
+        nested_common_dir = _create_git_common_dir(outer / "nested.git")
+        worktree = tmp_path / "nested-worktree"
+        _create_git_worktree(nested_common_dir, worktree, "nested")
+        server_configs = self._server_configs()
+        config_path = tmp_path / "config.toml"
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=worktree,
+            server_configs=server_configs,
+        )
+
+        approvals = self._approvals(config_path)
+        assert approvals[0]["project_root"] == str(nested_common_dir.resolve())
+        assert approvals[0]["git_common_dir"] is True
+        lists = load_mcp_server_trust_lists(config_path)
+        assert lists.is_enabled(
+            "docs", project_root=worktree, server=server_configs["docs"]
+        )
+        assert not lists.is_enabled(
+            "docs", project_root=outer, server=server_configs["docs"]
+        )
 
     def test_removes_migrated_names_from_legacy_approvals(self, tmp_path: Path) -> None:
         """Scoped approvals consume matching names from the legacy allowlist."""

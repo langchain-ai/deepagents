@@ -13,6 +13,7 @@ from deepagents_code._git import (
     _git_dir_cache,
     _normalize_lookup_path,
     _parse_git_dir_pointer,
+    find_git_common_dir,
     find_git_dir,
     find_git_root,
     parse_repository_metadata,
@@ -29,6 +30,34 @@ from deepagents_code._git import (
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 """A valid 40-char SHA-1 used across the commit-resolution tests."""
+
+
+def _run_git(root: Path, *args: str) -> None:
+    """Run Git in a throwaway repository."""
+    subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _init_git_repo(root: Path) -> None:
+    """Create a committed repository suitable for real worktree tests."""
+    root.mkdir()
+    _run_git(root, "init")
+    _run_git(root, "config", "user.email", "test@example.com")
+    _run_git(root, "config", "user.name", "Test")
+    _run_git(root, "config", "commit.gpgsign", "false")
+    (root / "tracked.txt").write_text("initial\n")
+    _run_git(root, "add", "tracked.txt")
+    _run_git(root, "commit", "-m", "initial")
+
+
+def _add_git_worktree(root: Path, worktree: Path, branch: str) -> None:
+    """Add a linked worktree backed by `root`'s common metadata."""
+    _run_git(root, "worktree", "add", "-b", branch, str(worktree), "HEAD")
 
 
 @pytest.fixture(autouse=True)
@@ -165,6 +194,143 @@ class TestFindGitDirAndRoot:
     def test_find_no_repo(self, tmp_path: Path) -> None:
         assert find_git_dir(tmp_path) is None
         assert find_git_root(tmp_path) is None
+
+
+class TestFindGitCommonDir:
+    def test_main_and_genuine_sibling_worktrees_share_identity(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        _init_git_repo(main)
+        _add_git_worktree(main, first, "first")
+        _add_git_worktree(main, second, "second")
+
+        expected = (main / ".git").resolve()
+        assert find_git_common_dir(main) == expected
+        assert find_git_common_dir(first) == expected
+        assert find_git_common_dir(second) == expected
+
+    def test_direct_pointer_to_another_common_dir_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {main / '.git'}\n")
+
+        assert find_git_common_dir(forged) is None
+
+    def test_independent_repositories_have_distinct_identities(
+        self, tmp_path: Path
+    ) -> None:
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        _init_git_repo(first)
+        _init_git_repo(second)
+
+        assert find_git_common_dir(first) == (first / ".git").resolve()
+        assert find_git_common_dir(second) == (second / ".git").resolve()
+        assert find_git_common_dir(first) != find_git_common_dir(second)
+
+    def test_non_git_directory_has_no_common_identity(self, tmp_path: Path) -> None:
+        assert find_git_common_dir(tmp_path) is None
+
+    def test_nested_non_repo_directory_does_not_inherit_parent_identity(
+        self, tmp_path: Path
+    ) -> None:
+        outer = tmp_path / "outer"
+        _init_git_repo(outer)
+        child = outer / "child"
+        child.mkdir()
+
+        assert find_git_common_dir(child) is None
+
+    def test_missing_worktree_common_dir_is_rejected(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _add_git_worktree(main, worktree, "worktree")
+        git_dir = _parse_git_dir_pointer(worktree / ".git")
+        assert git_dir is not None
+        (git_dir / "commondir").unlink()
+
+        assert find_git_common_dir(worktree) is None
+
+    def test_malformed_worktree_common_dir_is_rejected(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _add_git_worktree(main, worktree, "worktree")
+        git_dir = _parse_git_dir_pointer(worktree / ".git")
+        assert git_dir is not None
+        (git_dir / "commondir").write_text("../..\nunexpected\n")
+
+        assert find_git_common_dir(worktree) is None
+
+    def test_forged_pointer_to_another_worktree_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        genuine = tmp_path / "genuine"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        _add_git_worktree(main, genuine, "genuine")
+        git_dir = _parse_git_dir_pointer(genuine / ".git")
+        assert git_dir is not None
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {git_dir}\n")
+
+        assert find_git_common_dir(genuine) == (main / ".git").resolve()
+        assert find_git_common_dir(forged) is None
+
+    def test_symlinked_stale_backlink_does_not_validate_forged_worktree(
+        self, tmp_path: Path
+    ) -> None:
+        main = tmp_path / "main"
+        genuine = tmp_path / "genuine"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        _add_git_worktree(main, genuine, "genuine")
+        git_dir = _parse_git_dir_pointer(genuine / ".git")
+        assert git_dir is not None
+        forged.mkdir()
+        (forged / ".git").write_text(f"gitdir: {git_dir}\n")
+        (genuine / ".git").unlink()
+        (genuine / ".git").symlink_to(forged / ".git")
+
+        assert find_git_common_dir(forged) is None
+
+    def test_symlinked_git_entry_is_rejected(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        forged.mkdir()
+        (forged / ".git").symlink_to(main / ".git", target_is_directory=True)
+
+        assert find_git_common_dir(forged) is None
+
+    def test_directory_link_is_rejected_even_when_not_reported_as_symlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        main = tmp_path / "main"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        forged.mkdir()
+        git_entry = forged / ".git"
+        git_entry.symlink_to(main / ".git", target_is_directory=True)
+        original_is_symlink = Path.is_symlink
+
+        def _hide_git_entry_link(path: Path) -> bool:
+            if path == git_entry:
+                return False
+            return original_is_symlink(path)
+
+        monkeypatch.setattr(Path, "is_symlink", _hide_git_entry_link)
+
+        assert find_git_common_dir(forged) is None
 
 
 class TestReadGitBranchFromFilesystem:

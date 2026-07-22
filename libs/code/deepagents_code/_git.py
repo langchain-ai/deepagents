@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -157,6 +158,179 @@ def find_git_root(path: str | Path) -> Path | None:
             return None
 
     return None
+
+
+def _read_single_git_metadata_line(path: Path) -> str | None:
+    """Read one non-empty line from a regular Git metadata file.
+
+    Args:
+        path: Metadata file to read.
+
+    Returns:
+        The stripped line, or `None` when the file is unsafe or malformed.
+    """
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        logger.debug("Failed to read Git metadata from %s", path, exc_info=True)
+        return None
+
+    lines = raw.splitlines()
+    if len(lines) != 1:
+        return None
+    value = lines[0].strip()
+    if not value or "\x00" in value:
+        return None
+    return value
+
+
+def _resolve_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
+    """Resolve a path stored in a single-line Git metadata file.
+
+    Args:
+        path: Metadata file containing the path.
+        relative_to: Base directory for a relative stored path.
+
+    Returns:
+        The strictly resolved path, or `None` when it cannot be trusted.
+    """
+    value = _read_single_git_metadata_line(path)
+    if value is None:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = relative_to / candidate
+    try:
+        return candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Failed to resolve Git metadata path from %s", path, exc_info=True)
+        return None
+
+
+def _normalize_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
+    """Normalize a stored path without following its target.
+
+    Args:
+        path: Metadata file containing the path.
+        relative_to: Base directory for a relative stored path.
+
+    Returns:
+        The absolute lexical path, or `None` when the metadata is malformed.
+    """
+    value = _read_single_git_metadata_line(path)
+    if value is None:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = relative_to / candidate
+    try:
+        return Path(os.path.abspath(candidate))  # noqa: PTH100  # do not follow links
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to normalize Git metadata path from %s", path, exc_info=True
+        )
+        return None
+
+
+def _parse_trusted_git_dir_pointer(git_entry: Path) -> Path | None:
+    """Resolve a strict worktree `.git` pointer for a trust decision.
+
+    Args:
+        git_entry: Regular `.git` file to parse.
+
+    Returns:
+        The canonical administration directory, or `None` for an invalid pointer.
+    """
+    value = _read_single_git_metadata_line(git_entry)
+    if value is None or not value.startswith(_GIT_DIR_POINTER_PREFIX):
+        return None
+    pointer = value.removeprefix(_GIT_DIR_POINTER_PREFIX).strip()
+    if not pointer:
+        return None
+    candidate = Path(pointer)
+    if not candidate.is_absolute():
+        candidate = git_entry.parent / candidate
+    try:
+        git_dir = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to resolve trusted gitdir pointer %s", git_entry, exc_info=True
+        )
+        return None
+    return git_dir if git_dir.is_dir() else None
+
+
+def _is_valid_git_common_dir(path: Path) -> bool:
+    """Return whether `path` has the required shared-repository metadata."""
+    return (
+        path.is_dir()
+        and (path / "HEAD").is_file()
+        and (path / "config").is_file()
+        and (path / "objects").is_dir()
+        and (path / "refs").is_dir()
+    )
+
+
+def find_git_common_dir(path: str | Path) -> Path | None:
+    """Resolve a validated identity shared by one repository's Git worktrees.
+
+    A normal checkout uses its in-tree `.git` directory. A linked worktree is
+    accepted only when its administration directory lives directly under the
+    common repository's `worktrees` directory and its `gitdir` file points back
+    to the current worktree's `.git` file. These checks prevent a forged pointer
+    or directory link from borrowing another repository's identity.
+
+    Args:
+        path: Exact working-tree root or persisted common-directory path.
+
+    Returns:
+        The canonical Git common directory, or `None` when the metadata cannot
+        be validated confidently.
+    """
+    try:
+        root = _normalize_lookup_path(path)
+        if not root.is_dir():
+            return None
+        if _is_valid_git_common_dir(root):
+            return root
+        root = root.resolve(strict=True)
+        git_entry = root / ".git"
+        if git_entry.is_symlink():
+            return None
+
+        if git_entry.is_dir():
+            common_dir = git_entry.resolve(strict=True)
+            if common_dir != git_entry or not _is_valid_git_common_dir(common_dir):
+                return None
+            return common_dir
+        if not git_entry.is_file():
+            return None
+
+        git_dir = _parse_trusted_git_dir_pointer(git_entry)
+        if git_dir is None:
+            return None
+
+        common_dir = _resolve_git_metadata_path(
+            git_dir / "commondir", relative_to=git_dir
+        )
+        if common_dir is None or git_dir.parent != common_dir / "worktrees":
+            return None
+        if not _is_valid_git_common_dir(common_dir):
+            return None
+        if not (git_dir / "HEAD").is_file():
+            return None
+
+        backlink = _normalize_git_metadata_path(git_dir / "gitdir", relative_to=git_dir)
+        if backlink is None or backlink != git_entry:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to validate Git common directory for %s", path, exc_info=True
+        )
+        return None
+    return common_dir
 
 
 def read_git_branch_from_filesystem(path: str | Path) -> str | None:

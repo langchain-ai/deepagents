@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._git import find_git_common_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -3412,13 +3413,16 @@ class McpProjectServerApproval:
     """
 
     project_root: str
-    """Resolved project root that originated the approval."""
+    """Shared local-repository identity, or the resolved project root fallback."""
 
     name: str
     """MCP server name within the project config."""
 
     fingerprint: str
     """Fingerprint of the approved MCP server definition."""
+
+    git_common_dir: bool = field(default=False, compare=False, kw_only=True)
+    """Whether `project_root` is a persisted Git common-directory identity."""
 
     def __post_init__(self) -> None:
         """Reject degenerate approvals so a bad one can't silently never match.
@@ -3439,6 +3443,32 @@ class McpProjectServerApproval:
             raise ValueError(msg)
 
     @classmethod
+    def _create_for_scope(
+        cls,
+        *,
+        scope: tuple[str, bool],
+        name: str,
+        server: JsonValue,
+    ) -> McpProjectServerApproval:
+        """Build an approval from one already-resolved trust scope.
+
+        Args:
+            scope: Normalized identity and Git-common marker.
+            name: MCP server name.
+            server: Parsed MCP server definition to fingerprint.
+
+        Returns:
+            The normalized, definition-bound approval.
+        """
+        normalized_root, git_common_dir = scope
+        return cls(
+            project_root=normalized_root,
+            name=name.strip(),
+            fingerprint=fingerprint_mcp_server_config(server),
+            git_common_dir=git_common_dir,
+        )
+
+    @classmethod
     def create(
         cls, *, project_root: str | Path | None, name: str, server: JsonValue
     ) -> McpProjectServerApproval | None:
@@ -3455,39 +3485,33 @@ class McpProjectServerApproval:
         Returns:
             The approval, or `None` when `project_root` cannot be normalized.
         """
-        normalized_root = normalize_mcp_project_root(project_root)
-        if normalized_root is None:
+        scope = _normalize_mcp_project_scope(project_root)
+        if scope is None:
             return None
-        return cls(
-            project_root=normalized_root,
-            # Strip so the read side matches the write side and `from_toml`,
-            # both of which persist/compare a stripped name — otherwise a
-            # whitespace-padded server key would never match its own approval.
-            name=name.strip(),
-            fingerprint=fingerprint_mcp_server_config(server),
-        )
+        return cls._create_for_scope(scope=scope, name=name, server=server)
 
     @classmethod
     def from_toml(cls, item: Mapping[str, object]) -> McpProjectServerApproval | None:
         """Deserialize a persisted approval table, normalizing the root.
 
-        The read-side counterpart to `as_toml`. Applies the *same* root
-        normalization as `create` so a persisted approval and a freshly built
-        runtime one compare equal for the same project and definition — the
-        write/read symmetry the trust decision depends on lives here, not in the
-        caller.
+        Legacy exact-root entries are migrated through the same project lookup as
+        `create`. Entries marked `git_common_dir` retain their exact stored
+        identity instead, so stale metadata cannot redirect them to an enclosing
+        repository.
 
         Args:
             item: A parsed TOML table with `project_root`, `name`, and
-                `fingerprint` string fields.
+                `fingerprint` string fields plus an optional `git_common_dir`
+                boolean.
 
         Returns:
-            The approval, or `None` for a malformed table (missing, blank, or
-                non-string field) — fail-closed for an allowlist.
+            The approval, or `None` for a malformed table — fail-closed for an
+            allowlist.
         """
         project_root = item.get("project_root")
         name = item.get("name")
         fingerprint = item.get("fingerprint")
+        git_common_dir = item.get("git_common_dir", False)
         if not (
             isinstance(project_root, str)
             and project_root.strip()
@@ -3495,39 +3519,49 @@ class McpProjectServerApproval:
             and name.strip()
             and isinstance(fingerprint, str)
             and fingerprint.strip()
+            and isinstance(git_common_dir, bool)
         ):
             return None
-        normalized_root = normalize_mcp_project_root(project_root)
+
+        if git_common_dir:
+            normalized_root = _normalize_persisted_git_common_dir(project_root)
+            normalized_is_common = True
+        else:
+            scope = _normalize_mcp_project_scope(project_root)
+            if scope is None:
+                return None
+            normalized_root, normalized_is_common = scope
         if normalized_root is None:
             return None
         return cls(
             project_root=normalized_root,
             name=name.strip(),
             fingerprint=fingerprint.strip(),
+            git_common_dir=normalized_is_common,
         )
 
-    def as_toml(self) -> dict[str, str]:
+    def as_toml(self) -> dict[str, str | bool]:
         """Return a TOML-serializable representation."""
-        return {
+        item: dict[str, str | bool] = {
             "project_root": self.project_root,
             "name": self.name,
             "fingerprint": self.fingerprint,
         }
+        if self.git_common_dir:
+            item["git_common_dir"] = True
+        return item
 
 
-def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
-    """Normalize a project root for persisted MCP trust comparisons.
+def _normalize_mcp_project_scope(
+    project_root: str | Path | None,
+) -> tuple[str, bool] | None:
+    """Resolve an MCP trust identity and whether it is Git-common scoped.
 
     Args:
         project_root: Project root path to normalize.
 
     Returns:
-        Resolved absolute project root string, or `None` when `project_root`
-            is `None`, cannot be expanded, or resolution detects a path loop.
-            On an `OSError` from `resolve()`, returns the expanded but
-            *unresolved* path as a fallback; a transient failure on only one of
-            the write/read sides then yields different strings and a spurious
-            re-prompt (fail-closed), never a false match.
+        `(identity, git_common_dir)`, or `None` when the path is unavailable.
     """
     if project_root is None:
         return None
@@ -3542,14 +3576,14 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
         return None
 
     try:
-        return str(expanded_root.resolve())
+        resolved_root = expanded_root.resolve()
     except OSError:
         logger.warning(
             "Could not resolve MCP project root %s",
             project_root,
             exc_info=True,
         )
-        return str(expanded_root)
+        return str(expanded_root), False
     except RuntimeError:
         logger.warning(
             "Could not resolve MCP project root %s",
@@ -3557,6 +3591,51 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
             exc_info=True,
         )
         return None
+
+    common_dir = find_git_common_dir(resolved_root)
+    if common_dir is not None:
+        return str(common_dir), True
+    return str(resolved_root), False
+
+
+def _normalize_persisted_git_common_dir(project_root: str) -> str | None:
+    """Normalize a marked Git identity without following or rediscovering it.
+
+    Args:
+        project_root: Persisted Git common-directory path.
+
+    Returns:
+        The absolute lexical path, or `None` for an invalid stored identity.
+    """
+    try:
+        expanded_root = Path(project_root).expanduser()
+    except (OSError, RuntimeError):
+        return None
+    if not expanded_root.is_absolute():
+        return None
+    try:
+        return os.path.abspath(expanded_root)  # noqa: PTH100  # do not follow links
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
+    """Normalize a project root for persisted MCP trust comparisons.
+
+    Genuine Git worktrees use their validated common repository metadata
+    directory, so all worktrees from one local repository share an identity while
+    independent clones remain distinct. Any Git metadata that cannot be validated
+    falls back to the exact resolved project root.
+
+    Args:
+        project_root: Project root path to normalize.
+
+    Returns:
+        The validated Git common directory or resolved absolute project root, or
+        `None` when `project_root` is unavailable.
+    """
+    scope = _normalize_mcp_project_scope(project_root)
+    return scope[0] if scope is not None else None
 
 
 def fingerprint_mcp_server_config(server: JsonValue) -> str:
@@ -3589,9 +3668,10 @@ class McpServerTrustLists:
 
     Sourced only from the user's own configuration — the home `config.toml`, the
     global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
-    committed `.mcp.json` cannot self-approve. Persisted approvals are scoped to
-    a resolved project root and the approved server definition's fingerprint.
-    Env-sourced approvals remain explicit process-wide name approvals.
+    committed `.mcp.json` cannot self-approve. Persisted approvals bind to the
+    validated common metadata of one local Git repository, or the exact resolved
+    project root when that identity is unavailable, plus the server definition's
+    fingerprint. Env-sourced approvals remain explicit process-wide name approvals.
 
     The "reject wins" invariant — a name in both approval and rejection data is
     only rejected — is enforced in `__post_init__`, so every instance is disjoint
@@ -3640,8 +3720,9 @@ class McpServerTrustLists:
 
     malformed_approvals: int = field(default=0, compare=False, kw_only=True)
     """Count of `[mcp].enabled_project_server_approvals` rows that were dropped as
-    malformed (wrong-typed key, non-table entry, or a table missing/blank
-    `project_root`/`name`/`fingerprint`). Non-zero means a persisted approval
+    malformed (wrong-typed key, non-table entry, a table missing/blank
+    `project_root`/`name`/`fingerprint`, or an invalid Git identity marker).
+    Non-zero means a persisted approval
     could not be read, so its server silently re-prompts; callers should surface
     it (a bare `logger.warning` is invisible outside debug mode) for parity with
     `legacy_ignored`. Diagnostic, not resolved policy — excluded from equality."""
@@ -3838,8 +3919,8 @@ def _toml_project_server_approvals(
         )
         if approval is None:
             logger.warning(
-                "[mcp].enabled_project_server_approvals in %s ignored an "
-                "entry missing project_root, name, or fingerprint",
+                "[mcp].enabled_project_server_approvals in %s ignored a "
+                "malformed entry",
                 config_path,
             )
             dropped += 1
@@ -3867,10 +3948,11 @@ def load_mcp_server_trust_lists(
 
     - `enabled` (permissive): the env var is an explicit process-wide name
         allowlist.
-    - `approvals` (permissive): TOML approvals are scoped to project root and a
-        server-definition fingerprint. They remain active alongside env-enabled
-        names, so setting the process-wide escape hatch does not discard choices
-        remembered by the interactive prompt. Legacy flat TOML
+    - `approvals` (permissive): TOML approvals are scoped to one validated local
+        Git repository (shared across its worktrees), with exact-root fallback,
+        and a server-definition fingerprint. They remain active alongside
+        env-enabled names, so setting the process-wide escape hatch does not
+        discard choices remembered by the interactive prompt. Legacy flat TOML
         `enabled_project_servers` entries are ignored because they cannot be safely
         scoped.
     - `disabled` (restrictive): the env var *unions* with the TOML list — denies
@@ -4013,8 +4095,9 @@ def add_enabled_project_mcp_servers(
 
     Backs the interactive approval prompt's "always allow" choice: the given
     names are added to the user-level `config.toml` allowlist with the current
-    project root and each server definition's fingerprint, so a different repo
-    or a changed command/URL under the same name asks for approval again.
+    local Git repository identity (or exact project root fallback) and each
+    server definition's fingerprint. Sibling worktrees share the approval, while
+    a different clone or changed command/URL under the same name asks again.
 
     Defaults to the user-level config (`DEFAULT_CONFIG_PATH`), the sole source
     `load_mcp_server_trust_lists` reads the allowlist from — so writing to the
@@ -4048,8 +4131,8 @@ def add_enabled_project_mcp_servers(
     if not clean_names:
         return True
 
-    normalized_root = normalize_mcp_project_root(project_root)
-    if normalized_root is None or server_configs is None:
+    scope = _normalize_mcp_project_scope(project_root)
+    if scope is None or server_configs is None:
         logger.error(
             "Cannot save enabled project MCP servers without project root and "
             "server definitions"
@@ -4061,15 +4144,11 @@ def add_enabled_project_mcp_servers(
         if name not in server_configs:
             logger.error("Cannot save unknown project MCP server %r", name)
             return False
-        approval = McpProjectServerApproval.create(
-            project_root=normalized_root, name=name, server=server_configs[name]
+        approvals_to_add.append(
+            McpProjectServerApproval._create_for_scope(
+                scope=scope, name=name, server=server_configs[name]
+            )
         )
-        if approval is None:
-            # normalized_root is already non-None here, so create cannot fail;
-            # guard anyway so a future change can't smuggle in a bad approval.
-            logger.error("Could not build approval for project MCP server %r", name)
-            return False
-        approvals_to_add.append(approval)
 
     try:
         # Hold the shared lock across read-through-replace: the atomic rename

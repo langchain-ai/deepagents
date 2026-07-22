@@ -2461,6 +2461,28 @@ class TestThreadsListCwdArgparse:
 class TestCheckMcpProjectTrustPrompt:
     """The project MCP approval prompt should surface a docs link."""
 
+    @staticmethod
+    def _create_git_repository(root: Path) -> Path:
+        root.mkdir()
+        common_dir = root / ".git"
+        (common_dir / "objects").mkdir(parents=True)
+        (common_dir / "refs").mkdir()
+        (common_dir / "worktrees").mkdir()
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n\tbare = false\n")
+        return common_dir
+
+    @staticmethod
+    def _create_git_worktree(common_dir: Path, root: Path, name: str) -> None:
+        root.mkdir()
+        git_entry = root / ".git"
+        git_dir = common_dir / "worktrees" / name
+        git_dir.mkdir()
+        git_entry.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{git_entry}\n")
+        (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+
     def test_debug_env_helper_uses_truthy_parsing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3179,6 +3201,66 @@ class TestCheckMcpProjectTrustPrompt:
             "docs", project_root=project_root, server=server_configs["docs"]
         )
         assert lists.disabled == frozenset({"reference"})
+
+    def test_existing_sibling_worktree_approval_skips_prompt(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        project_cfg = second / ".mcp.json"
+        project_cfg.write_text("{}")
+        server_configs = {"docs": {"command": "echo"}}
+        fingerprint = model_config.fingerprint_mcp_server_config(server_configs["docs"])
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            "[mcp]\nenabled_project_server_approvals = ["
+            f'{{ project_root = "{first}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(project_root=second, user_cwd=second)
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "prompt must be skipped for an approved sibling worktree"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "echo")],
+            ),
+            patch("builtins.input", _no_input),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is None
+        assert capsys.readouterr().err == ""
 
     def test_all_servers_list_resolved_skip_prompt_without_noise(
         self,

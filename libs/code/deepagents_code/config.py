@@ -3107,7 +3107,7 @@ def is_langsmith_redaction_enabled() -> bool:
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
-        return True
+        return False
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
 
@@ -3161,8 +3161,8 @@ def configure_langsmith_secret_redaction() -> bool:
     try:
         if not is_langsmith_redaction_enabled():
             logger.warning(
-                "LangSmith tracing is active but secret redaction is disabled "
-                "via %s; secrets may be uploaded to traces unredacted.",
+                "LangSmith tracing is active without secret redaction; secrets may "
+                "be uploaded to traces unredacted. Set %s=true to enable redaction.",
                 LANGSMITH_REDACT,
             )
             return False

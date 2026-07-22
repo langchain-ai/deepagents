@@ -831,10 +831,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
-        # Core names captured before the tail so an inherited main-agent
-        # middleware (one overriding a default GP slot) splices in after the
-        # real tools, ahead of the profile/prompt-caching tail.
-        _gp_core_names = {m.name for m in gp_middleware}
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
@@ -852,7 +848,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # is not mirrored here; to give the general-purpose subagent that
         # middleware, override it with a subagent named `general-purpose`.
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
-        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, core_names=_gp_core_names)
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,

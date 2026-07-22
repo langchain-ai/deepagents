@@ -522,7 +522,29 @@ class TestGraderPlumbing:
         mw._ensure_grader()
         assert seen["model"] == "custom-grader-model"
 
-    def test_grade_records_model_and_effective_strategy(
+    @pytest.mark.parametrize(
+        ("model_name", "profile"),
+        [
+            ("gpt-4.1", None),
+            ("claude-sonnet-4-6", {"structured_output": False}),
+        ],
+    )
+    def test_grader_metadata_uses_langchain_model_name_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        model_name: str,
+        profile: dict[str, bool] | None,
+    ) -> None:
+        mw = RubricMiddleware(model=f"provider:{model_name}")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(model_name=model_name, profile=profile),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "ProviderStrategy"
+
+    def test_grade_records_model_strategy_and_preserves_inherited_metadata(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -547,6 +569,16 @@ class TestGraderPlumbing:
 
         run = SimpleNamespace(add_metadata=recorded_metadata.append)
         monkeypatch.setattr("deepagents.middleware.rubric.get_current_run_tree", lambda: run)
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {
+                "metadata": {
+                    "tenant_id": "tenant-123",
+                    "thread_id": "thread-456",
+                    "rubric_grader_effective_strategy": "stale",
+                }
+            },
+        )
         mw = RubricMiddleware(model="anthropic:claude-sonnet-4-6")
         mw._grader = SimpleNamespace(invoke=invoke)
         monkeypatch.setattr(
@@ -568,10 +600,65 @@ class TestGraderPlumbing:
 
         assert graded is response
         assert captured_config["metadata"] == {
+            "tenant_id": "tenant-123",
+            "thread_id": "thread-456",
             "rubric_grader_configured_model": "anthropic:claude-sonnet-4-6",
             "rubric_grader_effective_strategy": "ProviderStrategy",
         }
         assert recorded_metadata[-1]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+
+    async def test_agrade_preserves_inherited_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured_config: dict[str, Any] = {}
+        response = GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[],
+        )
+
+        async def ainvoke(
+            _payload: dict[str, Any],
+            *,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            captured_config.update(config)
+            return {
+                "messages": [AIMessage(content='{"result":"satisfied"}')],
+                "structured_response": response,
+            }
+
+        monkeypatch.setattr("deepagents.middleware.rubric.get_current_run_tree", lambda: None)
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"experiment_id": "experiment-123"}},
+        )
+        mw = RubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        mw._grader = SimpleNamespace(ainvoke=ainvoke)
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+
+        graded = await mw._agrade(
+            {
+                "rubric": "tests pass",
+                "messages": [HumanMessage(content="run the tests")],
+            },
+            0,
+        )
+
+        assert graded is response
+        assert captured_config["metadata"] == {
+            "experiment_id": "experiment-123",
+            "rubric_grader_configured_model": "anthropic:claude-sonnet-4-6",
+            "rubric_grader_effective_strategy": "ProviderStrategy",
+        }
 
     def test_custom_system_prompt_honored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A user-supplied `system_prompt` replaces the default grader prompt."""

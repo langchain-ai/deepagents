@@ -26,6 +26,7 @@ from typing import (
 )
 
 from langchain.agents import create_agent
+from langchain.agents.factory import FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -45,6 +46,7 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
+from langchain_core.runnables import RunnableConfig, ensure_config
 from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
@@ -349,20 +351,21 @@ def _strategy_from_exception(exc: BaseException) -> Literal["ProviderStrategy", 
     return None
 
 
-def _strategy_from_model_profile(
+def _strategy_from_model(
     model: object,
     *,
     has_tools: bool,
 ) -> Literal["ProviderStrategy", "ToolStrategy"] | None:
-    profile = getattr(model, "profile", None)
-    if not isinstance(profile, Mapping) or not profile.get("structured_output"):
-        return None
     identifier = _model_identifier(model)
-    if has_tools and identifier is not None:
-        normalized = identifier.lower()
-        if "gemini" in normalized and "gemini-3" not in normalized:
+    normalized = identifier.lower() if identifier is not None else None
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, Mapping) and profile.get("structured_output"):
+        if has_tools and normalized is not None and "gemini" in normalized and "gemini-3" not in normalized:
             return "ToolStrategy"
-    return "ProviderStrategy"
+        return "ProviderStrategy"
+    if normalized is not None and any(re.search(pattern, normalized) for pattern in FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT):
+        return "ProviderStrategy"
+    return None
 
 
 @beta(obj_type="middleware")
@@ -621,7 +624,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         effective_strategy: Literal["ProviderStrategy", "ToolStrategy"] | None = None,
     ) -> dict[str, str]:
         model = self._resolved_model or self._model
-        strategy = effective_strategy or _strategy_from_model_profile(
+        strategy = effective_strategy or _strategy_from_model(
             model,
             has_tools=bool(self._tools),
         )
@@ -629,6 +632,11 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             "rubric_grader_configured_model": self._model_label,
             "rubric_grader_effective_strategy": strategy or "unknown",
         }
+
+    @staticmethod
+    def _grader_invocation_config(metadata: dict[str, str]) -> RunnableConfig:
+        inherited_metadata = ensure_config().get("metadata") or {}
+        return {"metadata": {**inherited_metadata, **metadata}}
 
     @staticmethod
     def _record_grader_trace_metadata(metadata: dict[str, str]) -> None:
@@ -647,7 +655,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         try:
             result = grader.invoke(
                 {"messages": [HumanMessage(content=payload)]},
-                config={"metadata": metadata},
+                config=self._grader_invocation_config(metadata),
             )
         except Exception as exc:
             self._record_grader_trace_metadata(
@@ -671,7 +679,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         try:
             result = await grader.ainvoke(
                 {"messages": [HumanMessage(content=payload)]},
-                config={"metadata": metadata},
+                config=self._grader_invocation_config(metadata),
             )
         except Exception as exc:
             self._record_grader_trace_metadata(

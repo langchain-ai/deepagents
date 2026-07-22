@@ -7,7 +7,6 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from importlib import import_module
 from typing import Annotated, Any, Required, TypedDict, cast
 
 from langchain.agents import AgentState, create_agent
@@ -21,7 +20,6 @@ from langchain.agents.middleware.types import (
 )
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
-from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -45,6 +43,7 @@ from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -246,45 +245,6 @@ def get_default_model() -> ChatAnthropic:
         `ChatAnthropic` instance configured with `claude-sonnet-4-6`.
     """
     return _build_default_model()
-
-
-def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
-    """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
-    module_name = "langchain_aws.middleware.prompt_caching"
-    try:
-        module = import_module(module_name)
-    except ImportError as exc:
-        if exc.name not in {"langchain_aws", "langchain_aws.middleware", module_name}:
-            raise
-        logger.debug("Bedrock prompt caching middleware is unavailable.", exc_info=exc)
-        return None
-    middleware_cls = module.BedrockPromptCachingMiddleware
-    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
-
-
-def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
-    """Create Fireworks prompt caching middleware when `langchain-fireworks` is installed."""
-    module_name = "langchain_fireworks.middleware.prompt_caching"
-    try:
-        module = import_module(module_name)
-    except ImportError as exc:
-        if exc.name not in {"langchain_fireworks", "langchain_fireworks.middleware", module_name}:
-            raise
-        logger.debug("Fireworks prompt caching middleware is unavailable.", exc_info=exc)
-        return None
-    middleware_cls = module.FireworksPromptCachingMiddleware
-    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
-
-
-def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
-    """Append provider-specific prompt caching middleware."""
-    middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    bedrock_middleware = _create_bedrock_prompt_caching_middleware()
-    if bedrock_middleware is not None:
-        middleware.append(bedrock_middleware)
-    fireworks_middleware = _create_fireworks_prompt_caching_middleware()
-    if fireworks_middleware is not None:
-        middleware.append(fireworks_middleware)
 
 
 def _merge_fs_interrupt_on(
@@ -778,7 +738,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
-            _append_prompt_caching_middleware(subagent_middleware)
+            append_prompt_caching_middleware(subagent_middleware)
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -862,7 +822,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
-        _append_prompt_caching_middleware(gp_middleware)
+        append_prompt_caching_middleware(gp_middleware)
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -957,7 +917,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    _append_prompt_caching_middleware(deepagent_middleware)
+    append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.

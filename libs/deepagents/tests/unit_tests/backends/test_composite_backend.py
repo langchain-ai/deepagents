@@ -12,6 +12,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     GlobResult,
     GrepResult,
+    LsResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -421,6 +422,30 @@ async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch:
     monkeypatch.setattr(routed, "aglob", _aglob_error)
     glob_result = await comp.aglob("*.txt", path="/")
     assert glob_result.error == "sandbox RPC failed"
+
+
+def test_composite_ls_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    comp, default, _routed = _merge_composite()
+    monkeypatch.setattr(default, "ls", lambda _path: LsResult(error="Error: connection to sandbox lost"))
+
+    result = comp.ls("/")
+
+    assert result.error == "Error: connection to sandbox lost"
+    assert result.entries is None
+
+
+async def test_composite_als_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    comp, default, _routed = _merge_composite()
+
+    async def _als_error(_path: str) -> LsResult:
+        return LsResult(error="Error: connection to sandbox lost")
+
+    monkeypatch.setattr(default, "als", _als_error)
+
+    result = await comp.als("/")
+
+    assert result.error == "Error: connection to sandbox lost"
+    assert result.entries is None
 
 
 def test_composite_backend_ls_nested_directories(tmp_path: Path):

@@ -3614,6 +3614,45 @@ class TestCheckMcpProjectTrustPrompt:
         assert "require approval" not in err
 
 
+class TestPromptYoloAcknowledgement:
+    """Tests for the inline YOLO acknowledgement selector."""
+
+    def test_yolo_selector_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The selector suppresses the stray first-character terminal cursor."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        assert captured["layout"].container.content.show_cursor is False
+
+
 class TestSelectProjectServersToPersist:
     """Tests for the "always allow" subset selection helpers."""
 
@@ -3737,6 +3776,36 @@ class TestSelectProjectServersToPersist:
         assert "Allow for this project — until changed" in rendered
         assert "Deny" in rendered
         assert "Choose how to continue" not in rendered
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The inline picker suppresses the stray first-character terminal cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustAction,
+            _run_project_mcp_trust_action_picker,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _ProjectMcpTrustAction:
+                return _ProjectMcpTrustAction.DENY
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        _run_project_mcp_trust_action_picker(Console(stderr=True))
+
+        assert captured["layout"].container.content.show_cursor is False
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_action_picker_escape_aborts(
@@ -3882,6 +3951,39 @@ class TestSelectProjectServersToPersist:
 
         assert names == ["reference"]
         assert captured["full_screen"] is False
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both checkbox windows suppress the stray first-character cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                return []
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        windows = captured["layout"].container.children
+        assert all(window.content.show_cursor is False for window in windows)
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(

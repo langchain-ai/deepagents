@@ -7789,7 +7789,11 @@ class TestGoalCommand:
 
     async def test_goal_show_grader_line_reports_defaults(self) -> None:
         """The grader line should spell out defaults when the grader is unset."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_goal = "ship the feature"
@@ -7800,8 +7804,35 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert (
-                "Grader: current chat model · max iterations: SDK default" in rendered
+                "Grader: startup chat model (openai:gpt-5.5) · "
+                "max iterations: 3 (SDK default)" in rendered
             )
+
+    def test_grader_display_ignores_per_turn_model_override(self) -> None:
+        """A `/model` override should not be reported as the grader model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "anthropic:claude-sonnet-4-5"},
+        )
+        app._model_override = "openai:gpt-5.5"
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model (anthropic:claude-sonnet-4-5)"
+
+    def test_grader_display_reports_bare_default_without_startup_model(self) -> None:
+        """With no startup model captured, the grader line omits the spec.
+
+        This is the state a fresh, unconfigured user sees on `/goal show` or
+        `/rubric show`, so guard against a regression rendering a stray
+        "startup chat model (None)".
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        assert app._rubric_default_model is None
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model"
 
     @pytest.mark.parametrize("command", ["/goal", "/goal show"])
     async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
@@ -10633,7 +10664,11 @@ class TestRubricCommand:
 
     async def test_rubric_state_reports_sdk_default_when_cap_unset(self) -> None:
         """`/rubric show` labels an unset cap as the SDK default."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_rubric = "tests pass"
@@ -10642,7 +10677,10 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations: SDK default" in rendered
+            assert (
+                "Rubric grader model: startup chat model (openai:gpt-5.5)" in rendered
+            )
+            assert "Rubric max iterations: 3 (SDK default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
         """External graph sessions cannot change construction-time rubric caps."""

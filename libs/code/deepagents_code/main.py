@@ -839,11 +839,22 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
         Whether the user explicitly accepted the warning.
     """
     console.print()
-    console.print("[bold red]YOLO mode runs gated actions without review.[/bold red]")
     console.print(
-        "It can execute arbitrary commands, modify files, call external tools, and "
-        "follow hostile retrieved instructions. Auto does not provide sandbox "
-        "containment either; YOLO removes its action decision boundary entirely."
+        "[bold red]YOLO mode lets the agent act on its own, without stopping to "
+        "ask you first.[/bold red]"
+    )
+    console.print(
+        "Normally dcode pauses for your approval before doing anything risky "
+        "(this is Manual mode). YOLO turns that safeguard off: the agent can run "
+        "any command, create, change, or delete files, and call outside tools on "
+        "its own. It will also follow instructions hidden in content it reads or "
+        "fetches, which someone could have planted to trick it. None of this is "
+        "sandboxed, so it all runs directly on your machine and your files."
+    )
+    console.print()
+    console.print(
+        '[dim]Not sure? Choose "Use Manual" below to keep reviewing actions '
+        "before they run.[/dim]"
     )
     console.print()
     if not (sys.stdin.isatty() and sys.stderr.isatty()):

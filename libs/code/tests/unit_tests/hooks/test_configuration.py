@@ -10,8 +10,6 @@ from pydantic import ValidationError
 
 from deepagents_code.hooks.capabilities import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    HOOK_EVENT_SPECS,
-    assert_hook_event_registry_complete,
     get_event_spec,
 )
 from deepagents_code.hooks.loading import (
@@ -29,8 +27,9 @@ if TYPE_CHECKING:
 
 
 def test_registry_covers_all_hook_events() -> None:
-    assert_hook_event_registry_complete()
-    assert set(HOOK_EVENT_SPECS) == set(HookEvent)
+    specs = {event: get_event_spec(event) for event in HookEvent}
+    assert set(specs) == set(HookEvent)
+    assert all(event is spec.event for event, spec in specs.items())
     assert (
         get_event_spec(HookEvent.SESSION_END).default_timeout_seconds
         == DEFAULT_COMMAND_TIMEOUT_SECONDS
@@ -68,7 +67,22 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_hooks_config(cwd=project_dir, config_dir=user_dir)
+    untrusted = load_hooks_config(
+        project_root=project_dir,
+        workspace_trusted=False,
+        config_dir=user_dir,
+    )
+    assert [
+        group.hooks[0].command
+        for group in untrusted.config.hooks[HookEvent.SESSION_START]
+    ] == ["user-hook"]
+    assert untrusted.sources == (user_dir / "hooks.json",)
+
+    loaded = load_hooks_config(
+        project_root=project_dir,
+        workspace_trusted=True,
+        config_dir=user_dir,
+    )
     groups = loaded.config.hooks[HookEvent.SESSION_START]
 
     assert [group.hooks[0].command for group in groups] == [
@@ -122,11 +136,17 @@ def test_legacy_migration_only_maps_exact_session_end_semantics(
         ),
         encoding="utf-8",
     )
-    loaded = load_hooks_config(cwd=tmp_path, config_dir=user_dir)
+    loaded = load_hooks_config(
+        project_root=tmp_path,
+        workspace_trusted=False,
+        config_dir=user_dir,
+    )
 
     assert HookEvent.SESSION_START not in loaded.config.hooks
     assert HookEvent.SESSION_END in loaded.config.hooks
     assert HookEvent.PRE_TOOL_USE not in loaded.config.hooks
+    assert loaded.diagnostics[0].code == "legacy_deprecated"
+    assert "September 1, 2026" in loaded.diagnostics[0].message
     assert any(item.code == "legacy_migrated" for item in loaded.diagnostics)
 
 
@@ -139,12 +159,68 @@ def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = load_hooks_config(cwd=tmp_path, config_dir=config_dir)
+    loaded = load_hooks_config(
+        project_root=tmp_path,
+        workspace_trusted=False,
+        config_dir=config_dir,
+    )
 
     assert loaded.config.hooks == {}
     assert loaded.sources == ()
     assert [item.code for item in loaded.diagnostics] == ["invalid_config"]
-    assert loaded.diagnostics[0].field == str(path)
+    assert loaded.diagnostics[0].field == f"{path}:hooks.Stop[0].hooks[0]"
+
+
+def test_invalid_handler_does_not_discard_valid_siblings(tmp_path: Path) -> None:
+    path = tmp_path / "hooks.json"
+    path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "valid"},
+                                {"type": "http", "url": "https://example.com"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_hooks_config(
+        project_root=tmp_path,
+        workspace_trusted=False,
+        paths=[path],
+    )
+
+    handlers = loaded.config.hooks[HookEvent.STOP][0].hooks
+    assert [handler.command for handler in handlers] == ["valid"]
+    assert loaded.sources == (path.resolve(),)
+    assert [item.code for item in loaded.diagnostics] == ["invalid_config"]
+    assert loaded.diagnostics[0].field == f"{path.resolve()}:hooks.Stop[0].hooks[1]"
+
+
+def test_source_paths_are_canonicalized_and_deduplicated(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    path = config_dir / "hooks.json"
+    path.write_text(
+        '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"once"}]}]}}',
+        encoding="utf-8",
+    )
+
+    loaded = load_hooks_config(
+        project_root=tmp_path,
+        workspace_trusted=False,
+        paths=[path, config_dir / ".." / "config" / "hooks.json"],
+    )
+
+    assert loaded.sources == (path.resolve(),)
+    assert len(loaded.config.hooks[HookEvent.STOP]) == 1
 
 
 def test_async_command_config_is_rejected() -> None:
@@ -159,6 +235,28 @@ def test_async_command_config_is_rejected() -> None:
                                     "type": "command",
                                     "command": "echo",
                                     "async": True,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("-inf"), float("nan")])
+def test_command_timeout_must_be_positive_and_finite(timeout: float) -> None:
+    with pytest.raises(ValidationError, match="timeout"):
+        HooksConfig.model_validate(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "echo",
+                                    "timeout": timeout,
                                 }
                             ]
                         }

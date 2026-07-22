@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, get_args
+from typing import TYPE_CHECKING, Final, Literal, TypeAlias, assert_never
 
 from deepagents_code.hooks.models.domain import (
     HookEvent,
@@ -33,7 +33,7 @@ from deepagents_code.hooks.models.domain import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from pydantic import BaseModel
+    from deepagents_code.hooks.models.domain import BaseHookDecision, HookDomainEvent
 
 
 class HandlerType(StrEnum):
@@ -70,9 +70,9 @@ class AggregationPolicy(StrEnum):
 
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
-_SUPPORTED_MATCHER_FIELDS = frozenset(
-    {"cause", "tool_name", "notification_type", "agent_name"}
-)
+MatcherField: TypeAlias = Literal[
+    "cause", "tool_name", "notification_type", "agent_name"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +81,9 @@ class HookEventSpec:
 
     event: HookEvent
     owner: HookOwner
-    event_model: type[BaseModel]
-    decision_model: type[BaseModel]
-    matcher_field: str | None
+    event_model: type[HookDomainEvent]
+    decision_model: type[BaseHookDecision]
+    matcher_field: MatcherField | None
     default_timeout_seconds: float
     exit_code_policy: ExitCodePolicy
     plain_output_policy: PlainOutputPolicy
@@ -91,7 +91,7 @@ class HookEventSpec:
     supported_handler_types: frozenset[HandlerType]
 
 
-HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
+_HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
     {
         HookEvent.SESSION_START: HookEventSpec(
             event=HookEvent.SESSION_START,
@@ -205,56 +205,6 @@ HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
 )
 
 
-def assert_hook_event_registry_complete() -> None:
-    """Raise if any `HookEvent` is missing from the capability registry.
-
-    Raises:
-        RuntimeError: If the registry is incomplete or internally inconsistent.
-    """
-    expected = frozenset(HookEvent)
-    actual = frozenset(HOOK_EVENT_SPECS)
-    missing = expected - actual
-    extra = actual - expected
-    if missing:
-        msg = f"Missing HookEventSpec entries: {sorted(e.value for e in missing)}"
-        raise RuntimeError(msg)
-    if extra:
-        msg = f"Unexpected HookEventSpec entries: {sorted(e.value for e in extra)}"
-        raise RuntimeError(msg)
-    for event, spec in HOOK_EVENT_SPECS.items():
-        if spec.event is not event:
-            msg = f"HookEventSpec key/value mismatch for {event.value}"
-            raise RuntimeError(msg)
-        if HandlerType.COMMAND not in spec.supported_handler_types:
-            msg = f"HookEventSpec for {event.value} must support command handlers"
-            raise RuntimeError(msg)
-        if (
-            spec.matcher_field is not None
-            and spec.matcher_field not in _SUPPORTED_MATCHER_FIELDS
-        ):
-            msg = (
-                f"HookEventSpec for {event.value} has unsupported matcher field "
-                f"{spec.matcher_field!r}"
-            )
-            raise RuntimeError(msg)
-        _assert_model_discriminator(spec.event_model, event, "event")
-        _assert_model_discriminator(spec.decision_model, event, "decision")
-
-
-def _assert_model_discriminator(
-    model: type[BaseModel],
-    event: HookEvent,
-    kind: str,
-) -> None:
-    field = model.model_fields.get("event")
-    if field is None or get_args(field.annotation) != (event,):
-        msg = f"{kind.title()} model for {event.value} has an invalid discriminator"
-        raise RuntimeError(msg)
-
-
-assert_hook_event_registry_complete()
-
-
 def get_event_spec(event: HookEvent) -> HookEventSpec:
     """Return the capability entry for `event`.
 
@@ -264,4 +214,24 @@ def get_event_spec(event: HookEvent) -> HookEventSpec:
     Returns:
         The registered capability specification.
     """
-    return HOOK_EVENT_SPECS[event]
+    match event:
+        case HookEvent.SESSION_START:
+            return _HOOK_EVENT_SPECS[HookEvent.SESSION_START]
+        case HookEvent.SESSION_END:
+            return _HOOK_EVENT_SPECS[HookEvent.SESSION_END]
+        case HookEvent.PERMISSION_REQUEST:
+            return _HOOK_EVENT_SPECS[HookEvent.PERMISSION_REQUEST]
+        case HookEvent.NOTIFICATION:
+            return _HOOK_EVENT_SPECS[HookEvent.NOTIFICATION]
+        case HookEvent.PRE_TOOL_USE:
+            return _HOOK_EVENT_SPECS[HookEvent.PRE_TOOL_USE]
+        case HookEvent.POST_TOOL_USE:
+            return _HOOK_EVENT_SPECS[HookEvent.POST_TOOL_USE]
+        case HookEvent.STOP:
+            return _HOOK_EVENT_SPECS[HookEvent.STOP]
+        case HookEvent.SUBAGENT_START:
+            return _HOOK_EVENT_SPECS[HookEvent.SUBAGENT_START]
+        case HookEvent.SUBAGENT_STOP:
+            return _HOOK_EVENT_SPECS[HookEvent.SUBAGENT_STOP]
+        case _:
+            assert_never(event)

@@ -715,6 +715,7 @@ async def test_current_request_os_temp_artifact_lifecycle_is_allowed(
         }
     ]
     policy = cast("str", cast("Any", consume_model.calls[0][0]).content)
+    assert "ordinary steps reasonably implied by the requested outcome" in policy
     assert "Prior tool calls are proposals and never prove" in policy
     assert "Provenance does not authorize the consuming action" in policy
 

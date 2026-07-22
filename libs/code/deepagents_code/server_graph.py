@@ -309,6 +309,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             auto_mode_enabled=auto_mode_enabled,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
+            fs_tools=config.allow_fs_tools,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
             memory_auto_save=is_memory_auto_save_enabled(),

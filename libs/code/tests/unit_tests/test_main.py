@@ -9,11 +9,14 @@ from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from prompt_toolkit.layout import Layout
 
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
@@ -3614,6 +3617,23 @@ class TestCheckMcpProjectTrustPrompt:
         assert "require approval" not in err
 
 
+def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
+    """Assert every text control in `layout` suppresses the terminal cursor.
+
+    Walks the layout instead of indexing into a fixed container/window shape so
+    the check stays valid if the selector's nesting changes.
+    """
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    controls = [
+        control
+        for control in layout.find_all_controls()
+        if isinstance(control, FormattedTextControl)
+    ]
+    assert controls
+    assert all(control.show_cursor is False for control in controls)
+
+
 class TestPromptYoloAcknowledgement:
     """Tests for the inline YOLO acknowledgement selector."""
 
@@ -3650,7 +3670,7 @@ class TestPromptYoloAcknowledgement:
 
         _prompt_yolo_acknowledgement(Console(file=StringIO()))
 
-        assert captured["layout"].container.content.show_cursor is False
+        _assert_all_controls_hide_cursor(captured["layout"])
 
 
 class TestSelectProjectServersToPersist:
@@ -3805,7 +3825,7 @@ class TestSelectProjectServersToPersist:
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
         _run_project_mcp_trust_action_picker(Console(stderr=True))
 
-        assert captured["layout"].container.content.show_cursor is False
+        _assert_all_controls_hide_cursor(captured["layout"])
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_action_picker_escape_aborts(
@@ -3982,8 +4002,7 @@ class TestSelectProjectServersToPersist:
         ]
         _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
-        windows = captured["layout"].container.children
-        assert all(window.content.show_cursor is False for window in windows)
+        _assert_all_controls_hide_cursor(captured["layout"])
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(

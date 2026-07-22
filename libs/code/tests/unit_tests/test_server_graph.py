@@ -287,6 +287,7 @@ class TestServerGraph:
             project_context=None,
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
+            rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

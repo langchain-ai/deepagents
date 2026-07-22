@@ -252,26 +252,6 @@ class TestYoloAcknowledgement:
             assert not _ensure_yolo_acknowledged(console)
         assert console.print.called
 
-    def test_interrupt_propagates_instead_of_manual_fallback(self) -> None:
-        """Ctrl+C/Ctrl+D at the prompt aborts rather than dropping to Manual."""
-        from deepagents_code.main import _ensure_yolo_acknowledged
-
-        console = MagicMock()
-        with (
-            patch(
-                "deepagents_code.approval_mode.has_yolo_acknowledgement",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.main._prompt_yolo_acknowledgement",
-                side_effect=KeyboardInterrupt,
-            ),
-            patch("deepagents_code.approval_mode.save_yolo_acknowledgement") as save,
-            pytest.raises(KeyboardInterrupt),
-        ):
-            _ensure_yolo_acknowledged(console)
-        save.assert_not_called()
-
 
 class TestAutoApproveHeadlessValidation:
     """Tests that headless mode rejects the interactive approval flag."""

@@ -2612,6 +2612,9 @@ class Settings:
                 os.environ.pop("LANGSMITH_PROJECT", None)
                 _apply_default_langsmith_project()
 
+        from deepagents_code.model_config import reset_env_resolution_log
+
+        reset_env_resolution_log()
         return self._format_reload_changes(previous, refreshed)
 
     @property

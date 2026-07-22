@@ -1351,19 +1351,59 @@ class TestResolveEnvVar:
 
         assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-canonical"
 
-    def test_prefix_beats_canonical_without_logging(
+    def test_prefix_beats_canonical_and_logs_once(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Prefixed variables take priority without logging routine resolution."""
+        """Prefixed variables take priority and log their source only once."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-override")
         caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
-        from deepagents_code.model_config import resolve_env_var
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
 
-        assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
-        assert caplog.records == []
+        reset_env_resolution_log()
+        try:
+            assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+            assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+            assert (
+                caplog.messages.count(
+                    "Resolved ANTHROPIC_API_KEY from DEEPAGENTS_CODE_ANTHROPIC_API_KEY"
+                )
+                == 1
+            )
+        finally:
+            reset_env_resolution_log()
+
+    def test_reset_allows_resolution_to_be_logged_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resetting resolution diagnostics starts a new logging generation."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        reset_env_resolution_log()
+        try:
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            reset_env_resolution_log()
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 2
+            )
+        finally:
+            reset_env_resolution_log()
 
     def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None when neither form is set."""

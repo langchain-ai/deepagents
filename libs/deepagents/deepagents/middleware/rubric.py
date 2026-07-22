@@ -820,12 +820,14 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             metadata["rubric_grader_configured_model"],
             metadata["rubric_grader_effective_strategy"],
         )
+        status_code = getattr(exc, "status_code", None)
+        status_suffix = f" (HTTP {status_code})" if isinstance(status_code, int) and not isinstance(status_code, bool) else ""
         evaluation: RubricEvaluation = {
             "grading_run_id": grading_run_id,
             "iteration": iteration,
             "result": "grader_error",
             "explanation": (
-                f"Grader raised {type(exc).__name__} "
+                f"Grader raised {type(exc).__name__}{status_suffix} "
                 f"(configured_model={metadata['rubric_grader_configured_model']!r}, "
                 f"effective_strategy={metadata['rubric_grader_effective_strategy']}): {exc}"
             ),

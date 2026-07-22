@@ -1,7 +1,5 @@
 """Async tests for StoreBackend."""
 
-import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -43,6 +41,52 @@ async def test_store_backend_async_crud_and_search():
 
     g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+
+
+async def test_store_backend_aread_supports_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = await be.aread("/legacy.txt")
+
+    assert result.file_data is not None
+    assert result.file_data["content"] == "hello\nworld"
+    assert result.file_data["encoding"] == "utf-8"
+
+
+async def test_store_backend_awrite_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    created_at = "2025-01-01T00:00:00+00:00"
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {"content": ["hello", "world"], "created_at": created_at},
+    )
+
+    result = await be.awrite("/legacy.txt", "replacement")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "replacement"
+    assert stored.value["encoding"] == "utf-8"
+    assert stored.value["created_at"] == created_at
+
+
+async def test_store_backend_aedit_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = await be.aedit("/legacy.txt", "world", "there")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "hello\nthere"
+    assert stored.value["encoding"] == "utf-8"
 
 
 async def test_store_backend_aread_surfaces_pagination_metadata():
@@ -292,26 +336,17 @@ async def test_store_backend_agrep_invalid_regex():
     assert result.matches is not None  # Returns empty list, not error
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-async def test_store_backend_intercept_large_tool_result_async(file_format):
+async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         tool_token_limit_before_evict=1000,
     )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -319,16 +354,14 @@ async def test_store_backend_intercept_large_tool_result_async(file_format):
 
     stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_content.value["content"] == expected
+    assert stored_content.value["content"] == large_content
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-async def test_store_backend_aintercept_large_tool_result_async(file_format):
+async def test_store_backend_aintercept_large_tool_result_async():
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         tool_token_limit_before_evict=1000,
     )
 
@@ -345,17 +378,8 @@ async def test_store_backend_aintercept_large_tool_result_async(file_format):
         response_metadata={"provider": "mock"},
     )
 
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     # Use the async intercept path (what awrap_tool_call uses)
-    result = await middleware._aintercept_large_tool_result(tool_message, rt)
+    result = await middleware._aintercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -370,5 +394,4 @@ async def test_store_backend_aintercept_large_tool_result_async(file_format):
     # Verify content was stored via async path
     stored_content = await mem_store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_content.value["content"] == expected
+    assert stored_content.value["content"] == large_content

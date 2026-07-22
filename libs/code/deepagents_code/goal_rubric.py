@@ -1351,6 +1351,7 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         )
         return {
             "goal_criteria_request": None,
+            "rubric": None,
             "_pending_goal_objective": objective,
             "_pending_goal_rubric": criteria,
             "_pending_goal_kind": request["kind"],

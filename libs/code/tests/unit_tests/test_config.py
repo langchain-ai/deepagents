@@ -14,6 +14,7 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _QUIET_SDK_LOGGER_NAMES,
     CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
@@ -29,7 +30,7 @@ from deepagents_code.config import (
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
-    _quiet_sdk_tracing_logging,
+    _quiet_sdk_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
@@ -3254,8 +3255,8 @@ class TestGetTracingStatus:
             )
 
 
-class TestQuietSdkTracingLogging:
-    """Tests for _quiet_sdk_tracing_logging()."""
+class TestQuietSdkLogging:
+    """Tests for _quiet_sdk_logging()."""
 
     def test_attaches_null_handler_without_debug(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3264,33 +3265,74 @@ class TestQuietSdkTracingLogging:
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             logger.handlers.clear()
             logger.setLevel(logging.NOTSET)
+            monkeypatch.setattr(logger, "propagate", True)
 
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
             assert logger.level == logging.NOTSET
+            # Propagation is left intact so a deliberately configured handler
+            # (an embedding app's root handler, pytest's caplog) still receives
+            # real SDK errors; the NullHandler alone keeps routine noise off the
+            # last-resort stderr handler.
+            assert logger.propagate is True
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logging.getLogger(name).handlers.clear()
 
-        _quiet_sdk_tracing_logging()
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             handlers = logging.getLogger(name).handlers
             assert len(handlers) == 1
+
+    def test_routes_harness_diagnostics_to_debug_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode configures a file handler for harness diagnostics."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.setenv(DEBUG, "1")
+        harness_logger = logging.getLogger(
+            "deepagents.profiles.harness.harness_profiles"
+        )
+        harness_logger.handlers.clear()
+        monkeypatch.setattr(harness_logger, "propagate", True)
+
+        with patch("deepagents_code._debug.configure_debug_logging") as configure:
+            _quiet_sdk_logging()
+
+        assert any(call.args == (harness_logger,) for call in configure.call_args_list)
+        assert harness_logger.propagate is True
+
+    def test_leaves_other_deepagents_loggers_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Actionable Deep Agents runtime warnings keep their normal routing."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        runtime_logger = logging.getLogger("deepagents.backends.filesystem")
+        runtime_logger.handlers.clear()
+        monkeypatch.setattr(runtime_logger, "propagate", True)
+
+        _quiet_sdk_logging()
+
+        assert runtime_logger.handlers == []
+        assert runtime_logger.propagate is True
 
 
 class TestFetchLangsmithProjectUrl:

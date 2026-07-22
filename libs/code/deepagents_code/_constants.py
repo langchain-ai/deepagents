@@ -13,6 +13,20 @@ from typing import Final
 DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
+FS_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+)
+"""Mirror of the SDK's `FsToolName` literal members.
+
+Hardcoded here rather than derived from `deepagents.FsToolName` because
+`deepagents` must not be imported on the arg-parsing hot path (see AGENTS.md
+"Startup performance"); this module is dependency-free and safe for `main.py` to
+import. Consumers (`main._parse_allow_fs_tools_flag`,
+`tool_catalog.collect_built_in_tools`) alias this set, and `get_args(FsToolName)`
+drift guards in `test_main_args` and `test_tool_catalog` pin it so a new or
+renamed SDK filesystem tool fails a test instead of silently diverging.
+"""
+
 FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
 """Prefix used to infer Fireworks from fully-qualified IDs."""
 

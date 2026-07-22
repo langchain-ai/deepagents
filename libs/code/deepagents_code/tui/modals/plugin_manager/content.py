@@ -55,7 +55,7 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
         if row.mcp_connected is True:
             meta_parts.append(Content.styled(f"{glyphs.checkmark} connected", "dim"))
         elif row.mcp_connected is False:
-            meta_parts.append(Content.styled("restart to connect", "bold $warning"))
+            meta_parts.append(Content.styled("run /reload to connect", "bold $warning"))
     elif (
         row.load_state == "pending_reload"
         and row.session_loaded
@@ -182,7 +182,8 @@ def _status_lines(row: _PluginRow) -> list[Content]:
     if row.mcp_connected is False:
         lines.append(
             Content.styled(
-                "MCP servers need a server restart (/reload) to connect.", "dim"
+                "Run /reload to rebuild the agent with this plugin's MCP tools.",
+                "dim",
             )
         )
     return lines

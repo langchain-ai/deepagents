@@ -40,6 +40,7 @@ from deepagents_code.resume_state import ResumeState
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents import FsToolName
     from deepagents.backends.protocol import FileInfo
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
@@ -1480,6 +1481,7 @@ def _create_goal_criteria_agent(
     repository_root: str,
     context_tools: Sequence[BaseTool | Callable[..., Any]],
     auto_mode_enabled: bool,
+    fs_tools: list[FsToolName] | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a criteria agent with the parent runtime's Auto eligibility.
 
@@ -1489,6 +1491,10 @@ def _create_goal_criteria_agent(
         repository_root: Absolute path that bounds repository reads.
         context_tools: External context tools available to the criteria agent.
         auto_mode_enabled: Whether Auto may bypass delegated context approval.
+        fs_tools: Parent filesystem-tool allowlist.
+
+            The criteria agent exposes only the allowed subset of its read-only
+            repository tools.
 
     Returns:
         Compiled criteria agent graph.
@@ -1533,11 +1539,16 @@ def _create_goal_criteria_agent(
         _CriteriaContextBudgetMiddleware(),
     ]
     if repository_backend is not None:
+        # Annotated (not `cast`) so the type checker validates each literal
+        # against `FsToolName` and rejects a typo at check time.
+        repository_tools: list[FsToolName] = ["ls", "read_file", "glob", "grep"]
+        if fs_tools is not None:
+            repository_tools = [name for name in repository_tools if name in fs_tools]
         middleware.extend(
             [
                 FilesystemMiddleware(
                     backend=repository_backend,
-                    tools=["ls", "read_file", "glob", "grep"],
+                    tools=repository_tools,
                     grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
                     tool_token_limit_before_evict=None,
                 ),

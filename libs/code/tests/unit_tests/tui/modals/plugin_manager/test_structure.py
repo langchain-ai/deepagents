@@ -1076,7 +1076,7 @@ def test_installed_details_disabled_state_copy() -> None:
     assert "Enable the plugin, then run /reload to load it." in content
 
 
-def test_installed_details_enabled_flags_mcp_restart() -> None:
+def test_installed_details_enabled_flags_mcp_reload() -> None:
     row = _PluginRow(
         plugin_id="quality@tools",
         description="Quality",
@@ -1092,7 +1092,7 @@ def test_installed_details_enabled_flags_mcp_restart() -> None:
     content = str(_installed_plugin_details_content(row))
 
     assert f"Status: {get_glyphs().checkmark} Enabled" in content
-    assert "MCP servers need a server restart (/reload) to connect." in content
+    assert "Run /reload to rebuild the agent with this plugin's MCP tools." in content
 
 
 def test_status_lines_enabled_is_success_and_companions_stay_dim() -> None:
@@ -1113,8 +1113,10 @@ def test_status_lines_enabled_is_success_and_companions_stay_dim() -> None:
 
     assert lines[0].plain == f"Status: {get_glyphs().checkmark} Enabled"
     assert [span.style for span in lines[0].spans] == ["$success"]
-    # The MCP-restart companion line must NOT inherit the success color.
-    assert lines[1].plain.startswith("MCP servers need a server restart")
+    # The MCP /reload guidance must NOT inherit the success color.
+    assert lines[1].plain == (
+        "Run /reload to rebuild the agent with this plugin's MCP tools."
+    )
     assert [span.style for span in lines[1].spans] == ["dim"]
 
 
@@ -1179,9 +1181,9 @@ def test_plugin_prompt_enabled_connection_hints() -> None:
     prompt = str(_plugin_prompt(connected, status=None))
     assert f"{checkmark} enabled" in prompt
     assert f"{checkmark} connected" in prompt
-    assert "restart to connect" not in prompt
+    assert "run /reload to connect" not in prompt
 
-    needs_restart = _PluginRow(
+    needs_reload = _PluginRow(
         plugin_id="quality@tools",
         description="Quality",
         enabled=True,
@@ -1190,8 +1192,8 @@ def test_plugin_prompt_enabled_connection_hints() -> None:
         mcp_connected=False,
         session_loaded=True,
     )
-    prompt = str(_plugin_prompt(needs_restart, status=None))
-    assert "restart to connect" in prompt
+    prompt = str(_plugin_prompt(needs_reload, status=None))
+    assert "run /reload to connect" in prompt
     assert f"{checkmark} connected" not in prompt
 
 

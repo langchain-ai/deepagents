@@ -111,6 +111,41 @@ class TestRuntimeDotenvReload:
         finally:
             config_mod._dotenv_loaded_values.clear()
 
+    def test_reload_resets_prefixed_resolution_logging(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Runtime reload starts a new generation of resolution diagnostics."""
+        import deepagents_code.config as config_mod
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        reset_env_resolution_log()
+        try:
+            runtime = Settings.from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            runtime.reload_from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 2
+            )
+        finally:
+            reset_env_resolution_log()
+
     def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
         self,
         tmp_path: Path,

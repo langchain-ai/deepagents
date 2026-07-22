@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langgraph.store.memory import InMemoryStore
@@ -40,6 +41,28 @@ class TestLargeToolResultGuidanceInToolDescriptions:
 class TestFilesystemMiddlewareInit:
     """Tests for FilesystemMiddleware initialization that don't require LLM invocation."""
 
+    def test_backend_class_is_rejected(self) -> None:
+        """Backend factories were removed in 0.7; callers must pass instances."""
+        with pytest.raises(TypeError, match=r"Backend factories were removed in deepagents 0\.7"):
+            FilesystemMiddleware(backend=StateBackend)  # type: ignore[arg-type]
+
+    def test_backend_factory_is_rejected(self) -> None:
+        """Backend factories were removed in 0.7; callers must pass instances."""
+        with pytest.raises(TypeError, match=r"Backend factories were removed in deepagents 0\.7"):
+            FilesystemMiddleware(backend=lambda _rt: StateBackend())  # type: ignore[arg-type]
+
+    def test_callable_backend_instance_is_accepted(self) -> None:
+        """A callable initialized backend remains a backend instance."""
+
+        class CallableStateBackend(StateBackend):
+            def __call__(self) -> None:
+                return None
+
+        backend = CallableStateBackend()
+        middleware = FilesystemMiddleware(backend=backend)
+
+        assert middleware.backend is backend
+
     def test_filesystem_tool_prompt_override(self) -> None:
         """Test that custom tool descriptions can be set via FilesystemMiddleware."""
         agent = create_agent(
@@ -71,7 +94,7 @@ class TestFilesystemMiddlewareInit:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                     custom_tool_descriptions={
                         "ls": "Charmander",
                         "read_file": "Bulbasaur",

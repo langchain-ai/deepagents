@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -231,8 +232,6 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
-    import asyncio
-
     captured_create: list[dict[str, object]] = []
 
     class FakeMCPClient:
@@ -242,7 +241,7 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
         async def get_tools(self) -> list[str]:
             return ["start_conversation", "send_message_to_user", "end_conversation"]
 
-    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+    def fake_init_chat_model(_model: str, **_kwargs: object) -> object:
         return "chat-model"
 
     def fake_create_deep_agent(**kwargs: object) -> object:

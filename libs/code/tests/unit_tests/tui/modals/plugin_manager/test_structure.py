@@ -80,7 +80,8 @@ def test_installed_details_separate_back_action() -> None:
         author=None,
     )
 
-    options = _installed_details_options(row, divider_width=8)
+    divider_width = 8
+    options = _installed_details_options(row, divider_width=divider_width)
 
     assert [option.id for option in options] == [
         "action:toggle-enabled",
@@ -89,7 +90,7 @@ def test_installed_details_separate_back_action() -> None:
         "details-back",
     ]
     assert options[2].disabled
-    assert str(options[2].prompt).count(get_glyphs().box_horizontal) == 8
+    assert str(options[2].prompt) == get_glyphs().box_horizontal * divider_width
 
 
 async def test_plugin_manager_closes_without_mcp_reconnect() -> None:

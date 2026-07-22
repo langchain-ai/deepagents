@@ -956,6 +956,7 @@ Usage:
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+- Large tool results are sometimes offloaded to a file instead of returned inline; the tool message gives the path. Read that file here, using `offset`/`limit` to page through it.
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
 
 For multimodal reads (image, audio, video, PDF, etc.):
@@ -1035,6 +1036,10 @@ Do NOT pass a regex. In particular:
 - To match any of several strings, run a SEPARATE grep for each one. There is no
   `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
 - Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.{execute_fallback}
+
+Offloaded large tool results are saved in a `large_tool_results/` directory
+inside the agent's artifacts root (`/large_tool_results/` by default). To search
+across them when you do not know the exact file path, grep that directory.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
@@ -1120,83 +1125,6 @@ FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "gl
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
-_FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
-    "ls": "ls: list files in a directory (requires absolute path)",
-    "read_file": "read_file: read a file from the filesystem",
-    "write_file": "write_file: write to a file in the filesystem",
-    "edit_file": "edit_file: edit a file in the filesystem",
-    "delete": "delete: delete a file or directory (recursively) from the filesystem",
-    "glob": 'glob: find files matching a pattern (e.g., "**/*.py")',
-    "grep": "grep: search for text within files",
-}
-
-
-def _build_fs_tools_section(visible: set[str]) -> tuple[str, str]:
-    """Return (header backtick list, bullet descriptions) for the given visible FS tools."""
-    ordered = [t for t in _FS_TOOL_ORDER if t in visible]
-    header = ", ".join(f"`{t}`" for t in ordered)
-    descriptions = "\n".join(f"- {_FS_TOOL_DESCRIPTION_LINES[t]}" for t in ordered)
-    return header, descriptions
-
-
-def _large_tool_results_search_guidance(visible: set[str], prefix: str) -> str:
-    """Build search guidance for offloaded tool results using visible tools.
-
-    Args:
-        visible: Names of the tools visible to the model.
-        prefix: Filesystem prefix containing offloaded tool results.
-
-    Returns:
-        A comma-prefixed search clause, or an empty string when no search tool is visible.
-    """
-    if "grep" in visible:
-        return f", or use `grep` within `{prefix}/` if you need to search across offloaded tool results and do not know the exact file path"
-    if "execute" in visible:
-        return (
-            f", or try `execute` with `grep -r <pattern> {prefix}/` if you need to search "
-            "across offloaded tool results and do not know the exact file path"
-        )
-    return ""
-
-
-_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = (
-    """## Following Conventions
-
-- Read files before editing — understand existing content before making changes
-- Mimic existing style, naming conventions, and patterns
-
-## Filesystem Tools {tool_header}
-
-You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
-
-{tool_descriptions}
-
-## Large Tool Results
-
-"""
-    "When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. "
-    "In those cases, use `read_file` to inspect the saved result in chunks{large_tool_search_guidance}. "
-    "Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."
-)
-
-_default_tool_header, _default_tool_descriptions = _build_fs_tools_section(set(_FS_TOOL_ORDER))
-FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-    large_tool_results_prefix="/large_tool_results",
-    large_tool_search_guidance=_large_tool_results_search_guidance(
-        set(_ALL_FS_TOOL_NAMES),
-        "/large_tool_results",
-    ),
-    tool_header=_default_tool_header,
-    tool_descriptions=_default_tool_descriptions,
-)
-
-EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
-
-You have access to an `execute` tool for running shell commands in a sandboxed environment.
-Use this tool to run commands, scripts, tests, builds, and other shell operations.
-
-- execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
 def _route_host_path_prompt(backend: BackendProtocol) -> str:
@@ -1548,11 +1476,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
-        # Cache for dynamic system prompts keyed on the `include_execution`
-        # flag. The text depends only on that flag and immutable config, so it
-        # is computed at most twice per instance.
-        self._dynamic_system_prompt_cache: dict[bool, str] = {}
-
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
@@ -1591,39 +1514,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
         self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
-
-    def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
-        """Build (and memoize) the dynamic system prompt.
-
-        The result depends only on `include_execution` and immutable config,
-        so it is cached per instance to avoid rebuilding on every model call.
-        The cache is intentionally lock-free even though sync and async model
-        calls share it: writes are idempotent (a given flag always yields the
-        same string), so a race at worst recomputes and re-stores that value.
-        """
-        cached = self._dynamic_system_prompt_cache.get(include_execution)
-        if cached is not None:
-            return cached
-        visible = set(self._enabled_tools) if self._enabled_tools is not None else set(_FS_TOOL_ORDER)
-        if not include_execution:
-            visible.discard("execute")
-        tool_header, tool_descriptions = _build_fs_tools_section(visible)
-        prompt_parts = [
-            _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                large_tool_results_prefix=self._large_tool_results_prefix,
-                large_tool_search_guidance=_large_tool_results_search_guidance(
-                    visible,
-                    self._large_tool_results_prefix,
-                ),
-                tool_header=tool_header,
-                tool_descriptions=tool_descriptions,
-            )
-        ]
-        if include_execution:
-            prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-        system_prompt = "\n\n".join(prompt_parts).strip()
-        self._dynamic_system_prompt_cache[include_execution] = system_prompt
-        return system_prompt
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
@@ -2889,32 +2779,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if described_tools is not visible_tools:
             request = request.override(tools=described_tools)
 
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt reflecting only the tools that survived filtering
-            tool_header, tool_descriptions = _build_fs_tools_section(visible_fs)
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                    large_tool_search_guidance=_large_tool_results_search_guidance(
-                        visible_fs,
-                        self._large_tool_results_prefix,
-                    ),
-                    tool_header=tool_header,
-                    tool_descriptions=tool_descriptions,
-                )
-            ]
-
-            # Add execution instructions only if the execute tool survived filtering
-            if execution_active:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-                route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
-                if route_prompt:
-                    prompt_parts.append(route_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
+        # `system_prompt` (default `None`) is the caller's tool-usage prose; no
+        # built-in tool-usage guidance is generated, since it would duplicate the
+        # tools' own schema descriptions. The host-path routing section is
+        # essential per-backend config (virtual->host path mapping for the `execute`
+        # shell), not prose, so it is appended when the execute tool is active
+        # regardless of the prose. Routing is empty for non-composite backends.
+        prompt_parts = [self._custom_system_prompt] if self._custom_system_prompt else []
+        if execution_active:
+            route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
+            if route_prompt:
+                prompt_parts.append(route_prompt)
+        system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

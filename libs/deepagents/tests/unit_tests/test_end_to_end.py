@@ -26,7 +26,7 @@ from langgraph.types import Command
 from pydantic import Field
 
 import deepagents.middleware.filesystem as filesystem_middleware
-from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
@@ -561,7 +561,6 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        assert "You are a deep agent" in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -581,7 +580,6 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        assert "You are a deep agent" in content
 
     @pytest.mark.parametrize(
         ("system_prompt", "ordered", "absent"),
@@ -593,18 +591,18 @@ class TestDeepAgentEndToEnd:
                 ["You are a deep agent"],
                 id="base-replaces-default",
             ),
-            # `prefix` sits before the retained default base.
+            # `prefix` is emitted; the default base is empty.
             pytest.param(
                 {"prefix": "__pre__"},
-                ["__pre__", "You are a deep agent"],
-                [],
+                ["__pre__"],
+                ["You are a deep agent"],
                 id="prefix-before-default-base",
             ),
-            # `suffix` sits after the retained default base.
+            # `suffix` is emitted; the default base is empty.
             pytest.param(
                 {"suffix": "__suf__"},
-                ["You are a deep agent", "__suf__"],
-                [],
+                ["__suf__"],
+                ["You are a deep agent"],
                 id="suffix-after-default-base",
             ),
             # All three slots, in order, with the default base replaced.
@@ -621,11 +619,11 @@ class TestDeepAgentEndToEnd:
                 ["You are a deep agent"],
                 id="base-none-drops-base",
             ),
-            # Back-compat: a bare string still prepends before the default base.
+            # Back-compat: a bare string is treated as a prefix (before the empty base).
             pytest.param(
                 "__bare__",
-                ["__bare__", "You are a deep agent"],
-                [],
+                ["__bare__"],
+                ["You are a deep agent"],
                 id="bare-str-prepends",
             ),
         ],
@@ -682,8 +680,6 @@ class TestDeepAgentEndToEnd:
         cached = [b for b in blocks if b.get("text") == "__cached_prefix__"]
         assert cached, f"cached prefix block missing: {blocks}"
         assert cached[0].get("cache_control") == {"type": "ephemeral"}
-        # Default base still follows the caller's cached prefix block.
-        assert any("You are a deep agent" in (b.get("text") or "") for b in blocks)
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -3013,11 +3009,52 @@ class TestStateBackendConfigKeys:
         assert set(result["files"].keys()) == {"/other.txt"}
 
 
+class TestFilesystemRoutingPrompt:
+    """Routing survives prose suppression; filesystem usage prose does not.
+
+    The host-path routing section is essential per-backend config, so it is
+    emitted even on the lean default where the usage prose is suppressed.
+    """
+
+    def _capture_system_prompt(self, backend: BackendProtocol, **create_kwargs: Any) -> str:
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        capturing = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing], **create_kwargs)
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+        return str(capturing.captured_system_messages[0].content)
+
+    def _routed_backend(self) -> CompositeBackend:
+        # LocalShellBackend default + FilesystemBackend route => the routing
+        # section maps `/common/` to the route's host path for the `execute` shell.
+        return CompositeBackend(
+            default=LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True),
+            routes={"/common/": FilesystemBackend(root_dir="/work/app", virtual_mode=True)},
+        )
+
+    def test_routing_survives_lean_default(self) -> None:
+        """The routing section is emitted on the lean default.
+
+        The filesystem usage prose and base prose are suppressed.
+        """
+        content = self._capture_system_prompt(self._routed_backend())
+        assert "Shell paths vs. virtual paths" in content, "routing section must survive trimming"
+        assert "## Following Conventions" not in content, "filesystem usage prose should be trimmed"
+        assert "You are a deep agent" not in content, "base prose should be absent"
+
+    def test_no_routing_section_for_non_composite_backend(self) -> None:
+        """A single backend has no routes, so no routing section is added.
+
+        The model still gets a functional (prose-suppressed) agent.
+        """
+        content = self._capture_system_prompt(LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True))
+        assert "Shell paths vs. virtual paths" not in content
+
+
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""
 
-    def test_deep_agent_artifacts_root_system_prompt_and_eviction(self) -> None:
-        """Custom artifacts_root flows through to system prompt and eviction paths."""
+    def test_deep_agent_artifacts_root_eviction(self) -> None:
+        """Custom artifacts_root flows through to the eviction paths."""
 
         @tool(description="Returns a very large string")
         def big_tool() -> str:
@@ -3030,8 +3067,6 @@ class TestArtifactsRoot:
             routes={},
             artifacts_root="/workspace",
         )
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
 
         model = FixedGenericFakeChatModel(
             messages=iter(
@@ -3056,15 +3091,9 @@ class TestArtifactsRoot:
             model=model,
             tools=[big_tool],
             backend=backend,
-            middleware=[capturing_middleware],
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
-
-        # Verify system prompt references the custom artifacts_root
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/workspace/large_tool_results/" in system_content
-        assert "/large_tool_results/<tool_call_id>" not in system_content or "/workspace/large_tool_results/<tool_call_id>" in system_content
 
         # Verify the evicted tool result was written under the custom prefix
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
@@ -3184,32 +3213,38 @@ class TestArtifactsRoot:
         assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
     def test_create_deep_agent_no_composite_backend(self) -> None:
-        """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
-        backend = StateBackend()
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
+        """A non-composite backend defaults artifacts_root to '/' (root prefix)."""
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return "x" * 500_000
+
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "big_tool", "args": {}, "id": "call_big", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
         )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
+        agent = create_deep_agent(model=model, tools=[big_tool], backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
+
+        # With no artifacts_root, evicted results land under the "/" root prefix.
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
+        assert "/large_tool_results/call_big" in evicted_msg.content
+        assert "/workspace/" not in evicted_msg.content
 
     def test_create_deep_agent_composite_backend_default_artifacts_root(self) -> None:
         """create_deep_agent with CompositeBackend without artifacts_root defaults to '/'."""
         backend = CompositeBackend(default=StateBackend(), routes={})
         assert backend.artifacts_root == "/"
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
-        )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
 
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""
@@ -4547,11 +4582,10 @@ class TestFilesystemMiddlewareToolsAllowlist:
 
         return _ToolSpyMiddleware(), captured
 
-    def test_allowlist_removes_tools_from_request_and_system_prompt(self) -> None:
-        """tools=[...] on FilesystemMiddleware restricts both request.tools and the system prompt."""
+    def test_allowlist_removes_tools_from_request(self) -> None:
+        """tools=[...] on FilesystemMiddleware restricts the tools on the wire."""
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
         spy, captured_tool_sets = self._make_spy_middleware()
-        capturing = SystemMessageCapturingMiddleware()
 
         agent = create_deep_agent(
             model=model,
@@ -4561,7 +4595,6 @@ class TestFilesystemMiddlewareToolsAllowlist:
                     tools=["read_file", "ls"],
                 ),
                 spy,
-                capturing,
             ],
         )
 
@@ -4574,17 +4607,6 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "ls" in tool_names
         for disabled in ("write_file", "edit_file", "delete", "glob", "grep", "execute"):
             assert disabled not in tool_names, f"{disabled!r} should have been filtered out"
-
-        # --- system prompt tool header only lists allowed tools ---
-        # Check backtick-wrapped names as they appear in the tool header/description section.
-        # (Some tool names may appear in static template text; backtick-wrapped ones are
-        # the tool listing that changes based on the allowlist.)
-        assert capturing.captured_system_messages, "system message must have been set"
-        prompt = str(capturing.captured_system_messages[0].content)
-        assert "`read_file`" in prompt
-        assert "`ls`" in prompt
-        for disabled in ("write_file", "edit_file", "delete", "glob"):
-            assert f"`{disabled}`" not in prompt, f"`{disabled}` should not appear in system prompt tool list"
 
     def test_excluded_tool_call_fails_instead_of_executing(self) -> None:
         """An excluded tool referenced in a `ToolCall` errors instead of executing.

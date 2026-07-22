@@ -132,16 +132,6 @@ class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
 
 
-SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
-
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.
-"""
-
-
 class SummarizationEvent(TypedDict):
     """Represents a summarization event."""
 
@@ -1689,7 +1679,7 @@ def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BackendProtocol,
     *,
-    system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1705,7 +1695,6 @@ def create_summarization_tool_middleware(
     own. The agent gains:
 
     - A `compact_conversation` tool to compact its own context window
-    - A system-prompt nudge hinting when to call it
     - An eligibility gate at ~50% of the auto-summarization trigger so
         the tool refuses to compact too early
 
@@ -1817,7 +1806,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self,
         summarization: _DeepAgentsSummarizationMiddleware,
         *,
-        system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         """Initialize with a reference to the summarization middleware.
 
@@ -1862,7 +1851,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 "Compact the conversation by summarizing older messages "
                 "into a concise summary. Use this proactively when the "
                 "conversation is getting long to free up context window "
-                "space. This tool takes no arguments."
+                "space. Use it when moving on to a completely new, unrelated "
+                "task, or after finishing synthesis or extraction when the "
+                "previous working context is no longer needed. This tool "
+                "takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,

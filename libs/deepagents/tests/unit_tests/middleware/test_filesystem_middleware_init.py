@@ -4,130 +4,38 @@ from typing import Any
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.middleware.filesystem import (
-    EXECUTION_SYSTEM_PROMPT,
+    GREP_TOOL_DESCRIPTION,
+    READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
 
 
-class TestDynamicSystemPromptCache:
-    """`_build_dynamic_system_prompt` caches per `include_execution` flag."""
+class TestLargeToolResultGuidanceInToolDescriptions:
+    """Large-tool-result offload guidance lives in the tool descriptions.
 
-    def test_returns_identical_cached_object(self) -> None:
-        mw = FilesystemMiddleware(backend=StateBackend())
-        first = mw._build_dynamic_system_prompt(include_execution=False)
-        second = mw._build_dynamic_system_prompt(include_execution=False)
-        assert first is second
+    It used to be in the (now-trimmed) filesystem system prompt, so it is
+    migrated into the always-visible `read_file` / `grep` descriptions.
+    """
 
-    def test_execution_flag_changes_output(self) -> None:
-        mw = FilesystemMiddleware(backend=StateBackend())
-        without = mw._build_dynamic_system_prompt(include_execution=False)
-        with_exec = mw._build_dynamic_system_prompt(include_execution=True)
-        assert without != with_exec
-        assert EXECUTION_SYSTEM_PROMPT not in without
-        assert EXECUTION_SYSTEM_PROMPT in with_exec
+    def test_read_file_describes_offloaded_results(self) -> None:
+        # read_file points at the exact path from the tool message (no hardcoded
+        # directory, which would be wrong for a non-root artifacts root).
+        assert "offloaded" in READ_FILE_TOOL_DESCRIPTION.lower()
 
-    async def test_awrap_model_call_emits_dynamic_prompt(self) -> None:
-        """`awrap_model_call` appends the same memoized prompt as the sync path.
-
-        The cache call site is duplicated across `wrap_model_call` and
-        `awrap_model_call`; this guards the async path against drift.
-        """
-        mw = FilesystemMiddleware(backend=StateBackend())
-        # StateBackend has no execution support, so the execute tool (if any)
-        # is filtered out and `include_execution` resolves to False.
-        expected = mw._build_dynamic_system_prompt(include_execution=False)
-
-        captured: list[ModelRequest] = []
-
-        async def handler(request: ModelRequest) -> ModelResponse:
-            captured.append(request)
-            return ModelResponse(result=[AIMessage(content="ok")])
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
-            messages=[HumanMessage(content="hi")],
-            tools=list(mw.tools),
-        )
-
-        await mw.awrap_model_call(request, handler)
-
-        assert len(captured) == 1
-        assert captured[0].system_prompt == expected
-
-
-class TestLargeToolResultsPrompt:
-    """Search guidance reflects the filesystem tools visible to the model."""
-
-    def test_read_file_only_omits_search_guidance(self) -> None:
-        middleware = FilesystemMiddleware(backend=StateBackend(), tools=["read_file"])
-
-        prompt = middleware._build_dynamic_system_prompt(include_execution=False)
-
-        assert (
-            "In those cases, use `read_file` to inspect the saved result in chunks. "
-            "Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`."
-        ) in prompt
-        assert "`grep`" not in prompt
-        assert "`execute`" not in prompt
-
-    def test_execute_uses_shell_grep_guidance(self) -> None:
-        middleware = FilesystemMiddleware(
-            backend=LocalShellBackend(virtual_mode=True),
-            tools=["read_file", "execute"],
-        )
-
-        prompt = middleware._build_dynamic_system_prompt(include_execution=True)
-
-        assert (
-            "or try `execute` with `grep -r <pattern> /large_tool_results/` if you need to search "
-            "across offloaded tool results and do not know the exact file path"
-        ) in prompt
-        assert "or use `grep` within" not in prompt
-
-    def test_backend_filtered_execute_omits_search_guidance(self) -> None:
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            tools=["read_file", "execute"],
-        )
-
-        prompt = middleware._build_dynamic_system_prompt(include_execution=False)
-
-        assert "grep -r" not in prompt
-        assert "or use `grep` within" not in prompt
-
-    def test_grep_keeps_existing_search_guidance(self) -> None:
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            tools=["read_file", "grep"],
-        )
-
-        prompt = middleware._build_dynamic_system_prompt(include_execution=False)
-
-        assert (
-            "or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path"
-        ) in prompt
-
-    def test_default_tools_keep_existing_search_guidance(self) -> None:
-        middleware = FilesystemMiddleware(backend=StateBackend())
-
-        prompt = middleware._build_dynamic_system_prompt(include_execution=False)
-
-        assert (
-            "or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path"
-        ) in prompt
+    def test_grep_describes_searching_offloaded_results(self) -> None:
+        assert "large_tool_results/" in GREP_TOOL_DESCRIPTION
+        # Must not imply the root-only path; it is under the artifacts root.
+        assert "artifacts root" in GREP_TOOL_DESCRIPTION
 
 
 class TestFilesystemMiddlewareInit:

@@ -2289,7 +2289,6 @@ class TestCreateCliAgentMemorySources:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
-            patch("deepagents_code.agent.FilesystemBackend"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -2356,7 +2355,6 @@ class TestCreateCliAgentMemorySources:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
-            patch("deepagents_code.agent.FilesystemBackend"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -2428,7 +2426,6 @@ class TestCreateCliAgentMemoryAutoSave:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
-            patch("deepagents_code.agent.FilesystemBackend"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -2616,7 +2613,6 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
-            patch("deepagents_code.agent.FilesystemBackend"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
@@ -2784,6 +2780,8 @@ class TestCreateCliAgentProjectContext:
         self, tmp_path: Path
     ) -> None:
         """Filesystem backend root should follow the explicit working directory."""
+        from deepagents.backends.filesystem import FilesystemBackend
+
         user_cwd = tmp_path / "project" / "src"
         user_cwd.mkdir(parents=True)
 
@@ -2817,11 +2815,10 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
-            patch("deepagents_code.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch("deepagents._models.init_chat_model", return_value=fake_model),
         ):
-            create_cli_agent(
+            _, composite_backend = create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
                 enable_memory=False,
@@ -2830,7 +2827,8 @@ class TestCreateCliAgentProjectContext:
                 cwd=user_cwd,
             )
 
-        assert mock_filesystem.call_args_list[0].kwargs["root_dir"] == user_cwd
+        assert isinstance(composite_backend.default, FilesystemBackend)
+        assert composite_backend.default.cwd == user_cwd.resolve()
 
 
 class TestMiddlewareStackConformance:

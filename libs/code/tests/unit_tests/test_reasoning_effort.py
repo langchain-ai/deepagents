@@ -86,7 +86,7 @@ def _restore_settings(
         # single-digit version it prefixes (`opus-4-1` must not match
         # `opus-4-16`); it falls through to the full range instead.
         ("anthropic:claude-opus-4-16", ("low", "medium", "high", "xhigh", "max")),
-        ("google_genai:gemini-3.5-flash", ("low", "medium", "high")),
+        ("google_genai:gemini-3.6-flash", ("low", "medium", "high")),
         ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
         ("xai:grok-4.5", ("low", "medium", "high")),
         ("xai:grok-4.5-latest", ("low", "medium", "high")),
@@ -103,7 +103,7 @@ def _restore_settings(
         # Fireworks routers (`accounts/fireworks/routers/...`) are gated the same
         # as individual models, so effort support keys off the model family.
         (
-            "fireworks:accounts/fireworks/routers/glm-5p1-fast",
+            "fireworks:accounts/fireworks/routers/glm-5p2-fast",
             ("none", "high", "max"),
         ),
         # Recognized provider, wrong model family: the per-provider prefix
@@ -140,7 +140,7 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
         ("anthropic:claude-sonnet-4-6", "high"),
         ("anthropic:claude-sonnet-4-5", None),
         ("anthropic:claude-opus-4-1", None),
-        ("google_genai:gemini-3.5-flash", "medium"),
+        ("google_genai:gemini-3.6-flash", "medium"),
         ("google_genai:gemini-3.1-pro-preview", "high"),
         ("google_genai:gemini-3-pro", "high"),
         ("google_genai:gemini-3-flash", "high"),
@@ -168,7 +168,7 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
         "thinking": {"type": "adaptive", "display": "summarized"},
         "output_config": {"effort": "xhigh"},
     }
-    assert model_params_for_effort("google_genai:gemini-3.5-flash", "low") == {
+    assert model_params_for_effort("google_genai:gemini-3.6-flash", "low") == {
         "thinking_level": "low"
     }
     assert model_params_for_effort(
@@ -253,7 +253,7 @@ def test_merge_and_clear_xai_effort_preserves_extra_body_params() -> None:
         ("openai:gpt-5.5", {"reasoning": {"effort": 5}}),
         ("anthropic:claude-opus-4-8", {"output_config": {"effort": 5}}),
         ("anthropic:claude-opus-4-8", {"output_config": "high"}),
-        ("google_genai:gemini-3.5-flash", {"thinking_level": 5}),
+        ("google_genai:gemini-3.6-flash", {"thinking_level": 5}),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
             {"model_kwargs": {"reasoning_effort": 5}},
@@ -710,7 +710,7 @@ def test_without_effort_clears_legacy_anthropic_top_level_effort() -> None:
 
 
 def test_without_effort_clears_google_thinking_level() -> None:
-    effort_params = model_params_for_effort("google_genai:gemini-3.5-flash", "low")
+    effort_params = model_params_for_effort("google_genai:gemini-3.6-flash", "low")
     assert effort_params is not None
     assert without_effort_model_params(effort_params) is None
 
@@ -736,7 +736,7 @@ def test_without_effort_preserves_non_dict_model_kwargs() -> None:
         ("openai:gpt-5.5", "none"),
         ("openai:gpt-5.5", "high"),
         ("anthropic:claude-opus-4-8", "xhigh"),
-        ("google_genai:gemini-3.5-flash", "low"),
+        ("google_genai:gemini-3.6-flash", "low"),
         ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"),
     ],
 )

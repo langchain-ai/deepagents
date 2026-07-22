@@ -34,6 +34,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
+_resolved_env_var_log_lock = threading.Lock()
+_resolved_env_var_log_names: set[str] = set()
+
+
+def reset_env_resolution_log() -> None:
+    """Allow successful prefixed environment resolutions to be logged again."""
+    with _resolved_env_var_log_lock:
+        _resolved_env_var_log_names.clear()
 
 
 def resolved_env_var_name(canonical: str) -> str:
@@ -91,8 +99,14 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
-            if val:
-                logger.debug("Resolved %s from %s", name, prefixed)
+            if val and logger.isEnabledFor(logging.DEBUG):
+                # `resolve_env_var` is called frequently; log each successful
+                # prefixed resolution only once per generation to avoid spam.
+                with _resolved_env_var_log_lock:
+                    should_log = name not in _resolved_env_var_log_names
+                    _resolved_env_var_log_names.add(name)
+                if should_log:
+                    logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 
@@ -3852,12 +3866,13 @@ def load_mcp_server_trust_lists(
     Source resolution differs by list, matching each one's security direction:
 
     - `enabled` (permissive): the env var is an explicit process-wide name
-        allowlist. When set, it *replaces* scoped TOML approvals
-        (env-beats-config, as elsewhere). Clearing it via an empty env value is
-        fail-closed — it only ever pre-approves fewer servers.
+        allowlist.
     - `approvals` (permissive): TOML approvals are scoped to project root and a
-        server-definition fingerprint. Legacy flat TOML `enabled_project_servers`
-        entries are ignored because they cannot be safely scoped.
+        server-definition fingerprint. They remain active alongside env-enabled
+        names, so setting the process-wide escape hatch does not discard choices
+        remembered by the interactive prompt. Legacy flat TOML
+        `enabled_project_servers` entries are ignored because they cannot be safely
+        scoped.
     - `disabled` (restrictive): the env var *unions* with the TOML list — denies
         accumulate and a lower-effort source can never silently empty a deny
         entry set in the other, which would be a fail-open. There is
@@ -3961,13 +3976,11 @@ def load_mcp_server_trust_lists(
             _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         )
 
-    # Enabled env remains an explicit process-wide name allowlist. TOML approvals
-    # are scoped to the project root and server fingerprint; a set env var
-    # replaces those TOML approvals to preserve env-beats-config semantics.
+    # Process-wide env names and scoped TOML approvals are independent grants.
+    # Keep both active so the escape hatch cannot make the interactive prompt's
+    # successfully persisted choices ineffective on the next launch.
     enabled = frozenset(env_enabled or ())
-    approvals = frozenset(
-        () if env_enabled is not None or read_error is not None else toml_approvals
-    )
+    approvals = frozenset(() if read_error is not None else toml_approvals)
     disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
     # Corner: when `read_error` is set because `config.toml` was unreadable,
     # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*

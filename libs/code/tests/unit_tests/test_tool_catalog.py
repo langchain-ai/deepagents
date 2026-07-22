@@ -68,6 +68,123 @@ class TestCollectBuiltInTools:
             assert tool.description
             assert "\n" not in tool.description
 
+    def test_respects_filesystem_allowlist(self) -> None:
+        """The catalog listing is narrowed to an explicit allowlist.
+
+        Scope: this validates the `/tools` display contract for
+        `collect_built_in_tools`, NOT runtime `FilesystemMiddleware` enforcement
+        (covered in `test_agent.py`). The narrowing is produced by the SDK
+        middleware, which omits disallowed tools from the node entirely; the
+        `collect_built_in_tools` post-filter is a defensive backstop over the
+        same result. Either way the listing must exclude the disallowed names.
+        """
+        names = {
+            tool.name for tool in collect_built_in_tools(fs_tools=["ls", "read_file"])
+        }
+        assert {"ls", "read_file", "task"} <= names
+        assert (
+            not {
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+                "execute",
+            }
+            & names
+        )
+
+    def test_none_lists_every_filesystem_tool(self) -> None:
+        """`fs_tools=None` (unrestricted default) lists every filesystem tool."""
+        names = {tool.name for tool in collect_built_in_tools(fs_tools=None)}
+        assert {
+            "ls",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete",
+            "glob",
+            "grep",
+            "execute",
+        } <= names
+
+    def test_backstop_surfaces_and_logs_when_disallowed_tool_leaks_through(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """If the SDK ever stops narrowing, the listing must not silently lie.
+
+        Normally the SDK's `FilesystemMiddleware` omits disallowed tools from the
+        node, so the check is a no-op. Here we simulate that guarantee breaking
+        (a disallowed `write_file` reaches enumeration) and assert the backstop
+        (a) keeps it in the listing — because the agent really does expose it, so
+        hiding it would misreport a restricted surface over an unrestricted
+        agent — and (b) logs an error so the discrepancy is visible.
+        """
+        leaked = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="write_file", description="write"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=leaked,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            names = {
+                tool.name for tool in collect_built_in_tools(fs_tools=["read_file"])
+            }
+
+        # The leaked tool is surfaced, not scrubbed: the listing reflects the
+        # agent's real (unrestricted) tools rather than a false restricted view.
+        assert "write_file" in names
+        assert {"read_file", "task"} <= names
+        assert any(
+            "allowlist backstop detected" in record.getMessage()
+            and "write_file" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_backstop_silent_when_allowlist_already_applied(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backstop must stay quiet when enumeration already respects it."""
+        applied = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=applied,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            collect_built_in_tools(fs_tools=["read_file"])
+
+        assert not caplog.records
+
+    def test_filesystem_tool_names_match_sdk(self) -> None:
+        """`_FILESYSTEM_TOOL_NAMES` must not drift from the SDK's `FsToolName`."""
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        from deepagents_code.tool_catalog import _FILESYSTEM_TOOL_NAMES
+
+        assert set(get_args(FsToolName)) == _FILESYSTEM_TOOL_NAMES
+
     def test_web_search_present_with_tavily(self) -> None:
         with patch.object(
             Settings, "has_tavily", new_callable=PropertyMock, return_value=True
@@ -99,10 +216,13 @@ class TestCollectBuiltInTools:
             "deepagents_code.agent.create_cli_agent",
             return_value=(agent, None),
         ) as create:
-            tools = collect_built_in_tools(assistant_id="custom-agent")
+            tools = collect_built_in_tools(
+                assistant_id="custom-agent", fs_tools=["ls", "read_file"]
+            )
         assert tools == [ToolEntry(name="task", description="Run a subagent")]
         create.assert_called_once()
         assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+        assert create.call_args.kwargs["fs_tools"] == ["ls", "read_file"]
 
     def test_raises_when_compiled_agent_not_inspectable(self) -> None:
         # A compiled agent whose graph does not expose the conventional tool
@@ -550,7 +670,9 @@ class TestCollectCatalog:
         ):
             catalog = collect_catalog(include_mcp=False)
         mock_mcp.assert_not_called()
-        built_in.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
+        built_in.assert_called_once_with(
+            assistant_id="agent", enable_interpreter=False, fs_tools=None
+        )
         assert len(catalog.groups) == 1
         assert catalog.groups[0].label == BUILT_IN_GROUP
         assert catalog.groups[0].source == "built-in"
@@ -578,11 +700,14 @@ class TestCollectCatalog:
         ):
             catalog = collect_catalog(
                 assistant_id="custom-agent",
+                fs_tools=["ls", "read_file"],
                 include_mcp=True,
                 mcp_config_path="/tmp/mcp.json",
             )
         built_in.assert_called_once_with(
-            assistant_id="custom-agent", enable_interpreter=False
+            assistant_id="custom-agent",
+            enable_interpreter=False,
+            fs_tools=["ls", "read_file"],
         )
         # Built-in group stays first; MCP groups follow.
         assert catalog.groups[0].label == BUILT_IN_GROUP

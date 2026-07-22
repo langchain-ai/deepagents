@@ -46,6 +46,7 @@ from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from textual.worker import NoActiveWorker, get_current_worker
 from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
@@ -584,7 +585,7 @@ if TYPE_CHECKING:
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
-    from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.debug_console import SnapshotField
@@ -960,6 +961,63 @@ def _load_show_scrollbar() -> bool:
     if value is not None:
         logger.warning(
             "[ui].show_scrollbar should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
+def _load_debug_console_click_to_copy() -> bool:
+    r"""Load the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Reads `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var, falling back to
+    `[ui].debug_console_click_to_copy` from `~/.deepagents/config.toml`, and
+    finally `False` (click-to-copy off; Enter-to-copy is always available).
+
+    Returns:
+        The resolved preference.
+    """
+    from deepagents_code._env_vars import (
+        DEBUG_CONSOLE_CLICK_TO_COPY,
+        classify_env_bool,
+    )
+
+    raw = os.environ.get(DEBUG_CONSOLE_CLICK_TO_COPY)
+    if raw is not None and raw.strip():
+        env = classify_env_bool(raw)
+        if env is not None:
+            return env
+
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not read config for debug console click-to-copy preference: %s",
+            exc,
+        )
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading debug console "
+            "click-to-copy preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("debug_console_click_to_copy")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].debug_console_click_to_copy should be a boolean; got %s",
             type(value).__name__,
         )
     return False
@@ -1400,6 +1458,68 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
         return _ConfigWriteResult(
             False,
             f"Scrollbar toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
+def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
+    r"""Persist the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Writes `[ui].debug_console_click_to_copy` atomically (temp file +
+    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["debug_console_click_to_copy"] = enabled
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save debug console click-to-copy preference")
+        return _ConfigWriteResult(
+            False,
+            f"Click-to-copy toggled for this session but could not be saved "
             f"({type(exc).__name__}).",
             "error",
         )
@@ -2821,6 +2941,15 @@ class DeepAgentsApp(App):
         responsive; holding the reference keeps the task from being GC'd
         mid-flight and lets tests await it deterministically."""
 
+        self._server_restart_tasks: set[asyncio.Task[Any]] = set()
+        """Background tasks that can restart the owned server subprocess.
+
+        Textual restart workers and detached restart callbacks register here so
+        shutdown can cancel and await them before stopping the server. Inline
+        callers on Textual's long-lived message loop are deliberately excluded.
+        (The initial boot is cleaned up by `run_textual_app` instead.)
+        """
+
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
         restart. Cleared by the next reconnect or restart so multiple deferred
@@ -3021,6 +3150,15 @@ class DeepAgentsApp(App):
 
         Restored from `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var or
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
+        """
+
+        self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
+        r"""Whether the `Ctrl+\` Debug Console copies on click.
+
+        Restored from `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var or
+        `[ui].debug_console_click_to_copy` and re-persisted when the console's
+        "Click to copy" checkbox is toggled. Off by default; Enter-to-copy is
+        always available.
         """
 
         # Widget refs (populated in compose/on_mount)
@@ -3272,6 +3410,18 @@ class DeepAgentsApp(App):
         """Placeholder widgets mounted for messages still sitting in
         `_pending_messages`, removed as the queue drains."""
 
+        self._initial_prompt_queued_widget: QueuedUserMessage | None = None
+        """Placeholder mounted at startup for a `-m`/`--message` prompt so it
+        appears queued immediately while the server is still connecting,
+        matching the on-screen feedback of the typed-while-connecting path.
+        Unlike that path this is a cosmetic placeholder: it is not tracked in
+        `_pending_messages`/`_queued_widgets` and is never drained — instead
+        `_submit_initial_submission` removes it (via
+        `_remove_initial_prompt_placeholder`) and submits the real message.
+        Its `+1` in `_sync_status_queued` keeps the queued count honest while
+        it is live, so any path that detaches the widget must also clear this
+        pointer (see `_clear_messages`, `_discard_queue`)."""
+
         self._message_store = MessageStore()
         """Message virtualization store."""
 
@@ -3330,7 +3480,18 @@ class DeepAgentsApp(App):
         """Latest background git-branch refresh task, if one is running."""
 
         self._graceful_exit_task: asyncio.Task[None] | None = None
-        """Fire-and-forget task for deferred exit after agent worker cancellation."""
+        """Fire-and-forget task for the deferred, overlapping teardown.
+
+        Runs whenever any teardown phase has work — agent cleanup, restart
+        cancellation, server stop, pending-hook drain, or `session.end` — so it
+        may run with no agent worker at all (e.g. only to stop the server)."""
+
+        self._exiting = False
+        """Whether shutdown has begun.
+
+        New work (submissions, queue drains, server restarts) must be rejected,
+        and it doubles as the force-quit / re-entrancy sentinel for `exit()`
+        itself."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -3670,6 +3831,22 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+        # Surface a `-m`/`--message` prompt as a queued message right away,
+        # while the server is still connecting, instead of waiting for
+        # `ServerReady` to submit it. The resume-exclusion decision is read
+        # here, synchronously, before the resume-resolve task consumes
+        # `_resume_thread_intent` (see `_should_queue_initial_prompt_placeholder`).
+        if self._should_queue_initial_prompt_placeholder():
+
+            def _queue_initial_prompt_placeholder() -> None:
+                # Bare `create_task` would let any failure in the placeholder
+                # setup vanish as an unretrieved-task warning; route it through
+                # `_log_task_exception` like every other fire-and-forget task.
+                task = asyncio.create_task(self._show_initial_prompt_as_queued())
+                task.add_done_callback(_log_task_exception)
+
+            self.call_after_refresh(_queue_initial_prompt_placeholder)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -6379,7 +6556,10 @@ class DeepAgentsApp(App):
         """Mirror the pending-message queue depth onto the status bar."""
         if self._status_bar is None:
             return
-        self._status_bar.set_queued(len(self._pending_messages))
+        depth = len(self._pending_messages)
+        if self._initial_prompt_queued_widget is not None:
+            depth += 1
+        self._status_bar.set_queued(depth)
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -6659,9 +6839,7 @@ class DeepAgentsApp(App):
         ):
             anchor = spinner
         if anchor is None:
-            first_queued = self._queued_widgets[0] if self._queued_widgets else None
-            if first_queued is not None and first_queued.parent is container:
-                anchor = first_queued
+            anchor = self._first_mounted_queued_widget(container)
         if anchor is not None:
             try:
                 await container.mount(widget, before=anchor)
@@ -6687,6 +6865,14 @@ class DeepAgentsApp(App):
             if isinstance(child, LoadingWidget | QueuedUserMessage):
                 continue
             return child
+        return None
+
+    def _first_mounted_queued_widget(self, container: Container) -> Widget | None:
+        """Return the first queued placeholder mounted in `container`."""
+        initial = self._initial_prompt_queued_widget
+        for child in container.children:
+            if child is initial or child in self._queued_widgets:
+                return child
         return None
 
     @staticmethod
@@ -6733,14 +6919,7 @@ class DeepAgentsApp(App):
             )
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
-                anchor = next(
-                    (
-                        queued
-                        for queued in self._queued_widgets
-                        if queued.parent is container
-                    ),
-                    None,
-                )
+                anchor = self._first_mounted_queued_widget(container)
             if anchor is None:
                 await container.mount(bottom)
             else:
@@ -6839,10 +7018,8 @@ class DeepAgentsApp(App):
         if not children or self._loading_widget not in children:
             return False
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             return children.index(self._loading_widget) == (
                 children.index(first_queued) - 1
             )
@@ -6978,8 +7155,8 @@ class DeepAgentsApp(App):
                 "Spinner widget not in container children; skipping reposition",
             )
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             container.move_child(self._loading_widget, before=first_queued)
             return
         non_spinner = [
@@ -7877,8 +8054,72 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    def _should_queue_initial_prompt_placeholder(self) -> bool:
+        """Whether startup should surface the `-m` prompt as a queued placeholder.
+
+        Called synchronously from `on_mount`, before the resume-resolve task
+        consumes `_resume_thread_intent`, so the resume exclusion is decided
+        against the raw `-r` intent. Resume is excluded because that path
+        bulk-loads history on connect, which would briefly render the
+        placeholder above the restored transcript.
+
+        Returns:
+            `True` when a bare `-m` prompt should be shown as queued during the
+            initial connect; `False` when resuming or not connecting.
+        """
+        return self._connecting and self._resume_thread_intent is None
+
+    async def _show_initial_prompt_as_queued(self) -> None:
+        """Mount the `-m` prompt as a queued placeholder during connect.
+
+        Gives a `-m`/`--message` prompt the same immediate on-screen feedback
+        as a message typed into an already-running session while it reconnects:
+        the text shows as queued right away rather than after `ServerReady`.
+        Scoped to a bare prompt — skills and goals render differently and keep
+        their existing startup path. The placeholder is removed and replaced by
+        a real user message when `_submit_initial_submission` dispatches.
+        """
+        if not self._connecting:
+            return
+        if self._initial_skill is not None or self._initial_goal is not None:
+            return
+        if not (self._initial_prompt and self._initial_prompt.strip()):
+            return
+        if self._initial_prompt_queued_widget is not None:
+            return
+
+        await self._dismiss_startup_tip()
+        # `ServerReady` can arrive while tip dismissal yields. Its startup
+        # sequence may submit the prompt before this task resumes, so recheck
+        # readiness before creating a placeholder that nobody will remove.
+        if not self._connecting or self._initial_prompt_queued_widget is not None:
+            return
+        queued_widget = QueuedUserMessage(self._initial_prompt)
+        self._initial_prompt_queued_widget = queued_widget
+        await self._mount_message(queued_widget)
+        self._sync_status_queued()
+        self._reveal_connection_status()
+
+    async def _remove_initial_prompt_placeholder(self) -> None:
+        """Drop the `-m` queued placeholder before mounting the real message."""
+        widget = self._initial_prompt_queued_widget
+        if widget is None:
+            return
+        self._initial_prompt_queued_widget = None
+        if widget.is_attached:
+            # Only benign detach races are expected here; a broader
+            # `suppress(Exception)` would hide a real removal failure and
+            # strand the placeholder above the real message. Matches the
+            # narrow-suppress idiom used elsewhere for widget removal.
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
+        self._sync_status_queued()
+
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        if self._exiting:
+            return
+
         # These startup paths (`-m`, `--skill`, `--goal`) submit outside
         # `_submit_input`, so dismiss the startup tip here to match the
         # interactive submission behavior.
@@ -7894,6 +8135,7 @@ class DeepAgentsApp(App):
                 await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
+                await self._remove_initial_prompt_placeholder()
                 await self._handle_user_message(self._initial_prompt)
         except Exception:
             logger.exception("Unhandled error during initial submission")
@@ -8443,6 +8685,9 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
+        if self._exiting:
+            return
+
         # Any submitted prompt (interactive or external) ends the startup
         # tip's lifetime, so dismiss it here at the shared entry point rather
         # than in a single handler.
@@ -8504,6 +8749,9 @@ class DeepAgentsApp(App):
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
+        if self._exiting:
+            return
+
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
@@ -9227,6 +9475,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
@@ -10330,12 +10579,6 @@ class DeepAgentsApp(App):
                     "Goal is paused. It remains saved, but it will not drive work or "
                     "grading until resumed."
                 )
-            lines.append(
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>"
-            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -13609,6 +13852,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or not self._pending_messages
             or self._exit
+            or self._exiting
             or self._connecting
         ):
             return
@@ -14818,6 +15062,10 @@ class DeepAgentsApp(App):
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
         self._active_user_message = None
+        # Same reasoning for the startup `-m` placeholder: remove_children()
+        # below detaches its widget, so the pointer must not outlive it or
+        # `_sync_status_queued`'s `+1` would strand the queued count.
+        self._initial_prompt_queued_widget = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -14953,6 +15201,15 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        # The startup `-m` placeholder represents a pending submission even
+        # though it is not stored in `_pending_messages`. Cancel the backing
+        # prompt along with the widget so a later `ServerReady` cannot submit
+        # work the user already discarded.
+        placeholder = self._initial_prompt_queued_widget
+        if placeholder is not None:
+            self._initial_prompt = None
+            self._initial_prompt_queued_widget = None
+            placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
 
@@ -15488,12 +15745,14 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
-        # A second exit() while a graceful exit is already pending means the
-        # user is forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). Tear down
+        # A second exit() while shutdown is already underway means the user is
+        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set by
+        # the first exit() below, before it decides whether to defer, so this
+        # guard fires for both the deferred and immediate first paths. Tear down
         # immediately rather than arming another bounded wait — the first call
         # already ran cleanup and cancelled the worker, so re-running it would
         # only make the force-quit wait out another window.
-        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+        if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
 
@@ -15533,8 +15792,11 @@ class DeepAgentsApp(App):
             self._cleanup_external_event_source_sync()
             self._external_event_source = None
 
-        # Dispatch synchronously — the event loop is about to be torn down by
-        # super().exit(), so an async task would never complete.
+        # `session.end` is dispatched inside the deferred teardown below (off
+        # the Textual event loop via `asyncio.to_thread`) rather than
+        # synchronously here, so a slow hook can neither block rendering nor
+        # delay agent-cancellation cleanup from starting. Build the payload now,
+        # capturing `_lc_thread_id` at exit time, and hand it to the task.
         from deepagents_code.hooks import (
             _dispatch_hook_sync,
             _load_hooks,
@@ -15543,14 +15805,14 @@ class DeepAgentsApp(App):
         )
 
         hooks = _load_hooks()
+        session_end_payload: bytes | None = None
         if hooks:
-            payload = json.dumps(
+            session_end_payload = json.dumps(
                 {
                     "event": "session.end",
                     "thread_id": getattr(self, "_lc_thread_id", ""),
                 },
             ).encode()
-            _dispatch_hook_sync("session.end", payload, hooks)
 
         from deepagents_code.terminal_escape import reset_terminal_background
 
@@ -15563,46 +15825,210 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
+        self._exiting = True
 
-        # Defer super().exit() so the agent worker's cancellation handler
-        # (which, for remote agents, sends a server-side run cancel, and in all
-        # cases persists interrupt state) has a bounded window to complete
-        # before the event loop is torn down. This gives the server a chance to
-        # finish persisting the in-flight run's trace instead of being
-        # SIGTERM'd mid-request.
+        # Defer super().exit() so teardown can overlap independent slow phases
+        # instead of serializing them, while keeping the Textual event loop
+        # responsive throughout (so a shutdown toast can render). The ordering
+        # constraint is that the agent worker's cancellation handler — which,
+        # for remote agents, sends a server-side run cancel and in all cases
+        # persists interrupt state *through* the server — must finish (or hit
+        # its bounded window) before the server is stopped, so the in-flight
+        # run's trace is not SIGTERM'd mid-request. Once that dependency is
+        # satisfied, server shutdown and the pending-hook drain touch
+        # independent resources and run concurrently. `session.end` overlaps
+        # everything, dispatched off-loop from the start of teardown.
         agent_worker = self._agent_worker if self._agent_running else None
         should_wait_for_agent = (
             agent_worker is not None and not agent_worker.is_finished
         )
         should_drain_hooks = has_pending_hooks()
+        restart_tasks = {task for task in self._server_restart_tasks if not task.done()}
+        # Keep compatibility with a `/restart` task scheduled just before it
+        # enters the centralized tracker (and with callers/tests that seed the
+        # strong-reference field directly).
+        restart_task = self._restart_respawn_task
+        if restart_task is not None and not restart_task.done():
+            restart_tasks.add(restart_task)
+        should_wait_for_restart = bool(restart_tasks)
+        for task in restart_tasks:
+            task.cancel()
+        # Capture the current server so a concurrent respawn can't swap it out
+        # from under the teardown task. Cleanup is still guaranteed by the outer
+        # `finally` in `run_textual_app`; `ServerProcess.stop()` is idempotent
+        # and serialized, so the two callers never race or double-clean.
+        server_proc = self._server_proc
 
-        if should_wait_for_agent or should_drain_hooks:
-            from deepagents_code.config import get_glyphs
+        if (
+            should_wait_for_agent
+            or should_wait_for_restart
+            or should_drain_hooks
+            or server_proc is not None
+            or session_end_payload is not None
+        ):
+            refreshed: asyncio.Event | None = None
+            if should_wait_for_agent or should_drain_hooks:
+                from deepagents_code.config import get_glyphs
 
-            # Surface a single toast so the user knows shutdown is intentionally
-            # waiting rather than hung. Gate `_graceful_exit` on an explicit
-            # refresh so even an already-finished worker or hook drain can't tear
-            # down Textual before the queued notification has been rendered.
-            # Immediate/idle exits skip this branch and stay toast-free, and a
-            # repeated exit while shutdown is still pending hits the force-quit
-            # guard above before reaching here, so it stays toast-free too.
-            self.notify(
-                f"Finishing pending work before exit{get_glyphs().ellipsis}",
-                markup=False,
-            )
-            refreshed = asyncio.Event()
-            if not self.call_after_refresh(refreshed.set):
-                # A closing message pump can't render the toast, but it must not
-                # strand shutdown waiting on a refresh that will never happen.
-                refreshed.set()
+                # Surface a single toast so the user knows shutdown is intentionally
+                # waiting rather than hung. Gate `_graceful_exit` on an explicit
+                # refresh so even an already-finished worker or hook drain can't tear
+                # down Textual before the queued notification has been rendered.
+                # Immediate/idle exits skip this branch and stay toast-free, and a
+                # repeated exit while shutdown is still pending hits the force-quit
+                # guard above before reaching here, so it stays toast-free too.
+                self.notify(
+                    f"Finishing pending work before exit{get_glyphs().ellipsis}",
+                    markup=False,
+                )
+                refreshed = asyncio.Event()
+                if not self.call_after_refresh(refreshed.set):
+                    # A closing message pump can't render the toast, but it must not
+                    # strand shutdown waiting on a refresh that will never happen.
+                    refreshed.set()
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
+                teardown_start = time.monotonic()
+
+                # Fire `session.end` off the event loop immediately so it
+                # overlaps agent cleanup and server shutdown. It reuses the same
+                # blocking `_dispatch_hook_sync` (identical payload and per-hook
+                # timeouts as the old synchronous path), just on a worker thread,
+                # and is awaited in the `finally` below (before the event loop is
+                # stopped). It is dispatched once and never duplicated; delivery
+                # is at-most-once — a force-quit can still drop it.
+                session_end_task: asyncio.Task[None] | None = None
+                if session_end_payload is not None:
+                    payload = session_end_payload
+
+                    async def _dispatch_session_end() -> None:
+                        phase_start = time.monotonic()
+                        try:
+                            await asyncio.to_thread(
+                                _dispatch_hook_sync,
+                                "session.end",
+                                payload,
+                                hooks,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "session.end hook dispatch raised before app exit",
+                                exc_info=True,
+                            )
+                        finally:
+                            logger.debug(
+                                "Teardown phase 'session.end hooks' took %.3fs",
+                                time.monotonic() - phase_start,
+                            )
+
+                    session_end_task = asyncio.ensure_future(_dispatch_session_end())
+
+                async def _drain_hooks() -> None:
+                    phase_start = time.monotonic()
+                    try:
+                        # Bound the drain so a hung hook subprocess can't stall
+                        # an interactive quit indefinitely. Each hook is already
+                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
+                        # thread, but a slow/many-hook config could still exceed
+                        # the graceful-exit budget; a dropped final tool.result is
+                        # announced rather than letting the UI feel frozen. The
+                        # headless surface leaves its drain unbounded on purpose —
+                        # a script exit favors a complete audit trail over shutdown
+                        # latency.
+                        await asyncio.wait_for(
+                            drain_pending_hooks(),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook drain did not finish within %ss before app "
+                            "exit; a final tool.result hook may be dropped",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Hook drain raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'pending-hook drain' took %.3fs",
+                            time.monotonic() - phase_start,
+                        )
+
+                async def _stop_server() -> None:
+                    if server_proc is None:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        # `stop()` blocks on SIGTERM/SIGKILL waits; offload it so
+                        # the event loop stays responsive and it overlaps the
+                        # hook drain instead of serializing behind it.
+                        await asyncio.to_thread(server_proc.stop)
+                    except Exception:
+                        logger.warning(
+                            "Server shutdown raised before app exit",
+                            exc_info=True,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'server shutdown' took %.3fs",
+                            time.monotonic() - phase_start,
+                        )
+
+                async def _finish_restart() -> None:
+                    if not restart_tasks:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        # Bound the wait for symmetry with the agent-cleanup and
+                        # hook-drain phases: the tasks were already cancelled in
+                        # `exit()` and their cleanup is internally bounded (the
+                        # shielded `_stop_process` thread, ~`_SHUTDOWN_TIMEOUT` +
+                        # SIGKILL grace), but a wedged cancellation must not stall
+                        # shutdown longer than the other phases' explicit budgets.
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                *restart_tasks,
+                                return_exceptions=True,
+                            ),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                        for restart_result in results:
+                            if isinstance(restart_result, asyncio.CancelledError):
+                                continue
+                            if isinstance(restart_result, BaseException):
+                                logger.warning(
+                                    "Server restart raised unexpectedly before "
+                                    "app exit",
+                                    exc_info=(
+                                        type(restart_result),
+                                        restart_result,
+                                        restart_result.__traceback__,
+                                    ),
+                                )
+                    except TimeoutError:
+                        logger.warning(
+                            "Server restart cleanup did not finish within %ss "
+                            "before app exit",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'server restart cleanup' (%d tasks) "
+                            "took %.3fs",
+                            len(restart_tasks),
+                            time.monotonic() - phase_start,
+                        )
+
                 try:
-                    await refreshed.wait()
+                    if refreshed is not None:
+                        await refreshed.wait()
                     worker = agent_worker
                     if should_wait_for_agent and worker is not None:
+                        phase_start = time.monotonic()
                         try:
                             await asyncio.wait_for(
                                 asyncio.shield(worker.wait()),
@@ -15630,32 +16056,62 @@ class DeepAgentsApp(App):
                                 "Agent worker wait raised unexpectedly before app exit",
                                 exc_info=True,
                             )
-                    try:
-                        # Bound the drain so a hung hook subprocess can't stall
-                        # an interactive quit indefinitely. Each hook is already
-                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
-                        # thread, but a slow/many-hook config could still exceed
-                        # the graceful-exit budget; a dropped final tool.result is
-                        # announced rather than letting the UI feel frozen. The
-                        # headless surface leaves its drain unbounded on purpose —
-                        # a script exit favors a complete audit trail over shutdown
-                        # latency.
-                        await asyncio.wait_for(
-                            drain_pending_hooks(),
-                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
-                        )
-                    except TimeoutError:
-                        logger.warning(
-                            "Hook drain did not finish within %ss before app "
-                            "exit; a final tool.result hook may be dropped",
-                            _GRACEFUL_EXIT_WAIT_SECONDS,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Hook drain raised unexpectedly before app exit",
-                            exc_info=True,
-                        )
+                        finally:
+                            logger.debug(
+                                "Teardown phase 'agent cleanup' took %.3fs",
+                                time.monotonic() - phase_start,
+                            )
+
+                    # Agent cleanup has finished or hit its window; only now is
+                    # it safe to finish cancellation of any detached restart,
+                    # then stop the server. Server shutdown and the pending-hook
+                    # drain are independent, so overlap them. Each coroutine
+                    # swallows its own `Exception`s, and `return_exceptions=True`
+                    # keeps a stray one from cancelling its sibling; a
+                    # `CancelledError` (force-quit) still propagates and is
+                    # handled by the `finally` below. Inspect the results anyway
+                    # so a future edit that lets an exception escape a child
+                    # coroutine is surfaced rather than silently swallowed.
+                    await _finish_restart()
+                    results = await asyncio.gather(
+                        _stop_server(), _drain_hooks(), return_exceptions=True
+                    )
+                    for phase_result in results:
+                        if isinstance(phase_result, asyncio.CancelledError):
+                            continue
+                        if isinstance(phase_result, BaseException):
+                            logger.warning(
+                                "Teardown phase raised before app exit",
+                                exc_info=(
+                                    type(phase_result),
+                                    phase_result,
+                                    phase_result.__traceback__,
+                                ),
+                            )
                 finally:
+                    # Await `session.end` here rather than in the `try` so a
+                    # force-quit cancellation still honors delivery (at-most-once)
+                    # instead of orphaning the task. Scoped guard so a failed or
+                    # cancelled dispatch can never keep `super().exit()` from
+                    # running below.
+                    if session_end_task is not None:
+                        try:
+                            await session_end_task
+                        except BaseException:
+                            # Reached when teardown itself is cancelled
+                            # (force-quit) before the await returns; the
+                            # dispatch thread may still be running. Genuine
+                            # dispatch failures are already logged at `warning`
+                            # inside the task, so keep this at `debug`.
+                            logger.debug(
+                                "session.end await interrupted during teardown "
+                                "(force-quit); dispatch may not have completed",
+                                exc_info=True,
+                            )
+                    logger.debug(
+                        "Teardown total took %.3fs",
+                        time.monotonic() - teardown_start,
+                    )
                     # This is the only call that stops the event loop, so it
                     # must run on every path the try/except can take, including
                     # an unexpected BaseException (e.g. SystemExit) propagating
@@ -15994,6 +16450,28 @@ class DeepAgentsApp(App):
             return None
         return focused
 
+    def _focused_ask_user_editor(self) -> AskUserTextArea | None:
+        """Return the active focused ask-user text area, if any."""
+        menu = self._pending_ask_user_widget
+        if menu is None or not menu.is_attached or not menu.display or not menu.visible:
+            return None
+
+        from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+
+        focused = self.focused
+        # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
+        # a menu owns two possible inputs (free-text vs "Other"), and this also
+        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
+        if (
+            not isinstance(focused, AskUserTextArea)
+            or menu not in focused.ancestors
+            or not focused.is_attached
+            or not focused.display
+            or not focused.visible
+        ):
+            return None
+        return focused
+
     async def _open_text_area_in_editor(
         self,
         text_area: TextArea,
@@ -16015,7 +16493,7 @@ class DeepAgentsApp(App):
             restore_focus: Callback that restores the originating editable surface.
             reset_after_edit: Optional state reset after replacing the field text.
         """
-        from deepagents_code.editor import open_in_editor
+        from deepagents_code.editor import ExternalEditorError, open_in_editor
 
         try:
             with self.suspend():
@@ -16024,7 +16502,11 @@ class DeepAgentsApp(App):
                     allow_empty=allow_empty,
                     raise_on_error=raise_editor_errors,
                 )
-        except Exception:
+        except ExternalEditorError:
+            # `open_in_editor` only raises this when `raise_on_error` is set, and
+            # only for genuine launch/file failures. Catching it narrowly lets
+            # `suspend()` failures and programming errors propagate instead of
+            # being disguised as an editor-config problem.
             logger.warning("External editor failed", exc_info=True)
             self.notify(
                 "External editor failed. Check $VISUAL/$EDITOR.",
@@ -16052,6 +16534,18 @@ class DeepAgentsApp(App):
                 raise_editor_errors=True,
                 restore_focus=goal_editor.focus,
                 reset_after_edit=goal_editor.reset_paste_state,
+            )
+            return
+
+        ask_user_editor = self._focused_ask_user_editor()
+        if ask_user_editor is not None:
+            await self._open_text_area_in_editor(
+                ask_user_editor,
+                ask_user_editor.submitted_value,
+                allow_empty=True,
+                raise_editor_errors=True,
+                restore_focus=ask_user_editor.focus,
+                reset_after_edit=ask_user_editor.reset_paste_state,
             )
             return
 
@@ -16688,6 +17182,7 @@ class DeepAgentsApp(App):
         (`_maybe_offer_deferred_web_search_restart`, via `call_after_refresh`).
         """
         task = asyncio.create_task(self._offer_restart_for_web_search())
+        self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
 
     async def _resume_server_after_auth_change(self) -> None:
@@ -17081,7 +17576,7 @@ class DeepAgentsApp(App):
                 server_proc.update_env(
                     **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name},
                 )
-                await server_proc.restart()
+                await self._restart_server_process(server_proc)
                 # `ServerProcess.restart()` may rebind to a different port
                 # if the original is still in TIME_WAIT, so rebuild the
                 # client against the current URL rather than reusing it.
@@ -17393,9 +17888,51 @@ class DeepAgentsApp(App):
                 self._build_debug_snapshot(),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
+                click_to_copy=self._debug_console_click_to_copy,
+                on_click_to_copy_change=self._persist_debug_console_click_to_copy,
             ),
             handle_result,
         )
+
+    def _persist_debug_console_click_to_copy(self, enabled: bool) -> None:
+        r"""Persist the Debug Console click-to-copy toggle off the UI thread.
+
+        Keeps the in-memory preference in sync so a reopened console reflects
+        the latest choice, and writes `[ui].debug_console_click_to_copy` off the
+        UI thread via `asyncio.to_thread` so a slow disk never blocks the toggle.
+        A write failure degrades to a toast rather than losing the session-level
+        change.
+
+        Args:
+            enabled: The new click-to-copy state to persist.
+        """
+        self._debug_console_click_to_copy = enabled
+
+        async def _persist() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    _save_debug_console_click_to_copy_result, enabled
+                )
+                if result.message is not None:
+                    self.notify(
+                        result.message,
+                        severity=result.severity,
+                        timeout=6,
+                        markup=False,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to persist debug console click-to-copy preference",
+                    exc_info=True,
+                )
+                self.notify(
+                    "Click-to-copy toggled for this session but could not be saved.",
+                    severity="error",
+                    timeout=6,
+                    markup=False,
+                )
+
+        self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
         """Capture a point-in-time session/runtime snapshot for the console.
@@ -18630,6 +19167,7 @@ class DeepAgentsApp(App):
             task = asyncio.create_task(
                 self._restart_server_for_mcp_refresh("forced reconnect")
             )
+            self._track_server_restart_task(task)
             task.add_done_callback(_log_task_exception)
 
         try:
@@ -18685,6 +19223,7 @@ class DeepAgentsApp(App):
                 # `action_reconnect` gates dismiss on pending state, so the
                 # implicit `force=False` reconnect is correct.
                 task = asyncio.create_task(self._reconnect_from_viewer_safe())
+                self._track_server_restart_task(task)
                 task.add_done_callback(_log_task_exception)
                 return
             if result:
@@ -19789,6 +20328,7 @@ class DeepAgentsApp(App):
         self._sync_status_connection()
         task = asyncio.create_task(self._run_restart_respawn())
         self._restart_respawn_task = task
+        self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
 
     async def _run_restart_respawn(self) -> None:
@@ -19846,6 +20386,58 @@ class DeepAgentsApp(App):
             ),
         )
 
+    def _track_server_restart_task(self, task: asyncio.Task[Any]) -> None:
+        """Register a task that may restart the owned server.
+
+        Args:
+            task: Task to cancel and await during app teardown.
+        """
+        self._server_restart_tasks.add(task)
+        task.add_done_callback(self._server_restart_tasks.discard)
+
+    async def _restart_server_process(
+        self,
+        server_proc: ServerProcess,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109
+    ) -> None:
+        """Run one server restart unless app teardown has begun.
+
+        Textual workers register their underlying task here because `run_worker`
+        does not expose it at the scheduling site. The task stays registered for
+        its whole lifetime so shutdown can cancel and await server-touching work
+        after `restart()` returns, such as MCP preload or agent rebuilding.
+        Detached `asyncio.create_task` callers register at their scheduling site;
+        inline callers on Textual's long-lived message loop remain untracked.
+
+        Args:
+            server_proc: Owned server process to restart.
+            timeout: Optional outer timeout for the full restart.
+
+        Raises:
+            asyncio.CancelledError: If app teardown has already begun, or if
+                `server_proc.restart()` is cancelled because a terminal `stop()`
+                bumped the stop generation mid-restart.
+            RuntimeError: Propagated from `server_proc.restart()` on failure.
+            TimeoutError: If `timeout` is set and the restart exceeds it.
+        """  # noqa: DOC502  # restart() raises RuntimeError; wait_for() times out.
+        if self._exiting:
+            raise asyncio.CancelledError
+
+        try:
+            get_current_worker()
+        except NoActiveWorker:
+            pass
+        else:
+            task = asyncio.current_task()
+            if task is not None and task not in self._server_restart_tasks:
+                self._track_server_restart_task(task)
+        restart = server_proc.restart()
+        if timeout is None:
+            await restart
+        else:
+            await asyncio.wait_for(restart, timeout=timeout)
+
     async def _respawn_server(
         self,
         *,
@@ -19886,7 +20478,16 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
 
             try:
-                await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
+                await self._restart_server_process(
+                    server_proc,
+                    timeout=restart_timeout,
+                )
+            # `asyncio.CancelledError` is intentionally NOT caught here (it is a
+            # `BaseException`): `_restart_server_process` raises it only when app
+            # teardown has begun or a terminal `stop()` bumped the server's stop
+            # generation mid-restart — i.e. only during shutdown. Let it propagate
+            # to the outer `BaseException` handler below, which resets
+            # `_connecting`/`_reconnecting`, syncs connection status, and re-raises.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False

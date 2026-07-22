@@ -69,8 +69,9 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     `tool_catalog.collect_catalog`) so names and descriptions never drift from
     what the model sees. The same runtime options that shape the agent's tool
     set are honored: the resolved interpreter setting controls whether `js_eval`
-    is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
-    `--trust-project-mcp`) control MCP discovery. Those are top-level flags, so
+    is listed, `--allow-fs-tools` restricts filesystem tools, and the MCP options
+    (`--no-mcp`, `--mcp-config`, `--trust-project-mcp`) control MCP discovery.
+    Those are top-level flags, so
     they must precede the subcommand (e.g. `dcode --no-mcp tools list`).
 
     MCP discovery is best-effort: the built-in tools always render. Servers that
@@ -88,8 +89,8 @@ def _run_tools_list(args: argparse.Namespace) -> int:
 
     Args:
         args: Parsed CLI namespace. Reads `output_format`, `agent`,
-            `interpreter`, `sandbox`, `no_mcp`, `mcp_config`, and
-            `trust_project_mcp`.
+            `interpreter`, `sandbox`, `allow_fs_tools`, `no_mcp`, `mcp_config`,
+            and `trust_project_mcp`.
 
     Returns:
         `0` on success (including best-effort MCP degradation); `1` when an
@@ -97,7 +98,7 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
     from deepagents_code._server_config import _resolve_enable_interpreter
-    from deepagents_code.main import _resolve_agent_arg
+    from deepagents_code.main import _parse_allow_fs_tools_flag, _resolve_agent_arg
     from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
@@ -111,6 +112,7 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     catalog = collect_catalog(
         assistant_id=assistant_id,
         enable_interpreter=enable_interpreter,
+        fs_tools=_parse_allow_fs_tools_flag(getattr(args, "allow_fs_tools", None)),
         include_mcp=not getattr(args, "no_mcp", False),
         mcp_config_path=mcp_config_path,
         trust_project_mcp=_tools_list_project_mcp_trust(args),

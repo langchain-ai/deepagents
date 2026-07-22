@@ -3,7 +3,7 @@ version = "1.3"
 [metadata]
 source = "contextbench"
 suite = "cloud"
-difficulty = "medium"
+difficulty = "easy"
 source_difficulty = "easy"
 question_type = "comparison_tiebreak"
 

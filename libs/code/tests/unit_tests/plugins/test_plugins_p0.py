@@ -184,7 +184,7 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert "quality-review-plugin@company-tools" in load_enabled_plugin_ids()
 
 
-async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
+async def test_plugin_manager_installed_row_shows_reload_hint_before_connect(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -212,8 +212,8 @@ async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
 
         options = screen.query_one("#plugin-manager-options", OptionList)
         prompt = str(options.get_option_at_index(0).prompt)
-        assert "restart to connect" in prompt
-        assert "connected" not in prompt.replace("restart to connect", "")
+        assert "run /reload to connect" in prompt
+        assert "connected" not in prompt.replace("run /reload to connect", "")
 
 
 def test_plugin_manager_uses_recursive_skill_inventory(

@@ -916,7 +916,7 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
         app: Application[bool] = Application(
             layout=Layout(
                 Window(
-                    FormattedTextControl(rows),
+                    FormattedTextControl(rows, show_cursor=False),
                     height=len(choices) + 1,
                     dont_extend_height=True,
                 )
@@ -2977,7 +2977,7 @@ def _run_project_mcp_trust_action_picker(
         Application(
             layout=Layout(
                 Window(
-                    FormattedTextControl(_rows),
+                    FormattedTextControl(_rows, show_cursor=False),
                     height=len(actions) + 1,
                     dont_extend_height=True,
                 )
@@ -3170,12 +3170,12 @@ def _run_project_mcp_server_checkbox_picker(
             HSplit(
                 [
                     Window(
-                        FormattedTextControl(_help_text),
+                        FormattedTextControl(_help_text, show_cursor=False),
                         height=4,
                         dont_extend_height=True,
                     ),
                     Window(
-                        FormattedTextControl(_rows),
+                        FormattedTextControl(_rows, show_cursor=False),
                         height=visible_count,
                         dont_extend_height=True,
                     ),

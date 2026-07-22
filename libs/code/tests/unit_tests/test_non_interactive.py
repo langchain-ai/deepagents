@@ -366,6 +366,59 @@ class TestSandboxTypeForwarding:
         assert kwargs["sandbox_snapshot_name"] == "my-snap"
 
 
+class TestAllowFsToolsForwarding:
+    """`allow_fs_tools` must survive the run_non_interactive plumbing.
+
+    `start_server_and_get_agent` is mocked but `server_session` is not, so this
+    pins the middle hops (`run_non_interactive` -> `server_session` ->
+    `start_server_and_get_agent`) where a dropped kwarg would silently disable
+    the filesystem allowlist for every `-n` server session with a green suite.
+    """
+
+    async def test_allow_fs_tools_passed_to_server(self) -> None:
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(
+                message="test task",
+                allow_fs_tools=["ls", "read_file"],
+            )
+
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["allow_fs_tools"] == ["ls", "read_file"]
+
+
 class TestQuietMode:
     """Tests for --quiet flag in run_non_interactive."""
 

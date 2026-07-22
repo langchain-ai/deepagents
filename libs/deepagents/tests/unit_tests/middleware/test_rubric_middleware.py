@@ -278,7 +278,18 @@ class TestAfterAgentDirect:
         assert update["_rubric_status"] == "failed"
         assert "jump_to" not in update
 
-    def test_grader_exception_becomes_grader_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_grader_exception_includes_http_status_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class APIStatusError(RuntimeError):
+            status_code = 529
+
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=3)
+        _stub_grader(mw, monkeypatch, exc=APIStatusError("API overloaded"))
+        update = mw.after_agent(self._state(), _runtime())
+        assert update is not None
+        evals = update["_rubric_evaluations"]
+        assert evals[0]["explanation"] == "Grader raised APIStatusError (HTTP 529): API overloaded"
+
+    def test_grader_exception_without_status_preserves_explanation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Infrastructure failures get the distinct `grader_error` status.
 
         Separate from `"failed"`, which the grader *itself* returns when
@@ -293,7 +304,7 @@ class TestAfterAgentDirect:
         evals = update["_rubric_evaluations"]
         assert len(evals) == 1
         assert evals[0]["result"] == "grader_error"
-        assert "grader exploded" in evals[0]["explanation"]
+        assert evals[0]["explanation"] == "Grader raised RuntimeError: grader exploded"
 
     def test_keyboard_interrupt_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `KeyboardInterrupt` (and `asyncio.CancelledError`) are

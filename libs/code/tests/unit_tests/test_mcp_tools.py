@@ -4478,6 +4478,28 @@ class TestSelectiveProjectMcpTrust:
         return {"type": "sse", "url": url}
 
     @staticmethod
+    def _create_git_repository(root: Path) -> Path:
+        root.mkdir()
+        common_dir = root / ".git"
+        (common_dir / "objects").mkdir(parents=True)
+        (common_dir / "refs").mkdir()
+        (common_dir / "worktrees").mkdir()
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n\tbare = false\n")
+        return common_dir
+
+    @staticmethod
+    def _create_git_worktree(common_dir: Path, root: Path, name: str) -> None:
+        root.mkdir()
+        git_entry = root / ".git"
+        git_dir = common_dir / "worktrees" / name
+        git_dir.mkdir()
+        git_entry.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{git_entry}\n")
+        (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+
+    @staticmethod
     def _write_user_approvals(
         user_config: Path,
         project_root: Path,
@@ -4618,6 +4640,85 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_local_approval_does_not_load_in_sibling_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import model_config
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        approved_servers = {"docs": self._stdio("echo")}
+        self._write_project_config(second, approved_servers)
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
+        )
+
+        merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_remote_approval_loads_in_sibling_but_not_clone_or_new_transport(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import model_config
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        clone = tmp_path / "clone"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        self._create_git_repository(clone)
+        approved_servers = {"docs": self._remote()}
+        self._write_project_config(second, approved_servers)
+        self._write_project_config(clone, approved_servers)
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
+        )
+
+        sibling_merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+        clone_merged = await self._resolve_merged(
+            clone,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+        self._write_project_config(second, {"docs": self._stdio("python")})
+        changed_merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert sibling_merged is not None
+        assert set(sibling_merged["mcpServers"]) == {"docs"}
+        assert clone_merged is None
+        assert changed_merged is None
 
     async def test_same_name_in_different_project_is_not_approved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

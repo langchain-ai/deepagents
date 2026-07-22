@@ -585,7 +585,7 @@ if TYPE_CHECKING:
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
-    from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.debug_console import SnapshotField
@@ -9475,6 +9475,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
@@ -10578,12 +10579,6 @@ class DeepAgentsApp(App):
                     "Goal is paused. It remains saved, but it will not drive work or "
                     "grading until resumed."
                 )
-            lines.append(
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>"
-            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -12101,6 +12096,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.model_config import clear_caches
 
                 clear_caches()
+                self._sync_status_model()
             except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -13347,15 +13343,31 @@ class DeepAgentsApp(App):
         return settings.model_provider or None
 
     def _sync_status_model(self) -> None:
-        """Update model displays with the active model and reasoning effort."""
+        """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import settings
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
+            supported_efforts_for_model,
         )
 
         provider = settings.model_provider or ""
         model = settings.model_name or ""
+        spec = self._effective_model_spec()
+        if self._chat_input is not None:
+            try:
+                efforts = supported_efforts_for_model(
+                    spec, cli_override=self._profile_override
+                )
+                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
+                self._chat_input.set_argument_hint_override("/effort", hint)
+            # A cosmetic ghost-text hint must never gate the primary model
+            # displays updated below, so swallow and log any failure here.
+            except Exception:
+                logger.warning(
+                    "Failed to refresh /effort argument hint during model sync",
+                    exc_info=True,
+                )
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
@@ -13379,12 +13391,11 @@ class DeepAgentsApp(App):
             # blank model paired with a populated effort suffix.
             self._status_bar.set_model(provider=provider, model=model, effort="")
             return
-        spec = self._effective_model_spec()
         effort = ""
         if spec:
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
-                or default_effort_for_model(spec)
+                or default_effort_for_model(spec, cli_override=self._profile_override)
                 or ""
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
@@ -13406,21 +13417,19 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            is_effort_supported_for_model,
+            with_effort_model_params,
         )
 
-        if (
-            current_effort_from_model_params(model_spec, self._model_params_override)
-            is not None
-        ):
+        if has_explicit_effort_model_params(model_spec, self._model_params_override):
             return
         effort = await asyncio.to_thread(load_effort_for_model, model_spec)
         if effort is None:
             return
-        params = model_params_for_effort(model_spec, effort)
-        if params is None:
+        if not is_effort_supported_for_model(
+            model_spec, effort, cli_override=self._profile_override
+        ):
             # Saved label is no longer valid for this model; drop the stale
             # entry so the model default applies. The active params carry no
             # effort here (checked above), so there is nothing to strip.
@@ -13436,9 +13445,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
-        self._model_params_override = merge_effort_model_params(
+        self._model_params_override = with_effort_model_params(
+            model_spec,
             self._model_params_override,
-            params,
+            effort,
         )
 
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
@@ -13462,7 +13472,7 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 "No model is configured yet. Run `/model` to choose one."
             )
-        efforts = supported_efforts_for_model(spec)
+        efforts = supported_efforts_for_model(spec, cli_override=self._profile_override)
         if not efforts:
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."
@@ -13471,7 +13481,7 @@ class DeepAgentsApp(App):
             spec=spec,
             efforts=efforts,
             current=current_effort_from_model_params(spec, self._model_params_override),
-            default=default_effort_for_model(spec),
+            default=default_effort_for_model(spec, cli_override=self._profile_override),
         )
 
     async def _handle_effort_command(self, command: str) -> None:
@@ -13480,7 +13490,7 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        raw = command.strip()[len("/effort") :].strip().lower()
+        raw = command.strip()[len("/effort") :].strip()
         if not raw:
             await self._show_effort_selector(command)
             return
@@ -13544,21 +13554,25 @@ class DeepAgentsApp(App):
             save_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            with_effort_model_params,
             without_effort_model_params,
         )
 
-        context = self._resolve_effort_context()
-        if isinstance(context, _EffortUnavailable):
-            await self._mount_message(AppMessage(context.message))
-            return
-        spec = context.spec
-
-        if effort in {"clear", "--clear", "reset"}:
-            had_override = context.current is not None
+        if effort.lower() in {"clear", "--clear", "reset"}:
+            spec = self._effective_model_spec()
+            if not spec:
+                await self._mount_message(
+                    AppMessage(
+                        "No model is configured yet. Run `/model` to choose one."
+                    )
+                )
+                return
+            had_override = has_explicit_effort_model_params(
+                spec, self._model_params_override
+            )
             self._model_params_override = without_effort_model_params(
-                self._model_params_override
+                spec, self._model_params_override
             )
             saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
@@ -13578,8 +13592,20 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(message))
             return
 
-        params = model_params_for_effort(spec, effort)
-        if params is None:
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
+            return
+        spec = context.spec
+        matched_effort = next(
+            (
+                supported_effort
+                for supported_effort in context.efforts
+                if supported_effort.casefold() == effort.casefold()
+            ),
+            None,
+        )
+        if matched_effort is None:
             supported = ", ".join(context.efforts)
             await self._mount_message(
                 ErrorMessage(
@@ -13589,21 +13615,21 @@ class DeepAgentsApp(App):
             )
             return
 
-        self._model_params_override = merge_effort_model_params(
-            self._model_params_override, params
+        self._model_params_override = with_effort_model_params(
+            spec, self._model_params_override, matched_effort
         )
-        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
+        saved = await asyncio.to_thread(save_effort_for_model, spec, matched_effort)
         self._sync_status_model()
         if not saved:
             await self._mount_message(
                 ErrorMessage(
-                    f"Reasoning effort for {spec} set to {effort} in this session, "
-                    "but the preference could not be saved."
+                    f"Reasoning effort for {spec} set to {matched_effort} in this "
+                    "session, but the preference could not be saved."
                 )
             )
             return
         await self._mount_message(
-            AppMessage(f"Reasoning effort for {spec} set to {effort}."),
+            AppMessage(f"Reasoning effort for {spec} set to {matched_effort}."),
         )
 
     async def _run_agent_task(
@@ -16455,6 +16481,28 @@ class DeepAgentsApp(App):
             return None
         return focused
 
+    def _focused_ask_user_editor(self) -> AskUserTextArea | None:
+        """Return the active focused ask-user text area, if any."""
+        menu = self._pending_ask_user_widget
+        if menu is None or not menu.is_attached or not menu.display or not menu.visible:
+            return None
+
+        from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+
+        focused = self.focused
+        # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
+        # a menu owns two possible inputs (free-text vs "Other"), and this also
+        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
+        if (
+            not isinstance(focused, AskUserTextArea)
+            or menu not in focused.ancestors
+            or not focused.is_attached
+            or not focused.display
+            or not focused.visible
+        ):
+            return None
+        return focused
+
     async def _open_text_area_in_editor(
         self,
         text_area: TextArea,
@@ -16476,7 +16524,7 @@ class DeepAgentsApp(App):
             restore_focus: Callback that restores the originating editable surface.
             reset_after_edit: Optional state reset after replacing the field text.
         """
-        from deepagents_code.editor import open_in_editor
+        from deepagents_code.editor import ExternalEditorError, open_in_editor
 
         try:
             with self.suspend():
@@ -16485,7 +16533,11 @@ class DeepAgentsApp(App):
                     allow_empty=allow_empty,
                     raise_on_error=raise_editor_errors,
                 )
-        except Exception:
+        except ExternalEditorError:
+            # `open_in_editor` only raises this when `raise_on_error` is set, and
+            # only for genuine launch/file failures. Catching it narrowly lets
+            # `suspend()` failures and programming errors propagate instead of
+            # being disguised as an editor-config problem.
             logger.warning("External editor failed", exc_info=True)
             self.notify(
                 "External editor failed. Check $VISUAL/$EDITOR.",
@@ -16513,6 +16565,18 @@ class DeepAgentsApp(App):
                 raise_editor_errors=True,
                 restore_focus=goal_editor.focus,
                 reset_after_edit=goal_editor.reset_paste_state,
+            )
+            return
+
+        ask_user_editor = self._focused_ask_user_editor()
+        if ask_user_editor is not None:
+            await self._open_text_area_in_editor(
+                ask_user_editor,
+                ask_user_editor.submitted_value,
+                allow_empty=True,
+                raise_editor_errors=True,
+                restore_focus=ask_user_editor.focus,
+                reset_after_edit=ask_user_editor.reset_paste_state,
             )
             return
 

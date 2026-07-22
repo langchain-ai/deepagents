@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self, TypeAlias
+from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from deepagents_code.hooks.models.domain import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     HookEvent,
@@ -27,20 +27,16 @@ class CommandHandlerSpec(_ConfigModel):
 
     type: Literal["command"]
     command: str
-    timeout: float | None = None
+    timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     status_message: str | None = Field(default=None, alias="statusMessage")
     async_: bool | None = Field(default=None, alias="async")
 
-    @model_validator(mode="after")
-    def _reject_async_commands(self) -> Self:
-        if self.async_:
-            msg = "async command hooks are not supported in MVP"
+    @field_validator("async_", mode="after")
+    @classmethod
+    def _normalize_async(cls, value: bool | None) -> None:
+        if value:
+            msg = "async command hooks are not yet supported."
             raise ValueError(msg)
-        # Normalize explicit `async: false` to omitted so equivalent configs
-        # share a snapshot hash.
-        if self.async_ is False:
-            return self.model_copy(update={"async_": None})
-        return self
 
 
 HandlerSpec: TypeAlias = CommandHandlerSpec

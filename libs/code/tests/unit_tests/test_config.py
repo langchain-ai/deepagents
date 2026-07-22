@@ -14,6 +14,7 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _QUIET_SDK_LOGGER_NAMES,
     CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
@@ -29,7 +30,7 @@ from deepagents_code.config import (
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
-    _quiet_sdk_tracing_logging,
+    _quiet_sdk_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
@@ -110,6 +111,41 @@ class TestRuntimeDotenvReload:
             assert "openai_api_key: set -> set" in changes
         finally:
             config_mod._dotenv_loaded_values.clear()
+
+    def test_reload_resets_prefixed_resolution_logging(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Runtime reload starts a new generation of resolution diagnostics."""
+        import deepagents_code.config as config_mod
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        reset_env_resolution_log()
+        try:
+            runtime = Settings.from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            runtime.reload_from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 2
+            )
+        finally:
+            reset_env_resolution_log()
 
     def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
         self,
@@ -1935,19 +1971,23 @@ class TestGetLangsmithProjectName:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
-    def test_redaction_enabled_by_default(self) -> None:
-        """LangSmith trace redaction defaults to enabled."""
-        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
-            assert is_langsmith_redaction_enabled() is True
+    @pytest.fixture(autouse=True)
+    def _enable_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
 
-    def test_redaction_can_be_disabled_by_env(
+    def test_redaction_disabled_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The redaction env var can opt out for local debugging."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        """LangSmith trace redaction defaults to disabled."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
             assert is_langsmith_redaction_enabled() is False
+
+    def test_redaction_can_be_enabled_by_env(self) -> None:
+        """The redaction env var can opt in to secret redaction."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
 
     def test_configures_langsmith_client_with_secret_anonymizer(
         self,
@@ -1976,14 +2016,14 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
-    def test_skips_client_configuration_when_redaction_disabled(
+    def test_skips_client_configuration_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Opting out leaves the LangSmith client untouched."""
+        """Tracing leaves the LangSmith client untouched until redaction is enabled."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -2200,25 +2240,29 @@ class TestLangsmithSecretRedaction:
         assert "api_key" not in kwargs
         assert "anonymizer" in kwargs
 
-    def test_redaction_can_be_disabled_by_toml(self) -> None:
-        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+    def test_redaction_can_be_enabled_by_toml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `[tracing] langsmith_redact = true` in config.toml opts in."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is False
+            assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is True
+            assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,
@@ -3219,8 +3263,8 @@ class TestGetTracingStatus:
             )
 
 
-class TestQuietSdkTracingLogging:
-    """Tests for _quiet_sdk_tracing_logging()."""
+class TestQuietSdkLogging:
+    """Tests for _quiet_sdk_logging()."""
 
     def test_attaches_null_handler_without_debug(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3229,33 +3273,74 @@ class TestQuietSdkTracingLogging:
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             logger.handlers.clear()
             logger.setLevel(logging.NOTSET)
+            monkeypatch.setattr(logger, "propagate", True)
 
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
             assert logger.level == logging.NOTSET
+            # Propagation is left intact so a deliberately configured handler
+            # (an embedding app's root handler, pytest's caplog) still receives
+            # real SDK errors; the NullHandler alone keeps routine noise off the
+            # last-resort stderr handler.
+            assert logger.propagate is True
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logging.getLogger(name).handlers.clear()
 
-        _quiet_sdk_tracing_logging()
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             handlers = logging.getLogger(name).handlers
             assert len(handlers) == 1
+
+    def test_routes_harness_diagnostics_to_debug_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode configures a file handler for harness diagnostics."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.setenv(DEBUG, "1")
+        harness_logger = logging.getLogger(
+            "deepagents.profiles.harness.harness_profiles"
+        )
+        harness_logger.handlers.clear()
+        monkeypatch.setattr(harness_logger, "propagate", True)
+
+        with patch("deepagents_code._debug.configure_debug_logging") as configure:
+            _quiet_sdk_logging()
+
+        assert any(call.args == (harness_logger,) for call in configure.call_args_list)
+        assert harness_logger.propagate is True
+
+    def test_leaves_other_deepagents_loggers_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Actionable Deep Agents runtime warnings keep their normal routing."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        runtime_logger = logging.getLogger("deepagents.backends.filesystem")
+        runtime_logger.handlers.clear()
+        monkeypatch.setattr(runtime_logger, "propagate", True)
+
+        _quiet_sdk_logging()
+
+        assert runtime_logger.handlers == []
+        assert runtime_logger.propagate is True
 
 
 class TestFetchLangsmithProjectUrl:
@@ -4096,6 +4181,64 @@ class TestCreateModelForwardsProviderProfile:
 
         _, call_kwargs = mock_init.call_args
         assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_does_not_add_summary(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={"reasoning_effort": "high"},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        mock_init: Mock,
+        tmp_path: Path,
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+models = ["gpt-5.5"]
+[models.providers.openai.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_native_reasoning_effort_keeps_precedence(
+        self,
+        mock_init: Mock,
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={
+                "reasoning_effort": "high",
+                "reasoning": {"effort": "low", "summary": "auto"},
+            },
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert "reasoning_effort" not in call_kwargs
 
     @patch("langchain.chat_models.init_chat_model")
     def test_config_toml_opt_out_wins_over_profile(
@@ -6132,6 +6275,42 @@ class TestCreateModelCodex:
         assert isinstance(result.model, _ChatOpenAICodex)
         assert result.provider == "openai_codex"
         assert result.model_name == "gpt-5.2-codex"
+
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        token_path = tmp_path / "auth.json"
+        self._plant_token(token_path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: token_path)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+models = ["gpt-5.5"]
+[models.providers.openai_codex.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        captured: dict[str, Any] = {}
+        model = _make_init_chat_model_mock()
+
+        def _capture(_model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401
+            captured.update(kwargs)
+            return model
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai_codex:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        assert captured["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in captured
 
     def test_api_key_kwarg_is_stripped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

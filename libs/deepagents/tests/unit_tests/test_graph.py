@@ -24,7 +24,6 @@ from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
-    BASE_AGENT_PROMPT,
     DEFAULT_AGENT_PROMPT,
     DeepAgentState,
     _apply_custom_middleware,
@@ -577,12 +576,12 @@ class TestSystemPromptAssembly:
         assert prompt == "You are a custom agent.\n\nBe concise."
         assert DEFAULT_AGENT_PROMPT not in prompt
 
-    def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
+    def test_suffix_without_base_system_prompt_omits_empty_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "suffprov",
             HarnessProfile(system_prompt_suffix="Think step by step."),
         )
-        assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
+        assert prompt == "Think step by step."
 
     def test_user_system_prompt_prepended_before_profile_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -593,13 +592,13 @@ class TestSystemPromptAssembly:
         assert prompt == "User instructions.\n\nCustom base."
         assert DEFAULT_AGENT_PROMPT not in prompt
 
-    def test_user_system_prompt_prepended_before_default_base(self) -> None:
+    def test_user_system_prompt_is_used_without_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "defprov",
             HarnessProfile(),
             system_prompt="User instructions.",
         )
-        assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
+        assert prompt == "User instructions."
 
     def test_triple_combo_all_three_inputs(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -621,7 +620,7 @@ class TestSystemPromptAssembly:
             system_prompt=msg,
         )
         assert isinstance(result, SystemMessage)
-        # Last content block should contain the custom base, not BASE_AGENT_PROMPT
+        # Last content block should contain the custom base.
         last_block = result.content_blocks[-1]
         assert "Custom base." in last_block["text"]
         assert DEFAULT_AGENT_PROMPT not in last_block["text"]
@@ -661,7 +660,6 @@ class TestSystemPromptAssembly:
 
     def test_default_agent_prompt_holds_authored_prose(self) -> None:
         """The authored prose is preserved (not deleted) so it can be restored."""
-        assert BASE_AGENT_PROMPT == ""
         assert "You are a deep agent" in DEFAULT_AGENT_PROMPT
         assert "Professional Objectivity" in DEFAULT_AGENT_PROMPT
 

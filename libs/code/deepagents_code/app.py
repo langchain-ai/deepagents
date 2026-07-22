@@ -16464,6 +16464,9 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 
         focused = self.focused
+        # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
+        # a menu owns two possible inputs (free-text vs "Other"), and this also
+        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
         if (
             not isinstance(focused, AskUserTextArea)
             or menu not in focused.ancestors
@@ -16495,7 +16498,7 @@ class DeepAgentsApp(App):
             restore_focus: Callback that restores the originating editable surface.
             reset_after_edit: Optional state reset after replacing the field text.
         """
-        from deepagents_code.editor import open_in_editor
+        from deepagents_code.editor import ExternalEditorError, open_in_editor
 
         try:
             with self.suspend():
@@ -16504,7 +16507,11 @@ class DeepAgentsApp(App):
                     allow_empty=allow_empty,
                     raise_on_error=raise_editor_errors,
                 )
-        except Exception:
+        except ExternalEditorError:
+            # `open_in_editor` only raises this when `raise_on_error` is set, and
+            # only for genuine launch/file failures. Catching it narrowly lets
+            # `suspend()` failures and programming errors propagate instead of
+            # being disguised as an editor-config problem.
             logger.warning("External editor failed", exc_info=True)
             self.notify(
                 "External editor failed. Check $VISUAL/$EDITOR.",

@@ -19,7 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.cache import LRUCache
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
@@ -917,6 +917,38 @@ class DebugConsoleScreen(ModalScreen[None]):
         event.prevent_default()
         event.stop()
         self.focus_previous(_FOCUS_CYCLE)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Dismiss transient control state when the user clicks outside it.
+
+        Clicking a focusable control already moves focus, but clicking a
+        non-focusable area (the snapshot, labels, help, or empty modal space)
+        does not. Mirror that outside-click behavior for the open level dropdown
+        and the focused "Click to copy" checkbox.
+        """
+        offset = event.screen_offset
+        select = self._level_select()
+        if select.expanded and not self._point_in_level_select(select, offset):
+            overlay = select.query_one(SelectOverlay)
+            select.expanded = False
+            # Re-focus the select only when focus is still trapped on the now
+            # hidden overlay; if the click already moved focus to another
+            # control, leave it there.
+            if self.focused is overlay:
+                select.focus()
+        checkbox = self.query_one(f"#{_CLICK_TO_COPY_ID}", Checkbox)
+        if self.focused is checkbox and not checkbox.region.contains(
+            offset.x, offset.y
+        ):
+            self.set_focus(None)
+
+    @staticmethod
+    def _point_in_level_select(select: Select[FilterValue], offset: Offset) -> bool:
+        """Return whether *offset* falls on the select box or its open overlay."""
+        if select.region.contains(offset.x, offset.y):
+            return True
+        overlay = select.query_one(SelectOverlay)
+        return overlay.display and overlay.region.contains(offset.x, offset.y)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""

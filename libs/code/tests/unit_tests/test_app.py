@@ -7816,7 +7816,11 @@ class TestGoalCommand:
 
     async def test_goal_show_grader_line_reports_defaults(self) -> None:
         """The grader line should spell out defaults when the grader is unset."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_goal = "ship the feature"
@@ -7827,8 +7831,51 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert (
-                "Grader: current chat model · max iterations: SDK default" in rendered
+                "Grader: startup chat model (openai:gpt-5.5) · "
+                "max iterations: 3 (SDK default)" in rendered
             )
+
+    def test_grader_display_ignores_per_turn_model_override(self) -> None:
+        """A `/model` override should not be reported as the grader model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "anthropic:claude-sonnet-4-5"},
+        )
+        app._model_override = "openai:gpt-5.5"
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model (anthropic:claude-sonnet-4-5)"
+
+    def test_grader_display_reports_bare_default_without_startup_model(self) -> None:
+        """With no startup model captured, the grader line omits the spec.
+
+        This is the state a fresh, unconfigured user sees on `/goal show` or
+        `/rubric show`, so guard against a regression rendering a stray
+        "startup chat model (None)".
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        assert app._rubric_default_model is None
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model"
+
+    def test_grader_display_falls_back_to_model_kwargs_spec(self) -> None:
+        """Without `server_kwargs`, the startup model comes from `model_kwargs`.
+
+        Guards the second arm of the `_rubric_default_model` `or` fallback,
+        which is the source when server startup was deferred with only a
+        `model_spec` supplied.
+        """
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            model_kwargs={"model_spec": "openai:gpt-5.5"},
+        )
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model (openai:gpt-5.5)"
 
     @pytest.mark.parametrize("command", ["/goal", "/goal show"])
     async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
@@ -9850,7 +9897,7 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "No rubric set." in rendered
-            assert "Rubric grader model: current chat model" not in rendered
+            assert "Rubric grader model:" not in rendered
 
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""
@@ -10660,7 +10707,11 @@ class TestRubricCommand:
 
     async def test_rubric_state_reports_sdk_default_when_cap_unset(self) -> None:
         """`/rubric show` labels an unset cap as the SDK default."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_rubric = "tests pass"
@@ -10669,7 +10720,10 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations: SDK default" in rendered
+            assert (
+                "Rubric grader model: startup chat model (openai:gpt-5.5)" in rendered
+            )
+            assert "Rubric max iterations: 3 (SDK default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
         """External graph sessions cannot change construction-time rubric caps."""
@@ -10873,7 +10927,7 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model cleared; using current chat model." in rendered
+            assert "Rubric grader model cleared; using startup chat model." in rendered
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""
@@ -19135,6 +19189,12 @@ class TestDeferredActions:
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider is None
             assert app._server_startup_error is None
+
+            # The retry reconstructs the server with the new model, so the
+            # grader's construction-time model must follow it — otherwise
+            # `/goal show` / `/rubric show` would report the stale pre-retry
+            # model, the exact class of bug this display path exists to fix.
+            assert app._rubric_default_model == "anthropic:claude-opus-4-7"
 
             # A `/model` retry is a mid-session reconnect, not an initial
             # connect: both flags are set and the status bar reads

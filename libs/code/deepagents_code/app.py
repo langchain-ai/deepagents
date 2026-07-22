@@ -58,6 +58,7 @@ from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
     MCP_REENABLED_PENDING_ERROR,
+    SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -3071,6 +3072,16 @@ class DeepAgentsApp(App):
         # Per-turn model overrides
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
+
+        self._rubric_default_model: str | None = (server_kwargs or {}).get(
+            "model_name"
+        ) or (model_kwargs or {}).get("model_spec")
+        """Chat model captured when the rubric middleware is constructed.
+
+        Unlike `_effective_model_spec`, this does not follow per-turn `/model`
+        overrides because those only affect `ConfigurableModelMiddleware`; the
+        rubric middleware keeps using its construction-time model.
+        """
 
         self._model_params_override: dict[str, Any] | None = (
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
@@ -10404,14 +10415,27 @@ class DeepAgentsApp(App):
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
-        Both fall back to human-readable defaults when unset. Shared by
-        `/goal show` and `/rubric show` so the default wording stays in sync.
+        When no explicit grader model is set, the model string reports the
+        rubric's construction-time chat model (`_rubric_default_model`, which
+        deliberately ignores per-turn `/model` overrides), falling back to a
+        bare "startup chat model" when that is unknown. An unset iteration cap
+        reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
+        rather than the word "default". Shared by `/goal show` and
+        `/rubric show` so the default wording stays in sync.
         """
-        model = self._rubric_model or "current chat model"
+        if self._rubric_model:
+            model = self._rubric_model
+        else:
+            chat_model = self._rubric_default_model
+            model = (
+                f"startup chat model ({chat_model})"
+                if chat_model
+                else "startup chat model"
+            )
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
-            else "SDK default"
+            else f"{SDK_DEFAULT_RUBRIC_MAX_ITERATIONS} (SDK default)"
         )
         return model, iterations
 
@@ -11559,7 +11583,7 @@ class DeepAgentsApp(App):
             title="Choose grader model for rubric",
             description=(
                 "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the current chat model."
+                "`/rubric model clear` to reuse the startup chat model."
             ),
         )
         self.push_screen(screen, handle_result)
@@ -11742,7 +11766,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage("Rubric grader model cleared; using current chat model."),
+                AppMessage("Rubric grader model cleared; using startup chat model."),
             )
 
     async def _handle_command(self, command: str) -> None:
@@ -21779,6 +21803,7 @@ class DeepAgentsApp(App):
         }
         self._model_kwargs = new_model_kwargs
         self._server_kwargs["model_name"] = display
+        self._rubric_default_model = display
         if extra_kwargs is not None:
             self._server_kwargs["model_params"] = extra_kwargs
 

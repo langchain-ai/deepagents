@@ -14798,6 +14798,183 @@ class TestActionOpenEditor:
             assert app.focused is chat_input.input_widget
             assert future.done() is False
 
+    @staticmethod
+    async def _open_ask_user_other_editor(
+        app: DeepAgentsApp,
+        pilot: Pilot[DeepAgentsApp],
+    ) -> tuple[AskUserMenu, AskUserTextArea, asyncio.Future[Any]]:
+        """Mount an ask-user question and focus its 'Other' free-text input."""
+        messages = app.query_one("#messages", Container)
+        menu = AskUserMenu(
+            [
+                {
+                    "question": "Pick one?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "A"}, {"value": "B"}],
+                }
+            ]
+        )
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        menu.set_future(future)
+        await messages.mount(menu)
+        app._pending_ask_user_widget = menu
+        await pilot.pause()
+        menu.focus_active()
+        await pilot.pause()
+        # Move the selection past both real choices onto "Other", which reveals
+        # and focuses the free-text input.
+        await pilot.press("down", "down")
+        await pilot.pause()
+        other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+        assert app.focused is other_input
+        return menu, other_input, future
+
+    async def test_ctrl_x_edits_focused_ask_user_other_without_submitting(
+        self,
+    ) -> None:
+        """Ctrl+X should round-trip the 'Other' draft through the editor."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            other_input.text = "draft answer"
+            other_input.move_cursor(other_input.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited answer",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "draft answer", allow_empty=True, raise_on_error=True
+            )
+            assert other_input.text == "edited answer"
+            assert other_input.cursor_location == other_input.document.end
+            assert app.focused is other_input
+            assert future.done() is False
+
+    async def test_ctrl_x_expands_and_resets_ask_user_other_paste_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """External edits should use logical paste text and discard stale backing."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            big = "answer line\n" * 5
+            await other_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+            assert other_input._pasted_contents
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="replacement",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                big, allow_empty=True, raise_on_error=True
+            )
+            assert other_input.text == "replacement"
+            assert other_input.submitted_value == "replacement"
+            assert other_input._pasted_contents == {}
+            assert other_input._next_paste_id == 1
+            assert app.focused is other_input
+            assert future.done() is False
+
+    async def test_ctrl_x_ask_user_other_failure_preserves_text_and_focus(
+        self,
+    ) -> None:
+        """Editor errors should notify without moving focus to the chat input."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            other_input.text = "draft answer"
+            other_input.move_cursor(other_input.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.resolve_editor",
+                    return_value=["missing-editor"],
+                ),
+                patch(
+                    "deepagents_code.editor.subprocess.run",
+                    side_effect=FileNotFoundError("missing-editor"),
+                ),
+                patch.object(app, "notify") as notify,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            notify.assert_called_once_with(
+                "External editor failed. Check $VISUAL/$EDITOR.",
+                severity="error",
+                timeout=5,
+            )
+            assert other_input.text == "draft answer"
+            assert app.focused is other_input
+            assert future.done() is False
+
+    @pytest.mark.parametrize("state", ["hidden", "unfocused", "detached"])
+    async def test_inactive_ask_user_editor_does_not_intercept_chat_ctrl_x(
+        self, state: str
+    ) -> None:
+        """Only the visible, attached, focused ask-user input should capture Ctrl+X."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, other_input, future = await self._open_ask_user_other_editor(
+                app, pilot
+            )
+            if state == "hidden":
+                other_input.display = False
+                menu.focus()
+                assert other_input.display is False
+            elif state == "unfocused":
+                menu.focus()
+                assert other_input.display is True
+            else:
+                await menu.remove()
+                assert menu.is_attached is False
+            await pilot.pause()
+            assert app.focused is not other_input
+
+            chat_input = app.query_one(ChatInput)
+            chat_input.set_value_at_end("chat draft")
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited chat draft",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "chat draft", allow_empty=False, raise_on_error=False
+            )
+            assert chat_input.value == "edited chat draft"
+            assert app.focused is chat_input.input_widget
+            assert future.done() is False
+
 
 class TestEditorSlashCommand:
     """Test that /editor dispatches to action_open_editor."""

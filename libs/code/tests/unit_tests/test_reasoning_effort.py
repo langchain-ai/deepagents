@@ -738,6 +738,18 @@ async def test_effort_command_replaces_native_effort_and_preserves_summary() -> 
     }
 
 
+async def test_effort_command_matches_levels_case_insensitively() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort HIGH")
+
+    assert app._model_params_override == {"reasoning_effort": "high"}
+    assert model_config.load_effort_for_model("openai:gpt-5.5") == "high"
+
+
 async def test_profile_override_controls_selector_and_validation() -> None:
     override = {
         "reasoning_output": True,
@@ -756,8 +768,54 @@ async def test_profile_override_controls_selector_and_validation() -> None:
     assert screen._efforts == ("Ultra",)
     assert screen._default_effort == "provider-default"
 
-    await app._handle_effort_command("/effort Ultra")
+    await app._handle_effort_command("/effort ultra")
     assert app._model_params_override == {"reasoning_effort": "Ultra"}
+    # The canonical profile-cased label is persisted, not the raw `ultra` input.
+    assert model_config.load_effort_for_model("openai:gpt-5.5") == "Ultra"
+
+
+def test_sync_status_model_refreshes_profile_argument_hint() -> None:
+    """Switching models re-derives the `/effort` hint from the live profile."""
+    app = DeepAgentsApp()
+    app._chat_input = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    # Real profile data drives the hint: gpt-5.5 exposes effort levels, while
+    # plain-chat-model does not, so switching to it must clear the hint.
+    with _mock_profiles(
+        {
+            "openai:gpt-5.5": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["Ultra", "turbo-v2"],
+            ),
+            "openai:plain-chat-model": _profile_entry(reasoning_output=False),
+        }
+    ):
+        app._sync_status_model()
+        settings.model_name = "plain-chat-model"
+        app._sync_status_model()
+
+    assert app._chat_input.set_argument_hint_override.call_args_list == [  # ty: ignore[unresolved-attribute]
+        call("/effort", "[Ultra|turbo-v2|clear]"),
+        call("/effort", None),
+    ]
+
+
+def test_sync_status_model_hint_failure_does_not_break_status_bar() -> None:
+    """A raising hint refresh is logged, not propagated, so displays survive."""
+    app = DeepAgentsApp()
+    app._chat_input = Mock()  # ty: ignore
+    app._chat_input.set_argument_hint_override.side_effect = RuntimeError("boom")  # ty: ignore[unresolved-attribute]
+    app._status_bar = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    # Must not raise even though the hint refresh blows up.
+    app._sync_status_model()
+
+    # The primary status-bar display still updates.
+    app._status_bar.set_model.assert_called_once()  # ty: ignore[unresolved-attribute]
 
 
 async def test_profile_override_controls_persisted_restoration() -> None:

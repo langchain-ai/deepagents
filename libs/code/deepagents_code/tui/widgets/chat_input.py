@@ -1520,6 +1520,9 @@ class ChatInput(Vertical):
 
         # Command name (without /) → argument hint for inline ghost text
         self._argument_hints: dict[str, str] = {}
+        # Runtime hints that depend on session state, kept separate so rebuilding
+        # slash commands after skill discovery cannot replace them.
+        self._argument_hint_overrides: dict[str, str] = {}
 
         # Set up history manager
         if history_file is None:
@@ -1653,6 +1656,22 @@ class ChatInput(Vertical):
                 "(widget not yet mounted)"
             )
 
+    def set_argument_hint_override(self, command: str, hint: str | None) -> None:
+        """Set or clear a runtime argument hint for a slash command.
+
+        Args:
+            command: Slash command name, with or without the leading `/`.
+            hint: Replacement hint, or `None`/empty to restore the registered
+                hint. An empty string is treated the same as `None` rather than
+                as a distinct "force-blank" state.
+        """
+        name = command.removeprefix("/")
+        if not hint:
+            self._argument_hint_overrides.pop(name, None)
+        else:
+            self._argument_hint_overrides[name] = hint
+        self._update_argument_hint()
+
     def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
         """Rebuild the command-name -> argument-hint lookup.
 
@@ -1679,7 +1698,10 @@ class ChatInput(Vertical):
         if self.mode == "command":
             text = self._text_area.text
             if text.endswith(" ") and text.count(" ") == 1:
-                hint = self._argument_hints.get(text[:-1], "")
+                command = text[:-1]
+                hint = self._argument_hint_overrides.get(command)
+                if hint is None:
+                    hint = self._argument_hints.get(command, "")
                 if hint:
                     self._text_area.argument_hint = hint
                     return

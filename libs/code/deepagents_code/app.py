@@ -12101,6 +12101,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.model_config import clear_caches
 
                 clear_caches()
+                self._sync_status_model()
             except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -13347,15 +13348,31 @@ class DeepAgentsApp(App):
         return settings.model_provider or None
 
     def _sync_status_model(self) -> None:
-        """Update model displays with the active model and reasoning effort."""
+        """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import settings
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
+            supported_efforts_for_model,
         )
 
         provider = settings.model_provider or ""
         model = settings.model_name or ""
+        spec = self._effective_model_spec()
+        if self._chat_input is not None:
+            try:
+                efforts = supported_efforts_for_model(
+                    spec, cli_override=self._profile_override
+                )
+                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else None
+                self._chat_input.set_argument_hint_override("/effort", hint)
+            # A cosmetic ghost-text hint must never gate the primary model
+            # displays updated below, so swallow and log any failure here.
+            except Exception:
+                logger.warning(
+                    "Failed to refresh /effort argument hint during model sync",
+                    exc_info=True,
+                )
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
@@ -13379,7 +13396,6 @@ class DeepAgentsApp(App):
             # blank model paired with a populated effort suffix.
             self._status_bar.set_model(provider=provider, model=model, effort="")
             return
-        spec = self._effective_model_spec()
         effort = ""
         if spec:
             effort = (
@@ -13586,7 +13602,15 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(context.message))
             return
         spec = context.spec
-        if effort not in context.efforts:
+        matched_effort = next(
+            (
+                supported_effort
+                for supported_effort in context.efforts
+                if supported_effort.casefold() == effort.casefold()
+            ),
+            None,
+        )
+        if matched_effort is None:
             supported = ", ".join(context.efforts)
             await self._mount_message(
                 ErrorMessage(
@@ -13597,20 +13621,20 @@ class DeepAgentsApp(App):
             return
 
         self._model_params_override = with_effort_model_params(
-            spec, self._model_params_override, effort
+            spec, self._model_params_override, matched_effort
         )
-        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
+        saved = await asyncio.to_thread(save_effort_for_model, spec, matched_effort)
         self._sync_status_model()
         if not saved:
             await self._mount_message(
                 ErrorMessage(
-                    f"Reasoning effort for {spec} set to {effort} in this session, "
-                    "but the preference could not be saved."
+                    f"Reasoning effort for {spec} set to {matched_effort} in this "
+                    "session, but the preference could not be saved."
                 )
             )
             return
         await self._mount_message(
-            AppMessage(f"Reasoning effort for {spec} set to {effort}."),
+            AppMessage(f"Reasoning effort for {spec} set to {matched_effort}."),
         )
 
     async def _run_agent_task(

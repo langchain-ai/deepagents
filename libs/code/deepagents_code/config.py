@@ -2612,6 +2612,13 @@ class Settings:
                 os.environ.pop("LANGSMITH_PROJECT", None)
                 _apply_default_langsmith_project()
 
+        # A reload can repoint env resolution at a different .env (e.g. after a
+        # cwd switch), so start a fresh diagnostics generation; otherwise the new
+        # "Resolved X from ..." lines would be suppressed by the pre-reload dedup
+        # set.
+        from deepagents_code.model_config import reset_env_resolution_log
+
+        reset_env_resolution_log()
         return self._format_reload_changes(previous, refreshed)
 
     @property

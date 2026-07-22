@@ -13,6 +13,7 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellB
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -248,6 +249,33 @@ def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_s
     assert len(system_messages) >= 1
 
     snapshot_path = snapshots_dir / "system_prompt_without_execute.md"
+    _assert_snapshot(
+        snapshot_path,
+        _system_message_as_text(system_messages[0]),
+        update_snapshots=update_snapshots,
+    )
+
+
+def test_system_prompt_snapshot_with_read_file_only(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    model = _smoke_model()
+    backend = StateBackend()
+    filesystem = FilesystemMiddleware(backend=backend, tools=["read_file"])
+    agent = create_deep_agent(
+        model=model,
+        backend=backend,
+        middleware=[filesystem],
+    )
+
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    messages = history[0]["messages"]
+    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+    assert len(system_messages) >= 1
+
+    snapshot_path = snapshots_dir / "system_prompt_with_read_file_only.md"
     _assert_snapshot(
         snapshot_path,
         _system_message_as_text(system_messages[0]),

@@ -33,8 +33,8 @@ SDK_DEFAULT_RUBRIC_MAX_ITERATIONS: Final[int] = 3
 Hardcoded rather than read from `deepagents.middleware.rubric.RubricMiddleware`
 because this module is dependency-free and importing the SDK for a display
 string would violate the startup-performance rule (see AGENTS.md). This is a
-hand-maintained duplicate: if the SDK bumps its default, this value silently
-rots. `test_reliable_rubric.py::test_displayed_max_iterations_default_matches_sdk`
+hand-maintained duplicate that can rot if the SDK bumps its default, so
+`test_reliable_rubric.py::TestReliableRubricMiddleware::test_displayed_max_iterations_default_matches_sdk`
 is the drift guard that fails when the two diverge.
 """
 

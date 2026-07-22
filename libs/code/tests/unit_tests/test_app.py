@@ -7834,6 +7834,22 @@ class TestGoalCommand:
 
         assert model == "startup chat model"
 
+    def test_grader_display_falls_back_to_model_kwargs_spec(self) -> None:
+        """Without `server_kwargs`, the startup model comes from `model_kwargs`.
+
+        Guards the second arm of the `_rubric_default_model` `or` fallback,
+        which is the source when server startup was deferred with only a
+        `model_spec` supplied.
+        """
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            model_kwargs={"model_spec": "openai:gpt-5.5"},
+        )
+
+        model, _ = app._grader_display_values()
+
+        assert model == "startup chat model (openai:gpt-5.5)"
+
     @pytest.mark.parametrize("command", ["/goal", "/goal show"])
     async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
         """Goal state should not repeat commands already shown in the input hint."""
@@ -9854,7 +9870,7 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "No rubric set." in rendered
-            assert "Rubric grader model: current chat model" not in rendered
+            assert "Rubric grader model:" not in rendered
 
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""
@@ -10884,7 +10900,7 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model cleared; using current chat model." in rendered
+            assert "Rubric grader model cleared; using startup chat model." in rendered
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""
@@ -19146,6 +19162,12 @@ class TestDeferredActions:
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider is None
             assert app._server_startup_error is None
+
+            # The retry reconstructs the server with the new model, so the
+            # grader's construction-time model must follow it — otherwise
+            # `/goal show` / `/rubric show` would report the stale pre-retry
+            # model, the exact class of bug this display path exists to fix.
+            assert app._rubric_default_model == "anthropic:claude-opus-4-7"
 
             # A `/model` retry is a mid-session reconnect, not an initial
             # connect: both flags are set and the status bar reads

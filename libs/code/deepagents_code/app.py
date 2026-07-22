@@ -11580,7 +11580,7 @@ class DeepAgentsApp(App):
             title="Choose grader model for rubric",
             description=(
                 "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the current chat model."
+                "`/rubric model clear` to reuse the startup chat model."
             ),
         )
         self.push_screen(screen, handle_result)
@@ -11763,7 +11763,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage("Rubric grader model cleared; using current chat model."),
+                AppMessage("Rubric grader model cleared; using startup chat model."),
             )
 
     async def _handle_command(self, command: str) -> None:

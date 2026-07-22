@@ -16,6 +16,7 @@ import logging
 import re
 import secrets
 import uuid
+from collections.abc import Mapping
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -33,6 +34,10 @@ from langchain.agents.middleware.types import (
     ResponseT,
     hook_config,
 )
+from langchain.agents.structured_output import (
+    MultipleStructuredOutputsError,
+    StructuredOutputValidationError,
+)
 from langchain_core._api import beta
 from langchain_core.messages import (
     AIMessage,
@@ -40,6 +45,7 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
+from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
@@ -291,6 +297,74 @@ class GraderResponse(BaseModel):
         return self
 
 
+def _model_identifier(model: object) -> str | None:
+    for attr in ("model_name", "model", "model_id"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _configured_model_label(model: str | BaseChatModel) -> str:
+    if isinstance(model, str):
+        return model
+    identifier = _model_identifier(model)
+    class_name = type(model).__name__
+    return f"{class_name}:{identifier}" if identifier else class_name
+
+
+def _calls_grader_response(message: AIMessage) -> bool:
+    return any(call.get("name") == GraderResponse.__name__ for call in message.tool_calls)
+
+
+def _strategy_from_result(result: dict[str, Any]) -> Literal["ProviderStrategy", "ToolStrategy"] | None:
+    if result.get("structured_response") is None:
+        return None
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return None
+    if any(isinstance(message, AIMessage) and _calls_grader_response(message) for message in messages):
+        return "ToolStrategy"
+    return "ProviderStrategy"
+
+
+def _strategy_from_exception(exc: BaseException) -> Literal["ProviderStrategy", "ToolStrategy"] | None:
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, MultipleStructuredOutputsError):
+            return "ToolStrategy"
+        if isinstance(current, StructuredOutputValidationError):
+            return "ToolStrategy" if _calls_grader_response(current.ai_message) else "ProviderStrategy"
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+    return None
+
+
+def _strategy_from_model_profile(
+    model: object,
+    *,
+    has_tools: bool,
+) -> Literal["ProviderStrategy", "ToolStrategy"] | None:
+    profile = getattr(model, "profile", None)
+    if not isinstance(profile, Mapping) or not profile.get("structured_output"):
+        return None
+    identifier = _model_identifier(model)
+    if has_tools and identifier is not None:
+        normalized = identifier.lower()
+        if "gemini" in normalized and "gemini-3" not in normalized:
+            return "ToolStrategy"
+    return "ProviderStrategy"
+
+
 @beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
@@ -366,12 +440,14 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         self.max_iterations = max_iterations
         self._model = model
+        self._model_label = _configured_model_label(model)
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
         self._on_evaluation = on_evaluation
         # Built lazily so importing the middleware doesn't construct a model
         # client (which can trigger env-var lookups / API key validation).
         self._grader: Any = None
+        self._resolved_model: BaseChatModel | None = None
 
     def before_agent(
         self,
@@ -528,8 +604,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         # validation we don't want to pay at module-import time.
         from deepagents._models import resolve_model  # noqa: PLC0415
 
+        resolved_model = resolve_model(self._model)
+        self._resolved_model = resolved_model
         self._grader = create_agent(
-            model=resolve_model(self._model),
+            model=resolved_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -537,16 +615,76 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         )
         return self._grader
 
+    def _grader_trace_metadata(
+        self,
+        *,
+        effective_strategy: Literal["ProviderStrategy", "ToolStrategy"] | None = None,
+    ) -> dict[str, str]:
+        model = self._resolved_model or self._model
+        strategy = effective_strategy or _strategy_from_model_profile(
+            model,
+            has_tools=bool(self._tools),
+        )
+        return {
+            "rubric_grader_configured_model": self._model_label,
+            "rubric_grader_effective_strategy": strategy or "unknown",
+        }
+
+    @staticmethod
+    def _record_grader_trace_metadata(metadata: dict[str, str]) -> None:
+        try:
+            run = get_current_run_tree()
+            if run is not None:
+                run.add_metadata(metadata)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not attach rubric grader metadata to the current trace", exc_info=True)
+
     def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
-        result = grader.invoke({"messages": [HumanMessage(content=payload)]})
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
+        try:
+            result = grader.invoke(
+                {"messages": [HumanMessage(content=payload)]},
+                config={"metadata": metadata},
+            )
+        except Exception as exc:
+            self._record_grader_trace_metadata(
+                self._grader_trace_metadata(
+                    effective_strategy=_strategy_from_exception(exc),
+                )
+            )
+            raise
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
+        )
         return self._extract_graded(result)
 
     async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
-        result = await grader.ainvoke({"messages": [HumanMessage(content=payload)]})
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
+        try:
+            result = await grader.ainvoke(
+                {"messages": [HumanMessage(content=payload)]},
+                config={"metadata": metadata},
+            )
+        except Exception as exc:
+            self._record_grader_trace_metadata(
+                self._grader_trace_metadata(
+                    effective_strategy=_strategy_from_exception(exc),
+                )
+            )
+            raise
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
+        )
         return self._extract_graded(result)
 
     @staticmethod
@@ -673,12 +811,24 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         # not handled here -- they're `BaseException` subclasses, not
         # `Exception`, so they propagate up the call stack and preserve
         # normal Python interrupt / asyncio cancellation semantics.
-        logger.exception("RubricMiddleware grader failed")
+        metadata = self._grader_trace_metadata(
+            effective_strategy=_strategy_from_exception(exc),
+        )
+        self._record_grader_trace_metadata(metadata)
+        logger.exception(
+            "RubricMiddleware grader failed (configured_model=%r, effective_strategy=%s)",
+            metadata["rubric_grader_configured_model"],
+            metadata["rubric_grader_effective_strategy"],
+        )
         evaluation: RubricEvaluation = {
             "grading_run_id": grading_run_id,
             "iteration": iteration,
             "result": "grader_error",
-            "explanation": f"Grader raised {type(exc).__name__}: {exc}",
+            "explanation": (
+                f"Grader raised {type(exc).__name__} "
+                f"(configured_model={metadata['rubric_grader_configured_model']!r}, "
+                f"effective_strategy={metadata['rubric_grader_effective_strategy']}): {exc}"
+            ),
             "criteria": [],
         }
         self._emit(runtime, "rubric_evaluation_end", grading_run_id, iteration, evaluation)

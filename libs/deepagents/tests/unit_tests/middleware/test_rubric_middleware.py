@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -294,6 +295,48 @@ class TestAfterAgentDirect:
         assert len(evals) == 1
         assert evals[0]["result"] == "grader_error"
         assert "grader exploded" in evals[0]["explanation"]
+        assert "configured_model='stub:test'" in evals[0]["explanation"]
+        assert "effective_strategy=unknown" in evals[0]["explanation"]
+
+    @pytest.mark.parametrize(
+        ("message", "expected_strategy"),
+        [
+            (AIMessage(content='{"result":"needs_revision"}'), "ProviderStrategy"),
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "GraderResponse",
+                            "args": {"result": "needs_revision"},
+                            "id": "grader-response",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                "ToolStrategy",
+            ),
+        ],
+    )
+    def test_structured_output_error_reports_effective_strategy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        message: AIMessage,
+        expected_strategy: str,
+    ) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        exc = StructuredOutputValidationError(
+            "GraderResponse",
+            ValueError("gap is required"),
+            message,
+        )
+        _stub_grader(mw, monkeypatch, exc=exc)
+
+        update = mw.after_agent(self._state(), _runtime())
+
+        assert update is not None
+        explanation = update["_rubric_evaluations"][0]["explanation"]
+        assert f"effective_strategy={expected_strategy}" in explanation
 
     def test_keyboard_interrupt_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `KeyboardInterrupt` (and `asyncio.CancelledError`) are
@@ -465,6 +508,57 @@ class TestGraderPlumbing:
         mw = RubricMiddleware(model="custom-grader-model")
         mw._ensure_grader()
         assert seen["model"] == "custom-grader-model"
+
+    def test_grade_records_model_and_effective_strategy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured_config: dict[str, Any] = {}
+        recorded_metadata: list[dict[str, str]] = []
+        response = GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[],
+        )
+
+        def invoke(
+            _payload: dict[str, Any],
+            *,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            captured_config.update(config)
+            return {
+                "messages": [AIMessage(content='{"result":"satisfied"}')],
+                "structured_response": response,
+            }
+
+        run = SimpleNamespace(add_metadata=recorded_metadata.append)
+        monkeypatch.setattr("deepagents.middleware.rubric.get_current_run_tree", lambda: run)
+        mw = RubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        mw._grader = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+
+        graded = mw._grade(
+            {
+                "rubric": "tests pass",
+                "messages": [HumanMessage(content="run the tests")],
+            },
+            0,
+        )
+
+        assert graded is response
+        assert captured_config["metadata"] == {
+            "rubric_grader_configured_model": "anthropic:claude-sonnet-4-6",
+            "rubric_grader_effective_strategy": "ProviderStrategy",
+        }
+        assert recorded_metadata[-1]["rubric_grader_effective_strategy"] == "ProviderStrategy"
 
     def test_custom_system_prompt_honored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A user-supplied `system_prompt` replaces the default grader prompt."""

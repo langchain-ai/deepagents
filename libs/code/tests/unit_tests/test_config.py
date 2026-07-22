@@ -1971,19 +1971,23 @@ class TestGetLangsmithProjectName:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
-    def test_redaction_enabled_by_default(self) -> None:
-        """LangSmith trace redaction defaults to enabled."""
-        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
-            assert is_langsmith_redaction_enabled() is True
+    @pytest.fixture(autouse=True)
+    def _enable_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
 
-    def test_redaction_can_be_disabled_by_env(
+    def test_redaction_disabled_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The redaction env var can opt out for local debugging."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        """LangSmith trace redaction defaults to disabled."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
             assert is_langsmith_redaction_enabled() is False
+
+    def test_redaction_can_be_enabled_by_env(self) -> None:
+        """The redaction env var can opt in to secret redaction."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
 
     def test_configures_langsmith_client_with_secret_anonymizer(
         self,
@@ -2012,14 +2016,14 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
-    def test_skips_client_configuration_when_redaction_disabled(
+    def test_skips_client_configuration_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Opting out leaves the LangSmith client untouched."""
+        """Tracing leaves the LangSmith client untouched until redaction is enabled."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -2236,25 +2240,29 @@ class TestLangsmithSecretRedaction:
         assert "api_key" not in kwargs
         assert "anonymizer" in kwargs
 
-    def test_redaction_can_be_disabled_by_toml(self) -> None:
-        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+    def test_redaction_can_be_enabled_by_toml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `[tracing] langsmith_redact = true` in config.toml opts in."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is False
+            assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is True
+            assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,

@@ -551,6 +551,34 @@ async def test_routine_in_worktree_write_is_deterministically_allowed(
     assert plan["decisions"][0]["disposition"] == "deterministic_allow"
 
 
+async def test_compact_conversation_is_deterministically_allowed(
+    tmp_path: Path,
+) -> None:
+    """Auto allows conversation compaction without classifier or human review."""
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"compact_conversation": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=1,
+    )
+    model = _FailIfClassifiedModel()
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="compact_conversation",
+        args={},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="compact_conversation",
+        args={},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "deterministic_allow"
+
+
 async def test_absolute_outside_write_resolves_path_off_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

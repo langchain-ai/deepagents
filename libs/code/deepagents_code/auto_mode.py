@@ -1265,6 +1265,12 @@ def _deterministic_allow(
     if tool is not None and is_mcp_tool(tool):
         return mcp_tool_is_coherently_read_only(tool)
     name = call["name"]
+    if name == "compact_conversation":
+        # Conversation compaction only summarizes older messages into backend
+        # storage to reclaim context window; it has no external side effect and
+        # crosses no trust boundary, so Auto always allows it without classifier
+        # review or a human approval prompt (e.g. mid-`/goal` autonomous runs).
+        return True
     if name in {"write_file", "edit_file"}:
         return _routine_write_allowed(root, call)
     if name == "execute":

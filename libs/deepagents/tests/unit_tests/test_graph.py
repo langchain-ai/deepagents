@@ -652,11 +652,11 @@ class TestSystemPromptAssembly:
         assert BASE_AGENT_PROMPT not in prompt
 
     def test_base_agent_prompt_restores_base(self) -> None:
-        """Callers opt the authored prose back in via `system_prompt={"base": ...}`."""
+        """Callers opt the authored prose back in via `system_prompt=BASE_AGENT_PROMPT`."""
         prompt = self._build_and_capture_system_prompt(
             "defprov",
             HarnessProfile(),
-            system_prompt={"base": BASE_AGENT_PROMPT},
+            system_prompt=BASE_AGENT_PROMPT,
         )
         assert prompt == BASE_AGENT_PROMPT
 

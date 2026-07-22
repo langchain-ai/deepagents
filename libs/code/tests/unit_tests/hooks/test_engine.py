@@ -491,7 +491,7 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
     assert payload["tool_response"]["goto"] == []
 
 
-def test_projection_rejects_unknown_notification_and_omits_auto_mode(
+def test_projection_rejects_unknown_notification_and_projects_auto_mode(
     tmp_path: Path,
 ) -> None:
     unknown = HookInvocation(
@@ -531,10 +531,10 @@ def test_projection_rejects_unknown_notification_and_omits_auto_mode(
         by_alias=True,
         exclude_none=True,
     )
-    assert "permission_mode" not in payload
+    assert payload["permission_mode"] == "auto"
 
 
-async def test_engine_requires_client_materialized_transcript_path(
+async def test_engine_accepts_auto_permission_mode(
     tmp_path: Path,
 ) -> None:
     invocation = _invocation(
@@ -546,7 +546,6 @@ async def test_engine_requires_client_materialized_transcript_path(
     )
     snapshot = HooksSnapshot.from_config(HooksConfig(hooks={}))
 
-    missing = await HookEngine(snapshot).run(invocation)
     automatic = HookInvocation(
         context=invocation.context.model_copy(
             update={"approval_mode": ApprovalMode.AUTO}
@@ -558,8 +557,7 @@ async def test_engine_requires_client_materialized_transcript_path(
         transcript_path=_transcript_path(tmp_path),
     )
 
-    assert [item.code for item in missing.diagnostics] == ["projection_failed"]
-    assert [item.code for item in auto.diagnostics] == ["unsupported_permission_mode"]
+    assert auto.diagnostics == []
 
 
 @pytest.mark.parametrize(
@@ -596,13 +594,13 @@ async def test_engine_requires_client_materialized_transcript_path(
         (
             "read_file",
             {"file_path": "/tmp/result.txt", "offset": 0, "limit": 100},
-            "read_file",
-            {"file_path": "/tmp/result.txt", "offset": 0, "limit": 100},
+            "Read",
+            {"file_path": "/tmp/result.txt", "offset": 1, "limit": 100},
         ),
         (
             "glob",
             {"pattern": "**/*.py", "path": "/tmp"},
-            "glob",
+            "Glob",
             {"pattern": "**/*.py", "path": "/tmp"},
         ),
         (
@@ -614,16 +612,16 @@ async def test_engine_requires_client_materialized_transcript_path(
                 "output_mode": "content",
                 "max_count": 20,
             },
-            "grep",
+            "Grep",
             {
-                "pattern": "result.*",
+                "pattern": "result\\.\\*",
                 "path": "/tmp",
                 "glob": "*.txt",
                 "output_mode": "content",
-                "max_count": 20,
+                "head_limit": 20,
             },
         ),
-        ("ls", {"path": "/tmp"}, "ls", {"path": "/tmp"}),
+        ("ls", {"path": "/tmp"}, "LS", {"path": "/tmp"}),
         ("custom", {"value": 1}, "custom", {"value": 1}),
     ],
 )
@@ -715,7 +713,6 @@ async def test_runner_session_start_plain_stdout_is_context(tmp_path: Path) -> N
         handler,
         b"{}",
         cwd=tmp_path,
-        event=HookEvent.SESSION_START,
     )
 
     assert result.output is None
@@ -723,7 +720,7 @@ async def test_runner_session_start_plain_stdout_is_context(tmp_path: Path) -> N
     assert result.diagnostics == ()
 
 
-async def test_runner_pretool_plain_stdout_is_malformed(tmp_path: Path) -> None:
+async def test_reducer_applies_pretool_plain_stdout_policy(tmp_path: Path) -> None:
     code = "print('not json')"
     snapshot = HooksSnapshot.from_config(
         _config(
@@ -747,11 +744,20 @@ async def test_runner_pretool_plain_stdout_is_malformed(tmp_path: Path) -> None:
         handler,
         b"{}",
         cwd=tmp_path,
-        event=HookEvent.PRE_TOOL_USE,
     )
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="execute", args={}),
+        ),
+    )
+    decision = reduce_hook_results(invocation, [result])
 
     assert result.output is None
-    assert [item.code for item in result.diagnostics] == ["malformed_json"]
+    assert result.plain_output == "not json"
+    assert result.diagnostics == ()
+    assert [item.code for item in decision.diagnostics] == ["malformed_json"]
 
 
 async def test_runner_turns_exit_two_stderr_into_block(tmp_path: Path) -> None:

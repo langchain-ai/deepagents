@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-# OSC 0/1/2/9/99/777 terminated by BEL or ST, plus bare BEL.
 _ALLOWED_SEQUENCE = re.compile(
     r"(?:"
     r"\x1b\](?:0|1|2|9|99|777);[^\x00-\x1f\x7f-\x9f]*(?:\x07|\x1b\\)"

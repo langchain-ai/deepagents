@@ -8,10 +8,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
 from deepagents_code.hooks.models.domain import HookDiagnostic
-from deepagents_code.hooks.projection import (
-    projection_diagnostics,
-    serialize_hook_input,
-)
+from deepagents_code.hooks.projection import serialize_hook_input
 from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import (
     MAX_HOOK_OUTPUT_BYTES,
@@ -37,7 +34,7 @@ class HookEngine:
         self,
         invocation: HookInvocation,
         *,
-        transcript_path: Path | None = None,
+        transcript_path: Path,
         agent_transcript_path: Path | None = None,
     ) -> HookDecision:
         """Execute matching handlers and return a normalized decision.
@@ -55,7 +52,6 @@ class HookEngine:
             The event-specific decision produced by ordered hook reduction.
         """
         match = self.snapshot.match(invocation)
-        projected_diagnostics = projection_diagnostics(invocation)
         try:
             payload = serialize_hook_input(
                 invocation,
@@ -74,7 +70,6 @@ class HookEngine:
                 diagnostics=(
                     *self.snapshot.diagnostics,
                     *match.diagnostics,
-                    *projected_diagnostics,
                     diagnostic,
                 ),
             )
@@ -91,7 +86,6 @@ class HookEngine:
                     handler,
                     payload,
                     cwd=invocation.context.cwd,
-                    event=event,
                     default_timeout=event_default,
                     max_output_bytes=self.max_output_bytes,
                 )
@@ -104,6 +98,5 @@ class HookEngine:
             diagnostics=(
                 *self.snapshot.diagnostics,
                 *match.diagnostics,
-                *projected_diagnostics,
             ),
         )

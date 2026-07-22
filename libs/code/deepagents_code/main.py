@@ -844,9 +844,8 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
         "prompts.[/bold red]"
     )
     console.print(
-        "It can run any command, change files, and use outside tools — even "
-        "acting on instructions hidden in content it reads. Nothing is "
-        "sandboxed; it all affects your real machine."
+        "It can run commands, change files, and use tools on your machine "
+        "without asking you first."
     )
     console.print('[dim]Not sure? Pick "Use Manual" below.[/dim]')
     console.print()

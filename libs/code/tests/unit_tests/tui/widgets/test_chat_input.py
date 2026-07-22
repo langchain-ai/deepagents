@@ -4178,6 +4178,60 @@ class TestArgumentHints:
         chat._rebuild_argument_hints(commands)
         assert chat._argument_hints == {}
 
+    async def test_runtime_override_updates_hint_and_survives_refresh(self) -> None:
+        """Session-specific hints remain active when skill commands are rebuilt."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("effort ")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == "[<level>|clear]"
+
+            dynamic_hint = "[minimal|turbo-v2|max|clear]"
+            chat.set_argument_hint_override("/effort", dynamic_hint)
+            assert chat._text_area.argument_hint == dynamic_hint
+
+            chat.update_slash_commands(
+                [
+                    *get_slash_commands(),
+                    CommandEntry("/skill:test", "Test skill", "test", ""),
+                ]
+            )
+            chat._update_argument_hint()
+            assert chat._text_area.argument_hint == dynamic_hint
+
+            chat.set_argument_hint_override("/effort", None)
+            assert chat._text_area.argument_hint == "[<level>|clear]"
+
+    async def test_empty_override_hides_registered_hint(self) -> None:
+        """An empty override suppresses the registered hint until restored."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("effort ")
+            await pilot.pause()
+
+            chat.set_argument_hint_override("/effort", "[custom|clear]")
+            assert chat._text_area.argument_hint == "[custom|clear]"
+
+            chat.set_argument_hint_override("/effort", "")
+            assert chat._argument_hint_overrides["effort"] == ""
+            assert chat._text_area.argument_hint == ""
+
+            chat.set_argument_hint_override("/effort", None)
+            assert "effort" not in chat._argument_hint_overrides
+            assert chat._text_area.argument_hint == "[<level>|clear]"
+
     async def test_hint_shown_after_command_and_space(self) -> None:
         """Ghost text appears when text is a known command + trailing space."""
         app = _ChatInputTestApp()

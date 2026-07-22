@@ -596,10 +596,10 @@ class TestModelLabelPrefixStripping:
         async with StatusBarApp().run_test() as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
-            label.model = "accounts/fireworks/routers/glm-5p1-fast"
+            label.model = "accounts/fireworks/routers/glm-5p2-fast"
             await pilot.pause()
             rendered = str(label.render())
-            assert "fireworks:glm-5p1-fast" in rendered
+            assert "fireworks:glm-5p2-fast" in rendered
             assert "accounts/fireworks/routers/" not in rendered
 
     async def test_fireworks_prefix_stripped_case_insensitively(self) -> None:

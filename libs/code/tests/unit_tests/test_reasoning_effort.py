@@ -1,26 +1,31 @@
-"""Tests for `/effort` reasoning effort handling."""
+"""Tests for `/effort` reasoning effort handling.
+
+Support data comes from LangChain model profiles, so most tests mock
+`get_model_profiles()` instead of relying on installed provider packages.
+"""
 
 import logging
 from collections.abc import Coroutine, Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import get_args
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 from textual.app import App
 from textual.widgets import OptionList
 
-from deepagents_code import model_config
+from deepagents_code import model_config, reasoning_effort
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import COMMANDS
 from deepagents_code.config import settings
+from deepagents_code.model_config import ModelProfileEntry
 from deepagents_code.reasoning_effort import (
-    EffortLabel,
     current_effort_from_model_params,
     default_effort_for_model,
-    merge_effort_model_params,
-    model_params_for_effort,
+    has_explicit_effort_model_params,
+    is_effort_supported_for_model,
     supported_efforts_for_model,
+    with_effort_model_params,
     without_effort_model_params,
 )
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
@@ -35,281 +40,672 @@ def _restore_settings(
     original_name = settings.model_name
     original_provider = settings.model_provider
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    model_config.clear_caches()
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
+    model_config.clear_caches()
+
+
+def _profile_entry(**profile: object) -> ModelProfileEntry:
+    return ModelProfileEntry(profile=dict(profile), overridden_keys=frozenset())
+
+
+def _mock_profiles(
+    mapping: dict[str, ModelProfileEntry],
+) -> AbstractContextManager[Mock]:
+    """Patch `get_model_profiles` to return a fixed, hermetic mapping."""
+    return patch.object(reasoning_effort, "get_model_profiles", return_value=mapping)
+
+
+# Reading logic (mocked profiles, provider-agnostic)
+
+
+def test_supported_efforts_for_model_reads_ordered_open_ended_levels() -> None:
+    with _mock_profiles(
+        {
+            "acme:foo": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["minimal", "turbo-v2", "max"],
+            )
+        }
+    ):
+        assert supported_efforts_for_model("acme:foo") == (
+            "minimal",
+            "turbo-v2",
+            "max",
+        )
 
 
 @pytest.mark.parametrize(
-    ("model_spec", "efforts"),
+    "profile",
     [
-        ("openai:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
-        ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+        {},
+        {"reasoning_output": False, "reasoning_effort_levels": ["high"]},
+        {"reasoning_output": True},
+        {"reasoning_output": True, "reasoning_effort_levels": []},
+    ],
+)
+def test_supported_efforts_for_model_fails_closed(profile: dict[str, object]) -> None:
+    with _mock_profiles({"acme:foo": _profile_entry(**profile)}):
+        assert supported_efforts_for_model("acme:foo") == ()
+
+
+def test_supported_efforts_for_model_missing_spec_is_empty() -> None:
+    with _mock_profiles({}):
+        assert supported_efforts_for_model("acme:unknown") == ()
+    assert supported_efforts_for_model(None) == ()
+    assert supported_efforts_for_model("") == ()
+
+
+@pytest.mark.parametrize(
+    ("profile", "bad_value"),
+    [
         (
-            "openai:gpt-5.6-sol",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            {
+                "reasoning_output": "enabled",
+                "reasoning_effort_levels": ["high"],
+            },
+            "enabled",
         ),
         (
-            "openai:gpt-5.6-terra",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            {
+                "reasoning_output": True,
+                "reasoning_effort_levels": ("low", "high"),
+            },
+            "low",
         ),
         (
-            "openai:gpt-5.6-luna",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            {
+                "reasoning_output": True,
+                "reasoning_effort_levels": ["low", 7],
+            },
+            "7",
         ),
+    ],
+)
+def test_supported_efforts_for_model_logs_only_malformed_types(
+    profile: dict[str, object],
+    bad_value: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        _mock_profiles({"acme:foo": _profile_entry(**profile)}),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert supported_efforts_for_model("acme:foo") == ()
+    assert caplog.records
+    assert bad_value not in caplog.text
+
+
+def test_default_effort_is_independent_of_selectable_levels() -> None:
+    with _mock_profiles(
+        {
+            "acme:foo": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["low", "high"],
+                reasoning_effort_default="automatic",
+            )
+        }
+    ):
+        assert default_effort_for_model("acme:foo") == "automatic"
+
+
+def test_default_effort_can_exist_without_configurable_levels() -> None:
+    with _mock_profiles(
+        {
+            "acme:foo": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_default="provider-default",
+            )
+        }
+    ):
+        assert supported_efforts_for_model("acme:foo") == ()
+        assert default_effort_for_model("acme:foo") == "provider-default"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {},
+        {"reasoning_output": False, "reasoning_effort_default": "high"},
+        {"reasoning_output": True},
+    ],
+)
+def test_default_effort_missing_or_disabled_is_none(profile: dict[str, object]) -> None:
+    with _mock_profiles({"acme:foo": _profile_entry(**profile)}):
+        assert default_effort_for_model("acme:foo") is None
+
+
+def test_default_effort_malformed_value_logs_type_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        _mock_profiles(
+            {
+                "acme:foo": _profile_entry(
+                    reasoning_output=True,
+                    reasoning_effort_default=42,
+                )
+            }
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert default_effort_for_model("acme:foo") is None
+    assert "int" in caplog.text
+    assert "42" not in caplog.text
+
+
+def test_is_effort_supported_for_model() -> None:
+    with _mock_profiles(
+        {
+            "acme:foo": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["low", "high"],
+            )
+        }
+    ):
+        assert is_effort_supported_for_model("acme:foo", "high")
+        assert not is_effort_supported_for_model("acme:foo", "medium")
+        assert not is_effort_supported_for_model("acme:unknown", "high")
+
+
+@pytest.mark.parametrize(
+    "model_spec",
+    [
+        "openai:gpt-test",
+        "openai_codex:gpt-test",
+        "anthropic:claude-test",
+        "google_genai:gemini-test",
+        "fireworks:accounts/fireworks/models/test",
+        "xai:grok-test",
+        "custom:model",
+    ],
+)
+def test_profile_support_is_not_limited_by_provider(model_spec: str) -> None:
+    with _mock_profiles(
+        {
+            model_spec: _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["provider-specific"],
+                reasoning_effort_default="provider-default",
+            )
+        }
+    ):
+        assert supported_efforts_for_model(model_spec) == ("provider-specific",)
+        assert default_effort_for_model(model_spec) == "provider-default"
+
+
+def test_xai_released_profiles_replace_old_grok_45_matrix() -> None:
+    with _mock_profiles(
+        {
+            "xai:grok-4.3": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["none", "low", "medium", "high"],
+                reasoning_effort_default="low",
+            ),
+            "xai:grok-4.5": _profile_entry(reasoning_output=True),
+        }
+    ):
+        assert supported_efforts_for_model("xai:grok-4.3") == (
+            "none",
+            "low",
+            "medium",
+            "high",
+        )
+        assert default_effort_for_model("xai:grok-4.3") == "low"
+        assert supported_efforts_for_model("xai:grok-4.5") == ()
+
+
+def test_profile_helpers_forward_cli_override() -> None:
+    override = {"reasoning_effort_levels": ["custom"]}
+    with _mock_profiles({}) as mock_profiles:
+        supported_efforts_for_model("acme:foo", cli_override=override)
+        default_effort_for_model("acme:foo", cli_override=override)
+    assert mock_profiles.call_args_list == [
+        call(cli_override=override),
+        call(cli_override=override),
+    ]
+
+
+def test_cli_profile_override_supports_unregistered_model() -> None:
+    override = {
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["custom"],
+        "reasoning_effort_default": "provider-default",
+    }
+    with _mock_profiles({}):
+        assert supported_efforts_for_model(
+            "custom:unregistered", cli_override=override
+        ) == ("custom",)
+        assert (
+            default_effort_for_model("custom:unregistered", cli_override=override)
+            == "provider-default"
+        )
+
+
+def test_config_and_cli_profile_override_precedence(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("""
+[models.providers.acme]
+models = ["foo"]
+[models.providers.acme.profile]
+reasoning_output = true
+reasoning_effort_levels = ["config-low", "config-high"]
+reasoning_effort_default = "config-default"
+""")
+    upstream = {
+        "foo": {
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["upstream"],
+            "reasoning_effort_default": "upstream-default",
+        }
+    }
+    with (
+        patch.object(
+            model_config,
+            "_get_provider_profile_modules",
+            return_value=[("acme", "acme.data._profiles")],
+        ),
+        patch.object(model_config, "_load_provider_profiles", return_value=upstream),
+        patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+    ):
+        model_config.clear_caches()
+        assert supported_efforts_for_model("acme:foo") == (
+            "config-low",
+            "config-high",
+        )
+        assert default_effort_for_model("acme:foo") == "config-default"
+
+        cli_override = {
+            "reasoning_effort_levels": ["cli"],
+            "reasoning_effort_default": "cli-default",
+        }
+        assert supported_efforts_for_model("acme:foo", cli_override=cli_override) == (
+            "cli",
+        )
+        assert (
+            default_effort_for_model("acme:foo", cli_override=cli_override)
+            == "cli-default"
+        )
+        assert (
+            supported_efforts_for_model(
+                "acme:foo", cli_override={"reasoning_effort_levels": []}
+            )
+            == ()
+        )
+
+
+# Contract checks against required minimum integrations.
+
+
+def test_gemini_36_profile_contract() -> None:
+    assert supported_efforts_for_model("google_genai:gemini-3.6-flash") == (
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    )
+    assert default_effort_for_model("google_genai:gemini-3.6-flash") == "medium"
+
+
+def test_openai_and_codex_use_mirrored_profile_contract() -> None:
+    expected = ("none", "low", "medium", "high", "xhigh")
+    assert supported_efforts_for_model("openai:gpt-5.5") == expected
+    assert supported_efforts_for_model("openai_codex:gpt-5.5") == expected
+    assert default_effort_for_model("openai:gpt-5.5") == "medium"
+    assert default_effort_for_model("openai_codex:gpt-5.5") == "medium"
+
+
+def test_anthropic_profile_contract() -> None:
+    assert supported_efforts_for_model("anthropic:claude-opus-4-5") == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert default_effort_for_model("anthropic:claude-opus-4-5") == "high"
+
+
+def test_openai_integration_translates_standard_effort_without_summary() -> None:
+    from langchain_core.messages import HumanMessage
+    from langchain_openai import ChatOpenAI
+
+    with (
+        patch("langchain_openai.chat_models.base.openai.OpenAI"),
+        patch("langchain_openai.chat_models.base.openai.AsyncOpenAI"),
+    ):
+        model = ChatOpenAI(
+            model="gpt-5.5",
+            api_key="test",
+            reasoning_effort="high",
+            use_responses_api=True,
+        )
+    payload = model._get_request_payload([HumanMessage("hello")])
+
+    assert payload["reasoning"] == {"effort": "high"}
+    assert "reasoning_effort" not in payload
+
+
+def test_anthropic_integration_translates_standard_effort() -> None:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage
+
+    model = ChatAnthropic(
+        model="claude-opus-4-5",
+        api_key="test",
+        reasoning_effort="high",
+        output_config={"format": {"type": "json_schema", "schema": {}}},
+    )
+    payload = model._get_request_payload([HumanMessage("hello")])
+
+    assert payload["output_config"] == {
+        "format": {"type": "json_schema", "schema": {}},
+        "effort": "high",
+    }
+    assert "reasoning_effort" not in payload
+
+
+def test_google_integration_translates_standard_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    model = ChatGoogleGenerativeAI(
+        model="gemini-3.6-flash",
+        google_api_key="test",
+        reasoning_effort="minimal",
+        thinking_config={"include_thoughts": True},
+    )
+    config = model._build_thinking_config()
+
+    assert config is not None
+    assert config.thinking_level is not None
+    assert config.thinking_level.value == "MINIMAL"
+    assert config.include_thoughts is True
+
+
+# Compatibility reader for canonical and legacy/native model params.
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "model_params", "expected"),
+    [
+        ("openai:gpt-5.5", {"reasoning": {"effort": "low"}}, "low"),
         (
-            "openai_codex:gpt-5.6-sol",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            "openai_codex:gpt-5.5",
+            {"reasoning": {"effort": "high"}},
+            "high",
         ),
-        # A generic (non-5.5) gpt-5 still gets the full OpenAI range.
-        ("openai:gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
-        ("openai:gpt-5.60-sol", ("none", "low", "medium", "high", "xhigh")),
-        ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
-        # Opus 4.7 is the first version documented for the full range; assert the
-        # named boundary directly rather than relying on 4.8 to exercise it.
-        ("anthropic:claude-opus-4-7", ("low", "medium", "high", "xhigh", "max")),
-        ("anthropic:claude-opus-4-6", ("low", "medium", "high", "max")),
-        ("anthropic:claude-opus-4-5", ("low", "medium", "high")),
-        ("anthropic:claude-sonnet-5", ("low", "medium", "high", "xhigh", "max")),
-        ("anthropic:claude-sonnet-4-6", ("low", "medium", "high", "max")),
-        ("anthropic:claude-sonnet-4-5", ()),
-        # Models that predate reasoning effort must report no configurable
-        # efforts rather than falling through to the full range.
-        ("anthropic:claude-opus-4-1", ()),
-        ("anthropic:claude-opus-4-0", ()),
-        ("anthropic:claude-sonnet-4-0", ()),
-        # A dated snapshot of a predating version still predates: the version
-        # anchor tolerates a trailing `-<date>` suffix.
-        ("anthropic:claude-opus-4-1-20250805", ()),
-        # Version matching is anchored on a non-digit boundary, so a
-        # hypothetical future double-digit minor is NOT misread as the
-        # single-digit version it prefixes (`opus-4-1` must not match
-        # `opus-4-16`); it falls through to the full range instead.
-        ("anthropic:claude-opus-4-16", ("low", "medium", "high", "xhigh", "max")),
-        ("google_genai:gemini-3.6-flash", ("low", "medium", "high")),
-        ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
-        ("xai:grok-4.5", ("low", "medium", "high")),
-        ("xai:grok-4.5-latest", ("low", "medium", "high")),
-        ("xai:grok-build-latest", ("low", "medium", "high")),
+        ("anthropic:claude-opus-4-5", {"effort": "max"}, "max"),
+        (
+            "anthropic:claude-opus-4-5",
+            {"output_config": {"effort": "low"}},
+            "low",
+        ),
+        ("google_genai:gemini-3.6-flash", {"thinking_level": "minimal"}, "minimal"),
+        (
+            "google_genai:gemini-3.6-flash",
+            {"thinking_config": {"thinking_level": "medium"}},
+            "medium",
+        ),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            {"model_kwargs": {"reasoning_effort": "xhigh"}},
+            "xhigh",
         ),
-        (
-            "fireworks:accounts/fireworks/models/kimi-k2p7-code",
-            ("low", "medium", "high"),
-        ),
-        ("fireworks:accounts/fireworks/models/glm-5p2", ("none", "high", "max")),
-        # Fireworks routers (`accounts/fireworks/routers/...`) are gated the same
-        # as individual models, so effort support keys off the model family.
-        (
-            "fireworks:accounts/fireworks/routers/glm-5p2-fast",
-            ("none", "high", "max"),
-        ),
-        # Recognized provider, wrong model family: the per-provider prefix
-        # guards in `_classify_reasoning_provider` (and the Fireworks family
-        # check) must reject these rather than fall through to an effort set.
-        ("openai:gpt-4o", ()),
-        ("openai_codex:gpt-4o", ()),
-        ("anthropic:claude-3-5-haiku-latest", ()),
-        ("google_genai:gemini-2.5-flash", ()),
-        ("xai:grok-4", ()),
-        ("fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct", ()),
-        # Same guard for the router prefix: a recognized router whose id carries
-        # no known family token must also fall through to no efforts.
-        ("fireworks:accounts/fireworks/routers/llama-v3p1-70b-instruct", ()),
+        ("xai:grok-4.3", {"extra_body": {"reasoning_effort": "low"}}, "low"),
+        ("custom:model", {"reasoning_effort": "custom"}, "custom"),
     ],
 )
-def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:
-    assert supported_efforts_for_model(model_spec) == efforts
+def test_current_effort_recognizes_canonical_and_native_settings(
+    model_spec: str,
+    model_params: dict[str, object],
+    expected: str,
+) -> None:
+    assert current_effort_from_model_params(model_spec, model_params) == expected
 
 
 @pytest.mark.parametrize(
-    ("model_spec", "default"),
+    ("model_spec", "model_params", "expected"),
     [
-        ("openai:gpt-5.5", "medium"),
-        ("openai_codex:gpt-5.5", "medium"),
-        ("openai:gpt-5.6-sol", "medium"),
-        ("openai:gpt-5.6-terra", "medium"),
-        ("openai:gpt-5.6-luna", "medium"),
-        ("openai_codex:gpt-5.6-sol", "medium"),
-        ("openai:gpt-5.4", None),
-        ("openai:gpt-5.60-sol", None),
-        ("anthropic:claude-opus-4-8", "high"),
-        ("anthropic:claude-opus-4-7", "high"),
-        ("anthropic:claude-sonnet-4-6", "high"),
-        ("anthropic:claude-sonnet-4-5", None),
-        ("anthropic:claude-opus-4-1", None),
-        ("google_genai:gemini-3.6-flash", "medium"),
-        ("google_genai:gemini-3.1-pro-preview", "high"),
-        ("google_genai:gemini-3-pro", "high"),
-        ("google_genai:gemini-3-flash", "high"),
-        ("xai:grok-4.5", "high"),
-        ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "high"),
-        ("fireworks:accounts/fireworks/models/glm-5p2", "max"),
-        ("fireworks:accounts/fireworks/models/kimi-k2p7-code", None),
-        # Routers reach the same family-based default lookup as models.
-        ("fireworks:accounts/fireworks/routers/deepseek-v4-pro", "high"),
-        ("ollama:llama3.1", None),
+        (
+            "openai:gpt-5.5",
+            {"reasoning_effort": "high", "reasoning": {"effort": "low"}},
+            "low",
+        ),
+        (
+            "anthropic:claude-opus-4-5",
+            {
+                "effort": "max",
+                "reasoning_effort": "high",
+                "output_config": {"effort": "low"},
+            },
+            "max",
+        ),
+        (
+            "google_genai:gemini-3.6-flash",
+            {
+                "thinking_level": "minimal",
+                "reasoning_effort": "high",
+                "thinking_config": {"thinking_level": "medium"},
+            },
+            "minimal",
+        ),
+        (
+            "anthropic:claude-opus-4-5",
+            {
+                "effort": None,
+                "reasoning_effort": "high",
+                "output_config": {"effort": "low"},
+            },
+            "low",
+        ),
+        (
+            "google_genai:gemini-3.6-flash",
+            {
+                "thinking_level": None,
+                "reasoning_effort": "high",
+                "thinking_config": {"thinking_level": "low"},
+            },
+            "low",
+        ),
+        (
+            "xai:grok-4.3",
+            {
+                "reasoning_effort": "high",
+                "extra_body": {"reasoning_effort": "low"},
+            },
+            "high",
+        ),
+        (
+            "xai:grok-4.3",
+            {
+                "reasoning_effort": None,
+                "extra_body": {"reasoning_effort": "low"},
+            },
+            "low",
+        ),
     ],
 )
-def test_default_effort_for_model(model_spec: str, default: str | None) -> None:
-    assert default_effort_for_model(model_spec) == default
+def test_current_effort_matches_integration_precedence(
+    model_spec: str,
+    model_params: dict[str, object],
+    expected: str,
+) -> None:
+    assert current_effort_from_model_params(model_spec, model_params) == expected
 
 
-def test_model_params_for_effort_maps_provider_kwargs() -> None:
-    assert model_params_for_effort("openai:gpt-5.5", "high") == {
-        "reasoning": {"effort": "high", "summary": "auto"}
-    }
-    assert model_params_for_effort("openai:gpt-5.6-sol", "max") == {
-        "reasoning": {"effort": "max", "summary": "auto"}
-    }
-    assert model_params_for_effort("anthropic:claude-opus-4-8", "xhigh") == {
-        "thinking": {"type": "adaptive", "display": "summarized"},
-        "output_config": {"effort": "xhigh"},
-    }
-    assert model_params_for_effort("google_genai:gemini-3.6-flash", "low") == {
-        "thinking_level": "low"
-    }
-    assert model_params_for_effort(
-        "fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"
-    ) == {"model_kwargs": {"reasoning_effort": "max"}}
-    assert model_params_for_effort("xai:grok-4.5", "medium") == {
-        "extra_body": {"reasoning_effort": "medium"}
+def test_openai_native_null_suppresses_flat_effort() -> None:
+    model_spec = "openai:gpt-5.5"
+    model_params = {
+        "reasoning": {"effort": None},
+        "reasoning_effort": "high",
     }
 
-
-def test_current_effort_reads_anthropic_output_config() -> None:
-    assert (
-        current_effort_from_model_params(
-            "anthropic:claude-opus-4-8", {"output_config": {"effort": "low"}}
-        )
-        == "low"
-    )
+    assert current_effort_from_model_params(model_spec, model_params) is None
+    assert has_explicit_effort_model_params(model_spec, model_params)
 
 
-def test_current_effort_reads_xai_extra_body() -> None:
-    assert (
-        current_effort_from_model_params(
-            "xai:grok-4.5", {"extra_body": {"reasoning_effort": "high"}}
-        )
-        == "high"
-    )
-
-
-def test_model_params_for_effort_rejects_unsupported_effort() -> None:
-    assert (
-        model_params_for_effort(
-            "fireworks:accounts/fireworks/models/kimi-k2p7-code", "max"
-        )
-        is None
-    )
-    assert model_params_for_effort("ollama:llama3.1", "high") is None
-
-
-def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> None:
-    merged = merge_effort_model_params(
-        {"temperature": 0.2, "model_kwargs": {"top_p": 0.9}},
-        {"model_kwargs": {"reasoning_effort": "high"}},
-    )
-
-    assert merged == {
-        "temperature": 0.2,
-        "model_kwargs": {"top_p": 0.9, "reasoning_effort": "high"},
-    }
-    assert (
-        current_effort_from_model_params(
-            "fireworks:accounts/fireworks/models/deepseek-v4-pro", merged
-        )
-        == "high"
-    )
-    assert without_effort_model_params(merged) == {
-        "temperature": 0.2,
-        "model_kwargs": {"top_p": 0.9},
+def test_fireworks_duplicate_forms_fail_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model_spec = "fireworks:accounts/fireworks/models/deepseek-v4-pro"
+    model_params = {
+        "reasoning_effort": "high",
+        "model_kwargs": {"reasoning_effort": "low"},
     }
 
-
-def test_merge_and_clear_xai_effort_preserves_extra_body_params() -> None:
-    merged = merge_effort_model_params(
-        {"extra_body": {"prompt_cache_key": "thread-1"}},
-        {"extra_body": {"reasoning_effort": "high"}},
-    )
-
-    assert merged == {
-        "extra_body": {"prompt_cache_key": "thread-1", "reasoning_effort": "high"}
-    }
-    assert current_effort_from_model_params("xai:grok-4.5", merged) == "high"
-    assert without_effort_model_params(merged) == {
-        "extra_body": {"prompt_cache_key": "thread-1"}
-    }
+    with caplog.at_level(logging.WARNING):
+        assert current_effort_from_model_params(model_spec, model_params) is None
+    assert has_explicit_effort_model_params(model_spec, model_params)
+    assert "conflicting Fireworks" in caplog.text
 
 
 @pytest.mark.parametrize(
     ("model_spec", "model_params"),
     [
-        # `reasoning` present but not a dict (e.g. a bare-string override).
-        ("openai:gpt-5.5", {"reasoning": "high"}),
-        # `reasoning.effort` present but not a str.
-        ("openai:gpt-5.5", {"reasoning": {"effort": 5}}),
-        ("anthropic:claude-opus-4-8", {"output_config": {"effort": 5}}),
-        ("anthropic:claude-opus-4-8", {"output_config": "high"}),
-        ("google_genai:gemini-3.6-flash", {"thinking_level": 5}),
+        (
+            "openai:gpt-5.5",
+            {"reasoning": {"effort": 5}, "reasoning_effort": "high"},
+        ),
+        ("anthropic:claude-opus-4-5", {"effort": 5}),
+        (
+            "google_genai:gemini-3.6-flash",
+            {"thinking_config": {"thinking_level": 5}},
+        ),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
             {"model_kwargs": {"reasoning_effort": 5}},
         ),
-        ("xai:grok-4.5", {"extra_body": {"reasoning_effort": 5}}),
+        ("xai:grok-4.3", {"extra_body": {"reasoning_effort": 5}}),
+        ("custom:model", {"reasoning_effort": 5}),
     ],
 )
-def test_current_effort_warns_on_malformed_params(
+def test_current_effort_warns_on_malformed_values(
     model_spec: str,
     model_params: dict[str, object],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A present-but-mistyped effort is discarded *and* logged, not silent.
-
-    Reading it as plain `None` would let the status bar show the provider
-    default while the malformed param still ships on the wire — the two would
-    disagree with no trace. The reader must warn (type only, never the value).
-    """
     with caplog.at_level(logging.WARNING):
         assert current_effort_from_model_params(model_spec, model_params) is None
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    assert "int" in caplog.text
+    assert "5" not in caplog.text
 
 
-def test_current_effort_non_dict_model_kwargs_is_silent() -> None:
-    """A non-dict `model_kwargs` is a legit shape and must not warn."""
-    # No caplog assertion for silence: the value simply reads as "no effort".
+def test_current_effort_non_dict_container_is_silent() -> None:
     assert (
-        current_effort_from_model_params(
+        current_effort_from_model_params("openai:gpt-5.5", {"reasoning": "raw"}) is None
+    )
+
+
+def test_current_effort_requires_spec_and_params() -> None:
+    assert current_effort_from_model_params(None, {"reasoning_effort": "high"}) is None
+    assert current_effort_from_model_params("anthropic:claude-opus-4-5", None) is None
+    assert current_effort_from_model_params("anthropic:claude-opus-4-5", {}) is None
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "existing", "cleaned"),
+    [
+        (
+            "openai:gpt-5.5",
+            {
+                "temperature": 0.1,
+                "reasoning_effort": "high",
+                "reasoning": {"effort": "low", "summary": "auto"},
+            },
+            {"temperature": 0.1, "reasoning": {"summary": "auto"}},
+        ),
+        (
+            "openai_codex:gpt-5.5",
+            {"reasoning": {"effort": "high", "summary": "concise"}},
+            {"reasoning": {"summary": "concise"}},
+        ),
+        (
+            "anthropic:claude-opus-4-5",
+            {
+                "effort": "high",
+                "output_config": {"effort": "low", "format": "json"},
+                "thinking": {"type": "adaptive", "display": "summarized"},
+            },
+            {"output_config": {"format": "json"}},
+        ),
+        (
+            "google_genai:gemini-3.6-flash",
+            {
+                "thinking_level": "high",
+                "thinking_config": {
+                    "thinking_level": "low",
+                    "include_thoughts": True,
+                },
+            },
+            {"thinking_config": {"include_thoughts": True}},
+        ),
+        (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-            {"model_kwargs": "raw"},
-        )
-        is None
-    )
+            {"model_kwargs": {"reasoning_effort": "max", "top_p": 0.9}},
+            {"model_kwargs": {"top_p": 0.9}},
+        ),
+        (
+            "xai:grok-4.3",
+            {
+                "extra_body": {
+                    "reasoning_effort": "high",
+                    "prompt_cache_key": "thread-1",
+                }
+            },
+            {"extra_body": {"prompt_cache_key": "thread-1"}},
+        ),
+        (
+            "custom:model",
+            {"reasoning_effort": "custom", "temperature": 0.2},
+            {"temperature": 0.2},
+        ),
+    ],
+)
+def test_set_and_clear_preserve_unrelated_native_settings(
+    model_spec: str,
+    existing: dict[str, object],
+    cleaned: dict[str, object],
+) -> None:
+    original = dict(existing)
+
+    assert without_effort_model_params(model_spec, existing) == cleaned
+    assert with_effort_model_params(model_spec, existing, "replacement") == {
+        **cleaned,
+        "reasoning_effort": "replacement",
+    }
+    assert existing == original
 
 
-def test_current_effort_non_dict_extra_body_is_silent() -> None:
-    """A non-dict `extra_body` is a legit shape and must not warn."""
-    assert (
-        current_effort_from_model_params("xai:grok-4.5", {"extra_body": "raw"}) is None
-    )
+def test_anthropic_clear_preserves_arbitrary_thinking_config() -> None:
+    params = {
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+    }
+
+    assert without_effort_model_params("anthropic:claude-opus-4-5", params) == {
+        "thinking": {"type": "enabled", "budget_tokens": 4096}
+    }
 
 
-def test_effort_argument_hint_covers_effort_vocabulary() -> None:
-    """The `/effort` argument hint must list every `EffortLabel` plus a reset.
+def test_clear_preserves_non_dict_nested_values() -> None:
+    assert without_effort_model_params(
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        {"reasoning_effort": "high", "model_kwargs": "raw"},
+    ) == {"model_kwargs": "raw"}
 
-    The label vocabulary is hand-duplicated into the command's `argument_hint`
-    (and `COMMANDS.md`), none of which is type-checked against `EffortLabel`.
-    This pins the hint so a new label can't silently drift out of the hint text.
-    """
+
+def test_effort_argument_hint_is_profile_agnostic() -> None:
     effort_command = next(cmd for cmd in COMMANDS if cmd.name == "/effort")
-    hint = effort_command.argument_hint
-    assert hint is not None
-    tokens = set(hint.strip("[]").split("|"))
-    assert set(get_args(EffortLabel)) <= tokens
-    # At least one reset token (handled by `_set_effort_override`) is offered.
-    assert tokens & {"clear", "--clear", "reset"}
+    assert effort_command.argument_hint == "[<level>|clear]"
+
+
+# app.py integration (uses real profile data for openai/anthropic)
 
 
 async def test_effort_command_sets_current_model_params() -> None:
@@ -320,10 +716,157 @@ async def test_effort_command_sets_current_model_params() -> None:
 
     await app._handle_effort_command("/effort high")
 
-    assert app._model_params_override == {
-        "reasoning": {"effort": "high", "summary": "auto"}
-    }
+    # Support is only validated now; the actual provider-specific shape is
+    # built natively inside the model from a plain `reasoning_effort` sentinel.
+    assert app._model_params_override == {"reasoning_effort": "high"}
     assert model_config.load_effort_for_model("openai:gpt-5.5") == "high"
+    assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_command_replaces_native_effort_and_preserves_summary() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._model_params_override = {"reasoning": {"effort": "low", "summary": "auto"}}
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort high")
+
+    assert app._model_params_override == {
+        "reasoning": {"summary": "auto"},
+        "reasoning_effort": "high",
+    }
+
+
+async def test_effort_command_matches_levels_case_insensitively() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort HIGH")
+
+    assert app._model_params_override == {"reasoning_effort": "high"}
+    assert model_config.load_effort_for_model("openai:gpt-5.5") == "high"
+
+
+async def test_profile_override_controls_selector_and_validation() -> None:
+    override = {
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["Ultra"],
+        "reasoning_effort_default": "provider-default",
+    }
+    app = DeepAgentsApp(profile_override=override)
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort")
+
+    screen = app.push_screen.call_args.args[0]  # ty: ignore[unresolved-attribute]
+    assert screen._efforts == ("Ultra",)
+    assert screen._default_effort == "provider-default"
+
+    await app._handle_effort_command("/effort ultra")
+    assert app._model_params_override == {"reasoning_effort": "Ultra"}
+    # The canonical profile-cased label is persisted, not the raw `ultra` input.
+    assert model_config.load_effort_for_model("openai:gpt-5.5") == "Ultra"
+
+
+def test_sync_status_model_refreshes_profile_argument_hint() -> None:
+    """Switching models re-derives the `/effort` hint from the live profile."""
+    app = DeepAgentsApp()
+    app._chat_input = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    # Real profile data drives the hint: gpt-5.5 exposes effort levels, while
+    # plain-chat-model does not, so switching to it must clear the hint.
+    with _mock_profiles(
+        {
+            "openai:gpt-5.5": _profile_entry(
+                reasoning_output=True,
+                reasoning_effort_levels=["Ultra", "turbo-v2"],
+            ),
+            "openai:plain-chat-model": _profile_entry(reasoning_output=False),
+        }
+    ):
+        app._sync_status_model()
+        settings.model_name = "plain-chat-model"
+        app._sync_status_model()
+
+    assert app._chat_input.set_argument_hint_override.call_args_list == [  # ty: ignore[unresolved-attribute]
+        call("/effort", "[Ultra|turbo-v2|clear]"),
+        call("/effort", ""),
+    ]
+
+
+def test_sync_status_model_hint_failure_does_not_break_status_bar() -> None:
+    """A raising hint refresh is logged, not propagated, so displays survive."""
+    app = DeepAgentsApp()
+    app._chat_input = Mock()  # ty: ignore
+    app._chat_input.set_argument_hint_override.side_effect = RuntimeError("boom")  # ty: ignore[unresolved-attribute]
+    app._status_bar = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    # Must not raise even though the hint refresh blows up.
+    app._sync_status_model()
+
+    # The primary status-bar display still updates.
+    app._status_bar.set_model.assert_called_once()  # ty: ignore[unresolved-attribute]
+
+
+async def test_profile_override_controls_persisted_restoration() -> None:
+    model_config.save_effort_for_model("openai:gpt-5.5", "custom")
+    app = DeepAgentsApp(
+        profile_override={
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["custom"],
+        }
+    )
+
+    await app._restore_effort_override("openai:gpt-5.5")
+
+    assert app._model_params_override == {"reasoning_effort": "custom"}
+
+
+def test_profile_override_controls_status_default() -> None:
+    app = DeepAgentsApp(
+        profile_override={
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["custom"],
+            "reasoning_effort_default": "outside-levels",
+        }
+    )
+    app._status_bar = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    app._sync_status_model()
+
+    app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
+        provider="openai",
+        model="gpt-5.5",
+        effort="outside-levels",
+    )
+
+
+async def test_empty_profile_override_levels_disable_effort() -> None:
+    app = DeepAgentsApp(
+        profile_override={
+            "reasoning_output": True,
+            "reasoning_effort_levels": [],
+        }
+    )
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort high")
+
+    assert app._model_params_override is None
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
 
 
@@ -336,7 +879,7 @@ async def test_restore_effort_override_applies_persisted_model_choice() -> None:
 
     assert app._model_params_override == {
         "temperature": 0.2,
-        "reasoning": {"effort": "max", "summary": "auto"},
+        "reasoning_effort": "max",
     }
 
 
@@ -344,14 +887,12 @@ async def test_restore_effort_override_keeps_explicit_params() -> None:
     model_config.save_effort_for_model("openai:gpt-5.5", "high")
     app = DeepAgentsApp()
     # Explicit per-session params already specify an effort.
-    app._model_params_override = {"reasoning": {"effort": "low", "summary": "auto"}}
+    app._model_params_override = {"reasoning_effort": "low"}
 
     await app._restore_effort_override("openai:gpt-5.5")
 
     # The explicit low effort wins; the saved high is not merged over it.
-    assert app._model_params_override == {
-        "reasoning": {"effort": "low", "summary": "auto"}
-    }
+    assert app._model_params_override == {"reasoning_effort": "low"}
 
 
 async def test_startup_model_params_precede_persisted_effort() -> None:
@@ -359,7 +900,7 @@ async def test_startup_model_params_precede_persisted_effort() -> None:
     app = DeepAgentsApp(
         model_kwargs={
             "model_spec": "openai:gpt-5.5",
-            "extra_kwargs": {"reasoning": {"effort": "low", "summary": "auto"}},
+            "extra_kwargs": {"reasoning_effort": "low"},
         }
     )
 
@@ -367,9 +908,50 @@ async def test_startup_model_params_precede_persisted_effort() -> None:
     # startup kwargs. The explicit CLI value must already be active by then.
     await app._restore_effort_override("openai:gpt-5.5")
 
-    assert app._model_params_override == {
-        "reasoning": {"effort": "low", "summary": "auto"}
-    }
+    assert app._model_params_override == {"reasoning_effort": "low"}
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "model_params"),
+    [
+        ("openai:gpt-5.5", {"reasoning": {"effort": "low"}}),
+        ("openai_codex:gpt-5.5", {"reasoning": {"effort": "low"}}),
+        ("anthropic:claude-opus-4-5", {"effort": "low"}),
+        (
+            "anthropic:claude-opus-4-5",
+            {"output_config": {"effort": "low"}},
+        ),
+        ("google_genai:gemini-3.6-flash", {"thinking_level": "low"}),
+        (
+            "google_genai:gemini-3.6-flash",
+            {"thinking_config": {"thinking_level": "low"}},
+        ),
+        (
+            "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+            {"model_kwargs": {"reasoning_effort": "low"}},
+        ),
+        (
+            "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+            {
+                "reasoning_effort": "high",
+                "model_kwargs": {"reasoning_effort": "low"},
+            },
+        ),
+        ("xai:grok-4.3", {"extra_body": {"reasoning_effort": "low"}}),
+        ("custom:model", {"reasoning_effort": "low"}),
+    ],
+)
+async def test_restore_keeps_explicit_canonical_and_native_params(
+    model_spec: str,
+    model_params: dict[str, object],
+) -> None:
+    model_config.save_effort_for_model(model_spec, "high")
+    app = DeepAgentsApp()
+    app._model_params_override = model_params
+
+    await app._restore_effort_override(model_spec)
+
+    assert app._model_params_override == model_params
 
 
 async def test_restore_effort_override_prunes_invalid_model_choice() -> None:
@@ -390,7 +972,7 @@ async def test_effort_command_without_args_opens_selector() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
-    app._model_params_override = {"reasoning": {"effort": "medium"}}
+    app._model_params_override = {"reasoning_effort": "medium"}
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
 
@@ -406,13 +988,27 @@ async def test_effort_command_without_args_opens_selector() -> None:
     app._mount_message.assert_not_awaited()  # ty: ignore[unresolved-attribute]
 
 
+async def test_gemini_36_selector_offers_minimal_with_medium_default() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    settings.model_provider = "google_genai"
+    settings.model_name = "gemini-3.6-flash"
+
+    await app._handle_effort_command("/effort")
+
+    screen = app.push_screen.call_args.args[0]  # ty: ignore[unresolved-attribute]
+    assert screen._efforts == ("minimal", "low", "medium", "high")
+    assert screen._default_effort == "medium"
+
+
 async def test_effort_command_clear_removes_only_effort_params() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._model_params_override = {
         "temperature": 0.2,
-        "reasoning": {"effort": "high", "summary": "auto"},
         "reasoning_effort": "high",
+        "reasoning": {"effort": "low", "summary": "auto"},
     }
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
@@ -420,7 +1016,10 @@ async def test_effort_command_clear_removes_only_effort_params() -> None:
 
     await app._handle_effort_command("/effort clear")
 
-    assert app._model_params_override == {"temperature": 0.2}
+    assert app._model_params_override == {
+        "temperature": 0.2,
+        "reasoning": {"summary": "auto"},
+    }
     assert model_config.load_effort_for_model("openai:gpt-5.5") is None
 
 
@@ -440,9 +1039,7 @@ async def test_effort_command_save_failure_reports_error(
     # The effort still applies for the session, but the user is told it could
     # not be persisted, and the success message is suppressed by the early
     # return (so the only mounted message is the error).
-    assert app._model_params_override == {
-        "reasoning": {"effort": "high", "summary": "auto"}
-    }
+    assert app._model_params_override == {"reasoning_effort": "high"}
     assert app._mount_message.await_count == 1  # ty: ignore[unresolved-attribute]
     message = app._mount_message.await_args.args[0]  # ty: ignore[unresolved-attribute]
     assert isinstance(message, ErrorMessage)
@@ -455,7 +1052,7 @@ async def test_effort_command_clear_failure_reports_error(
 ) -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    app._model_params_override = {"reasoning": {"effort": "high", "summary": "auto"}}
+    app._model_params_override = {"reasoning_effort": "high"}
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
     monkeypatch.setattr(
@@ -495,7 +1092,7 @@ async def test_effort_command_clear_refreshes_status_bar_to_default() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._status_bar = Mock()  # ty: ignore
-    app._model_params_override = {"reasoning": {"effort": "high", "summary": "auto"}}
+    app._model_params_override = {"reasoning_effort": "high"}
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
 
@@ -514,10 +1111,11 @@ async def test_effort_command_clear_refreshes_status_bar_to_default() -> None:
 async def test_effort_command_rejects_unsupported_effort() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "fireworks"
-    settings.model_name = "accounts/fireworks/models/kimi-k2p7-code"
+    settings.model_provider = "anthropic"
+    settings.model_name = "claude-opus-4-5"
 
-    await app._handle_effort_command("/effort max")
+    # Opus 4.5 supports up to `high`; `xhigh` postdates it (Opus 4.7+ only).
+    await app._handle_effort_command("/effort xhigh")
 
     assert app._model_params_override is None
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
@@ -529,7 +1127,7 @@ async def test_effort_command_clear_aliases(token: str) -> None:
     app._mount_message = AsyncMock()  # ty: ignore
     app._model_params_override = {
         "temperature": 0.2,
-        "reasoning": {"effort": "high", "summary": "auto"},
+        "reasoning_effort": "high",
     }
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
@@ -562,6 +1160,18 @@ async def test_effort_command_reports_not_configurable_model() -> None:
 
     assert app._model_params_override is None
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_clear_works_when_profile_is_not_configurable() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._model_params_override = {"output_config": {"effort": "low", "format": "json"}}
+    settings.model_provider = "anthropic"
+    settings.model_name = "claude-sonnet-4-5"
+
+    await app._handle_effort_command("/effort clear")
+
+    assert app._model_params_override == {"output_config": {"format": "json"}}
 
 
 async def test_effort_selector_not_configurable_model_skips_screen() -> None:
@@ -686,66 +1296,6 @@ async def test_effort_selector_apply_failure_reports_error(
     )
     mounted = app._mount_message.await_args.args[0]  # ty: ignore[unresolved-attribute]
     assert isinstance(mounted, ErrorMessage)
-
-
-def test_without_effort_clears_anthropic_thinking_and_effort() -> None:
-    effort_params = model_params_for_effort("anthropic:claude-opus-4-8", "xhigh")
-    assert effort_params is not None
-    format_config = {"type": "json_schema", "schema": {"type": "object"}}
-    params = merge_effort_model_params(
-        {"temperature": 0.3, "output_config": {"format": format_config}}, effort_params
-    )
-    assert params["output_config"] == {"format": format_config, "effort": "xhigh"}
-    assert "thinking" in params
-    assert without_effort_model_params(params) == {
-        "temperature": 0.3,
-        "output_config": {"format": format_config},
-    }
-
-
-def test_without_effort_clears_legacy_anthropic_top_level_effort() -> None:
-    assert without_effort_model_params({"temperature": 0.3, "effort": "xhigh"}) == {
-        "temperature": 0.3
-    }
-
-
-def test_without_effort_clears_google_thinking_level() -> None:
-    effort_params = model_params_for_effort("google_genai:gemini-3.6-flash", "low")
-    assert effort_params is not None
-    assert without_effort_model_params(effort_params) is None
-
-
-def test_without_effort_clears_top_level_openai_reasoning_effort() -> None:
-    cleaned = without_effort_model_params(
-        {"reasoning_effort": "high", "temperature": 0.1}
-    )
-    assert cleaned == {"temperature": 0.1}
-
-
-def test_without_effort_preserves_non_dict_model_kwargs() -> None:
-    """A non-dict `model_kwargs` is preserved verbatim while effort keys drop."""
-    cleaned = without_effort_model_params(
-        {"model_kwargs": "raw", "temperature": 0.1, "effort": "high"}
-    )
-    assert cleaned == {"model_kwargs": "raw", "temperature": 0.1}
-
-
-@pytest.mark.parametrize(
-    ("model_spec", "effort"),
-    [
-        ("openai:gpt-5.5", "none"),
-        ("openai:gpt-5.5", "high"),
-        ("anthropic:claude-opus-4-8", "xhigh"),
-        ("google_genai:gemini-3.6-flash", "low"),
-        ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"),
-    ],
-)
-def test_effort_params_round_trip_clears_to_none(model_spec: str, effort: str) -> None:
-    """The clear-set must strip exactly what `model_params_for_effort` writes."""
-    effort_params = model_params_for_effort(model_spec, effort)
-    assert effort_params is not None
-    merged = merge_effort_model_params(None, effort_params)
-    assert without_effort_model_params(merged) is None
 
 
 class _EffortSelectorHost(App[None]):

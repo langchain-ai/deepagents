@@ -6,7 +6,6 @@ instead of silently returning None.
 
 import asyncio
 import errno
-import warnings
 from unittest.mock import patch
 
 import pytest
@@ -17,9 +16,7 @@ from deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
     BackendProtocol,
     DeleteResult,
-    GlobResult,
     GrepResult,
-    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     _method_accepts_max_count,
@@ -139,107 +136,8 @@ class TestSupportsDelete:
         assert _supports_delete(MyBackend()) is True
 
 
-class TestDeprecatedMethodsRouteToNewNames:
-    """Old method names warn and delegate to the new implementations."""
-
-    def test_ls_info_delegates_to_ls(self) -> None:
-        class MyBackend(BackendProtocol):
-            def ls(self, path: str) -> LsResult:
-                return LsResult(entries=[{"path": path}])
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().ls_info("/") == [{"path": "/"}]
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_ls_info_raises_for_new_only_ls_behavior(self) -> None:
-        class MyBackend(BackendProtocol):
-            def ls(self, path: str) -> LsResult:
-                return LsResult(error="error")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            with pytest.raises(NotImplementedError, match="new `ls` API"):
-                MyBackend().ls_info("/")
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_grep_raw_delegates_to_grep(self) -> None:
-        class MyBackend(BackendProtocol):
-            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
-                return GrepResult(error="error")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().grep_raw("x") == "error"
-        assert any("grep_raw" in str(x.message) for x in w)
-
-    def test_glob_info_delegates_to_glob(self) -> None:
-        class MyBackend(BackendProtocol):
-            def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-                return GlobResult(matches=[{"path": f"{path}/{pattern}"}])
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().glob_info("*.py") == [{"path": "//*.py"}]
-        assert any("glob_info" in str(x.message) for x in w)
-
-
-class TestLegacySubclassOverrideRouting:
-    """New method names detect legacy overrides and delegate back."""
-
-    def test_ls_routes_to_ls_info_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def ls_info(self, path: str) -> list[dict[str, str]]:
-                return [{"path": path}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().ls("/") == LsResult(entries=[{"path": "/"}])
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_grep_routes_to_grep_raw_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict[str, str | int]] | str:
-                return [{"path": "/f", "line": 1, "text": pattern}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().grep("x") == GrepResult(matches=[{"path": "/f", "line": 1, "text": "x"}])
-        assert any("grep_raw" in str(x.message) for x in w)
-
-    def test_grep_raw_override_respects_max_count(self) -> None:
-        """`grep` caps a legacy `grep_raw` override post-hoc, honoring the boundary."""
-
-        class LegacyBackend(BackendProtocol):
-            def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict[str, str | int]] | str:
-                return [
-                    {"path": "/one", "line": 1, "text": pattern},
-                    {"path": "/two", "line": 2, "text": pattern},
-                    {"path": "/three", "line": 3, "text": pattern},
-                ]
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            capped = LegacyBackend().grep("x", max_count=2)
-            exact = LegacyBackend().grep("x", max_count=3)
-
-        # More matches than the cap: trimmed to `max_count` and flagged truncated.
-        assert capped.matches == [{"path": "/one", "line": 1, "text": "x"}, {"path": "/two", "line": 2, "text": "x"}]
-        assert capped.truncated is True
-        # Exactly `max_count` matches with none dropped is reported complete.
-        assert exact.matches is not None
-        assert len(exact.matches) == 3
-        assert exact.truncated is False
-
-    def test_glob_routes_to_glob_info_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def glob_info(self, pattern: str, path: str = "/") -> list[dict[str, str]]:
-                return [{"path": f"{path}/{pattern}"}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().glob("*.py") == GlobResult(matches=[{"path": "//*.py"}])
-        assert any("glob_info" in str(x.message) for x in w)
+class TestAdditionalAsyncWrappersPropagateNotImplemented:
+    """Additional async wrappers propagate NotImplementedError."""
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

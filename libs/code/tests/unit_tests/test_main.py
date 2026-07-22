@@ -9,11 +9,14 @@ from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from prompt_toolkit.layout import Layout
 
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
@@ -2461,6 +2464,28 @@ class TestThreadsListCwdArgparse:
 class TestCheckMcpProjectTrustPrompt:
     """The project MCP approval prompt should surface a docs link."""
 
+    @staticmethod
+    def _create_git_repository(root: Path) -> Path:
+        root.mkdir()
+        common_dir = root / ".git"
+        (common_dir / "objects").mkdir(parents=True)
+        (common_dir / "refs").mkdir()
+        (common_dir / "worktrees").mkdir()
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n\tbare = false\n")
+        return common_dir
+
+    @staticmethod
+    def _create_git_worktree(common_dir: Path, root: Path, name: str) -> None:
+        root.mkdir()
+        git_entry = root / ".git"
+        git_dir = common_dir / "worktrees" / name
+        git_dir.mkdir()
+        git_entry.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{git_entry}\n")
+        (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+
     def test_debug_env_helper_uses_truthy_parsing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3180,6 +3205,124 @@ class TestCheckMcpProjectTrustPrompt:
         )
         assert lists.disabled == frozenset({"reference"})
 
+    def test_existing_remote_sibling_worktree_approval_skips_prompt(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        project_cfg = second / ".mcp.json"
+        project_cfg.write_text("{}")
+        server_configs = {"docs": {"type": "http", "url": "https://example.test/mcp"}}
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=server_configs,
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(project_root=second, user_cwd=second)
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "prompt must be skipped for an approved sibling worktree"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "http", "https://example.test/mcp")],
+            ),
+            patch("builtins.input", _no_input),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is None
+        assert capsys.readouterr().err == ""
+
+    def test_existing_local_sibling_worktree_approval_prompts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        project_cfg = second / ".mcp.json"
+        project_cfg.write_text("{}")
+        server_configs = {"docs": {"command": "python", "args": ["server.py"]}}
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=server_configs,
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(project_root=second, user_cwd=second)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "python server.py")],
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        output = capsys.readouterr().err
+        assert "Approve project MCP servers" in output
+        assert '"docs"' in output
+
     def test_all_servers_list_resolved_skip_prompt_without_noise(
         self,
         capsys: pytest.CaptureFixture[str],
@@ -3474,6 +3617,62 @@ class TestCheckMcpProjectTrustPrompt:
         assert "require approval" not in err
 
 
+def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
+    """Assert every text control in `layout` suppresses the terminal cursor.
+
+    Walks the layout instead of indexing into a fixed container/window shape so
+    the check stays valid if the selector's nesting changes.
+    """
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    controls = [
+        control
+        for control in layout.find_all_controls()
+        if isinstance(control, FormattedTextControl)
+    ]
+    assert controls
+    assert all(control.show_cursor is False for control in controls)
+
+
+class TestPromptYoloAcknowledgement:
+    """Tests for the inline YOLO acknowledgement selector."""
+
+    def test_yolo_selector_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The selector suppresses the stray first-character terminal cursor."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+
 class TestSelectProjectServersToPersist:
     """Tests for the "always allow" subset selection helpers."""
 
@@ -3597,6 +3796,36 @@ class TestSelectProjectServersToPersist:
         assert "Allow for this project — until changed" in rendered
         assert "Deny" in rendered
         assert "Choose how to continue" not in rendered
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The inline picker suppresses the stray first-character terminal cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustAction,
+            _run_project_mcp_trust_action_picker,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _ProjectMcpTrustAction:
+                return _ProjectMcpTrustAction.DENY
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        _run_project_mcp_trust_action_picker(Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_action_picker_escape_aborts(
@@ -3742,6 +3971,38 @@ class TestSelectProjectServersToPersist:
 
         assert names == ["reference"]
         assert captured["full_screen"] is False
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both checkbox windows suppress the stray first-character cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                return []
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(

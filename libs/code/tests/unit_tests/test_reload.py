@@ -842,6 +842,69 @@ class TestReloadInAutocomplete:
         assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
+class TestReloadModelProfileHints:
+    """`/reload` should refresh profile-derived command hints."""
+
+    async def test_refreshes_status_without_owned_server(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Client-only sessions should resync after profile caches are cleared."""
+        from deepagents_code import model_config
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.config import settings
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        config_path = tmp_path / "config.toml"
+
+        def write_config(level: str) -> None:
+            config_path.write_text(f"""
+[models.providers.acme]
+models = ["foo"]
+[models.providers.acme.profile]
+reasoning_output = true
+reasoning_effort_levels = ["{level}"]
+""")
+
+        write_config("old")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        monkeypatch.setattr(model_config, "_get_provider_profile_modules", list)
+        monkeypatch.setattr(settings, "model_provider", "acme")
+        monkeypatch.setattr(settings, "model_name", "foo")
+        model_config.clear_caches()
+
+        app = DeepAgentsApp()
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                async def _fake_discover() -> bool:  # noqa: RUF029
+                    return True
+
+                monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+                monkeypatch.setattr(
+                    "deepagents_code.plugins.discover_plugins",
+                    lambda: PluginDiscoveryResult(plugins=()),
+                )
+                monkeypatch.setattr(
+                    "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                    lambda _plugins: (),
+                )
+                assert app._server_proc is None
+                assert app._chat_input is not None
+                assert app._chat_input._argument_hint_overrides["effort"] == (
+                    "[old|clear]"
+                )
+
+                write_config("new")
+                await app._handle_command("/reload")
+
+                assert app._chat_input._argument_hint_overrides["effort"] == (
+                    "[new|clear]"
+                )
+        finally:
+            model_config.clear_caches()
+
+
 class TestReloadSkillReport:
     """`/reload` should surface skill add/remove diff in its report."""
 

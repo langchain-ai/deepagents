@@ -4098,6 +4098,64 @@ class TestCreateModelForwardsProviderProfile:
         assert call_kwargs.get("use_responses_api") is False
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_does_not_add_summary(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={"reasoning_effort": "high"},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        mock_init: Mock,
+        tmp_path: Path,
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+models = ["gpt-5.5"]
+[models.providers.openai.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_native_reasoning_effort_keeps_precedence(
+        self,
+        mock_init: Mock,
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={
+                "reasoning_effort": "high",
+                "reasoning": {"effort": "low", "summary": "auto"},
+            },
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_config_toml_opt_out_wins_over_profile(
         self, mock_init: Mock, tmp_path: Path
     ) -> None:
@@ -6132,6 +6190,42 @@ class TestCreateModelCodex:
         assert isinstance(result.model, _ChatOpenAICodex)
         assert result.provider == "openai_codex"
         assert result.model_name == "gpt-5.2-codex"
+
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        token_path = tmp_path / "auth.json"
+        self._plant_token(token_path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: token_path)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+models = ["gpt-5.5"]
+[models.providers.openai_codex.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        captured: dict[str, Any] = {}
+        model = _make_init_chat_model_mock()
+
+        def _capture(_model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401
+            captured.update(kwargs)
+            return model
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai_codex:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        assert captured["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in captured
 
     def test_api_key_kwarg_is_stripped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

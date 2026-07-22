@@ -13406,15 +13406,12 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
+            has_explicit_effort_model_params,
             is_effort_supported_for_model,
-            merge_effort_model_params,
+            with_effort_model_params,
         )
 
-        if (
-            current_effort_from_model_params(model_spec, self._model_params_override)
-            is not None
-        ):
+        if has_explicit_effort_model_params(model_spec, self._model_params_override):
             return
         effort = await asyncio.to_thread(load_effort_for_model, model_spec)
         if effort is None:
@@ -13437,13 +13434,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
-        # Translation into the model's provider-specific shape happens
-        # natively inside the model itself, driven by `model.profile`. This
-        # only needs to forward the plain effort label through the existing
-        # model_params channel.
-        self._model_params_override = merge_effort_model_params(
+        self._model_params_override = with_effort_model_params(
+            model_spec,
             self._model_params_override,
-            {"reasoning_effort": effort},
+            effort,
         )
 
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
@@ -13485,7 +13479,7 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        raw = command.strip()[len("/effort") :].strip().lower()
+        raw = command.strip()[len("/effort") :].strip()
         if not raw:
             await self._show_effort_selector(command)
             return
@@ -13549,20 +13543,25 @@ class DeepAgentsApp(App):
             save_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            merge_effort_model_params,
+            has_explicit_effort_model_params,
+            with_effort_model_params,
             without_effort_model_params,
         )
 
-        context = self._resolve_effort_context()
-        if isinstance(context, _EffortUnavailable):
-            await self._mount_message(AppMessage(context.message))
-            return
-        spec = context.spec
-
-        if effort in {"clear", "--clear", "reset"}:
-            had_override = context.current is not None
+        if effort.lower() in {"clear", "--clear", "reset"}:
+            spec = self._effective_model_spec()
+            if not spec:
+                await self._mount_message(
+                    AppMessage(
+                        "No model is configured yet. Run `/model` to choose one."
+                    )
+                )
+                return
+            had_override = has_explicit_effort_model_params(
+                spec, self._model_params_override
+            )
             self._model_params_override = without_effort_model_params(
-                self._model_params_override
+                spec, self._model_params_override
             )
             saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
@@ -13582,6 +13581,11 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(message))
             return
 
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
+            return
+        spec = context.spec
         if effort not in context.efforts:
             supported = ", ".join(context.efforts)
             await self._mount_message(
@@ -13592,12 +13596,8 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Translation into the model's provider-specific shape happens
-        # natively inside the model itself, driven by `model.profile`. This
-        # only needs to forward the plain effort label through the existing
-        # model_params channel.
-        self._model_params_override = merge_effort_model_params(
-            self._model_params_override, {"reasoning_effort": effort}
+        self._model_params_override = with_effort_model_params(
+            spec, self._model_params_override, effort
         )
         saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
         self._sync_status_model()

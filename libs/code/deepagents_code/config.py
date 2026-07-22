@@ -4146,6 +4146,40 @@ def _get_provider_kwargs(
     return result
 
 
+def _compose_openai_reasoning_effort(
+    provider: str,
+    kwargs: dict[str, Any],
+    effort_override: object,
+    reasoning_override: object,
+) -> dict[str, Any]:
+    """Compose a session effort override with an OpenAI reasoning mapping.
+
+    Args:
+        provider: Resolved model provider.
+        kwargs: Layered model constructor parameters.
+        effort_override: High-priority `reasoning_effort` from session params.
+        reasoning_override: High-priority native `reasoning` from session params.
+
+    Returns:
+        Constructor parameters with one native `reasoning` mapping when
+        composition is needed.
+    """
+    if provider not in {"openai", "openai_codex"} or not isinstance(
+        effort_override, str
+    ):
+        return kwargs
+    reasoning = kwargs.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return kwargs
+    composed = dict(kwargs)
+    if isinstance(reasoning_override, dict) and "effort" in reasoning_override:
+        composed.pop("reasoning_effort", None)
+        return composed
+    composed["reasoning"] = {**reasoning, "effort": effort_override}
+    composed.pop("reasoning_effort", None)
+    return composed
+
+
 def _create_model_from_class(
     class_path: str,
     model_name: str,
@@ -4582,10 +4616,20 @@ def create_model(
     # app re-creating the model on a runtime `/model` switch) keeps the sentinel
     # for the next provider's resolution.
     cli_max_retries: int | None = None
+    reasoning_effort_override: object = None
+    reasoning_override: object = None
     if extra_kwargs:
         extra_kwargs = dict(extra_kwargs)
         cli_max_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
+        reasoning_effort_override = extra_kwargs.get("reasoning_effort")
+        reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
+    kwargs = _compose_openai_reasoning_effort(
+        provider,
+        kwargs,
+        reasoning_effort_override,
+        reasoning_override,
+    )
 
     # `--max-retries` outranks everything: fold it under the provider's resolved
     # retry-param name (honoring `[retries.<provider>].param`) so a custom

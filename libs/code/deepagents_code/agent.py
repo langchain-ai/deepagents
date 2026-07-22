@@ -27,7 +27,6 @@ from deepagents.middleware import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from deepagents import SystemPromptConfig
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -2221,9 +2220,8 @@ def create_cli_agent(
                 Passing a value here replaces that auto-generated prompt
                 entirely — none of the dynamic context above is added, and
                 `sandbox_type` and `interactive` no longer influence the
-                prompt. The value is forwarded to the deepagents SDK as-is;
-                the SDK still layers its built-in base prompt beneath your
-                text.
+                prompt. Only pass an explicit prompt when you intend to take
+                full ownership of the system prompt's content.
         interactive: When `False`, the auto-generated system prompt is
             tailored for headless non-interactive execution, and every stack
             gains terminal-stall recovery middleware (a runtime no-op unless the
@@ -2726,23 +2724,15 @@ def create_cli_agent(
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
 
-    # For the auto-generated prompt, overwrite the SDK's built-in base prompt
-    # (via the `base` key) so its content isn't duplicated on top of ours. A
-    # caller-supplied prompt is forwarded as-is: the SDK treats a bare string
-    # as a `prefix`, layering it above its built-in base (see `system_prompt`).
-    resolved_system_prompt: str | SystemPromptConfig
+    # Get or use custom system prompt
     if system_prompt is None:
-        resolved_system_prompt = {
-            "base": get_system_prompt(
-                assistant_id=assistant_id,
-                sandbox_type=sandbox_type,
-                interactive=interactive,
-                cwd=effective_cwd,
-                fs_tools=fs_tools,
-            )
-        }
-    else:
-        resolved_system_prompt = system_prompt
+        system_prompt = get_system_prompt(
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            cwd=effective_cwd,
+            fs_tools=fs_tools,
+        )
 
     interrupt_on: dict[str, bool | InterruptOnConfig] | None
     if resolved_interrupt_on is None:
@@ -2971,7 +2961,7 @@ def create_cli_agent(
     _ensure_glm_5p2_profile_registered()
     agent = create_deep_agent(
         model=model,
-        system_prompt=resolved_system_prompt,
+        system_prompt=system_prompt,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

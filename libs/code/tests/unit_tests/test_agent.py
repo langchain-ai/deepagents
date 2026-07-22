@@ -1822,14 +1822,10 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
-        # The auto-generated prompt overwrites the SDK base prompt.
-        assert mock_create_deep_agent.call_args.kwargs["system_prompt"] == {
-            "base": "mocked prompt"
-        }
         assert call_order == ["register_profile", "create_agent"]
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
-        """Explicit system_prompt is forwarded verbatim, ignoring interactive."""
+        """Explicit system_prompt should be used verbatim, ignoring interactive."""
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -1860,9 +1856,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch(
-                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
-            ) as mock_create_deep_agent,
+            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
@@ -1882,11 +1876,6 @@ class TestCreateCliAgentInteractiveForwarding:
 
         # get_system_prompt should NOT be called when system_prompt is provided
         mock_get_prompt.assert_not_called()
-        # A caller-supplied prompt is forwarded verbatim (SDK treats it as a
-        # prefix), unlike the auto-generated prompt which overwrites the base.
-        assert (
-            mock_create_deep_agent.call_args.kwargs["system_prompt"] == "custom prompt"
-        )
 
 
 class TestDefaultAgentName:

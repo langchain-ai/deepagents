@@ -22,6 +22,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from pydantic import Field
 
+from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     RubricGraderState,
@@ -159,6 +160,16 @@ class TestTransientGraderTransportClassification:
 
 
 class TestReliableRubricMiddleware:
+    def test_displayed_max_iterations_default_matches_sdk(self) -> None:
+        """Drift guard for the TUI-display duplicate of the SDK default.
+
+        The constant must equal the `RubricMiddleware` default that the app
+        actually instantiates.
+        """
+        middleware = ReliableRubricMiddleware(model="fake-model")
+
+        assert middleware.max_iterations == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+
     async def test_retries_only_grading_without_mutating_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         error = httpx.ReadError(

@@ -1552,6 +1552,19 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive TUI" in prompt
 
+    def test_prompt_has_bounded_imperative_action_rule(self) -> None:
+        """Short git imperatives must resolve to a grounded confirmation."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Bounded Imperative Actions" in prompt
+        assert "commit and push" in prompt
+        assert "commit hash and remote branch" in prompt
+        assert "NEVER substitute unrelated code observations" in prompt
+
     def test_interactive_todo_section_asks_user_before_starting(self) -> None:
         """Interactive mode should require plan approval before first in_progress."""
         mock_settings = Mock()

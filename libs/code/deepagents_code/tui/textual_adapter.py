@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         HITLRequest,
         RejectDecision,
     )
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, ToolMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.types import Command, Interrupt
     from pydantic import TypeAdapter
@@ -538,6 +538,45 @@ def _build_interrupted_ai_message(
         content=accumulated_text,
         tool_calls=tool_calls or [],
     )
+
+
+def _build_interrupted_tool_messages(
+    interrupted_msg: AIMessage | None,
+) -> list[ToolMessage]:
+    """Build synthetic error `ToolMessage`s for an interrupted turn's tool calls.
+
+    Anthropic's Messages API requires every `tool_use` block to be immediately
+    followed by a matching `tool_result` block. When a turn is interrupted
+    mid-tool-execution, the partial `AIMessage` is persisted with its
+    `tool_calls` but no results, leaving the checkpoint in a state Anthropic
+    rejects on replay. One error `ToolMessage` per pending tool-call id
+    satisfies the pairing rule so the next turn resumes cleanly.
+
+    Args:
+        interrupted_msg: The partial `AIMessage` saved on interrupt, or `None`.
+
+    Returns:
+        One `ToolMessage` (with `status="error"`) per tool call on
+        `interrupted_msg`, in call order; empty when there are no tool calls.
+    """
+    from langchain_core.messages import ToolMessage
+
+    if interrupted_msg is None:
+        return []
+
+    tool_messages: list[ToolMessage] = []
+    for tool_call in interrupted_msg.tool_calls:
+        tool_call_id = tool_call.get("id")
+        if not tool_call_id:
+            continue
+        tool_messages.append(
+            ToolMessage(
+                content="Tool execution was interrupted by the user.",
+                tool_call_id=tool_call_id,
+                status="error",
+            )
+        )
+    return tool_messages
 
 
 def _interrupt_owned_tool_rows(
@@ -2490,6 +2529,22 @@ async def _handle_interrupt_cleanup(
     except Exception:
         logger.warning("Terminal tool.result dispatch failed on cancel", exc_info=True)
 
+    # Synthesize one error `ToolMessage` per pending tool-call id so the
+    # partial `AIMessage`'s `tool_use` blocks are each paired with a
+    # `tool_result` in the checkpoint. Without this, Anthropic rejects the
+    # replay on the next turn (OpenAI tolerates the gap). Built here — and
+    # written alongside `interrupted_msg` in the *same* `aupdate_state` call
+    # below — so the checkpointer never persists an `AIMessage` without its
+    # results. Guarded (best-effort) so a build failure can't skip the
+    # cancellation write or escape the cancel handler.
+    try:
+        interrupted_tool_messages = _build_interrupted_tool_messages(interrupted_msg)
+    except Exception:
+        logger.warning(
+            "Failed to build synthetic tool results on interrupt", exc_info=True
+        )
+        interrupted_tool_messages = []
+
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
     from langsmith import tracing_context
@@ -2504,7 +2559,10 @@ async def _handle_interrupt_cleanup(
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
                 if interrupted_msg:
-                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+                    await agent.aupdate_state(
+                        config,
+                        {"messages": [interrupted_msg, *interrupted_tool_messages]},
+                    )
 
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "

@@ -588,6 +588,67 @@ class TestInterruptCleanup:
             "Task interrupted by user" in str(message.content) for message in persisted
         )
 
+    async def test_interrupt_writes_synthetic_tool_results_to_checkpoint(self) -> None:
+        """Interrupted tool calls get paired error `ToolMessage`s in the checkpoint.
+
+        Anthropic rejects a replay where a `tool_use` block has no matching
+        `tool_result` immediately after. The first `aupdate_state` write must
+        therefore persist the partial `AIMessage` followed by one error
+        `ToolMessage` per pending tool-call id, before the `[SYSTEM]`
+        cancellation `HumanMessage`.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        first_tool = MagicMock()
+        first_tool._tool_name = "read_file"
+        first_tool._args = {"path": "notes.txt"}
+        second_tool = MagicMock()
+        second_tool._tool_name = "execute"
+        second_tool._args = {"command": "sleep 100"}
+        adapter._current_tool_messages = {
+            "call-1": first_tool,
+            "call-2": second_tool,
+        }
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},  # ty: ignore
+            pending_text_by_namespace={(): "partial answer"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        first_write = agent.aupdate_state.await_args_list[0].args[1]["messages"]
+        ai_message = first_write[0]
+        assert isinstance(ai_message, AIMessage)
+        pending_ids = [call["id"] for call in ai_message.tool_calls]
+        assert pending_ids == ["call-1", "call-2"]
+
+        tool_messages = [m for m in first_write if isinstance(m, ToolMessage)]
+        assert [m.tool_call_id for m in tool_messages] == pending_ids
+        assert all(m.status == "error" for m in tool_messages)
+        # The AIMessage precedes its tool results within the first write.
+        assert first_write.index(ai_message) < min(
+            first_write.index(m) for m in tool_messages
+        )
+
+        # The tool results land before the [SYSTEM] cancellation HumanMessage,
+        # which is written in the second aupdate_state call.
+        second_write = agent.aupdate_state.await_args_list[1].args[1]["messages"]
+        assert any(
+            isinstance(m, HumanMessage) and "Task interrupted by user" in str(m.content)
+            for m in second_write
+        )
+
     async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
         """Interrupt cleanup remains best-effort when remote cancel fails."""
         agent = SimpleNamespace(

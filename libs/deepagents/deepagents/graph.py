@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, TypedDict, cast
+from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -116,71 +116,37 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
+"""Default base system prompt for every deep agent (`BASE`).
 
+The final system prompt sent to the model is composed from up to four
+named parts:
 
-class SystemPromptConfig(TypedDict, total=False):
-    """Structured `system_prompt` for `create_deep_agent`.
+- `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
+    `SystemMessage`); when unset, no `USER` segment is included.
+- `BASE` — this constant.
+- `CUSTOM` — `HarnessProfile.base_system_prompt`. When set on a matching
+    profile, replaces `BASE` outright; when unset, `BASE` is used.
+- `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
+    matching profile, appended last; when unset, no `SUFFIX` segment is
+    included.
 
-    All keys are optional. Each accepts a `str` or a `SystemMessage` (to
-    carry explicit `cache_control` markers).
-    """
+The order is always `USER` -> (`BASE` or `CUSTOM`) -> `SUFFIX`, joined by
+blank lines (`\\n\\n`). Two invariants follow:
 
-    prefix: str | SystemMessage | None
-    """Text placed before the base prompt."""
+1. `USER` is always at the front, so caller instructions take precedence
+   over SDK and profile content regardless of which model is selected.
+2. `SUFFIX` is always at the end, so model-tuning guidance sits closest
+   to the conversation history (where the model attends most).
 
-    base: str | SystemMessage | None
-    """Replacement for the active profile base prompt.
+When `USER` is a `SystemMessage`, the right-hand assembly is appended as
+an additional text content block onto the message's existing
+`content_blocks` list, preserving any `cache_control` markers the caller
+set.
 
-    Omit the key to keep the active `HarnessProfile.base_system_prompt`, if
-    any. Set it to `None` to drop the base entirely, leaving only `prefix`,
-    `suffix`, and middleware-contributed content.
-    """
-
-    suffix: str | SystemMessage | None
-    """Text placed after the base prompt."""
-
-
-_PROMPT_SEPARATOR = "\n\n"
-
-
-def _assemble_prompt_parts(parts: list[str | SystemMessage]) -> str | SystemMessage:
-    r"""Join prompt parts into a single `str` or `SystemMessage`.
-
-    All-`str` parts join with blank lines. If any part is a `SystemMessage`,
-    the result is a `SystemMessage` whose `content_blocks` concatenate each
-    part's blocks with `\\n\\n` separators, preserving `cache_control` markers.
-    """
-    if not parts:
-        return ""
-    if all(isinstance(part, str) for part in parts):
-        return _PROMPT_SEPARATOR.join(cast("list[str]", parts))
-    blocks: list[Any] = []
-    for i, part in enumerate(parts):
-        if i:
-            blocks.append({"type": "text", "text": _PROMPT_SEPARATOR})
-        if isinstance(part, SystemMessage):
-            blocks.extend(part.content_blocks)
-        else:
-            blocks.append({"type": "text", "text": part})
-    return SystemMessage(content_blocks=blocks)
-
-
-def _normalize_system_prompt(
-    system_prompt: str | SystemMessage | SystemPromptConfig | None,
-) -> SystemPromptConfig:
-    """Coerce the `system_prompt` argument into a `SystemPromptConfig`.
-
-    `None` becomes an empty config; a bare `str`/`SystemMessage` becomes a
-    `prefix` (matching the pre-config behavior of placing caller text before
-    the base); a config dict is returned unchanged.
-    """
-    if system_prompt is None:
-        return {}
-    if isinstance(system_prompt, (str, SystemMessage)):
-        return {"prefix": system_prompt}
-    return system_prompt
-
-
+See `create_deep_agent`'s `system_prompt` parameter or
+[Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+for the full assembly order.
+"""
 def _build_default_model() -> ChatAnthropic:
     """Construct the default model without emitting a deprecation warning.
 
@@ -313,7 +279,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
-    system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
+    system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -382,24 +348,23 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             To drop a built-in tool, register a
             [`HarnessProfile`][deepagents.HarnessProfile] with
             `excluded_tools`.
-        system_prompt: Custom system instructions.
+        system_prompt: Custom system instructions placed at the front of
+            the system prompt sent to the model.
 
-            A `str` or `SystemMessage` is placed at the front of the system
-            prompt, before any base or model-tuning suffix from a registered
-            `HarnessProfile`.
+            Whatever you pass here always sits before the SDK's default
+            deep-agent prompt and any model-tuning suffix from a
+            registered `HarnessProfile`. With `system_prompt=None`, the
+            SDK default is used on its own (plus the profile suffix
+            when one applies). Sections are joined by a blank line.
 
-            For more control, pass a
-            [`SystemPromptConfig`][deepagents.SystemPromptConfig] with any of:
+            Passing a `SystemMessage` instead of a string preserves any
+            `cache_control` markers on the message's content blocks —
+            useful for placing explicit Anthropic prompt-cache
+            breakpoints. The same ordering applies (caller's blocks
+            first, SDK content appended as an additional text block).
 
-            - `prefix`: text before the base (same as passing a bare string).
-            - `base`: replace the profile base prompt; omit the key to keep
-                it, or set it to `None` to drop the base entirely.
-            - `suffix`: text after the base (before any profile suffix).
-
-            The assembly order is `prefix` -> `base` -> `suffix` ->
-            profile suffix, joined by blank lines. Any part may be a
-            `SystemMessage` to preserve `cache_control` markers; the result is
-            then a `SystemMessage` whose content blocks are concatenated.
+            See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+            for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -955,23 +920,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    # Assemble the main-agent prompt: prefix -> base -> suffix -> profile suffix.
-    # The config's `base` (when the key is present) overrides the profile base.
-    cfg = _normalize_system_prompt(system_prompt)
-    prompt_parts: list[str | SystemMessage] = []
-    prefix = cfg.get("prefix")
-    if prefix is not None:
-        prompt_parts.append(prefix)
-    profile_base = _profile.base_system_prompt
-    base = cfg.get("base", profile_base)
-    if base is not None:
-        prompt_parts.append(base)
-    suffix = cfg.get("suffix")
-    if suffix is not None:
-        prompt_parts.append(suffix)
-    if _profile.system_prompt_suffix is not None:
-        prompt_parts.append(_profile.system_prompt_suffix)
-    final_system_prompt: str | SystemMessage = _assemble_prompt_parts(prompt_parts)
+    base_prompt = _apply_profile_prompt(_profile, "")
+    if system_prompt is None:
+        final_system_prompt: str | SystemMessage = base_prompt
+    elif isinstance(system_prompt, SystemMessage):
+        if base_prompt:
+            final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
+        else:
+            final_system_prompt = system_prompt
+    else:
+        final_system_prompt = system_prompt + (f"\n\n{base_prompt}" if base_prompt else "")
 
     return create_agent(
         model,

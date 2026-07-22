@@ -8107,7 +8107,10 @@ class DeepAgentsApp(App):
         # readiness before creating a placeholder that nobody will remove.
         if not self._connecting or self._initial_prompt_queued_widget is not None:
             return
-        queued_widget = QueuedUserMessage(self._initial_prompt)
+        # The `-m` prompt is always sent as literal agent text (never a slash
+        # or shell command), so a leading `/` (e.g. a file path) must render as
+        # a plain user message rather than a slash command.
+        queued_widget = QueuedUserMessage(self._initial_prompt, detect_mode=False)
         self._initial_prompt_queued_widget = queued_widget
         await self._mount_message(queued_widget)
         self._sync_status_queued()
@@ -13253,8 +13256,14 @@ class DeepAgentsApp(App):
             message: The user's message
         """
         # Mount the user message, tracking it so it can be dimmed on interrupt.
+        # Everything routed here is literal agent text (slash/shell commands go
+        # through `_handle_command`/`_handle_shell_command`), so disable mode
+        # detection: a leading `/` (e.g. a file path from `-m`) must render as a
+        # plain user message rather than a slash command.
         media_snapshot = self._image_tracker.snapshot()
-        user_message = UserMessage(message, media_snapshot=media_snapshot)
+        user_message = UserMessage(
+            message, media_snapshot=media_snapshot, detect_mode=False
+        )
         await self._mount_message(user_message)
         self._active_user_message = user_message
         await self._send_to_agent(message)

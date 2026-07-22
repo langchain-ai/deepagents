@@ -3754,6 +3754,33 @@ class TestMessageQueue:
             assert app._status_bar.queued_count == 1
             assert not app.query(StartupTip)
 
+    async def test_initial_prompt_slash_path_renders_as_plain_message(self) -> None:
+        """A `-m` prompt starting with `/` must not render as a slash command.
+
+        `-m`/`--message` text is always sent as literal agent text, so a leading
+        slash (like a file path) should render with the plain `'> '` prefix in
+        both the queued placeholder and the submitted `UserMessage`.
+        """
+        app = DeepAgentsApp(initial_prompt="/etc/hosts explain this")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            placeholder = app.query(QueuedUserMessage).first()
+            assert placeholder._detect_mode is False
+            assert placeholder.render().plain == "> /etc/hosts explain this"
+
+            app._connecting = False
+            await app._handle_user_message(app._initial_prompt or "")
+            await pilot.pause()
+
+            submitted = app.query(UserMessage).first()
+            assert submitted._detect_mode is False
+            assert submitted.render().plain == "> /etc/hosts explain this"
+
     async def test_initial_prompt_placeholder_replaced_on_submission(self) -> None:
         """Submitting the `-m` prompt drops the placeholder and sends the message."""
         app = DeepAgentsApp(initial_prompt="hello world")

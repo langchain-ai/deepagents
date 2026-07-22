@@ -6350,7 +6350,7 @@ class TestGoalCommand:
                         "- tests pass\n- no unrelated files",
                     ),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._handle_command("/goal add refresh tokens exactly")
                 for _ in range(20):
@@ -6366,7 +6366,12 @@ class TestGoalCommand:
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
             assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("add refresh tokens exactly")
+            # Work continues through a hidden control message; the objective is
+            # not replayed as a second user turn.
+            handle.assert_awaited_once_with("created")
+            user_messages = [w.raw_text for w in app.query(UserMessage)]
+            assert user_messages == ["/goal add refresh tokens exactly"]
+            assert "add refresh tokens exactly" not in user_messages
 
             await app._show_goal_state()
             await pilot.pause()
@@ -6418,7 +6423,7 @@ class TestGoalCommand:
                     "_persist_goal_rubric_state",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
                 patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
                 patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
@@ -6434,7 +6439,7 @@ class TestGoalCommand:
             assert app._pending_goal_review_widget is None
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
-            handle.assert_awaited_once_with("ship login")
+            handle.assert_awaited_once_with("created")
 
     async def test_successful_generation_keeps_proposal_when_clear_fails(
         self,
@@ -6476,7 +6481,7 @@ class TestGoalCommand:
                     "_persist_goal_rubric_state",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
                 patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
                 patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
@@ -6489,7 +6494,7 @@ class TestGoalCommand:
             assert app._active_goal == "ship login"
             assert app._active_rubric == "- tests pass"
             assert app._queued_goal_application is None
-            handle.assert_awaited_once_with("ship login")
+            handle.assert_awaited_once_with("created")
 
     async def test_failed_or_cancelled_yolo_generation_does_not_accept(self) -> None:
         """A terminal unsuccessful criteria turn must discard its partial draft."""
@@ -6694,7 +6699,7 @@ class TestGoalCommand:
                     "_write_live_approval_mode",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await pilot.press("r")
                 await pilot.pause()
@@ -6743,14 +6748,14 @@ class TestGoalCommand:
             assert app._session_state is not None
             app._session_state.auto_approve = True
 
-            def start_after_history(_objective: str) -> None:
+            def start_after_history(_transition: str) -> None:
                 assert (
                     app._message_store.get_message("history-before-restored-goal")
                     is history
                 )
 
             handle = AsyncMock(side_effect=start_after_history)
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -6762,7 +6767,7 @@ class TestGoalCommand:
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
             assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("restore exact objective")
+            handle.assert_awaited_once_with("created")
 
     async def test_restored_proposal_with_active_request_is_not_auto_accepted(
         self,
@@ -6788,7 +6793,7 @@ class TestGoalCommand:
             app._session_state.auto_approve = True
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -7017,7 +7022,7 @@ class TestGoalCommand:
             app._pending_goal_request_id = "request-new"
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._remount_pending_goal_rubric_review(
                     expected_request_id="request-old"
                 )
@@ -7045,7 +7050,7 @@ class TestGoalCommand:
 
             assert app._active_goal == "new objective"
             assert app._active_rubric == "- new criteria"
-            handle.assert_awaited_once_with("new objective")
+            handle.assert_awaited_once_with("created")
 
     async def test_newer_inflight_request_supersedes_saved_yolo_proposal(
         self,
@@ -8078,7 +8083,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_run_goal_criteria_request", side_effect=generate),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._handle_command("/goal add audit logs")
                 for _ in range(10):
@@ -8209,7 +8214,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8226,7 +8231,7 @@ class TestGoalCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_goal_accept_persists_thread_metadata(self) -> None:
         """Accepted goals should be checkpointed on the current thread."""
@@ -8244,7 +8249,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", AsyncMock()),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8288,7 +8293,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", AsyncMock()),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8310,10 +8315,10 @@ class TestGoalCommand:
             app._pending_goal_rubric = "- tests pass"
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._accept_goal_rubric("- tests pass")
 
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
             assert app._initial_goal is None
 
     async def test_goal_review_accepts_revised_criteria(self) -> None:
@@ -8331,7 +8336,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", AsyncMock()),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8473,7 +8478,7 @@ class TestGoalCommand:
                 pending_goal_rubric="- tests pass",
             )
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -8499,7 +8504,7 @@ class TestGoalCommand:
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._pending_goal_review_widget is None
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_restore_uses_sticky_rubric_over_public_rubric(self) -> None:
         """Graph input `rubric` should not overwrite explicit sticky state."""
@@ -9568,7 +9573,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._review_pending_goal_rubric()
                 for _ in range(20):
@@ -9590,7 +9595,7 @@ class TestGoalCommand:
             assert not any(
                 "- tests pass" in str(w._content) for w in app.query(ErrorMessage)
             )
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_goal_amend_does_not_continue_when_persist_fails(self) -> None:
         """Synthetic continuation must not read an unchanged checkpoint."""

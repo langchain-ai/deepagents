@@ -11166,19 +11166,33 @@ class DeepAgentsApp(App):
             elif is_amendment and not self._agent_running:
                 await self._continue_goal_work("amended")
             elif not is_amendment and not self._agent_running:
-                await self._handle_user_message(application.objective)
+                await self._continue_goal_work("created")
         return transition
 
     async def _continue_goal_work(
         self,
-        transition: Literal["amended", "resumed"],
+        transition: Literal["amended", "resumed", "created"],
     ) -> None:
-        """Continue from persisted state without replaying the original objective."""
-        message = (
-            f"{SYSTEM_MESSAGE_PREFIX} Goal {transition} by the user. Read the "
-            "current objective and acceptance criteria with get_goal, then continue "
-            "from the existing conversation and work. Do not repeat completed work."
-        )
+        """Continue from persisted state without replaying the original objective.
+
+        The objective is already visible in the `/goal <objective>` command echo,
+        so a newly created goal starts work through a hidden control message that
+        points the model at `get_goal` rather than re-submitting (and re-showing)
+        the objective as a second user turn.
+        """
+        if transition == "created":
+            message = (
+                f"{SYSTEM_MESSAGE_PREFIX} Goal set by the user. Read the objective "
+                "and acceptance criteria with get_goal, then begin working toward "
+                "the goal."
+            )
+        else:
+            message = (
+                f"{SYSTEM_MESSAGE_PREFIX} Goal {transition} by the user. Read the "
+                "current objective and acceptance criteria with get_goal, then "
+                "continue from the existing conversation and work. Do not repeat "
+                "completed work."
+            )
         await self._send_to_agent(
             message,
             message_kwargs={"additional_kwargs": {"lc_source": "goal_control"}},
@@ -14048,7 +14062,7 @@ class DeepAgentsApp(App):
                 if queued_transition == "amended":
                     await self._continue_goal_work("amended")
                 elif queued_transition == "create" and queued_objective is not None:
-                    await self._handle_user_message(queued_objective)
+                    await self._continue_goal_work("created")
 
             if not self._startup_sequence_running and not had_queued_input:
                 await self._process_next_from_queue()

@@ -19,6 +19,7 @@ from deepagents_code.extras_info import (
     VersionReport,
     _editable_sdk_source_root,
     _requirement_satisfied,
+    _resolve_source_path,
     collect_cli_version_info,
     collect_sdk_version_info,
     collect_version_report,
@@ -479,6 +480,11 @@ class TestResolveSdkVersion:
         ):
             version_value, status = resolve_sdk_version()
         assert (version_value, status) == ("0.6.12", "resolved")
+
+    def test_resolve_source_path_returns_none_for_unusable_path(self) -> None:
+        """Malformed editable paths should not crash version diagnostics."""
+        with patch.object(Path, "resolve", side_effect=ValueError("nul byte")):
+            assert _resolve_source_path("/repo/%00/libs/code") is None
 
     def test_resolved_falls_back_to_metadata_when_editable_version_file_missing(
         self, tmp_path: Path

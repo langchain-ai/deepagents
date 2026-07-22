@@ -476,7 +476,7 @@ def _resolve_source_path(path: str | None) -> Path | None:
         return None
     try:
         return Path(path).expanduser().resolve(strict=False)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         logger.debug("Could not resolve editable source path %r", path, exc_info=True)
         return None
 

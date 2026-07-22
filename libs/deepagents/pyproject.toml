@@ -47,7 +47,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 # fix) instead of PyPI. Both live in the langchain-ai monorepos under libs/.
 [tool.uv.sources]
 langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", branch = "cc/profiling-test-1" }
-langgraph = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/langgraph", branch = "cc/profiling-test-1" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/langgraph", branch = "revert-8403-cc/revert_tool_policy" }
 
 
 [dependency-groups]

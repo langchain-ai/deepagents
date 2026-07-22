@@ -300,13 +300,17 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                         disabled=True,
                     )
                 )
-            options.extend(
-                Option(
-                    _marketplace_label(row),
-                    id=f"marketplace:{row.name}",
+            for index, row in enumerate(self._state.marketplaces):
+                if index > 0:
+                    options.append(
+                        Option(" ", id=f"marketplace-spacer:{index}", disabled=True)
+                    )
+                options.append(
+                    Option(
+                        _marketplace_label(row),
+                        id=f"marketplace:{row.name}",
+                    )
                 )
-                for row in self._state.marketplaces
-            )
             return options
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]

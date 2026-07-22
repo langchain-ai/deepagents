@@ -455,6 +455,7 @@ def test_harbor_overlays_branch_source() -> None:
     assert "Overlay branch agent source" in harbor
     assert "BRANCH_SHA: ${{ inputs.branch_sha }}" in harbor
     assert 'git fetch origin "$BRANCH_SHA" --depth=1' in harbor
+    assert 'fetched_sha=$(git rev-parse FETCH_HEAD)' in harbor
     assert "git checkout FETCH_HEAD --" in harbor
     # Only the agent-under-test libraries are overlaid; the harness graph factory
     # (langgraph_agent.py) stays at the eval ref.
@@ -462,6 +463,15 @@ def test_harbor_overlays_branch_source() -> None:
     assert "libs/code" in harbor
     assert "libs/partners/quickjs" in harbor
     assert "deepagents_harbor/langgraph_project/langgraph_agent.py" not in harbor
+
+
+def test_unified_comparison_does_not_build_product_wheels() -> None:
+    unified = UNIFIED_WORKFLOW.read_text()
+    harbor = HARBOR_WORKFLOW.read_text()
+    assert "build-products:" not in unified
+    assert "product_artifact" not in unified
+    assert "dependency_overrides" not in harbor
+    assert "branch_wheels" not in harbor
 
 
 def test_shard_artifact_name_includes_branch() -> None:

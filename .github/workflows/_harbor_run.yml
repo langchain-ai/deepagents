@@ -89,6 +89,7 @@ on:
         type: boolean
         default: false
       harbor_package_override:
+        description: "Optional Harbor package spec(s) to install over the locked versions. Provide one spec per line; all specs are resolved together. Leave empty to keep the locked Harbor packages."
         type: string
         default: ""
       judge_models:
@@ -379,15 +380,24 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
+        #
+        # The override may list MULTIPLE specs, one per line, installed together
+        # in a single resolution. This lets a run pin both harbor core and the
+        # harbor-langsmith plugin from the same git branch: with both in one
+        # `uv pip install`, the plugin's `harbor` dependency binds to the core
+        # spec given here (a direct git reference) instead of resolving from
+        # PyPI. Specs use the PEP 508 `name @ url` form (which contains spaces),
+        # so we split on newlines — never on whitespace — and pass each as its
+        # own argument (no shell interpolation of the value).
         run: |
-          # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
-          # so newline is the only safe delimiter. Collect into an array and pass
-          # as separate args — never re-split or eval'd, preserving injection
-          # safety — so a single install covers e.g. harbor + harbor-langsmith.
           specs=()
           while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+            line="${line%"${line##*[![:space:]]}"}"  # rtrim
             [ -n "$line" ] && specs+=("$line")
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          printf 'Installing %d Harbor override spec(s):\n' "${#specs[@]}"
+          printf '  - %s\n' "${specs[@]}"
           uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
@@ -481,6 +491,11 @@ jobs:
             echo "::error::Invalid resolved branch SHA: $BRANCH_SHA"; exit 1
           fi
           git fetch origin "$BRANCH_SHA" --depth=1
+          fetched_sha=$(git rev-parse FETCH_HEAD)
+          if [ "$fetched_sha" != "${BRANCH_SHA,,}" ]; then
+            echo "::error::Fetched commit $fetched_sha does not match resolved SHA $BRANCH_SHA"
+            exit 1
+          fi
           # Overlay ONLY the agent-under-test libraries. The harness (harbor +
           # deepagents_harbor/langgraph_project, including langgraph_agent.py) must
           # stay at the eval ref: it carries eval-infra fixes the pinned harbor
@@ -753,29 +768,14 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
+          # agent_impl IS the graph key in langgraph.json (the single registry).
+          # Validate membership before it reaches `harbor run --agent-kwarg
+          # graph=...`. Callers already validate, so this is defense-in-depth;
+          # AGENT_IMPL is passed via env, never interpolated into the validator.
+          AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
+            "$GITHUB_WORKSPACE/.github/scripts/validate_agent_graph.py" \
+            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+          HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
@@ -795,7 +795,6 @@ jobs:
           # is already set (local-path-aware) in the dataset-resolution block above.
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_branch}-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
-          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
 
@@ -840,7 +839,7 @@ jobs:
           esac
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
-          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
+          echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
           uv run harbor run \
@@ -891,7 +890,6 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
           HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
-          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
@@ -918,7 +916,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
+            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
@@ -1126,6 +1124,7 @@ jobs:
           CATEGORY: ${{ matrix.category }}
           AGENT_IMPL: ${{ matrix.agent_impl }}
           BRANCH: ${{ inputs.branch }}
+          SOURCE_SHA: ${{ inputs.branch_sha }}
           EXPECTED_SHARDS: ${{ matrix.expected_shards }}
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
         run: |
@@ -1159,6 +1158,7 @@ jobs:
             --category "$CATEGORY" \
             --config "$AGENT_IMPL" \
             --branch "$BRANCH" \
+            --source-sha "$SOURCE_SHA" \
             "${harbor_result_args[@]}" \
             --out-dir _shards
 

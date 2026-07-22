@@ -72,6 +72,7 @@ jobs:
       configs: ${{ steps.p.outputs.configs }}
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
+      sources: ${{ steps.p.outputs.sources }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -200,6 +201,7 @@ jobs:
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
           IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
           IN_BRANCHES: ${{ inputs.branches_to_compare }}
+          RESOLVED_SOURCES: ${{ steps.p.outputs.sources }}
           RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
@@ -241,6 +243,7 @@ jobs:
             echo "| categories | \`${IN_CATEGORIES}\` |"
             echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
             echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
+            echo "| resolved branch commits | \`${RESOLVED_SOURCES:-(prep did not complete)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"

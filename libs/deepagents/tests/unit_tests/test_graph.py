@@ -27,10 +27,12 @@ from deepagents.graph import (
     DEFAULT_AGENT_PROMPT,
     DeepAgentState,
     _apply_custom_middleware,
-    _create_bedrock_prompt_caching_middleware,
-    _create_fireworks_prompt_caching_middleware,
     create_deep_agent,
     get_default_model,
+)
+from deepagents.middleware._prompt_caching import (
+    _create_bedrock_prompt_caching_middleware,
+    _create_fireworks_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
@@ -367,7 +369,7 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
@@ -388,7 +390,7 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
@@ -415,9 +417,9 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
             patch(
-                "deepagents.graph.import_module",
+                "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
             ),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
@@ -433,7 +435,7 @@ class TestPromptCachingWiring:
 
     def test_bedrock_prompt_caching_preserves_unrelated_import_errors(self) -> None:
         with (
-            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
             pytest.raises(ImportError),
         ):
             _create_bedrock_prompt_caching_middleware()
@@ -446,8 +448,8 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
@@ -467,8 +469,8 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
@@ -494,9 +496,9 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
             patch(
-                "deepagents.graph.import_module",
+                "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),
             ),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
@@ -512,7 +514,7 @@ class TestPromptCachingWiring:
 
     def test_fireworks_prompt_caching_preserves_unrelated_import_errors(self) -> None:
         with (
-            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
             pytest.raises(ImportError),
         ):
             _create_fireworks_prompt_caching_middleware()
@@ -522,7 +524,7 @@ class TestPromptCachingWiring:
         middleware_cls = MagicMock(return_value=middleware)
         module = MagicMock(FireworksPromptCachingMiddleware=middleware_cls)
 
-        with patch("deepagents.graph.import_module", return_value=module):
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
             result = _create_fireworks_prompt_caching_middleware()
 
         assert result is middleware

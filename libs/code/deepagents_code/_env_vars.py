@@ -67,10 +67,11 @@ file, so it does not weaken the user-level-only trust boundary (a committed
 This dangerous contract is name-based: a different project, command change, or
 URL change under the same server name still matches.
 
-When set, this replaces (takes precedence over) the scoped
-`[mcp].enabled_project_server_approvals` TOML approvals.
-(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
-is never silently emptied.)
+This process-wide allowlist and the scoped
+`[mcp].enabled_project_server_approvals` TOML approvals are independent grants.
+Setting this variable, including to an empty value, does not suppress remembered
+project approvals. (`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its
+TOML list, so a deny is never silently emptied.)
 """
 
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
@@ -78,6 +79,21 @@ DEBUG = "DEEPAGENTS_CODE_DEBUG"
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
+DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
+r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
+
+Off by default; toggle the "Click to copy" checkbox in the console or set
+`[ui].debug_console_click_to_copy` in config.toml. A recognized value is parsed
+by `classify_env_bool`; an unrecognized value falls through to the config value.
+An empty/whitespace value is ignored before parsing (rather than being treated
+as falsy) and also falls through, so it never masks the saved preference.
+
+When set, this env var takes precedence over the persisted
+`[ui].debug_console_click_to_copy` config value on launch, so toggling the
+checkbox will not appear to "stick" across restarts while the env var remains
+set.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"

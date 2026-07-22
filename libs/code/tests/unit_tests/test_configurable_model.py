@@ -622,7 +622,7 @@ class TestFireworksSessionSettings:
         }
 
     def test_non_fireworks_non_openai_model_unchanged_with_thread_id(self) -> None:
-        model = _make_model("gemini-3.5-flash")
+        model = _make_model("gemini-3.6-flash")
         model._get_ls_params.return_value = {"ls_provider": "google_genai"}
         request = _make_request(
             model,
@@ -1153,6 +1153,31 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-sonnet-4-6",
             "_model_params": {"temperature": 0.7},
+        }
+
+    def test_reasoning_effort_reaches_model_settings(self) -> None:
+        """`reasoning_effort` from `/effort` must survive intact to the model.
+
+        Hermetic regression anchor for the effort-delivery path: a bug in the
+        override plumbing could silently drop or duplicate `reasoning_effort`
+        before it reaches the model constructor. Provider-specific translation
+        of the value is LangChain's responsibility; this pins the deepagents
+        contract that the resolved effort is carried into `model_settings`
+        (and checkpointed for resume) without mutation.
+        """
+        request = _make_request(
+            _make_model("claude-opus-4-5"),
+            context=CLIContext(model_params={"reasoning_effort": "high"}),
+        )
+        captured: list[ModelRequest] = []
+        result = _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"reasoning_effort": "high"}
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:claude-opus-4-5",
+            "_model_params": {"reasoning_effort": "high"},
         }
 
     def test_params_merge_preserves_existing(self) -> None:

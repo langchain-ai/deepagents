@@ -13,7 +13,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
-from textual.widgets.option_list import Option
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from deepagents_code.tui.widgets.loading import Spinner
 
@@ -194,17 +194,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._refresh_view()
 
     def on_resize(self) -> None:
-        """Refit the width-sized marketplaces divider when the modal resizes.
-
-        The divider is the only content sized to the options width, so restrict the
-        rebuild to the marketplaces list view to avoid needless focus/highlight churn
-        on unrelated tabs and while the add-marketplace input is focused.
-        """
-        if (
+        """Refit width-sized dividers when the modal resizes."""
+        marketplace_divider_visible = (
             self._mode == "list"
             and self._tab == "marketplaces"
-            and self._state.marketplaces
-        ):
+            and bool(self._state.marketplaces)
+        )
+        details_divider_visible = (
+            self._mode == "installed_details" and self._selected_plugin is not None
+        )
+        if marketplace_divider_visible or details_divider_visible:
             self._refresh_view()
 
     def _update_tab_labels(self) -> None:
@@ -304,20 +303,24 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                         disabled=True,
                     )
                 )
-            options.extend(
-                Option(
-                    _marketplace_label(row),
-                    id=f"marketplace:{row.name}",
+            for index, row in enumerate(self._state.marketplaces):
+                if index > 0:
+                    options.append(
+                        Option(" ", id=f"marketplace-spacer:{index}", disabled=True)
+                    )
+                options.append(
+                    Option(
+                        _marketplace_label(row),
+                        id=f"marketplace:{row.name}",
+                    )
                 )
-                for row in self._state.marketplaces
-            )
             return options
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
 
     def _divider_width(self) -> int:
-        """Width for the marketplaces divider, sized to the options list.
+        """Width for option-list dividers, sized to the available content.
 
         The options list respects the modal's `max-width`, so a fixed width wraps on
         terminals narrower than the full modal. Measure the laid-out content width when
@@ -438,12 +441,24 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             search_input.display = False
             source_input.display = False
             options.display = True
+            highlighted = options.highlighted
+            highlighted_id = (
+                None
+                if highlighted is None
+                else options.get_option_at_index(highlighted).id
+            )
             options.clear_options()
             detail_options = self._active_details_options()
             for option in detail_options:
                 options.add_option(option)
             if options.option_count:
-                options.highlighted = self._nearest_enabled_index(options, 0)
+                candidate = 0
+                if highlighted_id is not None:
+                    try:
+                        candidate = options.get_option_index(highlighted_id)
+                    except OptionDoesNotExist:
+                        candidate = 0
+                options.highlighted = self._nearest_enabled_index(options, candidate)
             options.focus()
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
@@ -496,7 +511,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if self._mode == "plugin_details":
             return _install_details_options()
         if self._mode == "installed_details" and self._selected_plugin is not None:
-            return _installed_details_options(self._selected_plugin)
+            return _installed_details_options(
+                self._selected_plugin, divider_width=self._divider_width()
+            )
         if (
             self._mode == "marketplace_details"
             and self._selected_marketplace is not None

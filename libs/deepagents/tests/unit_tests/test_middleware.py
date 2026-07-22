@@ -83,6 +83,13 @@ def _runtime(tool_call_id=""):
     return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
 
 
+class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+    """State backend with shell execution enabled for tool-description tests."""
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return ExecuteResponse(output="", exit_code=0)
+
+
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
@@ -2730,6 +2737,147 @@ class TestFilesystemMiddleware:
         assert "execute tool" not in rewritten_grep["description"]
         assert "rg '<regex>'" not in rewritten_grep["description"]
         assert "LITERAL text pattern" in rewritten_grep["description"]
+
+    def test_execute_description_keeps_search_guidance_when_grep_and_glob_visible(self):
+        """Default execute docs recommend both visible search tools."""
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="")
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [call for call in request.override.call_args_list if "tools" in call.kwargs]
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        assert tools_overrides == []
+        assert "use the grep, glob tools to search" in execute_tool.description
+        assert "# Use glob tool instead" in execute_tool.description
+        assert "# Use grep tool instead" in execute_tool.description
+
+    def test_execute_description_omits_search_guidance_when_grep_and_glob_hidden(self):
+        """Execute docs omit search guidance when neither search tool is visible."""
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "execute"],
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [call for call in request.override.call_args_list if "tools" in call.kwargs]
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        assert tools_overrides == []
+        assert "use the grep, glob tools" not in execute_tool.description
+        assert "grep, glob tools to search" not in execute_tool.description
+        assert "# Use glob tool instead" not in execute_tool.description
+        assert "# Use grep tool instead" not in execute_tool.description
+        assert "# Use read_file tool instead" in execute_tool.description
+        assert "avoid read tools like cat, head, tail" in execute_tool.description
+
+    def test_execute_description_references_only_visible_grep_tool(self):
+        """Execute docs retain grep guidance when glob is hidden."""
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "grep", "execute"],
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [call for call in request.override.call_args_list if "tools" in call.kwargs]
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        assert tools_overrides == []
+        assert "grep tool to search text" in execute_tool.description
+        assert "glob" not in execute_tool.description
+        assert "# Use glob tool instead" not in execute_tool.description
+        assert "# Use grep tool instead" in execute_tool.description
+
+    def test_execute_description_references_only_visible_glob_tool(self):
+        """Execute docs retain glob guidance when grep is hidden."""
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "glob", "execute"],
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [call for call in request.override.call_args_list if "tools" in call.kwargs]
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        assert tools_overrides == []
+        assert "glob tool to find files" in execute_tool.description
+        assert "grep" not in execute_tool.description
+        assert "# Use glob tool instead" in execute_tool.description
+        assert "# Use grep tool instead" not in execute_tool.description
+
+    def test_custom_execute_description_is_not_rewritten_when_search_tools_hidden(self):
+        """User-provided execute docs remain authoritative."""
+        custom_description = "Custom."
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "execute"],
+            custom_tool_descriptions={"execute": custom_description},
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [call for call in request.override.call_args_list if "tools" in call.kwargs]
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        assert tools_overrides == []
+        assert execute_tool.description == custom_description
+
+    def test_execute_description_swap_copies_dict_tool_specs(self):
+        """Dict-shaped execute specs are swapped via a copy, leaving the input untouched."""
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="")
+        default_description = next(tool for tool in middleware.tools if tool.name == "execute").description
+        original = {"name": "execute", "description": default_description}
+        tools = [original]
+
+        rewritten = middleware._with_filtered_execute_description(tools, visible_search_tools=set())
+
+        rewritten_execute = next(tool for tool in rewritten if tool["name"] == "execute")
+        assert rewritten is not tools
+        assert rewritten_execute is not original
+        assert original["description"] == default_description
+        assert "# Use glob tool instead" not in rewritten_execute["description"]
+        assert "# Use grep tool instead" not in rewritten_execute["description"]
+        assert "# Use read_file tool instead" in rewritten_execute["description"]
+
+    def test_execute_description_rewrites_when_search_tools_are_filtered_from_request(self):
+        """Runtime filtering corrects execute docs without mutating the registered tool."""
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="")
+        registered_execute = next(tool for tool in middleware.tools if tool.name == "execute")
+        request = MagicMock()
+        request.tools = [tool for tool in middleware.tools if tool.name not in {"grep", "glob"}]
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [call.kwargs["tools"] for call in request.override.call_args_list if "tools" in call.kwargs][-1]
+        rewritten_execute = next(tool for tool in tools_override if tool.name == "execute")
+        assert rewritten_execute is not registered_execute
+        assert "use the grep, glob tools to search" in registered_execute.description
+        assert "grep" not in rewritten_execute.description
+        assert "glob" not in rewritten_execute.description
 
     def test_delete_invalid_path_returns_error(self):
         """The sync delete tool rejects a traversal path before deleting."""

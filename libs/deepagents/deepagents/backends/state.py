@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _copy_file_data_with_content,
     _get_backend_read_file_type,
     _glob_search_files,
     create_file_data,
@@ -154,7 +155,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len(fd.get("content", ""))
+            size = len(file_data_to_string(fd))
             infos.append(
                 {
                     "path": k,
@@ -195,7 +196,9 @@ class StateBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         if _get_backend_read_file_type(file_path) != "text":
-            return ReadResult(file_data=file_data)
+            # Normalize legacy `list[str]` content to a string without mutating
+            # the stored file; timestamps and encoding are carried through.
+            return ReadResult(file_data=_copy_file_data_with_content(file_data, file_data_to_string(file_data)))
 
         return slice_read_response(file_data, offset, limit)
 
@@ -291,7 +294,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(fd.get("content", "")) if fd else 0
+            size = len(file_data_to_string(fd)) if fd else 0
             infos.append(
                 {
                     "path": p,

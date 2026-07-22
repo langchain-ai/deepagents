@@ -24,10 +24,22 @@ def test_text_round_trip() -> None:
     assert file_data_to_string(fd) == "hello\nworld"
 
 
-def test_legacy_list_content_is_rejected() -> None:
-    fd = {"content": ["hello", "world"], "encoding": "utf-8"}
+def test_legacy_list_content_is_readable() -> None:
+    fd = {"content": ["hello", "world", ""]}
 
-    with pytest.raises(TypeError, match="Legacy list-based file content is not supported in deepagents 0\\.7"):
+    assert file_data_to_string(fd) == "hello\nworld\n"  # type: ignore[arg-type]
+
+
+def test_empty_legacy_list_content_is_readable() -> None:
+    fd = {"content": []}
+
+    assert file_data_to_string(fd) == ""  # type: ignore[arg-type]
+
+
+def test_legacy_list_content_rejects_non_string_items() -> None:
+    fd = {"content": ["hello", 1]}
+
+    with pytest.raises(TypeError, match="got list"):
         file_data_to_string(fd)  # type: ignore[arg-type]
 
 

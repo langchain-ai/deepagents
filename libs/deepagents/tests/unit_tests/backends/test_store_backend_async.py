@@ -44,6 +44,52 @@ async def test_store_backend_async_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
+async def test_store_backend_aread_supports_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = await be.aread("/legacy.txt")
+
+    assert result.file_data is not None
+    assert result.file_data["content"] == "hello\nworld"
+    assert result.file_data["encoding"] == "utf-8"
+
+
+async def test_store_backend_awrite_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    created_at = "2025-01-01T00:00:00+00:00"
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {"content": ["hello", "world"], "created_at": created_at},
+    )
+
+    result = await be.awrite("/legacy.txt", "replacement")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "replacement"
+    assert stored.value["encoding"] == "utf-8"
+    assert stored.value["created_at"] == created_at
+
+
+async def test_store_backend_aedit_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = await be.aedit("/legacy.txt", "world", "there")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "hello\nthere"
+    assert stored.value["encoding"] == "utf-8"
+
+
 async def test_store_backend_aread_surfaces_pagination_metadata():
     """`StoreBackend.aread` propagates the pagination metadata from `slice_read_response`."""
     mem_store = InMemoryStore()

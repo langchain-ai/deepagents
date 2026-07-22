@@ -82,20 +82,87 @@ def test_store_backend_reads_mkv_as_binary_without_slicing():
     assert read_result.file_data["content"] == "single line of bytes"
 
 
-def test_store_backend_rejects_legacy_list_content() -> None:
+def test_store_backend_reads_legacy_list_content() -> None:
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    legacy_content = ["hello", "world", ""]
     mem_store.put(
         ("filesystem",),
         "/legacy.txt",
         {
-            "content": ["hello", "world"],
-            "encoding": "utf-8",
+            "content": legacy_content,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "modified_at": "2025-01-02T00:00:00+00:00",
         },
     )
 
-    with pytest.raises(TypeError, match="must be a `str`"):
-        be.read("/legacy.txt")
+    read_result = be.read("/legacy.txt")
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "hello\nworld\n"
+    assert read_result.file_data["encoding"] == "utf-8"
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == len("hello\nworld\n")
+
+    matches = be.grep("world", path="/").matches
+    assert matches is not None
+    assert matches[0]["text"] == "world"
+
+    glob_matches = be.glob("*.txt", path="/").matches
+    assert glob_matches is not None
+    assert glob_matches[0]["size"] == len("hello\nworld\n")
+
+    download = be.download_files(["/legacy.txt"])[0]
+    assert download.content == b"hello\nworld\n"
+
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == legacy_content
+    assert "encoding" not in stored.value
+
+
+def test_store_backend_rejects_legacy_lists_with_non_string_items() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/invalid.txt", {"content": ["hello", 1]})
+
+    with pytest.raises(TypeError, match="got list"):
+        be.read("/invalid.txt")
+
+
+def test_store_backend_write_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    created_at = "2025-01-01T00:00:00+00:00"
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {"content": ["hello", "world"], "created_at": created_at},
+    )
+
+    result = be.write("/legacy.txt", "replacement")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "replacement"
+    assert stored.value["encoding"] == "utf-8"
+    assert stored.value["created_at"] == created_at
+
+
+def test_store_backend_edit_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "world", "there")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "hello\nthere"
+    assert stored.value["encoding"] == "utf-8"
 
 
 def test_store_backend_write_overwrites_existing_file():

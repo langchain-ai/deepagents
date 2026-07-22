@@ -161,17 +161,22 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
 
 
 def _normalize_content(file_data: FileData) -> str:
-    """Normalize file_data content to a plain string.
+    """Normalize current and legacy file data content to a plain string.
 
     Args:
         file_data: `FileData` dict with `content` key.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
-    content = file_data["content"]
+    content: object = file_data["content"]
+    if isinstance(content, list) and all(isinstance(line, str) for line in content):
+        return "\n".join(content)
     if not isinstance(content, str):
-        msg = "File content must be a string. Legacy list-based file content is not supported in deepagents 0.7."
+        msg = f"File content must be a string or a legacy list of strings, got {type(content).__name__}."
         raise TypeError(msg)
     return content
 
@@ -298,13 +303,16 @@ def _get_backend_read_file_type(path: str) -> FileType:
 
 
 def file_data_to_string(file_data: FileData) -> str:
-    """Convert `FileData` to plain string content.
+    """Convert current or legacy persisted file content to a string.
 
     Args:
-        file_data: `FileData` dict with 'content' key
+        file_data: File data whose content is a string or legacy list of strings.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
     return _normalize_content(file_data)
 

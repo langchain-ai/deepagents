@@ -167,25 +167,32 @@ class StoreBackend(BackendProtocol):
         return _validate_namespace(namespace)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
-        """Convert a store `Item` to `FileData` format.
+        """Convert current and legacy persisted store content to `FileData`.
 
         Args:
             store_item: The store `Item` containing file data.
 
         Returns:
-            `FileData` dict with content and encoding.
+            `FileData` with string content and encoding. Legacy `list[str]`
+                content is joined without modifying the persisted item. Includes
+                `created_at` and `modified_at` when present.
 
-                Includes `created_at` and `modified_at` when present in the store item.
+        Raises:
+            ValueError: If the store item has no content.
+            TypeError: If content is neither a string nor a legacy list of strings.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
 
-        if not isinstance(raw_content, str):
-            msg = f"Store item `content` must be a `str`, got {type(raw_content).__name__}. Legacy `list[str]` content is no longer supported."
+        if isinstance(raw_content, list) and all(isinstance(line, str) for line in raw_content):
+            content = "\n".join(raw_content)
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
+            msg = f"Store item `content` must be a `str` or legacy `list[str]`, got {type(raw_content).__name__}."
             raise TypeError(msg)
-        content = raw_content
 
         result = FileData(
             content=content,
@@ -339,7 +346,7 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len(fd.get("content", ""))
+            size = len(file_data_to_string(fd))
             infos.append(
                 {
                     "path": item.key,
@@ -620,7 +627,7 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(fd.get("content", "")) if fd else 0
+            size = len(file_data_to_string(fd)) if fd else 0
             infos.append(
                 {
                     "path": p,

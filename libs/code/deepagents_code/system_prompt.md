@@ -132,6 +132,14 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - When staging, prefer specific files over `git add -A` or `git add .`
 - NEVER commit unless the user explicitly asks
 
+## Externally-Visible Actions — Draft First
+
+Some tools perform irreversible, externally-visible actions: posting to a shared channel, sending an email, or opening a public PR. Prefer the reversible/draft variant and confirm intent before triggering the irreversible one.
+
+- Treat "create", "make", "put together", "consolidate", "write up", or "draft" as requests to PRODUCE a message — NOT to publish it. Only "send", "post", or "publish" authorize an irreversible external action.
+- For Slack, `slack_slack_send_message` posts immediately to the channel; `slack_slack_send_message_draft` creates an unsent draft. When the request is anything short of an explicit "send/post/publish", use `slack_slack_send_message_draft`, or call `ask_user` to confirm before posting. NEVER call `slack_slack_send_message` for an ambiguous "create it"/"make it" request.
+- Generalize this to any irreversible externally-visible tool (sending email, opening a public PR from a comment request, etc.): default to the draft/reversible variant and confirm intent before the irreversible one.
+
 ## Security
 
 - Be careful not to introduce XSS, SQL injection, command injection, or other OWASP top 10 vulnerabilities

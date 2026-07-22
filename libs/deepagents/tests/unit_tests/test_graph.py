@@ -2648,17 +2648,28 @@ class TestSubagentMiddlewareIsolation:
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
 
-    def test_main_opt_in_todos_mirrors_to_gp(self) -> None:
-        """A caller-supplied TodoListMiddleware lands on the main agent and the GP subagent."""
+    def test_main_opt_in_todos_not_mirrored_to_gp(self) -> None:
+        """A caller-supplied TodoListMiddleware stays on the main agent only.
+
+        It is treated like any other main-agent-only middleware: because it is
+        not a default GP slot, it is not propagated to the general-purpose
+        subagent.
+        """
         custom = TodoListMiddleware()
         main_stack, sub_mw = self._setup([custom], enable_gp=True)
         main_todos = [m for m in main_stack if isinstance(m, TodoListMiddleware)]
         assert len(main_todos) == 1
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
-        gp_todos = [m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]
-        assert len(gp_todos) == 1
-        # Mirrored by reference so any caller configuration carries over.
-        assert gp_todos[0] is custom
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_gp_override_can_opt_in_todos(self) -> None:
+        """Overriding the GP subagent by name lets its own middleware add todos."""
+        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
+
+        gp_override: SubAgent = {**GENERAL_PURPOSE_SUBAGENT, "middleware": [TodoListMiddleware()]}
+        _, sub_mw = self._setup([], subagents=[gp_override])
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
 
     def test_declarative_subagent_todos_opt_in(self) -> None:
         """A declarative subagent gets todos when its own spec includes the middleware."""
@@ -2673,7 +2684,7 @@ class TestSubagentMiddlewareIsolation:
         assert len([m for m in helper_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
 
     def test_declarative_subagent_does_not_inherit_main_opt_in(self) -> None:
-        """Main-agent opt-in mirrors to the GP subagent only, not to declarative subagents."""
+        """A main-agent todos opt-in is not inherited by a declarative subagent."""
         subagent: SubAgent = {
             "name": "helper",
             "description": "A helper subagent",

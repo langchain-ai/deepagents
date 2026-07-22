@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import Annotated, Any, Required, TypedDict, cast
 
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     InputAgentState,
@@ -364,8 +364,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     Todo-list support (the `write_todos` tool) is opt-in: pass
     [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
-    via `middleware=` to enable it. When enabled on the main agent it is also
-    mirrored onto the automatic general-purpose subagent.
+    via `middleware=` to enable it on the main agent. It is not propagated to
+    the automatic general-purpose subagent; to give that subagent todos,
+    override it with a subagent named `general-purpose` whose `middleware`
+    list includes `TodoListMiddleware`.
 
     The `execute` tool allows running shell commands if the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
@@ -434,8 +436,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Todo-list support is opt-in here: passing a
             [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
-            instance enables the `write_todos` tool on the main agent and
-            mirrors it onto the automatic general-purpose subagent.
+            instance enables the `write_todos` tool on the main agent only. It
+            is not propagated to the automatic general-purpose subagent; to give
+            that subagent todos, override it with a subagent named
+            `general-purpose` whose `middleware` list includes it.
 
             The full ordering is:
 
@@ -828,7 +832,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         # Core names captured before the tail so an inherited main-agent
-        # middleware (e.g. an opt-in TodoListMiddleware) splices in after the
+        # middleware (one overriding a default GP slot) splices in after the
         # real tools, ahead of the profile/prompt-caching tail.
         _gp_core_names = {m.name for m in gp_middleware}
         # Add harness-profile middleware, if any
@@ -843,13 +847,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_names=_main_matched_names,
         )
         # Inherit middleware that overrides a default GP slot (including excluded
-        # ones) without carrying over middleware that's specific to the main agent.
-        # TodoListMiddleware is a special case: it is no longer a GP default, but a
-        # caller-supplied instance on the main agent is mirrored here so the
-        # general-purpose subagent also gets the `write_todos` tool. The todos
-        # state stays isolated per subagent (see `_EXCLUDED_STATE_KEYS`); each
-        # agent keeps its own list.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or isinstance(m, TodoListMiddleware)]
+        # ones) without carrying over middleware that's specific to the main
+        # agent. Main-agent-only middleware (e.g. an opt-in TodoListMiddleware)
+        # is not mirrored here; to give the general-purpose subagent that
+        # middleware, override it with a subagent named `general-purpose`.
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, core_names=_gp_core_names)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,

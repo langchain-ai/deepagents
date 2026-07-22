@@ -12,33 +12,33 @@
 <line x1="656.0" y1="70" x2="656.0" y2="404" stroke="rgba(11,11,11,0.08)"/>
 <text x="656.0" y="420" font-size="10.5" fill="#6b6a67" text-anchor="middle">1</text>
 <text x="122" y="107" font-size="12.5" fill="#22211f" text-anchor="end">GPT-5.6 sol</text>
-<rect x="132" y="80" width="252.0" height="16" rx="3" fill="#e8934a"/>
-<text x="390.0" y="92" font-size="11" fill="#6b6a67">0.481</text>
-<rect x="132" y="100" width="284.0" height="16" rx="3" fill="#2a78d6"/>
-<text x="422.0" y="112" font-size="11" fill="#6b6a67">0.542</text>
-<text x="122" y="161" font-size="12.5" fill="#22211f" text-anchor="end">GPT-5.6 terra</text>
-<rect x="132" y="134" width="190.2" height="16" rx="3" fill="#e8934a"/>
-<text x="328.2" y="146" font-size="11" fill="#6b6a67">0.363</text>
-<rect x="132" y="154" width="199.1" height="16" rx="3" fill="#2a78d6"/>
-<text x="337.1" y="166" font-size="11" fill="#6b6a67">0.380</text>
-<text x="122" y="215" font-size="12.5" fill="#22211f" text-anchor="end">Claude Opus 4.8</text>
-<rect x="132" y="188" width="169.3" height="16" rx="3" fill="#e8934a"/>
-<text x="307.3" y="200" font-size="11" fill="#6b6a67">0.323</text>
-<rect x="132" y="208" width="180.3" height="16" rx="3" fill="#2a78d6"/>
-<text x="318.3" y="220" font-size="11" fill="#6b6a67">0.344</text>
+<rect x="132" y="80" width="276.7" height="16" rx="3" fill="#e8934a"/>
+<text x="414.7" y="92" font-size="11" fill="#6b6a67">0.528</text>
+<rect x="132" y="100" width="297.6" height="16" rx="3" fill="#2a78d6"/>
+<text x="435.6" y="112" font-size="11" fill="#6b6a67">0.568</text>
+<text x="122" y="161" font-size="12.5" fill="#22211f" text-anchor="end">Claude Opus 4.8</text>
+<rect x="132" y="134" width="213.3" height="16" rx="3" fill="#e8934a"/>
+<text x="351.3" y="146" font-size="11" fill="#6b6a67">0.407</text>
+<rect x="132" y="154" width="230.0" height="16" rx="3" fill="#2a78d6"/>
+<text x="368.0" y="166" font-size="11" fill="#6b6a67">0.439</text>
+<text x="122" y="215" font-size="12.5" fill="#22211f" text-anchor="end">GPT-5.6 terra</text>
+<rect x="132" y="188" width="208.6" height="16" rx="3" fill="#e8934a"/>
+<text x="346.6" y="200" font-size="11" fill="#6b6a67">0.398</text>
+<rect x="132" y="208" width="225.8" height="16" rx="3" fill="#2a78d6"/>
+<text x="363.8" y="220" font-size="11" fill="#6b6a67">0.431</text>
 <text x="122" y="269" font-size="12.5" fill="#22211f" text-anchor="end">GPT-5.6 luna</text>
-<rect x="132" y="242" width="164.5" height="16" rx="3" fill="#e8934a"/>
-<text x="302.5" y="254" font-size="11" fill="#6b6a67">0.314</text>
-<rect x="132" y="262" width="193.9" height="16" rx="3" fill="#2a78d6"/>
-<text x="331.9" y="274" font-size="11" fill="#6b6a67">0.370</text>
+<rect x="132" y="242" width="193.9" height="16" rx="3" fill="#e8934a"/>
+<text x="331.9" y="254" font-size="11" fill="#6b6a67">0.370</text>
+<rect x="132" y="262" width="215.9" height="16" rx="3" fill="#2a78d6"/>
+<text x="353.9" y="274" font-size="11" fill="#6b6a67">0.412</text>
 <text x="122" y="323" font-size="12.5" fill="#22211f" text-anchor="end">Claude Sonnet 5</text>
-<rect x="132" y="296" width="123.1" height="16" rx="3" fill="#e8934a"/>
-<text x="261.1" y="308" font-size="11" fill="#6b6a67">0.235</text>
-<rect x="132" y="316" width="148.3" height="16" rx="3" fill="#2a78d6"/>
-<text x="286.3" y="328" font-size="11" fill="#6b6a67">0.283</text>
+<rect x="132" y="296" width="145.7" height="16" rx="3" fill="#e8934a"/>
+<text x="283.7" y="308" font-size="11" fill="#6b6a67">0.278</text>
+<rect x="132" y="316" width="167.2" height="16" rx="3" fill="#2a78d6"/>
+<text x="305.2" y="328" font-size="11" fill="#6b6a67">0.319</text>
 <text x="122" y="377" font-size="12.5" fill="#22211f" text-anchor="end">GLM-5.2</text>
-<rect x="132" y="350" width="87.5" height="16" rx="3" fill="#e8934a"/>
-<text x="225.5" y="362" font-size="11" fill="#6b6a67">0.167</text>
-<rect x="132" y="370" width="113.7" height="16" rx="3" fill="#2a78d6"/>
-<text x="251.7" y="382" font-size="11" fill="#6b6a67">0.217</text>
+<rect x="132" y="350" width="126.3" height="16" rx="3" fill="#e8934a"/>
+<text x="264.3" y="362" font-size="11" fill="#6b6a67">0.241</text>
+<rect x="132" y="370" width="149.3" height="16" rx="3" fill="#2a78d6"/>
+<text x="287.3" y="382" font-size="11" fill="#6b6a67">0.285</text>
 </svg>

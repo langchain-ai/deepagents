@@ -7803,20 +7803,20 @@ class TestGoalCommand:
                 "Grader: current chat model · max iterations: SDK default" in rendered
             )
 
-    async def test_goal_show_footer_lists_grader_aliases(self) -> None:
-        """`/goal show` should advertise the grader-alias commands in its footer."""
+    @pytest.mark.parametrize("command", ["/goal", "/goal show"])
+    async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
+        """Goal state should not repeat commands already shown in the input hint."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_goal = "ship the feature"
             app._goal_status = "active"
 
-            await app._handle_command("/goal show")
+            await app._handle_command(command)
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "/goal model [provider:model|clear]" in rendered
-            assert "/goal max-iterations <N|clear>" in rendered
+            assert "Commands:" not in rendered
 
     async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
         """Bare `/goal max-iterations` shows goal-branded usage without setting."""
@@ -8778,12 +8778,7 @@ class TestGoalCommand:
                 "remains active for resume, amendment, retry, or clearing" in rendered
             )
             assert "Goal marked complete" not in rendered
-            assert (
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>" in rendered
-            )
+            assert "Commands:" not in rendered
 
     async def test_grader_failed_keeps_goal_active_with_evaluation_error(self) -> None:
         """A `failed` grade must keep the goal active and blame the grader."""
@@ -9390,7 +9385,7 @@ class TestGoalCommand:
             assert payload.goal_objective == "add refresh tokens"
 
     async def test_goal_show_uses_labeled_sections(self) -> None:
-        """`/goal show` should render goal, status, criteria, and commands."""
+        """`/goal show` should render the goal, status, and criteria."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -9409,8 +9404,7 @@ class TestGoalCommand:
             assert (
                 "Follow-up prompts will continue working toward this goal." in rendered
             )
-            assert "Commands:\n/goal amend <feedback>\n/goal pause" in rendered
-            assert "/goal clear\n/goal show" in rendered
+            assert "Commands:" not in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
 

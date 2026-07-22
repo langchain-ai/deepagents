@@ -10578,12 +10578,6 @@ class DeepAgentsApp(App):
                     "Goal is paused. It remains saved, but it will not drive work or "
                     "grading until resumed."
                 )
-            lines.append(
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>"
-            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(

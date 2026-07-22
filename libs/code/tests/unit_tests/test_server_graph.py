@@ -201,6 +201,12 @@ class TestServerGraph:
         config = ServerConfig(
             no_mcp=False,
             profile_overrides={"max_input_tokens": 32000},
+            # Non-default allowlist so the `fs_tools=` assertion below is
+            # load-bearing: it round-trips through `to_env()`/`from_env()` and
+            # must reach `create_cli_agent`. With the `None` default this
+            # assertion passed whether or not `_make_graph` read
+            # `config.allow_fs_tools`, so a dropped read would go unnoticed.
+            allow_fs_tools=["ls", "read_file"],
         )
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -267,6 +273,7 @@ class TestServerGraph:
             auto_mode_enabled=False,
             interrupt_shell_only=False,
             shell_allow_list=None,
+            fs_tools=["ls", "read_file"],
             enable_ask_user=False,
             enable_memory=True,
             memory_auto_save=True,

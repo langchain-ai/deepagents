@@ -515,10 +515,10 @@ class FileExcludes(SuccessAssertion):
 class FileAbsent(SuccessAssertion):
     """Assert that a file path does not exist in the trajectory.
 
-    A successful deletion removes the path from state entirely (the ``files``
-    channel reducer drops keys whose update value is ``None``), so a deleted
-    path should not appear in ``trajectory.files`` at all. This is stricter
-    than ``FileExcludes``, which only checks for an absent substring and
+    A successful deletion removes the path from state entirely (the `files`
+    channel reducer drops keys whose update value is `None`), so a deleted
+    path should not appear in `trajectory.files` at all. This is stricter
+    than `FileExcludes`, which only checks for an absent substring and
     therefore passes even when the file is still present.
 
     Attributes:
@@ -528,7 +528,7 @@ class FileAbsent(SuccessAssertion):
     path: str
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that ``self.path`` is absent from the trajectory files.
+        """Check that `self.path` is absent from the trajectory files.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -857,13 +857,13 @@ def file_excludes(path: str, substring: str) -> FileExcludes:
 
 
 def file_absent(path: str) -> FileAbsent:
-    """Create a ``FileAbsent`` success assertion.
+    """Create a `FileAbsent` success assertion.
 
     Args:
         path: The file path that must not exist in the trajectory files.
 
     Returns:
-        A ``FileAbsent`` assertion instance.
+        A `FileAbsent` assertion instance.
     """
     return FileAbsent(path=path)
 

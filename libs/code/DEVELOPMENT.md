@@ -5,6 +5,7 @@ New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high
 ## Contents
 
 - [Quickstart](#quickstart) — get a local checkout running and run the checks CI enforces
+- [LangSmith tracing projects](#langsmith-tracing-projects) — route dev traces away from the shared GA project
 - [Local dev installs](#local-dev-installs) — keep an editable `dcode-dev` separate from a released install
 - [Debugging](#debugging) — diagnose startup crashes and client-side issues
 - [Live CSS development with Textual devtools](#live-css-development-with-textual-devtools) — UI/CSS hot-reload
@@ -67,6 +68,41 @@ make lint
 ```
 
 Run `make help` to see every available target.
+
+## LangSmith tracing projects
+
+When `LANGSMITH_API_KEY` is set, `deepagents-code` traces its own agent runs to
+LangSmith. By default those runs land in the `deepagents-code` project, but the
+team routes shared runs to a GA project (`shared-deepagents-code`) that is
+monitored by LangSmith Engine, which raises high-priority Slack alerts on
+suspected issues.
+
+**Do not point local development at the GA project.** Active development
+produces failures, half-finished branches, and experiments that Engine flags as
+issues — noise that buries the alerts that matter for the production project and
+costs the team triage time. Keep dev and prod runs in separate projects so
+Engine alerting on the GA project stays high-signal (this also mirrors LangSmith
+best practice of splitting dev and prod environments into distinct projects).
+
+Route your local runs to a dev-scoped project via `DEEPAGENTS_CODE_LANGSMITH_PROJECT`
+(this overrides only the agent's own traces, leaving your shell's
+`LANGSMITH_PROJECT` for user code untouched):
+
+```bash
+# A shared dev bucket, or your own personal project — anything but the GA project
+export DEEPAGENTS_CODE_LANGSMITH_PROJECT=shared-deepagents-code-dev
+uv run deepagents-code
+```
+
+You can also set it persistently under `[tracing]` in the config file
+(`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and
+`/trace` show the project a run is writing to — confirm it is not the GA project
+before doing noisy work.
+
+When onboarding a new tracing project to Engine, capture the nature of that
+project first: a production/GA app warrants high-priority alerts, while a
+staging or active-dev project should use looser thresholds (or stay off Engine)
+so it does not generate false positives.
 
 ## Debugging
 

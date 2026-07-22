@@ -29,16 +29,16 @@ dependencies = [
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.5.0,<1.6.0",
+    "langchain-anthropic>=1.5.0,<2.0.0",
     "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
     "langchain-fireworks>=1.4.4,<1.5.0",
-    "langchain-google-genai>=4.3.0,<4.4.0",
+    "langchain-google-genai>=4.3.0,<5.0.0",
     "langchain-groq>=1.1.3,<1.2.0",
     "langchain-mistralai>=1.1.6,<1.2.0",
     "langchain-nvidia-ai-endpoints>=1.4.3,<1.5.0",
     "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.4.0,<1.5.0",
+    "langchain-openai>=1.4.0,<2.0.0",
     "langchain-openrouter>=0.2.6,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     # Eval-specific dependencies
@@ -185,6 +185,11 @@ ban-relative-imports = "all"
 ]
 "deepagents_harbor/langsmith.py" = [
     "T201",    # `print` found — CI-facing integration layer, print is the expected output
+]
+"harbor_adapters/contextbench/templates/*" = [
+    "INP001",  # Standalone script copied into each task's sandbox, not an importable module
+    "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
+    "D",       # Docstring conventions — a copied-into-sandbox script, not library API
 ]
 
 [tool.ruff.lint.isort]

@@ -4641,9 +4641,41 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
-    async def test_sibling_worktree_approval_loads_but_clone_and_change_do_not(
+    async def test_local_approval_does_not_load_in_sibling_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from deepagents_code import model_config
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        approved_servers = {"docs": self._stdio("echo")}
+        self._write_project_config(second, approved_servers)
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
+        )
+
+        merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_remote_approval_loads_in_sibling_but_not_clone_or_new_transport(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import model_config
+
         main = tmp_path / "main"
         first = tmp_path / "first"
         second = tmp_path / "second"
@@ -4652,15 +4684,15 @@ class TestSelectiveProjectMcpTrust:
         self._create_git_worktree(common_dir, first, "first")
         self._create_git_worktree(common_dir, second, "second")
         self._create_git_repository(clone)
-        approved_servers = {"docs": self._stdio("echo")}
+        approved_servers = {"docs": self._remote()}
         self._write_project_config(second, approved_servers)
         self._write_project_config(clone, approved_servers)
         user_config = tmp_path / "config.toml"
-        self._write_user_approvals(
-            user_config,
-            first,
-            approved_servers,
+        assert model_config.add_enabled_project_mcp_servers(
             ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
         )
 
         sibling_merged = await self._resolve_merged(

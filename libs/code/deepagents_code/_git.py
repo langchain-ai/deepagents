@@ -279,8 +279,11 @@ def find_git_common_dir(path: str | Path) -> Path | None:
     A normal checkout uses its in-tree `.git` directory. A linked worktree is
     accepted only when its administration directory lives directly under the
     common repository's `worktrees` directory and its `gitdir` file points back
-    to the current worktree's `.git` file. These checks prevent a forged pointer
-    or directory link from borrowing another repository's identity.
+    to the current worktree's `.git` file, and both the shared common directory
+    and the worktree's own administration directory carry valid repository
+    metadata (`_is_valid_git_common_dir` plus the worktree's own `HEAD`). These
+    checks prevent a forged pointer or directory link from borrowing another
+    repository's identity.
 
     Args:
         path: Exact working-tree root or persisted common-directory path.

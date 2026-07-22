@@ -270,6 +270,28 @@ class TestFindGitCommonDir:
 
         assert find_git_common_dir(worktree) is None
 
+    def test_worktree_missing_head_is_rejected(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _add_git_worktree(main, worktree, "worktree")
+        git_dir = _parse_git_dir_pointer(worktree / ".git")
+        assert git_dir is not None
+        (git_dir / "HEAD").unlink()
+
+        assert find_git_common_dir(worktree) is None
+
+    def test_worktree_missing_backlink_is_rejected(self, tmp_path: Path) -> None:
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        _init_git_repo(main)
+        _add_git_worktree(main, worktree, "worktree")
+        git_dir = _parse_git_dir_pointer(worktree / ".git")
+        assert git_dir is not None
+        (git_dir / "gitdir").unlink()
+
+        assert find_git_common_dir(worktree) is None
+
     def test_forged_pointer_to_another_worktree_is_rejected(
         self, tmp_path: Path
     ) -> None:
@@ -301,6 +323,29 @@ class TestFindGitCommonDir:
         (genuine / ".git").unlink()
         (genuine / ".git").symlink_to(forged / ".git")
 
+        assert find_git_common_dir(forged) is None
+
+    def test_self_consistent_forgery_outside_worktrees_dir_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        # A fully self-consistent forgery: the attacker's admin dir has a valid
+        # `commondir` pointing at the victim repo, a present `HEAD`, and a correct
+        # self-referential `gitdir` backlink. Every acceptance check passes EXCEPT
+        # the admin dir's location, so the `worktrees/`-parent guard is the only
+        # defense that rejects it. Removing that guard makes this test fail.
+        main = tmp_path / "main"
+        forged = tmp_path / "forged"
+        _init_git_repo(main)
+        forged.mkdir()
+        common = (main / ".git").resolve()
+        admin = tmp_path / "attacker" / "wt"
+        admin.mkdir(parents=True)
+        (admin / "commondir").write_text(f"{common}\n")
+        (admin / "HEAD").write_text("ref: refs/heads/forged\n")
+        (admin / "gitdir").write_text(f"{forged.resolve() / '.git'}\n")
+        (forged / ".git").write_text(f"gitdir: {admin}\n")
+
+        assert admin.parent != common / "worktrees"
         assert find_git_common_dir(forged) is None
 
     def test_symlinked_git_entry_is_rejected(self, tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -16,6 +16,7 @@ from langchain.agents.middleware.human_in_the_loop import (
     ApproveDecision,
     RejectDecision,
 )
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import (
     AIMessage,
     FunctionMessage,
@@ -68,11 +69,11 @@ from deepagents_code.goal_rubric import (
     create_goal_criteria_agent,
     create_goal_criteria_fallback_agent,
 )
+from deepagents_code.goal_tools import GoalToolState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-    from typing import Any
 
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
@@ -683,6 +684,41 @@ class TestCriteriaHitlPolicy:
         assert len(displayed) <= _CRITERIA_OBJECTIVE_DISPLAY_LIMIT
 
 
+_RUBRIC_PROPOSAL_RESULT = {
+    "structured_response": {
+        "objective": "ship login with passkeys",
+        "criteria": "- passkeys work",
+    }
+}
+
+
+class _RubricProbeMiddleware(AgentMiddleware[GoalToolState, Any]):
+    """Record the rubric visible to end-of-turn middleware.
+
+    Declares the production `GoalToolState` schema so the public `rubric`
+    channel is registered exactly as in the real app (via
+    `GoalToolsMiddleware`), rather than a test-only redeclaration that could
+    silently drift from production.
+    """
+
+    state_schema = GoalToolState
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[object] = []
+
+    def after_agent(
+        self,
+        state: GoalToolState,
+        runtime: Runtime[Any],
+    ) -> None:
+        _ = runtime
+        # Record the raw value rather than coercing to None, so a regression
+        # that swapped the cleared sentinel for a non-str would be caught here
+        # instead of masked.
+        self.seen.append(state.get("rubric"))
+
+
 class TestGoalCriteriaMiddleware:
     """The main graph owns criteria execution and pending-state persistence."""
 
@@ -692,6 +728,21 @@ class TestGoalCriteriaMiddleware:
             "Runtime[Any]",
             SimpleNamespace(context={"model": "openai:gpt-5.5"}),
         )
+
+    @staticmethod
+    def _assert_rubric_suppressed(
+        probe: _RubricProbeMiddleware,
+        state_values: dict[str, Any],
+        *,
+        kind: str,
+        expected_objective: str,
+    ) -> None:
+        """The stale rubric is cleared before exit hooks and the proposal persists."""
+        assert probe.seen == [None]
+        assert state_values["rubric"] is None
+        assert state_values["_pending_goal_objective"] == expected_objective
+        assert state_values["_pending_goal_rubric"] == "- passkeys work"
+        assert state_values["_pending_goal_kind"] == kind
 
     def test_normal_agent_run_is_unchanged(self) -> None:
         criteria = MagicMock()
@@ -730,6 +781,7 @@ class TestGoalCriteriaMiddleware:
         assert update is not None
         assert update == {
             "goal_criteria_request": None,
+            "rubric": None,
             "_pending_goal_objective": "ship it",
             "_pending_goal_rubric": "- observable result",
             "_pending_goal_kind": "create",
@@ -794,6 +846,118 @@ class TestGoalCriteriaMiddleware:
         prompt = awaited.args[0]["messages"][0]["content"]
         assert "<current_goal>\nship login\n</current_goal>" in prompt
         assert "<user_feedback>\nadd passkeys\n</user_feedback>" in prompt
+
+    @pytest.mark.parametrize(
+        ("kind", "request_extra", "expected_objective"),
+        [
+            # create keeps the caller's objective; amend adopts the model's.
+            ("create", {}, "ship login"),
+            (
+                "amend",
+                {"criteria": "- passwords work", "feedback": "add passkeys"},
+                "ship login with passkeys",
+            ),
+        ],
+    )
+    async def test_proposal_suppresses_persisted_rubric_before_exit_hooks(
+        self,
+        kind: str,
+        request_extra: dict[str, str],
+        expected_objective: str,
+    ) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(return_value=_RUBRIC_PROPOSAL_RESULT)
+        probe = _RubricProbeMiddleware()
+        middleware: list[AgentMiddleware[Any, Any]] = [
+            GoalCriteriaMiddleware(criteria),
+            probe,
+        ]
+        parent = create_agent(
+            model=GoalCriteriaIntegrationChatModel(),
+            tools=[],
+            middleware=middleware,
+            checkpointer=InMemorySaver(),
+        )
+        config: RunnableConfig = {
+            "configurable": {"thread_id": f"criteria-{kind}-no-grade"}
+        }
+        await parent.aupdate_state(
+            config,
+            {
+                "messages": [AIMessage(content="Interrupted work")],
+                "rubric": "- passwords work",
+            },
+        )
+
+        await parent.ainvoke(
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-proposal",
+                    "kind": kind,
+                    "objective": "ship login",
+                    **request_extra,
+                },
+            },
+            config=config,
+            context={},
+        )
+
+        state = await parent.aget_state(config)
+        self._assert_rubric_suppressed(
+            probe, state.values, kind=kind, expected_objective=expected_objective
+        )
+
+    def test_proposal_suppresses_persisted_rubric_before_exit_hooks_sync(
+        self,
+    ) -> None:
+        # Mirror the async path over the synchronous before_agent → invoke driver.
+        criteria = MagicMock()
+        criteria.invoke.return_value = _RUBRIC_PROPOSAL_RESULT
+        probe = _RubricProbeMiddleware()
+        middleware: list[AgentMiddleware[Any, Any]] = [
+            GoalCriteriaMiddleware(criteria),
+            probe,
+        ]
+        parent = create_agent(
+            model=GoalCriteriaIntegrationChatModel(),
+            tools=[],
+            middleware=middleware,
+            checkpointer=InMemorySaver(),
+        )
+        config: RunnableConfig = {
+            "configurable": {"thread_id": "criteria-amend-no-grade-sync"}
+        }
+        parent.update_state(
+            config,
+            {
+                "messages": [AIMessage(content="Interrupted work")],
+                "rubric": "- passwords work",
+            },
+        )
+
+        parent.invoke(
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "request-proposal-sync",
+                    "kind": "amend",
+                    "objective": "ship login",
+                    "criteria": "- passwords work",
+                    "feedback": "add passkeys",
+                },
+            },
+            config=config,
+            context={},
+        )
+
+        state = parent.get_state(config)
+        self._assert_rubric_suppressed(
+            probe,
+            state.values,
+            kind="amend",
+            expected_objective="ship login with passkeys",
+        )
 
     def test_json_fallback_is_parsed_on_server(self) -> None:
         criteria = MagicMock()
@@ -1018,6 +1182,73 @@ class TestCreateGoalCriteriaAgent:
         assert any(
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]
+        )
+
+    def test_parent_allowlist_restricts_repository_tools(self) -> None:
+        """Nested criteria generation cannot bypass the parent fs allowlist."""
+        backend = MagicMock()
+        filesystem = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=filesystem,
+            ) as filesystem_type,
+            patch("langchain.agents.create_agent", return_value=graph),
+        ):
+            _create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=backend,
+                repository_root="/workspace",
+                context_tools=[],
+                auto_mode_enabled=True,
+                fs_tools=["read_file"],
+            )
+
+        filesystem_type.assert_called_once_with(
+            backend=backend,
+            tools=["read_file"],
+            grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
+            tool_token_limit_before_evict=None,
+        )
+
+    def test_parent_allowlist_intersects_with_repository_tools(self) -> None:
+        """The criteria agent keeps only allowed *repository* tools.
+
+        The repository tool set is `["ls", "read_file", "glob", "grep"]`. Given
+        an allowlist that overlaps it partially and also names a non-repository
+        tool (`write_file`), the result must be the intersection in repository
+        order — multiple repository names survive, the disallowed repository
+        names (`glob`, `grep`) drop, and the non-repository name never appears.
+        """
+        backend = MagicMock()
+        filesystem = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=filesystem,
+            ) as filesystem_type,
+            patch("langchain.agents.create_agent", return_value=graph),
+        ):
+            _create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=backend,
+                repository_root="/workspace",
+                context_tools=[],
+                auto_mode_enabled=True,
+                fs_tools=["ls", "read_file", "write_file"],
+            )
+
+        filesystem_type.assert_called_once_with(
+            backend=backend,
+            tools=["ls", "read_file"],
+            grep_max_count=_REPOSITORY_GREP_MATCH_LIMIT,
+            tool_token_limit_before_evict=None,
         )
 
     @staticmethod

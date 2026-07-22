@@ -1018,7 +1018,9 @@ class ServerProcess:
                 first), or if a terminal `stop()` bumped the stop generation
                 during cleanup — in which case `_start` aborts rather than
                 resurrecting the subprocess the terminal stop just tore down.
-        """
+            RuntimeError: If workspace preparation, process startup, or the
+                server health check fails.
+        """  # noqa: DOC502  # RuntimeError propagates from _start().
         logger.info("Restarting langgraph dev server")
         async with self._lifecycle_lock:
             with self._state_lock:

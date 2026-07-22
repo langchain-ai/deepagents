@@ -34,6 +34,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
+_resolved_env_var_log_lock = threading.Lock()
+_resolved_env_var_log_names: set[str] = set()
+
+
+def reset_env_resolution_log() -> None:
+    """Allow successful prefixed environment resolutions to be logged again."""
+    with _resolved_env_var_log_lock:
+        _resolved_env_var_log_names.clear()
 
 
 def resolved_env_var_name(canonical: str) -> str:
@@ -91,8 +99,14 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
-            if val:
-                logger.debug("Resolved %s from %s", name, prefixed)
+            if val and logger.isEnabledFor(logging.DEBUG):
+                # `resolve_env_var` is called frequently; log each successful
+                # prefixed resolution only once per generation to avoid spam.
+                with _resolved_env_var_log_lock:
+                    should_log = name not in _resolved_env_var_log_names
+                    _resolved_env_var_log_names.add(name)
+                if should_log:
+                    logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 

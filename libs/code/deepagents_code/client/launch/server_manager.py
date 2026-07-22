@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from deepagents import FsToolName
+
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.mcp_tools import MCPSessionManager
@@ -305,6 +307,7 @@ async def start_server_and_get_agent(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,
@@ -335,6 +338,9 @@ async def start_server_and_get_agent(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
@@ -385,6 +391,7 @@ async def start_server_and_get_agent(
         enable_interpreter=enable_interpreter,
         interpreter_ptc=interpreter_ptc,
         interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+        allow_fs_tools=allow_fs_tools,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
         mcp_config_path=mcp_config_path,
@@ -458,6 +465,7 @@ async def server_session(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,
@@ -491,6 +499,9 @@ async def server_session(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
@@ -526,6 +537,7 @@ async def server_session(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,

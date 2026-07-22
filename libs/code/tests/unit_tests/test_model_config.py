@@ -1351,13 +1351,92 @@ class TestResolveEnvVar:
 
         assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-canonical"
 
-    def test_prefix_beats_canonical(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """DEEPAGENTS_CODE_ prefixed var takes priority over canonical."""
+    def test_prefix_beats_canonical_and_logs_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Prefixed variables take priority and log their source only once."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-override")
-        from deepagents_code.model_config import resolve_env_var
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
 
-        assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+        reset_env_resolution_log()
+        try:
+            assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+            assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+            assert (
+                caplog.messages.count(
+                    "Resolved ANTHROPIC_API_KEY from DEEPAGENTS_CODE_ANTHROPIC_API_KEY"
+                )
+                == 1
+            )
+        finally:
+            reset_env_resolution_log()
+
+    def test_reset_allows_resolution_to_be_logged_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resetting resolution diagnostics starts a new logging generation."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        reset_env_resolution_log()
+        try:
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            reset_env_resolution_log()
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 2
+            )
+        finally:
+            reset_env_resolution_log()
+
+    def test_debug_disabled_resolution_still_logs_once_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A resolve while DEBUG is off must not consume the one-time log slot."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        reset_env_resolution_log()
+        try:
+            # DEBUG disabled: resolve succeeds but records nothing, so the name
+            # must not be marked as already-logged.
+            caplog.set_level(logging.INFO, logger="deepagents_code.model_config")
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert caplog.messages == []
+
+            # DEBUG enabled: the first resolution should still emit exactly once.
+            caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 1
+            )
+        finally:
+            reset_env_resolution_log()
 
     def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None when neither form is set."""
@@ -1386,14 +1465,18 @@ class TestResolveEnvVar:
         assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
 
     def test_empty_prefix_blocks_canonical(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Empty prefix var blocks fallback to canonical (explicit disable)."""
+        """Empty prefix blocks canonical fallback and logs the misconfiguration."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         from deepagents_code.model_config import resolve_env_var
 
         assert resolve_env_var("ANTHROPIC_API_KEY") is None
+        assert "blocking non-empty ANTHROPIC_API_KEY" in caplog.text
 
     def test_skips_double_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Names already carrying the prefix don't get double-prefixed."""

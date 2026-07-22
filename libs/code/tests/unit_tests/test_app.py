@@ -3747,6 +3747,390 @@ class TestMessageQueue:
             assert not app.query(StartupTip)
             dispatch.assert_awaited_once_with(*expected_args)
 
+    async def test_initial_prompt_shown_as_queued_while_connecting(self) -> None:
+        """`-m` prompt renders as queued immediately, before `ServerReady`."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+            assert widgets.first()._content == "hello world"
+            assert app._initial_prompt_queued_widget is widgets.first()
+            # Placeholder is not enqueued in the standard queue, but still
+            # counts toward the status-bar queued depth.
+            assert not app._pending_messages
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+            assert not app.query(StartupTip)
+
+    async def test_initial_prompt_placeholder_replaced_on_submission(self) -> None:
+        """Submitting the `-m` prompt drops the placeholder and sends the message."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert len(app.query(QueuedUserMessage)) == 1
+
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+
+            await app._submit_initial_submission()
+            await pilot.pause()
+
+            dispatch.assert_awaited_once_with("hello world")
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_initial_prompt_placeholder_skipped_if_submission_overtakes(
+        self,
+    ) -> None:
+        """A ready server can submit while placeholder setup is yielding."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            dismiss_started = asyncio.Event()
+            resume_dismissal = asyncio.Event()
+            dismiss_calls = 0
+
+            async def controlled_dismiss() -> None:
+                nonlocal dismiss_calls
+                dismiss_calls += 1
+                if dismiss_calls == 1:
+                    dismiss_started.set()
+                    await resume_dismissal.wait()
+
+            app._dismiss_startup_tip = controlled_dismiss  # ty: ignore
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+
+            placeholder_task = asyncio.create_task(app._show_initial_prompt_as_queued())
+            await dismiss_started.wait()
+
+            # `ServerReady` clears this before scheduling initial submission.
+            app._connecting = False
+            await app._submit_initial_submission()
+            resume_dismissal.set()
+            await placeholder_task
+            await pilot.pause()
+
+            dispatch.assert_awaited_once_with("hello world")
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_initial_prompt_anchors_direct_mounts_above_it(self) -> None:
+        """Transient startup output stays above the initial placeholder."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            messages = app.query_one("#messages", Container)
+            output = AppMessage("startup output")
+
+            await app._mount_before_queued(messages, output)
+            await pilot.pause()
+
+            placeholder = app._initial_prompt_queued_widget
+            assert placeholder is not None
+            children = list(messages.children)
+            assert children.index(output) < children.index(placeholder)
+
+    async def test_initial_prompt_anchors_transcript_spacers_above_it(self) -> None:
+        """Stored startup output stays above the initial placeholder."""
+        from deepagents_code.app import _MESSAGE_BOTTOM_SPACER_ID
+
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            output = AppMessage("Running startup command")
+
+            await app._mount_message(output)
+            await pilot.pause()
+
+            messages = app.query_one("#messages", Container)
+            placeholder = app._initial_prompt_queued_widget
+            assert placeholder is not None
+            bottom = messages.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}")
+            children = list(messages.children)
+            assert children.index(output) < children.index(bottom)
+            assert children.index(bottom) < children.index(placeholder)
+
+    async def test_initial_prompt_placeholder_skipped_for_skill(self) -> None:
+        """Skills render differently and keep their existing startup path."""
+        app = DeepAgentsApp(initial_prompt="hello world", initial_skill="review")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_should_queue_placeholder_excludes_resume(self) -> None:
+        """Resume startup must not schedule the placeholder; a bare `-m` must.
+
+        Guards the resume-exclusion decision in `on_mount`, which reads
+        `_resume_thread_intent` before the resolve task consumes it. This is the
+        only site enforcing the exclusion, so it needs direct coverage.
+        """
+        resuming = DeepAgentsApp(
+            initial_prompt="hello world",
+            resume_thread="thread-123",
+        )
+        resuming._connecting = True
+        assert resuming._should_queue_initial_prompt_placeholder() is False
+
+        fresh = DeepAgentsApp(initial_prompt="hello world")
+        fresh._connecting = True
+        assert fresh._should_queue_initial_prompt_placeholder() is True
+
+        # Not connecting (e.g. already-ready session): never schedule.
+        fresh._connecting = False
+        assert fresh._should_queue_initial_prompt_placeholder() is False
+
+    async def test_initial_prompt_placeholder_skipped_for_goal(self) -> None:
+        """Goals render differently and keep their existing startup path."""
+        app = DeepAgentsApp(initial_prompt="hello world", initial_goal="ship it")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_skipped_for_blank_prompt(self) -> None:
+        """A whitespace-only `-m` prompt must not mount a placeholder."""
+        app = DeepAgentsApp(initial_prompt="   ")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_skipped_when_not_connecting(
+        self,
+    ) -> None:
+        """The placeholder is only for the connect window; skip once ready."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_connecting` is already False for a no-server test app.
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+
+    async def test_initial_prompt_placeholder_is_idempotent(self) -> None:
+        """A second call is a no-op; the placeholder is never duplicated."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            first = app._initial_prompt_queued_widget
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is first
+            assert len(app.query(QueuedUserMessage)) == 1
+
+    async def test_initial_prompt_placeholder_counts_with_pending(self) -> None:
+        """Placeholder depth is additive with genuinely queued messages."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+
+            app._pending_messages.append(QueuedMessage(text="typed", mode="normal"))
+            app._sync_status_queued()
+            assert app._status_bar.queued_count == 2
+
+            await app._remove_initial_prompt_placeholder()
+            assert app._status_bar.queued_count == 1
+
+    async def test_discard_queue_clears_initial_prompt_placeholder(self) -> None:
+        """Discarding the queue mid-connect cancels the startup prompt.
+
+        Regression: `_discard_queue` (reached via `/force-clear`) detaches the
+        placeholder, so it must also clear both the pointer and the backing
+        prompt. Otherwise the queued count stays at 1 until `ServerReady`,
+        which then submits work that appeared to have been discarded.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._initial_prompt_queued_widget is not None
+
+            app._discard_queue()
+            await pilot.pause()
+
+            assert app._initial_prompt is None
+            assert app._initial_prompt_queued_widget is None
+            assert not app._has_initial_submission()
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+            dispatch = AsyncMock()
+            app._handle_user_message = dispatch  # ty: ignore
+            await app._submit_initial_submission()
+            dispatch.assert_not_awaited()
+
+    async def test_clear_messages_clears_initial_prompt_placeholder(self) -> None:
+        """`_clear_messages` detaches the placeholder, so it must drop the pointer."""
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+            assert app._initial_prompt_queued_widget is not None
+
+            await app._clear_messages()
+            app._sync_status_queued()
+            await pilot.pause()
+
+            assert app._initial_prompt_queued_widget is None
+            assert not app.query(QueuedUserMessage)
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 0
+
+    async def test_on_mount_shows_initial_prompt_placeholder_while_connecting(
+        self,
+    ) -> None:
+        """`on_mount` itself surfaces the `-m` placeholder during a real connect.
+
+        The other placeholder tests drive `_show_initial_prompt_as_queued`
+        directly. This exercises the `on_mount` seam that consults
+        `_should_queue_initial_prompt_placeholder` and schedules the task —
+        without it, deleting that whole block would leave the feature dead on
+        real startup while the suite stayed green. A `server_kwargs` app leaves
+        `_connecting` True at mount; the real server spawn is stubbed so the
+        connect window stays open and never fires `ServerReady`.
+        """
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="hello world",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+        )
+
+        async def _noop_server_start() -> None:  # noqa: RUF029
+            return
+
+        app._start_server_background = _noop_server_start  # ty: ignore
+        dispatch = AsyncMock()
+        app._handle_user_message = dispatch  # ty: ignore
+
+        async with app.run_test() as pilot:
+            # on_mount schedules the placeholder via `call_after_refresh`; pump
+            # a few frames so the scheduled task mounts it.
+            for _ in range(5):
+                await pilot.pause()
+
+            assert app._connecting is True
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+            assert widgets.first()._content == "hello world"
+            assert app._initial_prompt_queued_widget is widgets.first()
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+            # Shown while still connecting: the real prompt is not dispatched
+            # until `ServerReady`, which the stubbed server never fires.
+            dispatch.assert_not_awaited()
+
+    async def test_spinner_anchors_above_initial_prompt_placeholder(self) -> None:
+        """The startup spinner sits directly above the `-m` placeholder.
+
+        During the connect window there are no real `_queued_widgets`, so the
+        placeholder is the only anchor `_reposition_spinner` and
+        `_is_spinner_at_correct_position` can pin the spinner above — the
+        `child is initial` branch of `_first_mounted_queued_widget` that the
+        `_queued_widgets`-based spinner tests never reach.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            spinner = app._loading_widget
+            placeholder = app._initial_prompt_queued_widget
+            assert spinner is not None
+            assert placeholder is not None
+            assert not app._queued_widgets  # placeholder is the only anchor
+
+            messages = app.query_one("#messages", Container)
+            children = list(messages.children)
+            assert children.index(spinner) == children.index(placeholder) - 1
+            assert app._is_spinner_at_correct_position(messages) is True
+
+            # Strand the spinner below the placeholder, then confirm
+            # `_reposition_spinner` re-pins it above using the placeholder anchor.
+            messages.move_child(spinner, after=placeholder)
+            assert app._is_spinner_at_correct_position(messages) is False
+
+            app._reposition_spinner(messages)
+            children = list(messages.children)
+            assert children.index(spinner) == children.index(placeholder) - 1
+            assert app._is_spinner_at_correct_position(messages) is True
+
+    async def test_initial_prompt_placeholder_reveals_connection_status(self) -> None:
+        """Showing the placeholder un-defers the status-bar connection display.
+
+        The connect window normally hides the connection indicator to avoid
+        flashing it during fast startup; revealing the placeholder means the
+        user is now looking at a pending message, so the indicator should show.
+        """
+        app = DeepAgentsApp(initial_prompt="hello world")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._defer_connection_status_display = True
+
+            await app._show_initial_prompt_as_queued()
+            await pilot.pause()
+
+            assert app._defer_connection_status_display is False
+
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()
@@ -7433,20 +7817,20 @@ class TestGoalCommand:
                 "Grader: current chat model · max iterations: SDK default" in rendered
             )
 
-    async def test_goal_show_footer_lists_grader_aliases(self) -> None:
-        """`/goal show` should advertise the grader-alias commands in its footer."""
+    @pytest.mark.parametrize("command", ["/goal", "/goal show"])
+    async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
+        """Goal state should not repeat commands already shown in the input hint."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_goal = "ship the feature"
             app._goal_status = "active"
 
-            await app._handle_command("/goal show")
+            await app._handle_command(command)
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "/goal model [provider:model|clear]" in rendered
-            assert "/goal max-iterations <N|clear>" in rendered
+            assert "Commands:" not in rendered
 
     async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
         """Bare `/goal max-iterations` shows goal-branded usage without setting."""
@@ -8414,12 +8798,7 @@ class TestGoalCommand:
                 "remains active for resume, amendment, retry, or clearing" in rendered
             )
             assert "Goal marked complete" not in rendered
-            assert (
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>" in rendered
-            )
+            assert "Commands:" not in rendered
 
     async def test_grader_failed_keeps_goal_active_with_evaluation_error(self) -> None:
         """A `failed` grade must keep the goal active and blame the grader."""
@@ -9026,7 +9405,7 @@ class TestGoalCommand:
             assert payload.goal_objective == "add refresh tokens"
 
     async def test_goal_show_uses_labeled_sections(self) -> None:
-        """`/goal show` should render goal, status, criteria, and commands."""
+        """`/goal show` should render the goal, status, and criteria."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -9045,8 +9424,7 @@ class TestGoalCommand:
             assert (
                 "Follow-up prompts will continue working toward this goal." in rendered
             )
-            assert "Commands:\n/goal amend <feedback>\n/goal pause" in rendered
-            assert "/goal clear\n/goal show" in rendered
+            assert "Commands:" not in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
 
@@ -14176,7 +14554,32 @@ class TestActionOpenEditor:
 
         await app.action_open_editor()
 
-    async def test_notifies_on_exception(self) -> None:
+    async def test_notifies_on_editor_error(self) -> None:
+        from deepagents_code.editor import ExternalEditorError
+
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = ""
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch(
+                "deepagents_code.editor.open_in_editor",
+                side_effect=ExternalEditorError("boom"),
+            ),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            await app.action_open_editor()
+
+        mock_notify.assert_called_once()
+        assert "failed" in mock_notify.call_args[0][0].lower()
+        chat_input.focus_input.assert_called_once()
+
+    async def test_unexpected_editor_exception_propagates(self) -> None:
+        """Non-editor errors must surface, not be disguised as a config problem."""
         app = DeepAgentsApp(agent=MagicMock())
         text_area = MagicMock()
         text_area.text = ""
@@ -14191,11 +14594,12 @@ class TestActionOpenEditor:
                 side_effect=RuntimeError("boom"),
             ),
             patch.object(app, "notify") as mock_notify,
+            pytest.raises(RuntimeError, match="boom"),
         ):
             await app.action_open_editor()
 
-        mock_notify.assert_called_once()
-        assert "failed" in mock_notify.call_args[0][0].lower()
+        mock_notify.assert_not_called()
+        # Focus is still restored via the `finally` clause before propagation.
         chat_input.focus_input.assert_called_once()
 
     async def test_ctrl_x_edits_focused_goal_criteria_without_submitting(self) -> None:
@@ -14430,6 +14834,316 @@ class TestActionOpenEditor:
             assert app.focused is chat_input.input_widget
             assert future.done() is False
 
+    @staticmethod
+    async def _open_ask_user_other_editor(
+        app: DeepAgentsApp,
+        pilot: Pilot[DeepAgentsApp],
+    ) -> tuple[AskUserMenu, AskUserTextArea, asyncio.Future[Any]]:
+        """Mount an ask-user question and focus its 'Other' free-text input."""
+        messages = app.query_one("#messages", Container)
+        menu = AskUserMenu(
+            [
+                {
+                    "question": "Pick one?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "A"}, {"value": "B"}],
+                }
+            ]
+        )
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        menu.set_future(future)
+        await messages.mount(menu)
+        app._pending_ask_user_widget = menu
+        await pilot.pause()
+        menu.focus_active()
+        await pilot.pause()
+        # Move the selection past both real choices onto "Other", which reveals
+        # and focuses the free-text input.
+        await pilot.press("down", "down")
+        await pilot.pause()
+        other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+        assert app.focused is other_input
+        return menu, other_input, future
+
+    async def test_ctrl_x_edits_focused_ask_user_other_without_submitting(
+        self,
+    ) -> None:
+        """Ctrl+X should round-trip the 'Other' draft through the editor."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            other_input.text = "draft answer"
+            other_input.move_cursor(other_input.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited answer",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "draft answer", allow_empty=True, raise_on_error=True
+            )
+            assert other_input.text == "edited answer"
+            assert other_input.cursor_location == other_input.document.end
+            assert app.focused is other_input
+            assert future.done() is False
+
+    async def test_ctrl_x_expands_and_resets_ask_user_other_paste_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """External edits should use logical paste text and discard stale backing."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            big = "answer line\n" * 5
+            await other_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+            assert other_input._pasted_contents
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="replacement",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                big, allow_empty=True, raise_on_error=True
+            )
+            assert other_input.text == "replacement"
+            assert other_input.submitted_value == "replacement"
+            assert other_input._pasted_contents == {}
+            assert other_input._next_paste_id == 1
+            assert app.focused is other_input
+            assert future.done() is False
+
+    async def test_ctrl_x_ask_user_other_failure_preserves_text_and_focus(
+        self,
+    ) -> None:
+        """Editor errors should notify without moving focus to the chat input."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            other_input.text = "draft answer"
+            other_input.move_cursor(other_input.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.resolve_editor",
+                    return_value=["missing-editor"],
+                ),
+                patch(
+                    "deepagents_code.editor.subprocess.run",
+                    side_effect=FileNotFoundError("missing-editor"),
+                ),
+                patch.object(app, "notify") as notify,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            notify.assert_called_once_with(
+                "External editor failed. Check $VISUAL/$EDITOR.",
+                severity="error",
+                timeout=5,
+            )
+            assert other_input.text == "draft answer"
+            assert app.focused is other_input
+            assert future.done() is False
+
+    @pytest.mark.parametrize("state", ["hidden", "unfocused", "detached"])
+    async def test_inactive_ask_user_editor_does_not_intercept_chat_ctrl_x(
+        self, state: str
+    ) -> None:
+        """Only the visible, attached, focused ask-user input should capture Ctrl+X."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu, other_input, future = await self._open_ask_user_other_editor(
+                app, pilot
+            )
+            if state == "hidden":
+                other_input.display = False
+                menu.focus()
+                assert other_input.display is False
+            elif state == "unfocused":
+                menu.focus()
+                assert other_input.display is True
+            else:
+                await menu.remove()
+                assert menu.is_attached is False
+            await pilot.pause()
+            assert app.focused is not other_input
+
+            chat_input = app.query_one(ChatInput)
+            chat_input.set_value_at_end("chat draft")
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited chat draft",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "chat draft", allow_empty=False, raise_on_error=False
+            )
+            assert chat_input.value == "edited chat draft"
+            assert app.focused is chat_input.input_widget
+            assert future.done() is False
+
+    async def test_stale_ask_user_editor_does_not_intercept_chat_ctrl_x(
+        self,
+    ) -> None:
+        """A focused field must belong to the currently pending ask-user menu."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            stale_menu, stale_input, _ = await self._open_ask_user_other_editor(
+                app, pilot
+            )
+            stale_input.text = "stale answer"
+
+            messages = app.query_one("#messages", Container)
+            current_menu = AskUserMenu(
+                [{"question": "Current?", "type": "text"}],
+                id="ask-user-menu-current",
+            )
+            await messages.mount(current_menu)
+            app._pending_ask_user_widget = current_menu
+            await pilot.pause()
+            stale_input.focus()
+            await pilot.pause()
+
+            assert stale_menu.is_attached
+            assert current_menu.is_attached
+            assert app.focused is stale_input
+
+            chat_input = app.query_one(ChatInput)
+            chat_input.set_value_at_end("chat draft")
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited chat draft",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "chat draft", allow_empty=False, raise_on_error=False
+            )
+            assert stale_input.text == "stale answer"
+            assert chat_input.value == "edited chat draft"
+            assert app.focused is chat_input.input_widget
+            assert app._pending_ask_user_widget is current_menu
+
+    @staticmethod
+    async def _open_ask_user_text_editor(
+        app: DeepAgentsApp,
+        pilot: Pilot[DeepAgentsApp],
+    ) -> tuple[AskUserMenu, AskUserTextArea, asyncio.Future[Any]]:
+        """Mount a free-text ask-user question and focus its text input."""
+        messages = app.query_one("#messages", Container)
+        menu = AskUserMenu([{"question": "Free text?", "type": "text"}])
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        menu.set_future(future)
+        await messages.mount(menu)
+        app._pending_ask_user_widget = menu
+        await pilot.pause()
+        menu.focus_active()
+        await pilot.pause()
+        text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+        assert app.focused is text_input
+        return menu, text_input, future
+
+    async def test_ctrl_x_edits_focused_ask_user_text_without_submitting(
+        self,
+    ) -> None:
+        """Ctrl+X should round-trip the always-visible free-text draft."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, text_input, future = await self._open_ask_user_text_editor(app, pilot)
+            text_input.text = "draft answer"
+            text_input.move_cursor(text_input.document.end)
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited answer",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "draft answer", allow_empty=True, raise_on_error=True
+            )
+            assert text_input.text == "edited answer"
+            assert text_input.cursor_location == text_input.document.end
+            assert app.focused is text_input
+            assert future.done() is False
+
+    async def test_ctrl_x_cancel_preserves_ask_user_other_and_paste_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling the editor must preserve text and NOT reset paste state."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
+            big = "answer line\n" * 5
+            await other_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            visible = other_input.text
+            pasted = dict(other_input._pasted_contents)
+            next_paste_id = other_input._next_paste_id
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor", return_value=None
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                big, allow_empty=True, raise_on_error=True
+            )
+            assert other_input.text == visible
+            assert other_input._pasted_contents == pasted
+            assert other_input._next_paste_id == next_paste_id
+            assert app.focused is other_input
+            assert future.done() is False
+
 
 class TestEditorSlashCommand:
     """Test that /editor dispatches to action_open_editor."""
@@ -14451,7 +15165,10 @@ class TestToolsSlashCommand:
 
         app = DeepAgentsApp(agent=MagicMock())
         app._assistant_id = "agent"
-        app._server_kwargs = {"enable_interpreter": False}
+        app._server_kwargs = {
+            "enable_interpreter": False,
+            "allow_fs_tools": ["ls", "read_file"],
+        }
         app._mcp_server_info = [
             MCPServerInfo(
                 name="docs",
@@ -14469,7 +15186,11 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
+        collect.assert_called_once_with(
+            assistant_id="agent",
+            enable_interpreter=False,
+            fs_tools=["ls", "read_file"],
+        )
         assert mount.await_count == 2
         first, second = (c.args[0] for c in mount.await_args_list)
         assert isinstance(first, UserMessage)
@@ -14719,7 +15440,9 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=True)
+        collect.assert_called_once_with(
+            assistant_id="agent", enable_interpreter=True, fs_tools=None
+        )
         assert mount.await_count == 2
         assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
 
@@ -15867,6 +16590,51 @@ class TestExitGracefulWorkerHandoff:
             assert restart_task.done()
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
+
+    async def test_restart_timeout_still_stops_server(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung restart cleanup hits its timeout; server shutdown still runs."""
+        restart_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cleanup_blocker = asyncio.Event()
+
+        async def respawn() -> None:
+            restart_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_blocker.wait()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            restart = asyncio.create_task(respawn())
+            app._track_server_restart_task(restart)
+            await asyncio.wait_for(restart_started.wait(), timeout=2.0)
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+        assert any(
+            "Server restart cleanup did not finish within 0.01s before app exit"
+            in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_submission_is_rejected_during_graceful_exit(self) -> None:
         """A responsive UI cannot start work after shutdown begins."""

@@ -609,7 +609,7 @@ if TYPE_CHECKING:
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
-    from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.debug_console import SnapshotField
@@ -3434,6 +3434,18 @@ class DeepAgentsApp(App):
         """Placeholder widgets mounted for messages still sitting in
         `_pending_messages`, removed as the queue drains."""
 
+        self._initial_prompt_queued_widget: QueuedUserMessage | None = None
+        """Placeholder mounted at startup for a `-m`/`--message` prompt so it
+        appears queued immediately while the server is still connecting,
+        matching the on-screen feedback of the typed-while-connecting path.
+        Unlike that path this is a cosmetic placeholder: it is not tracked in
+        `_pending_messages`/`_queued_widgets` and is never drained — instead
+        `_submit_initial_submission` removes it (via
+        `_remove_initial_prompt_placeholder`) and submits the real message.
+        Its `+1` in `_sync_status_queued` keeps the queued count honest while
+        it is live, so any path that detaches the widget must also clear this
+        pointer (see `_clear_messages`, `_discard_queue`)."""
+
         self._message_store = MessageStore()
         """Message virtualization store."""
 
@@ -3843,6 +3855,22 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+        # Surface a `-m`/`--message` prompt as a queued message right away,
+        # while the server is still connecting, instead of waiting for
+        # `ServerReady` to submit it. The resume-exclusion decision is read
+        # here, synchronously, before the resume-resolve task consumes
+        # `_resume_thread_intent` (see `_should_queue_initial_prompt_placeholder`).
+        if self._should_queue_initial_prompt_placeholder():
+
+            def _queue_initial_prompt_placeholder() -> None:
+                # Bare `create_task` would let any failure in the placeholder
+                # setup vanish as an unretrieved-task warning; route it through
+                # `_log_task_exception` like every other fire-and-forget task.
+                task = asyncio.create_task(self._show_initial_prompt_as_queued())
+                task.add_done_callback(_log_task_exception)
+
+            self.call_after_refresh(_queue_initial_prompt_placeholder)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -6552,7 +6580,10 @@ class DeepAgentsApp(App):
         """Mirror the pending-message queue depth onto the status bar."""
         if self._status_bar is None:
             return
-        self._status_bar.set_queued(len(self._pending_messages))
+        depth = len(self._pending_messages)
+        if self._initial_prompt_queued_widget is not None:
+            depth += 1
+        self._status_bar.set_queued(depth)
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -6832,9 +6863,7 @@ class DeepAgentsApp(App):
         ):
             anchor = spinner
         if anchor is None:
-            first_queued = self._queued_widgets[0] if self._queued_widgets else None
-            if first_queued is not None and first_queued.parent is container:
-                anchor = first_queued
+            anchor = self._first_mounted_queued_widget(container)
         if anchor is not None:
             try:
                 await container.mount(widget, before=anchor)
@@ -6860,6 +6889,14 @@ class DeepAgentsApp(App):
             if isinstance(child, LoadingWidget | QueuedUserMessage):
                 continue
             return child
+        return None
+
+    def _first_mounted_queued_widget(self, container: Container) -> Widget | None:
+        """Return the first queued placeholder mounted in `container`."""
+        initial = self._initial_prompt_queued_widget
+        for child in container.children:
+            if child is initial or child in self._queued_widgets:
+                return child
         return None
 
     @staticmethod
@@ -6906,14 +6943,7 @@ class DeepAgentsApp(App):
             )
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
-                anchor = next(
-                    (
-                        queued
-                        for queued in self._queued_widgets
-                        if queued.parent is container
-                    ),
-                    None,
-                )
+                anchor = self._first_mounted_queued_widget(container)
             if anchor is None:
                 await container.mount(bottom)
             else:
@@ -7012,10 +7042,8 @@ class DeepAgentsApp(App):
         if not children or self._loading_widget not in children:
             return False
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             return children.index(self._loading_widget) == (
                 children.index(first_queued) - 1
             )
@@ -7151,8 +7179,8 @@ class DeepAgentsApp(App):
                 "Spinner widget not in container children; skipping reposition",
             )
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             container.move_child(self._loading_widget, before=first_queued)
             return
         non_spinner = [
@@ -8050,6 +8078,67 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    def _should_queue_initial_prompt_placeholder(self) -> bool:
+        """Whether startup should surface the `-m` prompt as a queued placeholder.
+
+        Called synchronously from `on_mount`, before the resume-resolve task
+        consumes `_resume_thread_intent`, so the resume exclusion is decided
+        against the raw `-r` intent. Resume is excluded because that path
+        bulk-loads history on connect, which would briefly render the
+        placeholder above the restored transcript.
+
+        Returns:
+            `True` when a bare `-m` prompt should be shown as queued during the
+            initial connect; `False` when resuming or not connecting.
+        """
+        return self._connecting and self._resume_thread_intent is None
+
+    async def _show_initial_prompt_as_queued(self) -> None:
+        """Mount the `-m` prompt as a queued placeholder during connect.
+
+        Gives a `-m`/`--message` prompt the same immediate on-screen feedback
+        as a message typed into an already-running session while it reconnects:
+        the text shows as queued right away rather than after `ServerReady`.
+        Scoped to a bare prompt — skills and goals render differently and keep
+        their existing startup path. The placeholder is removed and replaced by
+        a real user message when `_submit_initial_submission` dispatches.
+        """
+        if not self._connecting:
+            return
+        if self._initial_skill is not None or self._initial_goal is not None:
+            return
+        if not (self._initial_prompt and self._initial_prompt.strip()):
+            return
+        if self._initial_prompt_queued_widget is not None:
+            return
+
+        await self._dismiss_startup_tip()
+        # `ServerReady` can arrive while tip dismissal yields. Its startup
+        # sequence may submit the prompt before this task resumes, so recheck
+        # readiness before creating a placeholder that nobody will remove.
+        if not self._connecting or self._initial_prompt_queued_widget is not None:
+            return
+        queued_widget = QueuedUserMessage(self._initial_prompt)
+        self._initial_prompt_queued_widget = queued_widget
+        await self._mount_message(queued_widget)
+        self._sync_status_queued()
+        self._reveal_connection_status()
+
+    async def _remove_initial_prompt_placeholder(self) -> None:
+        """Drop the `-m` queued placeholder before mounting the real message."""
+        widget = self._initial_prompt_queued_widget
+        if widget is None:
+            return
+        self._initial_prompt_queued_widget = None
+        if widget.is_attached:
+            # Only benign detach races are expected here; a broader
+            # `suppress(Exception)` would hide a real removal failure and
+            # strand the placeholder above the real message. Matches the
+            # narrow-suppress idiom used elsewhere for widget removal.
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
+        self._sync_status_queued()
+
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
         if self._exiting:
@@ -8070,6 +8159,7 @@ class DeepAgentsApp(App):
                 await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
+                await self._remove_initial_prompt_placeholder()
                 await self._handle_user_message(self._initial_prompt)
         except Exception:
             logger.exception("Unhandled error during initial submission")
@@ -9409,6 +9499,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
@@ -10587,12 +10678,6 @@ class DeepAgentsApp(App):
                     "Goal is paused. It remains saved, but it will not drive work or "
                     "grading until resumed."
                 )
-            lines.append(
-                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
-                "/goal clear\n/goal show\n"
-                "/goal model [provider:model|clear]\n"
-                "/goal max-iterations <N|clear>"
-            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -12128,6 +12213,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.model_config import clear_caches
 
                 clear_caches()
+                self._sync_status_model()
             except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -13363,15 +13449,31 @@ class DeepAgentsApp(App):
         return settings.model_provider or None
 
     def _sync_status_model(self) -> None:
-        """Update model displays with the active model and reasoning effort."""
+        """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import settings
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
+            supported_efforts_for_model,
         )
 
         provider = settings.model_provider or ""
         model = settings.model_name or ""
+        spec = self._effective_model_spec()
+        if self._chat_input is not None:
+            try:
+                efforts = supported_efforts_for_model(
+                    spec, cli_override=self._profile_override
+                )
+                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
+                self._chat_input.set_argument_hint_override("/effort", hint)
+            # A cosmetic ghost-text hint must never gate the primary model
+            # displays updated below, so swallow and log any failure here.
+            except Exception:
+                logger.warning(
+                    "Failed to refresh /effort argument hint during model sync",
+                    exc_info=True,
+                )
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
@@ -13395,12 +13497,11 @@ class DeepAgentsApp(App):
             # blank model paired with a populated effort suffix.
             self._status_bar.set_model(provider=provider, model=model, effort="")
             return
-        spec = self._effective_model_spec()
         effort = ""
         if spec:
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
-                or default_effort_for_model(spec)
+                or default_effort_for_model(spec, cli_override=self._profile_override)
                 or ""
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
@@ -13422,21 +13523,19 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            is_effort_supported_for_model,
+            with_effort_model_params,
         )
 
-        if (
-            current_effort_from_model_params(model_spec, self._model_params_override)
-            is not None
-        ):
+        if has_explicit_effort_model_params(model_spec, self._model_params_override):
             return
         effort = await asyncio.to_thread(load_effort_for_model, model_spec)
         if effort is None:
             return
-        params = model_params_for_effort(model_spec, effort)
-        if params is None:
+        if not is_effort_supported_for_model(
+            model_spec, effort, cli_override=self._profile_override
+        ):
             # Saved label is no longer valid for this model; drop the stale
             # entry so the model default applies. The active params carry no
             # effort here (checked above), so there is nothing to strip.
@@ -13452,9 +13551,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
-        self._model_params_override = merge_effort_model_params(
+        self._model_params_override = with_effort_model_params(
+            model_spec,
             self._model_params_override,
-            params,
+            effort,
         )
 
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
@@ -13478,7 +13578,7 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 "No model is configured yet. Run `/model` to choose one."
             )
-        efforts = supported_efforts_for_model(spec)
+        efforts = supported_efforts_for_model(spec, cli_override=self._profile_override)
         if not efforts:
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."
@@ -13487,7 +13587,7 @@ class DeepAgentsApp(App):
             spec=spec,
             efforts=efforts,
             current=current_effort_from_model_params(spec, self._model_params_override),
-            default=default_effort_for_model(spec),
+            default=default_effort_for_model(spec, cli_override=self._profile_override),
         )
 
     async def _handle_effort_command(self, command: str) -> None:
@@ -13496,7 +13596,7 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        raw = command.strip()[len("/effort") :].strip().lower()
+        raw = command.strip()[len("/effort") :].strip()
         if not raw:
             await self._show_effort_selector(command)
             return
@@ -13560,21 +13660,25 @@ class DeepAgentsApp(App):
             save_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            with_effort_model_params,
             without_effort_model_params,
         )
 
-        context = self._resolve_effort_context()
-        if isinstance(context, _EffortUnavailable):
-            await self._mount_message(AppMessage(context.message))
-            return
-        spec = context.spec
-
-        if effort in {"clear", "--clear", "reset"}:
-            had_override = context.current is not None
+        if effort.lower() in {"clear", "--clear", "reset"}:
+            spec = self._effective_model_spec()
+            if not spec:
+                await self._mount_message(
+                    AppMessage(
+                        "No model is configured yet. Run `/model` to choose one."
+                    )
+                )
+                return
+            had_override = has_explicit_effort_model_params(
+                spec, self._model_params_override
+            )
             self._model_params_override = without_effort_model_params(
-                self._model_params_override
+                spec, self._model_params_override
             )
             saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
@@ -13594,8 +13698,20 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(message))
             return
 
-        params = model_params_for_effort(spec, effort)
-        if params is None:
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
+            return
+        spec = context.spec
+        matched_effort = next(
+            (
+                supported_effort
+                for supported_effort in context.efforts
+                if supported_effort.casefold() == effort.casefold()
+            ),
+            None,
+        )
+        if matched_effort is None:
             supported = ", ".join(context.efforts)
             await self._mount_message(
                 ErrorMessage(
@@ -13605,21 +13721,21 @@ class DeepAgentsApp(App):
             )
             return
 
-        self._model_params_override = merge_effort_model_params(
-            self._model_params_override, params
+        self._model_params_override = with_effort_model_params(
+            spec, self._model_params_override, matched_effort
         )
-        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
+        saved = await asyncio.to_thread(save_effort_for_model, spec, matched_effort)
         self._sync_status_model()
         if not saved:
             await self._mount_message(
                 ErrorMessage(
-                    f"Reasoning effort for {spec} set to {effort} in this session, "
-                    "but the preference could not be saved."
+                    f"Reasoning effort for {spec} set to {matched_effort} in this "
+                    "session, but the preference could not be saved."
                 )
             )
             return
         await self._mount_message(
-            AppMessage(f"Reasoning effort for {spec} set to {effort}."),
+            AppMessage(f"Reasoning effort for {spec} set to {matched_effort}."),
         )
 
     async def _run_agent_task(
@@ -15102,6 +15218,10 @@ class DeepAgentsApp(App):
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
         self._active_user_message = None
+        # Same reasoning for the startup `-m` placeholder: remove_children()
+        # below detaches its widget, so the pointer must not outlive it or
+        # `_sync_status_queued`'s `+1` would strand the queued count.
+        self._initial_prompt_queued_widget = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -15237,6 +15357,15 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        # The startup `-m` placeholder represents a pending submission even
+        # though it is not stored in `_pending_messages`. Cancel the backing
+        # prompt along with the widget so a later `ServerReady` cannot submit
+        # work the user already discarded.
+        placeholder = self._initial_prompt_queued_widget
+        if placeholder is not None:
+            self._initial_prompt = None
+            self._initial_prompt_queued_widget = None
+            placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
 
@@ -15773,16 +15902,15 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # A second exit() while shutdown is already underway means the user is
-        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set at
-        # the top of the first exit() below, before it decides whether to defer,
-        # so this guard fires for both the deferred and immediate first paths.
-        # Tear down immediately rather than arming another bounded wait — the
-        # first call already ran cleanup and cancelled the worker, so re-running
-        # it would only make the force-quit wait out another window.
+        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set by
+        # the first exit() below, before it decides whether to defer, so this
+        # guard fires for both the deferred and immediate first paths. Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
         if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
-        self._exiting = True
 
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
@@ -15853,6 +15981,7 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
+        self._exiting = True
 
         # Defer super().exit() so teardown can overlap independent slow phases
         # instead of serializing them, while keeping the Textual event loop
@@ -16477,6 +16606,28 @@ class DeepAgentsApp(App):
             return None
         return focused
 
+    def _focused_ask_user_editor(self) -> AskUserTextArea | None:
+        """Return the active focused ask-user text area, if any."""
+        menu = self._pending_ask_user_widget
+        if menu is None or not menu.is_attached or not menu.display or not menu.visible:
+            return None
+
+        from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+
+        focused = self.focused
+        # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
+        # a menu owns two possible inputs (free-text vs "Other"), and this also
+        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
+        if (
+            not isinstance(focused, AskUserTextArea)
+            or menu not in focused.ancestors
+            or not focused.is_attached
+            or not focused.display
+            or not focused.visible
+        ):
+            return None
+        return focused
+
     async def _open_text_area_in_editor(
         self,
         text_area: TextArea,
@@ -16498,7 +16649,7 @@ class DeepAgentsApp(App):
             restore_focus: Callback that restores the originating editable surface.
             reset_after_edit: Optional state reset after replacing the field text.
         """
-        from deepagents_code.editor import open_in_editor
+        from deepagents_code.editor import ExternalEditorError, open_in_editor
 
         try:
             with self.suspend():
@@ -16507,7 +16658,11 @@ class DeepAgentsApp(App):
                     allow_empty=allow_empty,
                     raise_on_error=raise_editor_errors,
                 )
-        except Exception:
+        except ExternalEditorError:
+            # `open_in_editor` only raises this when `raise_on_error` is set, and
+            # only for genuine launch/file failures. Catching it narrowly lets
+            # `suspend()` failures and programming errors propagate instead of
+            # being disguised as an editor-config problem.
             logger.warning("External editor failed", exc_info=True)
             self.notify(
                 "External editor failed. Check $VISUAL/$EDITOR.",
@@ -16535,6 +16690,18 @@ class DeepAgentsApp(App):
                 raise_editor_errors=True,
                 restore_focus=goal_editor.focus,
                 reset_after_edit=goal_editor.reset_paste_state,
+            )
+            return
+
+        ask_user_editor = self._focused_ask_user_editor()
+        if ask_user_editor is not None:
+            await self._open_text_area_in_editor(
+                ask_user_editor,
+                ask_user_editor.submitted_value,
+                allow_empty=True,
+                raise_editor_errors=True,
+                restore_focus=ask_user_editor.focus,
+                reset_after_edit=ask_user_editor.reset_paste_state,
             )
             return
 
@@ -20404,10 +20571,12 @@ class DeepAgentsApp(App):
             timeout: Optional outer timeout for the full restart.
 
         Raises:
-            asyncio.CancelledError: If app teardown has already begun.
+            asyncio.CancelledError: If app teardown has already begun, or if
+                `server_proc.restart()` is cancelled because a terminal `stop()`
+                bumped the stop generation mid-restart.
             RuntimeError: Propagated from `server_proc.restart()` on failure.
             TimeoutError: If `timeout` is set and the restart exceeds it.
-        """  # noqa: DOC502  # RuntimeError/TimeoutError propagate from restart()
+        """  # noqa: DOC502  # restart() raises RuntimeError; wait_for() times out.
         if self._exiting:
             raise asyncio.CancelledError
 
@@ -20472,12 +20641,9 @@ class DeepAgentsApp(App):
             # `asyncio.CancelledError` is intentionally NOT caught here (it is a
             # `BaseException`): `_restart_server_process` raises it only when app
             # teardown has begun or a terminal `stop()` bumped the server's stop
-            # generation mid-restart — i.e. only during shutdown. Letting it
-            # propagate means the `_connecting`/`_reconnecting` reset below is
-            # skipped, but that is safe because UI state no longer matters during
-            # shutdown and the `/restart` caller (`_run_restart_respawn`) resets
-            # those flags in its own `finally`. If a future edit ever lets this
-            # fire outside teardown, add a reset on the cancellation path.
+            # generation mid-restart — i.e. only during shutdown. Let it propagate
+            # to the outer `BaseException` handler below, which resets
+            # `_connecting`/`_reconnecting`, syncs connection status, and re-raises.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False

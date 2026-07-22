@@ -7454,6 +7454,7 @@ class DeepAgentsApp(App):
             timeout=8,
             markup=False,
         )
+        await self._auto_accept_pending_goal_rubric()
         return True
 
     async def _switch_to_manual_from_fallback(self) -> bool:
@@ -7886,6 +7887,7 @@ class DeepAgentsApp(App):
                 "Skipping session start sequence; already initialized for thread %s",
                 self._lc_thread_id,
             )
+            await self._auto_accept_pending_goal_rubric()
             await self._drain_startup_backlog()
             return
 
@@ -9793,12 +9795,14 @@ class DeepAgentsApp(App):
         self._pending_goal_kind = None
         self._pending_goal_request_id = None
 
-    def _live_goal_auto_approve_enabled(self) -> bool:
-        """Return whether the authoritative live mode is literal `True`."""
-        return (
-            self._session_state is not None
-            and getattr(self._session_state, "auto_approve", None) is True
-        )
+    def _live_goal_proposal_auto_accept_enabled(self) -> bool:
+        """Return whether the live mode accepts goal proposals automatically."""
+        if self._session_state is None:
+            return False
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = getattr(self._session_state, "approval_mode", None)
+        return mode is ApprovalMode.AUTO or mode is ApprovalMode.YOLO
 
     def _pending_goal_proposal(self) -> _PendingGoalProposal | None:
         """Return a complete, well-formed pending proposal if one exists."""
@@ -9898,6 +9902,28 @@ class DeepAgentsApp(App):
         def _as_nonblank_str(value: object) -> str | None:
             return value if isinstance(value, str) and value.strip() else None
 
+        raw_pending_kind = state_values.get("_pending_goal_kind")
+        pending_kind = coerce_goal_proposal_kind(raw_pending_kind)
+        raw_pending_request_id = state_values.get("_pending_goal_request_id")
+        pending_request_id = _as_nonblank_str(raw_pending_request_id)
+        pending_metadata_valid = (
+            raw_pending_kind is None or pending_kind is not None
+        ) and (raw_pending_request_id is None or pending_request_id is not None)
+        if not pending_metadata_valid and (
+            isinstance(state_values.get("_pending_goal_objective"), str)
+            or isinstance(state_values.get("_pending_goal_rubric"), str)
+        ):
+            # `_warn_discarded_goal_channels` only names the malformed metadata
+            # channel; record that an otherwise-valid objective/rubric was
+            # dropped alongside it so the coupled discard leaves a trace. Channel
+            # names only, never the persisted objective or criteria text.
+            logger.warning(
+                "Discarding complete pending goal proposal "
+                "(_pending_goal_objective/_pending_goal_rubric) because its "
+                "_pending_goal_kind/_pending_goal_request_id metadata was "
+                "malformed",
+            )
+
         return _ThreadHistoryPayload(
             messages,
             context_tokens,
@@ -9917,13 +9943,19 @@ class DeepAgentsApp(App):
             rubric_grading_run_id=_as_nonblank_str(
                 state_values.get("_current_grading_run_id")
             ),
-            pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
-            pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
-            pending_goal_kind=coerce_goal_proposal_kind(
-                state_values.get("_pending_goal_kind")
+            pending_goal_objective=(
+                _as_str(state_values.get("_pending_goal_objective"))
+                if pending_metadata_valid
+                else None
             ),
-            pending_goal_request_id=_as_nonblank_str(
-                state_values.get("_pending_goal_request_id")
+            pending_goal_rubric=(
+                _as_str(state_values.get("_pending_goal_rubric"))
+                if pending_metadata_valid
+                else None
+            ),
+            pending_goal_kind=pending_kind if pending_metadata_valid else None,
+            pending_goal_request_id=(
+                pending_request_id if pending_metadata_valid else None
             ),
             goal_criteria_request_active=(
                 state_values.get("goal_criteria_request") is not None
@@ -10486,7 +10518,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    "Goal proposals are reviewed in the review prompt. "
+                    "Manual mode reviews goal proposals in the review prompt. "
                     "Use `/goal <objective>` to draft criteria."
                 )
             )
@@ -10531,9 +10563,10 @@ class DeepAgentsApp(App):
             "  /goal model [provider:model|clear]\n"
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
-            "draft a checklist and ask before applying it. Once accepted, the "
-            "goal stays active for this thread until paused, completed, blocked, "
-            "or cleared. Follow-up prompts continue working toward that goal."
+            "draft a checklist. Manual mode asks you to review it before applying "
+            "it; Auto and YOLO apply it automatically. Once applied, the goal stays "
+            "active for this thread until paused, completed, blocked, or cleared. "
+            "Follow-up prompts continue working toward that goal."
         )
 
     async def _show_goal_state(self) -> None:
@@ -10716,7 +10749,7 @@ class DeepAgentsApp(App):
         self,
         proposal: _PendingGoalProposal,
     ) -> bool:
-        """Keep a submitted review decision ahead of a live YOLO toggle.
+        """Keep a submitted review decision ahead of a live Auto/YOLO toggle.
 
         Returns:
             Whether a terminal review decision was already waiting.
@@ -10755,7 +10788,7 @@ class DeepAgentsApp(App):
         )
         if self._pending_goal_proposal() != proposal:
             return False
-        if not self._live_goal_auto_approve_enabled():
+        if not self._live_goal_proposal_auto_accept_enabled():
             await self._mount_goal_rubric_review(proposal)
             return False
 
@@ -10773,7 +10806,7 @@ class DeepAgentsApp(App):
         *,
         expected_request_id: str | None = None,
     ) -> bool:
-        """Accept the complete pending proposal when live YOLO mode allows it.
+        """Accept the complete pending proposal outside Manual mode.
 
         Args:
             expected_request_id: Correlation ID required for a freshly generated
@@ -10785,7 +10818,7 @@ class DeepAgentsApp(App):
         if self._startup_sequence_running:
             return False
         async with self._goal_review_resolution_lock:
-            if not self._live_goal_auto_approve_enabled():
+            if not self._live_goal_proposal_auto_accept_enabled():
                 return False
             proposal = self._pending_goal_proposal()
             if proposal is None:
@@ -10813,7 +10846,7 @@ class DeepAgentsApp(App):
                 and proposal.request_id != expected_request_id
             ):
                 return
-            if self._live_goal_auto_approve_enabled():
+            if self._live_goal_proposal_auto_accept_enabled():
                 await self._auto_accept_pending_goal_rubric_locked(proposal)
                 return
 
@@ -11049,7 +11082,7 @@ class DeepAgentsApp(App):
         if automatic:
             await self._mount_message(
                 AppMessage(
-                    "Goal criteria automatically accepted because YOLO mode is enabled."
+                    "Goal criteria automatically accepted without manual review."
                 )
             )
         if self._agent_running or self._agent_reconciling:
@@ -16310,6 +16343,8 @@ class DeepAgentsApp(App):
                 timeout=8,
                 markup=False,
             )
+            if should_persist_live:
+                await self._auto_accept_pending_goal_rubric()
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""

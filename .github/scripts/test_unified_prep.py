@@ -137,14 +137,16 @@ def test_context_lite_tasks_pin_the_recalibrated_candidate():
     import lite_tasks
 
     assert lite_tasks.LITE_TASKS["context"] == [
-        "cb-cloud-4",
-        "cb-cloud-21",
-        "cb-cloud-22",
-        "cb-cloud-33",
         "cb-cloud-48",
-        "cb-cloud-53",
+        "cb-cloud-1",
+        "cb-cloud-21",
+        "cb-cloud-49",
         "cb-cloud-65",
-        "cb-cloud-79",
+        "cb-cloud-69",
+        "cb-cloud-57",
+        "cb-cloud-9",
+        "cb-cloud-7",
+        "cb-cloud-4",
     ]
 
 
@@ -335,8 +337,8 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     for entry in eval_matrix:
         assert set(entry) == {"model", "branch", "branch_sha", "flat_matrix"}
         flat = _j.loads(entry["flat_matrix"])["include"]
-        # lite totals 15+11+8 = 34 single-task shards per model
-        assert len(flat) == 34
+        # lite totals 15+11+10 = 36 single-task shards per model
+        assert len(flat) == 36
         assert {e["category"] for e in flat} == {
             "autonomous",
             "conversation",
@@ -538,7 +540,7 @@ def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
     tasks = {
         "autonomous": [f"harbor-index/a{i}" for i in range(15)],
         "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
-        "context": [f"cb-cloud-{i}" for i in range(8)],
+        "context": [f"cb-cloud-{i}" for i in range(10)],
     }
     entries = up.build_flat_matrix(
         "openai:gpt",
@@ -546,7 +548,7 @@ def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
         tasks,
         code_impls=["dcode"],
     )
-    assert len(entries) == 15 + 11 + 8
+    assert len(entries) == 15 + 11 + 10
     assert all(len(e["include_tasks"].split()) == 1 for e in entries)
 
 

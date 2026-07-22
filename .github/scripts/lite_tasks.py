@@ -57,19 +57,23 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-banking_knowledge-task-073",
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
-    # 8 — one task per Context-Bench query type. This 1 easy / 4 medium / 3 hard
-    # source-tier slice is selected from the paired six-rollout 100-task run:
-    # Terra 41/48 and Luna 43/48, preserving the full-corpus gap without using
-    # context to target a leaderboard order.
+    # 10 — every Context-Bench query type, with extra deep-comparison and
+    # multi-hop tasks. This 1 easy / 3 medium / 6 hard source-tier slice is
+    # selected from the completed six-model, three-rollout full-30 run
+    # (29883830538). It is the closest all-model profile among stable,
+    # source-balanced candidates that preserves the full run's strict observed
+    # order; it does not target an external leaderboard order.
     "context": [
-        "cb-cloud-4",  # temporal_reasoning (hard)
-        "cb-cloud-21",  # cross_file_counting (medium)
-        "cb-cloud-22",  # negation (easy)
-        "cb-cloud-33",  # comparison_tiebreak (medium)
         "cb-cloud-48",  # aggregation (medium)
-        "cb-cloud-53",  # set_intersection (medium)
+        "cb-cloud-1",  # comparison_tiebreak (easy)
+        "cb-cloud-21",  # cross_file_counting (medium)
+        "cb-cloud-49",  # multi_entity_comparison (hard)
         "cb-cloud-65",  # multi_entity_comparison (hard)
-        "cb-cloud-79",  # multi_hop_chain (hard)
+        "cb-cloud-69",  # multi_hop_chain (hard)
+        "cb-cloud-57",  # multi_hop_chain (hard)
+        "cb-cloud-9",  # negation (medium)
+        "cb-cloud-7",  # set_intersection (hard)
+        "cb-cloud-4",  # temporal_reasoning (hard)
     ],
 }
 

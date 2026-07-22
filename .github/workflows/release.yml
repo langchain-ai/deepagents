@@ -89,6 +89,9 @@ jobs:
   setup:
     name: 🧭 Resolve release target
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
@@ -213,6 +216,7 @@ jobs:
       - name: Resolve and validate release SHA
         id: resolve-sha
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_SHA: ${{ inputs.release-sha }}
           INPUT_VERSION: ${{ inputs.version }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
@@ -295,12 +299,33 @@ jobs:
           else
             RELEASE_SHA_SOURCE="workflow SHA fallback because dangerous-nonmain-release is enabled"
           fi
+
+          RELEASE_PR_NUMBER=""
+          if PULLS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" 2>&1); then
+            # sort_by(.number) makes the pick deterministic when a commit is
+            # associated with more than one merged PR (e.g. a merge to main plus a
+            # later backport that cherry-picked it): the lowest number is the
+            # original merge, since backports are opened afterwards.
+            if ! RELEASE_PR_NUMBER=$(printf '%s' "$PULLS" | jq -r \
+              'map(select(.merged_at != null)) | sort_by(.number) | .[0].number // empty'); then
+              echo "::warning::Could not parse the pull request associated with release SHA $SHA: $PULLS"
+              RELEASE_PR_NUMBER=""
+            fi
+          else
+            echo "::warning::Could not look up the pull request associated with release SHA $SHA: $PULLS"
+          fi
+
           {
             echo "### Resolved release target"
             echo ""
             echo "| Target | Value |"
             echo "|---|---|"
             echo "| Release SHA | [\`${SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SHA}) |"
+            if [ -n "$RELEASE_PR_NUMBER" ]; then
+              echo "| Associated PR | [#${RELEASE_PR_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${RELEASE_PR_NUMBER}) |"
+            fi
             echo "| Resolution | ${RELEASE_SHA_SOURCE} |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"

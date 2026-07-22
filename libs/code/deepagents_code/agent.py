@@ -967,6 +967,36 @@ MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL
 """Matches the `### Model Identity` section in the system prompt, up to the
 next heading or end of string."""
 
+_FS_TOOL_USAGE_INSTRUCTIONS: tuple[tuple[FsToolName, str], ...] = (
+    ("edit_file", "- `edit_file` over `sed`/`awk`"),
+    ("write_file", "- `write_file` over `echo`/heredoc"),
+)
+"""dcode filesystem-tool preferences included in the generated prompt."""
+
+
+def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
+    """Build dcode prompt guidance for the enabled filesystem tools.
+
+    Args:
+        fs_tools: Filesystem tool allowlist, or `None` for all tools.
+
+    Returns:
+        Filesystem preference guidance, or an empty string when neither
+        applicable tool is enabled.
+    """
+    enabled = None if fs_tools is None else frozenset(fs_tools)
+    instructions = [
+        instruction
+        for name, instruction in _FS_TOOL_USAGE_INSTRUCTIONS
+        if enabled is None or name in enabled
+    ]
+    if not instructions:
+        return ""
+    return (
+        "IMPORTANT: Use specialized tools instead of shell commands:\n\n"
+        + "\n".join(instructions)
+    )
+
 
 def build_model_identity_section(
     name: str | None,
@@ -1017,6 +1047,7 @@ def get_system_prompt(
     *,
     interactive: bool = True,
     cwd: str | Path | None = None,
+    fs_tools: list[FsToolName] | None = None,
 ) -> str:
     """Get the base system prompt for the agent.
 
@@ -1034,6 +1065,8 @@ def get_system_prompt(
         interactive: When `False`, the prompt is tailored for headless
             non-interactive execution (no human in the loop).
         cwd: Override the working directory shown in the prompt.
+        fs_tools: Filesystem tool allowlist. Restricted prompts omit guidance
+            for unavailable tools; `None` retains all guidance.
 
     Returns:
         The system prompt string
@@ -1114,6 +1147,8 @@ def get_system_prompt(
         context_limit=settings.model_context_limit,
         unsupported_modalities=settings.model_unsupported_modalities,
     )
+    filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
+
     # Build working directory section (local vs sandbox)
     if sandbox_type:
         working_dir = get_default_working_dir(sandbox_type)
@@ -1167,6 +1202,7 @@ def get_system_prompt(
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
+        .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
     )
 
     # Detect unreplaced placeholders (defense-in-depth for template typos)
@@ -2316,6 +2352,7 @@ def create_cli_agent(
                 sandbox_type=sandbox_type,
                 interactive=interactive,
                 cwd=effective_cwd,
+                fs_tools=fs_tools,
             )
         }
     else:

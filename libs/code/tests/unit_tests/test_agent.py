@@ -1674,6 +1674,48 @@ class TestGetSystemPromptSandbox:
         assert "remote Linux sandbox" not in prompt
 
 
+class TestGetSystemPromptFilesystemTools:
+    """Tests for filesystem allowlist guidance in the generated prompt."""
+
+    def test_restricted_prompt_omits_unavailable_mutation_tools(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt(
+                "test-agent",
+                fs_tools=["read_file", "execute"],
+            )
+
+        assert "`edit_file` over" not in prompt
+        assert "`write_file` over" not in prompt
+        assert "Use specialized tools instead of shell commands" not in prompt
+
+    def test_restricted_prompt_keeps_enabled_mutation_tool(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt(
+                "test-agent",
+                fs_tools=["read_file", "edit_file"],
+            )
+
+        assert "`edit_file` over" in prompt
+        assert "`write_file` over" not in prompt
+        assert "Use specialized tools instead of shell commands" in prompt
+
+    def test_unrestricted_prompt_keeps_all_mutation_tool_guidance(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "`edit_file` over" in prompt
+        assert "`write_file` over" in prompt
+
+
 class TestGetSystemPromptPlaceholderValidation:
     """Tests for unreplaced placeholder detection."""
 
@@ -1761,7 +1803,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_called_once()
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
-        assert "fs_tools" not in kwargs
+        assert kwargs["fs_tools"] == ["read_file", "grep"]
         assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
         assert (
             mock_create_deep_agent.call_args.kwargs["context_schema"]

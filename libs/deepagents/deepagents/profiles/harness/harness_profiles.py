@@ -798,7 +798,7 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     """
     prompt = profile.base_system_prompt if profile.base_system_prompt is not None else base_prompt
     if profile.system_prompt_suffix is not None:
-        prompt = prompt + "\n\n" + profile.system_prompt_suffix
+        prompt = prompt + "\n\n" + profile.system_prompt_suffix if prompt else profile.system_prompt_suffix
     return prompt
 
 

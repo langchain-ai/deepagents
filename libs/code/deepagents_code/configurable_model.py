@@ -408,6 +408,26 @@ def _build_overrides(
                 model_result.model_name,
             )
 
+    # Layer the swapped-in model's harness profile suffix onto the prompt.
+    # `create_deep_agent` resolves harness profiles against the *default*
+    # configurable model at construction time, so a runtime swap to a model
+    # with its own suffix (e.g. GLM-5.2's `<execution>` block) would otherwise
+    # never see it. Append it on top of any Model Identity patch above, using
+    # the already-patched prompt when present so both edits coexist.
+    if model_result is not None:
+        base_prompt = overrides.get("system_prompt", request.system_prompt)
+        if base_prompt:
+            from deepagents.profiles.harness.harness_profiles import (
+                _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+            )
+
+            spec = _model_spec_from_result(model_result, model_result.model)
+            suffix = _harness_profile_for_model(
+                model_result.model, spec
+            ).system_prompt_suffix
+            if suffix and suffix not in base_prompt:
+                overrides["system_prompt"] = f"{base_prompt}\n\n{suffix}"
+
     return request.override(**overrides)
 
 

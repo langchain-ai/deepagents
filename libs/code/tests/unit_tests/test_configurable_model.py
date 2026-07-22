@@ -1370,3 +1370,90 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestHarnessProfileSuffix:
+    """Runtime model swaps append the new model's harness profile suffix.
+
+    `create_deep_agent` resolves harness profiles against the default
+    configurable model at construction time, so the runtime swap done here is
+    the only place a GLM-5.2 swap can pick up its `<execution>` suffix.
+    """
+
+    _GLM_SPEC = "baseten:zai-org/GLM-5.2"
+    _PROMPT = "You are a helpful assistant.\n\n### Skills Directory\n"
+
+    @pytest.fixture
+    def glm_suffix(self, monkeypatch: pytest.MonkeyPatch) -> str:
+        """Register the real GLM-5.2 profile in an isolated harness registry."""
+        from deepagents.profiles.harness import harness_profiles
+
+        from deepagents_code._glm_5p2_profile import (
+            _GLM_5P2_PROFILE,
+            _SYSTEM_PROMPT_SUFFIX,
+        )
+
+        monkeypatch.setattr(
+            harness_profiles, "_ensure_harness_profiles_loaded", lambda: None
+        )
+        monkeypatch.setattr(
+            harness_profiles,
+            "_HARNESS_PROFILES",
+            {self._GLM_SPEC: _GLM_5P2_PROFILE},
+        )
+        return _SYSTEM_PROMPT_SUFFIX
+
+    def _swap(self, prompt: str, spec: str) -> str | None:
+        """Run one model swap to `spec` and return the resulting system prompt."""
+        override = _make_model(spec.split(":", 1)[1])
+        provider, model_name = spec.split(":", 1)
+        result = _make_model_result(
+            override, model_name=model_name, provider=provider, context_limit=128_000
+        )
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model=spec),
+            system_prompt=prompt,
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=result):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+        return captured[0].system_prompt
+
+    def test_suffix_appended_on_glm_swap(self, glm_suffix: str) -> None:
+        """Swapping to GLM-5.2 appends its `<execution>` suffix to the prompt."""
+        prompt = self._swap(self._PROMPT, self._GLM_SPEC)
+        assert prompt is not None
+        assert "<execution>" in prompt
+        assert prompt.endswith(glm_suffix)
+        # The original prompt content survives the append.
+        assert "### Skills Directory" in prompt
+
+    def test_suffix_not_double_appended(self, glm_suffix: str) -> None:
+        """A prompt already carrying the suffix is left untouched."""
+        prompt_with_suffix = f"{self._PROMPT}\n\n{glm_suffix}"
+        prompt = self._swap(prompt_with_suffix, self._GLM_SPEC)
+        assert prompt is not None
+        assert prompt.count("<execution>") == 1
+
+    @pytest.mark.usefixtures("glm_suffix")
+    def test_no_suffix_for_non_glm_swap(self) -> None:
+        """A swap to a model without a profile leaves the prompt unchanged."""
+        prompt = self._swap(self._PROMPT, "openai:gpt-5.5")
+        assert prompt == self._PROMPT
+
+    def test_suffix_and_identity_patch_coexist(self, glm_suffix: str) -> None:
+        """Identity patch and profile suffix both apply in one swap."""
+        prompt_with_identity = (
+            "Preamble.\n\n### Model Identity\n\n"
+            "You are running as model `claude-opus-4-6` (provider: anthropic).\n"
+            "Your context window is 200,000 tokens.\n\n"
+            "### Skills Directory\n\nSkills here.\n"
+        )
+        prompt = self._swap(prompt_with_identity, self._GLM_SPEC)
+        assert prompt is not None
+        assert "`zai-org/GLM-5.2`" in prompt
+        assert "`claude-opus-4-6`" not in prompt
+        assert prompt.endswith(glm_suffix)

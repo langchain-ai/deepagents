@@ -1207,6 +1207,33 @@ def test_run_get_unknown_key_returns_error_code(capsys) -> None:
     assert "config --verbose" in err
 
 
+def test_run_get_missing_key_hints_available_keys(capsys) -> None:
+    """Bare `config get` explains it needs a key and where to find one."""
+    args = argparse.Namespace(config_command="get", key=None, output_format="text")
+    assert run_config_command(args) == 2
+    err = capsys.readouterr().err
+    assert "needs an option key" in err
+    assert "dcode config" in err
+
+
+def test_run_get_missing_key_json_lists_keys(capsys) -> None:
+    """JSON output for a bare `config get` returns the full key list for tools."""
+    import json
+
+    args = argparse.Namespace(config_command="get", key=None, output_format="json")
+    assert run_config_command(args) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["error"] == "missing key"
+    assert payload["data"]["keys"] == list(option_keys())
+
+
+def test_missing_key_example_is_a_real_option() -> None:
+    """The hint's example key must stay a resolvable manifest key."""
+    from deepagents_code.client.commands.config import _GET_KEY_EXAMPLE
+
+    assert get_option(_GET_KEY_EXAMPLE) is not None
+
+
 def test_config_registered_as_bare_action_group() -> None:
     """Bare `config` must run its action instead of startup-fast-path help."""
     from deepagents_code import ui

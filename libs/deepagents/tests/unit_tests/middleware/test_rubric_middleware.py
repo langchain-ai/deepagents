@@ -523,17 +523,19 @@ class TestGraderPlumbing:
         assert seen["model"] == "custom-grader-model"
 
     @pytest.mark.parametrize(
-        ("model_name", "profile"),
+        ("model_name", "profile", "expected_strategy"),
         [
-            ("gpt-4.1", None),
-            ("claude-sonnet-4-6", {"structured_output": False}),
+            ("gpt-4.1", None, "ProviderStrategy"),
+            ("claude-sonnet-4-6", {"structured_output": False}, "ProviderStrategy"),
+            ("custom-model", None, "ToolStrategy"),
         ],
     )
-    def test_grader_metadata_uses_langchain_model_name_fallback(
+    def test_grader_metadata_matches_langchain_model_strategy(
         self,
         monkeypatch: pytest.MonkeyPatch,
         model_name: str,
         profile: dict[str, bool] | None,
+        expected_strategy: str,
     ) -> None:
         mw = RubricMiddleware(model=f"provider:{model_name}")
         monkeypatch.setattr(
@@ -542,7 +544,7 @@ class TestGraderPlumbing:
             SimpleNamespace(model_name=model_name, profile=profile),
         )
 
-        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == expected_strategy
 
     def test_grade_records_model_strategy_and_preserves_inherited_metadata(
         self,
@@ -563,7 +565,21 @@ class TestGraderPlumbing:
         ) -> dict[str, Any]:
             captured_config.update(config)
             return {
-                "messages": [AIMessage(content='{"result":"satisfied"}')],
+                "messages": [
+                    # Only the final AI turn determines the effective strategy.
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "GraderResponse",
+                                "args": {"result": "needs_revision"},
+                                "id": "earlier-tool-call",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content='{"result":"satisfied"}'),
+                ],
                 "structured_response": response,
             }
 

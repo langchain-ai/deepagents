@@ -140,10 +140,10 @@ def test_context_lite_tasks_pin_the_recalibrated_candidate():
         "cb-cloud-10",
         "cb-cloud-71",
         "cb-cloud-74",
-        "cb-cloud-13",
         "cb-cloud-15",
-        "cb-cloud-47",
+        "cb-cloud-35",
         "cb-cloud-55",
+        "cb-cloud-68",
         "cb-cloud-8",
     ]
 

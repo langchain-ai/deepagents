@@ -81,13 +81,19 @@ def _install_details_options() -> list[Option]:
     ]
 
 
-def _installed_details_options(row: _PluginRow) -> list[Option]:
+def _installed_details_options(row: _PluginRow, *, divider_width: int) -> list[Option]:
+    glyphs = get_glyphs()
     return [
         Option(
             "Disable plugin" if row.enabled else "Enable plugin",
             id="action:toggle-enabled",
         ),
         Option(Content.styled("Uninstall", "bold"), id="action:uninstall"),
+        Option(
+            Content.styled(glyphs.box_horizontal * divider_width, "dim"),
+            id="details-divider",
+            disabled=True,
+        ),
         Option("Back to plugin list", id="details-back"),
     ]
 

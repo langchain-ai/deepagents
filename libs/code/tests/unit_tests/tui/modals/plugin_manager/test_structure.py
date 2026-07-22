@@ -16,6 +16,7 @@ from deepagents_code.config import get_glyphs
 from deepagents_code.plugins.models import PluginMarketplace
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.content import (
+    _installed_details_options,
     _installed_plugin_details_content,
     _load_state_label,
     _marketplace_label,
@@ -68,6 +69,28 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
         "detail:second@source",
     ]
     assert options[1].disabled
+
+
+def test_installed_details_separate_back_action() -> None:
+    row = _PluginRow(
+        plugin_id="linear@tools",
+        description="Linear plugin",
+        enabled=True,
+        version="1.0.0",
+        author=None,
+    )
+
+    divider_width = 8
+    options = _installed_details_options(row, divider_width=divider_width)
+
+    assert [option.id for option in options] == [
+        "action:toggle-enabled",
+        "action:uninstall",
+        "details-divider",
+        "details-back",
+    ]
+    assert options[2].disabled
+    assert str(options[2].prompt) == get_glyphs().box_horizontal * divider_width
 
 
 async def test_plugin_manager_closes_without_mcp_reconnect() -> None:
@@ -1283,6 +1306,42 @@ async def test_details_navigation_starts_at_matching_edge(
         highlighted = options.highlighted
         assert highlighted is not None
         assert options.get_option_at_index(highlighted).id == expected_option_id
+
+
+async def test_installed_details_divider_refits_without_resetting_selection() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+
+        screen._selected_plugin = _PluginRow(
+            plugin_id="linear@tools",
+            description="Linear plugin",
+            enabled=True,
+            version="1.0.0",
+            author=None,
+        )
+        screen._mode = "installed_details"
+        screen._refresh_view()
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert options.get_option_at_index(2).id == "details-divider"
+        box = get_glyphs().box_horizontal
+        wide_width = str(options.get_option_at_index(2).prompt).count(box)
+        assert wide_width > 0
+        selected_option_id = "details-back"
+        options.highlighted = options.get_option_index(selected_option_id)
+
+        await pilot.resize_terminal(60, 40)
+        await pilot.pause()
+
+        narrow_width = str(options.get_option_at_index(2).prompt).count(box)
+        assert 0 < narrow_width < wide_width
+        highlighted = options.highlighted
+        assert highlighted is not None
+        assert options.get_option_at_index(highlighted).id == selected_option_id
 
 
 async def test_marketplace_divider_refits_on_resize() -> None:

@@ -205,7 +205,7 @@ def _merge_block(
     if policy is ExitCodePolicy.IGNORE:
         return
     # DIAGNOSE: exit 2 / decision:"block" is not a veto. SubagentStop still
-    # retains parent-visible context on the first attempt per the MVP matrix.
+    # retains parent-visible context on the first attempt.
     if event is HookEvent.SUBAGENT_STOP:
         if (
             isinstance(invocation.event, SubagentStopEvent)
@@ -218,7 +218,7 @@ def _merge_block(
                 code="unsupported_block",
                 severity="warning",
                 message=(
-                    "Blocking SubagentStop is not supported in MVP; "
+                    "Blocking SubagentStop is not supported yet; "
                     f"retained as parent context: {message}"
                 ),
                 handler_id=handler_id,

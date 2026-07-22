@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 
     from deepagents_code.hooks.snapshot import HookHandler
 
-DEFAULT_HOOK_TIMEOUT = DEFAULT_COMMAND_TIMEOUT_SECONDS
 MAX_HOOK_OUTPUT_BYTES = 100_000
 _READ_CHUNK_BYTES = 8192
 _BLOCKING_EXIT_CODE = 2
@@ -52,7 +51,7 @@ async def run_command_handler(
     *,
     cwd: Path,
     event: HookEvent | None = None,
-    default_timeout: float = DEFAULT_HOOK_TIMEOUT,
+    default_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_HOOK_OUTPUT_BYTES,
     env: dict[str, str] | None = None,
 ) -> HandlerResult:

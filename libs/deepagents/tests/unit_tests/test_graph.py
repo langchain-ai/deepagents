@@ -558,10 +558,6 @@ class TestSystemPromptAssembly:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_default_uses_base_agent_prompt(self) -> None:
-        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
-        assert prompt == BASE_AGENT_PROMPT
-
     def test_profile_base_system_prompt_replaces_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
@@ -581,12 +577,12 @@ class TestSystemPromptAssembly:
         assert prompt == "You are a custom agent.\n\nBe concise."
         assert BASE_AGENT_PROMPT not in prompt
 
-    def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
+    def test_suffix_without_base_system_prompt_omits_empty_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "suffprov",
             HarnessProfile(system_prompt_suffix="Think step by step."),
         )
-        assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
+        assert prompt == "Think step by step."
 
     def test_user_system_prompt_prepended_before_profile_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -597,13 +593,13 @@ class TestSystemPromptAssembly:
         assert prompt == "User instructions.\n\nCustom base."
         assert BASE_AGENT_PROMPT not in prompt
 
-    def test_user_system_prompt_prepended_before_default_base(self) -> None:
+    def test_user_system_prompt_is_used_without_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "defprov",
             HarnessProfile(),
             system_prompt="User instructions.",
         )
-        assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
+        assert prompt == "User instructions."
 
     def test_triple_combo_all_three_inputs(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -625,7 +621,7 @@ class TestSystemPromptAssembly:
             system_prompt=msg,
         )
         assert isinstance(result, SystemMessage)
-        # Last content block should contain the custom base, not BASE_AGENT_PROMPT
+        # Last content block should contain the custom base.
         last_block = result.content_blocks[-1]
         assert "Custom base." in last_block["text"]
         assert BASE_AGENT_PROMPT not in last_block["text"]
@@ -647,6 +643,105 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+    def test_default_base_is_empty(self) -> None:
+        """With no profile base and no caller base, the assembled base is empty."""
+        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
+        assert prompt == ""
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_base_agent_prompt_restores_base(self) -> None:
+        """Callers opt the authored prose back in via `system_prompt=BASE_AGENT_PROMPT`."""
+        prompt = self._build_and_capture_system_prompt(
+            "defprov",
+            HarnessProfile(),
+            system_prompt=BASE_AGENT_PROMPT,
+        )
+        assert prompt == BASE_AGENT_PROMPT
+
+    def test_base_agent_prompt_holds_authored_prose(self) -> None:
+        """The authored prose is preserved (not deleted) so it can be restored."""
+        assert "You are a deep agent" in BASE_AGENT_PROMPT
+        assert "Professional Objectivity" in BASE_AGENT_PROMPT
+
+
+_ABSENT = object()
+
+
+class TestDuplicateToolPromptTrimming:
+    """`create_deep_agent` ships the built-in tool-usage guidance prose trimmed.
+
+    The deepagents-owned middleware (Filesystem, SubAgent, AsyncSubAgent) default
+    to emitting no tool-usage prose, so `create_deep_agent` passes them no
+    `system_prompt` override.
+
+    Skills and Memory are never trimmed: their fragment is the only channel that
+    surfaces the loaded skill index / memory content, so they always emit it
+    (kwarg omitted). The lean middleware defaults themselves are covered by the
+    per-middleware unit tests and `TestFilesystemRoutingPrompt`.
+    """
+
+    def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
+        """Capture the `system_prompt` each built-in middleware is built with.
+
+        Patches the middleware, calls `create_deep_agent`, and returns, per
+        middleware class name, the `system_prompt` value each was constructed
+        with (`_ABSENT` when the kwarg was omitted).
+        """
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        patched = {
+            "FilesystemMiddleware": MagicMock(),
+            "SkillsMiddleware": MagicMock(),
+            "SubAgentMiddleware": MagicMock(),
+            "AsyncSubAgentMiddleware": MagicMock(),
+            "MemoryMiddleware": MagicMock(),
+        }
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+            patch("deepagents.graph.FilesystemMiddleware", patched["FilesystemMiddleware"]),
+            patch("deepagents.graph.SkillsMiddleware", patched["SkillsMiddleware"]),
+            patch("deepagents.graph.SubAgentMiddleware", patched["SubAgentMiddleware"]),
+            patch("deepagents.graph.AsyncSubAgentMiddleware", patched["AsyncSubAgentMiddleware"]),
+            patch("deepagents.graph.MemoryMiddleware", patched["MemoryMiddleware"]),
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", **create_kwargs)
+
+        return {name: [call.kwargs.get("system_prompt", _ABSENT) for call in mock.call_args_list] for name, mock in patched.items()}
+
+    def _create_kwargs(self) -> dict[str, Any]:
+        """Args that force every built-in middleware to be constructed."""
+        return {
+            "skills": ["skill-a"],
+            "memory": ["memory-a"],
+            "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
+        }
+
+    def test_builtin_middleware_use_lean_defaults(self) -> None:
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+
+        # deepagents-owned middleware are lean by default; no override is passed.
+        for name in ("FilesystemMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} should use its lean default"
+
+    def test_skills_and_memory_never_trimmed(self) -> None:
+        """Regression guard for the skills/memory content channel.
+
+        Their fragments carry the feature's only content, so they must emit
+        (kwarg omitted, never `None`) rather than be trimmed like usage prose.
+        """
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+        for name in ("SkillsMiddleware", "MemoryMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed"
 
 
 class TestToolExclusionMiddleware:

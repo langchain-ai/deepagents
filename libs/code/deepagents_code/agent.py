@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-from deepagents import create_deep_agent
+from deepagents import FsToolName, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import (
@@ -26,7 +26,6 @@ from deepagents.middleware import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from deepagents import SystemPromptConfig
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -172,6 +171,95 @@ class _NoTodoListMiddleware(AgentMiddleware):
     bare instance is self-contained rather than relying on the SDK's
     `getattr(mw, "tools", [])` fallback.
     """
+
+
+def _get_harness_tool_descriptions(
+    model: str | BaseChatModel,
+) -> dict[str, str]:
+    """Return the SDK harness's tool-description overrides for `model`.
+
+    The CLI supplies its own `FilesystemMiddleware` when filesystem tools are
+    allowlisted. Because that middleware replaces the SDK-created instance,
+    it must carry forward the same model-specific descriptions.
+
+    Args:
+        model: Model spec or resolved chat model used by the agent.
+
+    Returns:
+        Copy of the matching harness profile's tool-description overrides.
+    """
+    # deepagents-code exactly pins the SDK, and these are the same resolution
+    # helpers used by `create_deep_agent` for its filesystem middleware.
+    from deepagents.profiles.harness.harness_profiles import (
+        _get_harness_profile,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+        _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+    )
+
+    if isinstance(model, str):
+        profile = _get_harness_profile(model)
+        return dict(profile.tool_description_overrides) if profile is not None else {}
+    return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+
+
+def _inject_fs_tools_into_subagents(
+    custom_subagents: list[SubAgent | CompiledSubAgent],
+    *,
+    fs_tools: list[FsToolName],
+    backend: CompositeBackend,
+    main_tool_descriptions: dict[str, str],
+) -> None:
+    """Inject a filesystem-restricted `FilesystemMiddleware` into each subagent.
+
+    Mutates each sync subagent spec in place, appending a `FilesystemMiddleware`
+    bound to `fs_tools` so delegating via `task` cannot bypass the allowlist.
+    Each subagent keeps its own harness tool descriptions (by its `model`, or
+    `main_tool_descriptions` when it inherits the runtime model).
+
+    Args:
+        custom_subagents: Sync subagent specs to mutate. Must be raw `SubAgent`
+            dicts; see the `CompiledSubAgent` guard below.
+        fs_tools: The explicit allowlist to pass through to each subagent's
+            `FilesystemMiddleware`.
+        backend: Composite backend shared with the main agent's middleware.
+        main_tool_descriptions: Harness tool descriptions to use for a subagent
+            that inherits the runtime model (no explicit `model` key).
+
+    Raises:
+        ValueError: If a `CompiledSubAgent` (identified by a `"runnable"` key,
+            matching the SDK's own `"runnable" in spec` discriminator in
+            `deepagents.middleware.subagents`) is present. Such a spec is used
+            as-is by the SDK and its `middleware`
+            key is never read, so we cannot enforce the restriction on it. dcode
+            adds only raw `SubAgent` dicts today, but the declared type admits
+            compiled specs: fail loud rather than silently exposing an
+            unrestricted filesystem via `task` delegation.
+    """
+    for subagent in custom_subagents:
+        if "runnable" in subagent:
+            msg = (
+                "Cannot enforce --allow-fs-tools on compiled subagent "
+                f"{subagent.get('name', '<unnamed>')!r}: its middleware is "
+                "not configurable, so the filesystem restriction would be "
+                "silently bypassed."
+            )
+            raise ValueError(msg)
+        # `"runnable" in subagent` above narrows the union to `SubAgent`.
+        subagent_tool_descriptions = (
+            _get_harness_tool_descriptions(subagent["model"])
+            if "model" in subagent
+            else main_tool_descriptions
+        )
+        subagent["middleware"] = cast(
+            "list[AgentMiddleware]",
+            [
+                *subagent.get("middleware", []),
+                FilesystemMiddleware(
+                    backend=backend,
+                    tools=fs_tools,
+                    custom_tool_descriptions=subagent_tool_descriptions,
+                ),
+            ],
+        )
 
 
 def _todo_list_middleware_override() -> list[AgentMiddleware]:
@@ -882,6 +970,36 @@ MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL
 """Matches the `### Model Identity` section in the system prompt, up to the
 next heading or end of string."""
 
+_FS_TOOL_USAGE_INSTRUCTIONS: tuple[tuple[FsToolName, str], ...] = (
+    ("edit_file", "- `edit_file` over `sed`/`awk`"),
+    ("write_file", "- `write_file` over `echo`/heredoc"),
+)
+"""dcode filesystem-tool preferences included in the generated prompt."""
+
+
+def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
+    """Build dcode prompt guidance for the enabled filesystem tools.
+
+    Args:
+        fs_tools: Filesystem tool allowlist, or `None` for all tools.
+
+    Returns:
+        Filesystem preference guidance, or an empty string when neither
+        applicable tool is enabled.
+    """
+    enabled = None if fs_tools is None else frozenset(fs_tools)
+    instructions = [
+        instruction
+        for name, instruction in _FS_TOOL_USAGE_INSTRUCTIONS
+        if enabled is None or name in enabled
+    ]
+    if not instructions:
+        return ""
+    return (
+        "IMPORTANT: Use specialized tools instead of shell commands:\n\n"
+        + "\n".join(instructions)
+    )
+
 
 def build_model_identity_section(
     name: str | None,
@@ -932,6 +1050,7 @@ def get_system_prompt(
     *,
     interactive: bool = True,
     cwd: str | Path | None = None,
+    fs_tools: list[FsToolName] | None = None,
 ) -> str:
     """Get the base system prompt for the agent.
 
@@ -949,6 +1068,8 @@ def get_system_prompt(
         interactive: When `False`, the prompt is tailored for headless
             non-interactive execution (no human in the loop).
         cwd: Override the working directory shown in the prompt.
+        fs_tools: Filesystem tool allowlist. Restricted prompts omit guidance
+            for unavailable tools; `None` retains all guidance.
 
     Returns:
         The system prompt string
@@ -1029,6 +1150,7 @@ def get_system_prompt(
         context_limit=settings.model_context_limit,
         unsupported_modalities=settings.model_unsupported_modalities,
     )
+    filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1083,6 +1205,7 @@ def get_system_prompt(
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
+        .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
     )
 
     # Detect unreplaced placeholders (defense-in-depth for template typos)
@@ -1685,6 +1808,7 @@ def create_cli_agent(
     auto_mode_enabled: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
+    fs_tools: list[FsToolName] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     memory_auto_save: bool = True,
@@ -1730,9 +1854,8 @@ def create_cli_agent(
                 Passing a value here replaces that auto-generated prompt
                 entirely — none of the dynamic context above is added, and
                 `sandbox_type` and `interactive` no longer influence the
-                prompt. The value is forwarded to the deepagents SDK as-is;
-                the SDK still layers its built-in base prompt beneath your
-                text.
+                prompt. Only pass an explicit prompt when you intend to take
+                full ownership of the system prompt's content.
         interactive: When `False`, the auto-generated system prompt is
             tailored for headless non-interactive execution, and every stack
             gains terminal-stall recovery middleware (a runtime no-op unless the
@@ -1761,6 +1884,16 @@ def create_cli_agent(
             the CLI process. When provided (and `interrupt_shell_only` is
             `True`), used directly instead of reading `settings.shell_allow_list`
             (which may not be set in the server subprocess environment).
+        fs_tools: Allowlist of filesystem tools to expose to the agent, from
+            `--allow-fs-tools`. `None` (default; also what `--allow-fs-tools
+            all` parses to) leaves `FilesystemMiddleware` at its SDK default
+            (all tools). An explicit list (which must include `"read_file"`)
+            installs a `FilesystemMiddleware` restricted to those tool names,
+            replacing the SDK's default for the main agent and every synchronous
+            subagent (including `general-purpose`) as well as the nested
+            goal-criteria agent, so delegation cannot bypass the restriction.
+            Async subagents are unaffected (they run on their own remote
+            backend, not the local filesystem).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -2222,22 +2355,15 @@ def create_cli_agent(
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
 
-    # For the auto-generated prompt, overwrite the SDK's built-in base prompt
-    # (via the `base` key) so its content isn't duplicated on top of ours. A
-    # caller-supplied prompt is forwarded as-is: the SDK treats a bare string
-    # as a `prefix`, layering it above its built-in base (see `system_prompt`).
-    resolved_system_prompt: str | SystemPromptConfig
+    # Get or use custom system prompt
     if system_prompt is None:
-        resolved_system_prompt = {
-            "base": get_system_prompt(
-                assistant_id=assistant_id,
-                sandbox_type=sandbox_type,
-                interactive=interactive,
-                cwd=effective_cwd,
-            )
-        }
-    else:
-        resolved_system_prompt = system_prompt
+        system_prompt = get_system_prompt(
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            cwd=effective_cwd,
+            fs_tools=fs_tools,
+        )
 
     interrupt_on: dict[str, bool | InterruptOnConfig] | None
     if resolved_interrupt_on is None:
@@ -2305,6 +2431,40 @@ def create_cli_agent(
             routes={},
         )
 
+    if fs_tools is not None:
+        # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an
+        # omitted flag both arrive as `None`, leaving the SDK default in place).
+        main_tool_descriptions = _get_harness_tool_descriptions(model)
+        # Overrides the SDK's default `FilesystemMiddleware` (matched by
+        # `.name` in `create_deep_agent`'s custom-middleware merge) for the
+        # main agent. Preserve the SDK harness's model-specific tool metadata
+        # on the replacement.
+        #
+        # NOTE: this replacement only carries `backend`/`tools`/descriptions.
+        # The SDK also builds its default with `_permissions`; dcode passes no
+        # filesystem `permissions` to `create_deep_agent` today, so there is
+        # nothing to preserve. If dcode ever adopts filesystem permissions,
+        # they must be threaded through here (and into
+        # `_inject_fs_tools_into_subagents`) or `--allow-fs-tools` would
+        # silently strip them.
+        agent_middleware.append(
+            FilesystemMiddleware(
+                backend=composite_backend,
+                tools=fs_tools,
+                custom_tool_descriptions=main_tool_descriptions,
+            )
+        )
+        # dcode always supplies its own `general-purpose` spec, so the SDK's
+        # auto-created-GP middleware inheritance path never fires; the
+        # restriction must be injected into each subagent's own `middleware`
+        # list, or delegating via `task` could bypass `--allow-fs-tools`.
+        _inject_fs_tools_into_subagents(
+            custom_subagents,
+            fs_tools=fs_tools,
+            backend=composite_backend,
+            main_tool_descriptions=main_tool_descriptions,
+        )
+
     if goal_criteria_tools is not None:
         from deepagents_code.goal_rubric import (
             GoalCriteriaMiddleware,
@@ -2334,6 +2494,7 @@ def create_cli_agent(
             repository_root=criteria_root,
             context_tools=goal_criteria_tools,
             auto_mode_enabled=auto_mode_enabled,
+            fs_tools=fs_tools,
         )
         criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
         agent_middleware.append(
@@ -2369,7 +2530,7 @@ def create_cli_agent(
     _ensure_glm_5p2_profile_registered()
     agent = create_deep_agent(
         model=model,
-        system_prompt=resolved_system_prompt,
+        system_prompt=system_prompt,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

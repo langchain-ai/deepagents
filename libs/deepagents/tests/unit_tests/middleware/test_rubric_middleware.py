@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -278,7 +279,20 @@ class TestAfterAgentDirect:
         assert update["_rubric_status"] == "failed"
         assert "jump_to" not in update
 
-    def test_grader_exception_becomes_grader_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_grader_exception_includes_http_status_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class APIStatusError(RuntimeError):
+            status_code = 529
+
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=3)
+        _stub_grader(mw, monkeypatch, exc=APIStatusError("API overloaded"))
+        update = mw.after_agent(self._state(), _runtime())
+        assert update is not None
+        evals = update["_rubric_evaluations"]
+        assert evals[0]["explanation"] == (
+            "Grader raised APIStatusError (HTTP 529) (configured_model='stub:test', effective_strategy=unknown): API overloaded"
+        )
+
+    def test_grader_exception_without_status_preserves_explanation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Infrastructure failures get the distinct `grader_error` status.
 
         Separate from `"failed"`, which the grader *itself* returns when
@@ -294,6 +308,48 @@ class TestAfterAgentDirect:
         assert len(evals) == 1
         assert evals[0]["result"] == "grader_error"
         assert "grader exploded" in evals[0]["explanation"]
+        assert "configured_model='stub:test'" in evals[0]["explanation"]
+        assert "effective_strategy=unknown" in evals[0]["explanation"]
+
+    @pytest.mark.parametrize(
+        ("message", "expected_strategy"),
+        [
+            (AIMessage(content='{"result":"needs_revision"}'), "ProviderStrategy"),
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "GraderResponse",
+                            "args": {"result": "needs_revision"},
+                            "id": "grader-response",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                "ToolStrategy",
+            ),
+        ],
+    )
+    def test_structured_output_error_reports_effective_strategy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        message: AIMessage,
+        expected_strategy: str,
+    ) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        exc = StructuredOutputValidationError(
+            "GraderResponse",
+            ValueError("gap is required"),
+            message,
+        )
+        _stub_grader(mw, monkeypatch, exc=exc)
+
+        update = mw.after_agent(self._state(), _runtime())
+
+        assert update is not None
+        explanation = update["_rubric_evaluations"][0]["explanation"]
+        assert f"effective_strategy={expected_strategy}" in explanation
 
     def test_keyboard_interrupt_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `KeyboardInterrupt` (and `asyncio.CancelledError`) are
@@ -465,6 +521,160 @@ class TestGraderPlumbing:
         mw = RubricMiddleware(model="custom-grader-model")
         mw._ensure_grader()
         assert seen["model"] == "custom-grader-model"
+
+    @pytest.mark.parametrize(
+        ("model_name", "profile", "expected_strategy"),
+        [
+            ("gpt-4.1", None, "ProviderStrategy"),
+            ("claude-sonnet-4-6", {"structured_output": False}, "ProviderStrategy"),
+            ("custom-model", None, "ToolStrategy"),
+        ],
+    )
+    def test_grader_metadata_matches_langchain_model_strategy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        model_name: str,
+        profile: dict[str, bool] | None,
+        expected_strategy: str,
+    ) -> None:
+        mw = RubricMiddleware(model=f"provider:{model_name}")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(model_name=model_name, profile=profile),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == expected_strategy
+
+    def test_grade_records_model_strategy_and_preserves_inherited_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured_config: dict[str, Any] = {}
+        recorded_metadata: list[dict[str, str]] = []
+        response = GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[],
+        )
+
+        def invoke(
+            _payload: dict[str, Any],
+            *,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            captured_config.update(config)
+            return {
+                "messages": [
+                    # Only the final AI turn determines the effective strategy.
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "GraderResponse",
+                                "args": {"result": "needs_revision"},
+                                "id": "earlier-tool-call",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content='{"result":"satisfied"}'),
+                ],
+                "structured_response": response,
+            }
+
+        run = SimpleNamespace(add_metadata=recorded_metadata.append)
+        monkeypatch.setattr("deepagents.middleware.rubric.get_current_run_tree", lambda: run)
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {
+                "metadata": {
+                    "tenant_id": "tenant-123",
+                    "thread_id": "thread-456",
+                    "rubric_grader_effective_strategy": "stale",
+                }
+            },
+        )
+        mw = RubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        mw._grader = SimpleNamespace(invoke=invoke)
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+
+        graded = mw._grade(
+            {
+                "rubric": "tests pass",
+                "messages": [HumanMessage(content="run the tests")],
+            },
+            0,
+        )
+
+        assert graded is response
+        assert captured_config["metadata"] == {
+            "tenant_id": "tenant-123",
+            "thread_id": "thread-456",
+            "rubric_grader_configured_model": "anthropic:claude-sonnet-4-6",
+            "rubric_grader_effective_strategy": "ProviderStrategy",
+        }
+        assert recorded_metadata[-1]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+
+    async def test_agrade_preserves_inherited_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured_config: dict[str, Any] = {}
+        response = GraderResponse(
+            result="satisfied",
+            explanation="all checks pass",
+            criteria=[],
+        )
+
+        async def ainvoke(
+            _payload: dict[str, Any],
+            *,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            captured_config.update(config)
+            return {
+                "messages": [AIMessage(content='{"result":"satisfied"}')],
+                "structured_response": response,
+            }
+
+        monkeypatch.setattr("deepagents.middleware.rubric.get_current_run_tree", lambda: None)
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"experiment_id": "experiment-123"}},
+        )
+        mw = RubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        mw._grader = SimpleNamespace(ainvoke=ainvoke)
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+
+        graded = await mw._agrade(
+            {
+                "rubric": "tests pass",
+                "messages": [HumanMessage(content="run the tests")],
+            },
+            0,
+        )
+
+        assert graded is response
+        assert captured_config["metadata"] == {
+            "experiment_id": "experiment-123",
+            "rubric_grader_configured_model": "anthropic:claude-sonnet-4-6",
+            "rubric_grader_effective_strategy": "ProviderStrategy",
+        }
 
     def test_custom_system_prompt_honored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A user-supplied `system_prompt` replaces the default grader prompt."""

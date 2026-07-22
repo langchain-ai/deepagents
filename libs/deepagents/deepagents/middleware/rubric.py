@@ -16,6 +16,7 @@ import logging
 import re
 import secrets
 import uuid
+from collections.abc import Mapping
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -25,6 +26,7 @@ from typing import (
 )
 
 from langchain.agents import create_agent
+from langchain.agents.factory import FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -33,6 +35,10 @@ from langchain.agents.middleware.types import (
     ResponseT,
     hook_config,
 )
+from langchain.agents.structured_output import (
+    MultipleStructuredOutputsError,
+    StructuredOutputValidationError,
+)
 from langchain_core._api import beta
 from langchain_core.messages import (
     AIMessage,
@@ -40,6 +46,8 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
+from langchain_core.runnables import RunnableConfig, ensure_config
+from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
@@ -291,6 +299,108 @@ class GraderResponse(BaseModel):
         return self
 
 
+_StructuredOutputStrategy = Literal["ProviderStrategy", "ToolStrategy"]
+"""Structured-output strategies LangChain can select for the grader."""
+
+
+def _model_identifier(model: object) -> str | None:
+    """Return the model identifier exposed by supported chat integrations.
+
+    LangChain integrations do not share one identifier attribute: common
+    implementations expose `model_name`, `model`, or `model_id`. Checking them
+    in LangChain's precedence order keeps diagnostic labels and strategy
+    inference consistent.
+    """
+    for attr in ("model_name", "model", "model_id"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _configured_model_label(model: str | BaseChatModel) -> str:
+    """Build a diagnostic label for the configured grader model."""
+    if isinstance(model, str):
+        return model
+    identifier = _model_identifier(model)
+    class_name = type(model).__name__
+    return f"{class_name}:{identifier}" if identifier else class_name
+
+
+def _calls_grader_response(message: AIMessage) -> bool:
+    """Return whether a message calls the `GraderResponse` output tool."""
+    return any(call.get("name") == GraderResponse.__name__ for call in message.tool_calls)
+
+
+def _strategy_from_result(result: dict[str, Any]) -> _StructuredOutputStrategy | None:
+    """Infer the structured-output strategy from a successful grader result.
+
+    A final `GraderResponse` tool call identifies `ToolStrategy`; a final AI
+    response without that call identifies provider-native structured output.
+    """
+    if result.get("structured_response") is None:
+        return None
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return None
+    final_message = next((message for message in reversed(messages) if isinstance(message, AIMessage)), None)
+    if final_message is None:
+        return None
+    return "ToolStrategy" if _calls_grader_response(final_message) else "ProviderStrategy"
+
+
+def _strategy_from_exception(exc: BaseException) -> _StructuredOutputStrategy | None:
+    """Infer the structured-output strategy from a grader exception chain.
+
+    Structured-output errors may be wrapped as causes, contexts, or members of
+    an exception group, so the full chain is inspected before giving up.
+    """
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, MultipleStructuredOutputsError):
+            return "ToolStrategy"
+        if isinstance(current, StructuredOutputValidationError):
+            return "ToolStrategy" if _calls_grader_response(current.ai_message) else "ProviderStrategy"
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+    return None
+
+
+def _strategy_from_model(
+    model: object,
+    *,
+    has_tools: bool,
+) -> _StructuredOutputStrategy | None:
+    """Predict the strategy LangChain selects from the resolved model.
+
+    This mirrors LangChain's model-profile and known-model fallbacks, including
+    its tool-calling exception for Gemini models before Gemini 3. A configured
+    model string means resolution did not finish, so its strategy is unknown;
+    every resolved model ineligible for provider output uses `ToolStrategy`.
+    """
+    if isinstance(model, str):
+        return None
+    identifier = _model_identifier(model)
+    normalized = identifier.lower() if identifier is not None else None
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, Mapping) and profile.get("structured_output"):
+        if has_tools and normalized is not None and "gemini" in normalized and "gemini-3" not in normalized:
+            return "ToolStrategy"
+        return "ProviderStrategy"
+    if normalized is not None and any(re.search(pattern, normalized) for pattern in FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT):
+        return "ProviderStrategy"
+    return "ToolStrategy"
+
+
 @beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
@@ -366,12 +476,14 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         self.max_iterations = max_iterations
         self._model = model
+        self._model_label = _configured_model_label(model)
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
         self._on_evaluation = on_evaluation
         # Built lazily so importing the middleware doesn't construct a model
         # client (which can trigger env-var lookups / API key validation).
         self._grader: Any = None
+        self._resolved_model: BaseChatModel | None = None
 
     def before_agent(
         self,
@@ -528,8 +640,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         # validation we don't want to pay at module-import time.
         from deepagents._models import resolve_model  # noqa: PLC0415
 
+        resolved_model = resolve_model(self._model)
+        self._resolved_model = resolved_model
         self._grader = create_agent(
-            model=resolve_model(self._model),
+            model=resolved_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -537,16 +651,73 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         )
         return self._grader
 
+    def _grader_trace_metadata(
+        self,
+        *,
+        effective_strategy: _StructuredOutputStrategy | None = None,
+    ) -> dict[str, str]:
+        """Build model and strategy metadata for grader diagnostics.
+
+        A strategy observed in a result or exception takes precedence over the
+        model-based prediction. If neither source identifies the strategy, the
+        metadata records `unknown` rather than guessing.
+        """
+        model = self._resolved_model or self._model
+        strategy = effective_strategy or _strategy_from_model(
+            model,
+            has_tools=bool(self._tools),
+        )
+        return {
+            "rubric_grader_configured_model": self._model_label,
+            "rubric_grader_effective_strategy": strategy or "unknown",
+        }
+
+    @staticmethod
+    def _grader_invocation_config(metadata: dict[str, str]) -> RunnableConfig:
+        """Merge grader diagnostics into the inherited runnable metadata."""
+        inherited_metadata = ensure_config().get("metadata") or {}
+        return {"metadata": {**inherited_metadata, **metadata}}
+
+    @staticmethod
+    def _record_grader_trace_metadata(metadata: dict[str, str]) -> None:
+        """Attach metadata to the current trace without affecting grading."""
+        try:
+            run = get_current_run_tree()
+            if run is not None:
+                run.add_metadata(metadata)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not attach rubric grader metadata to the current trace", exc_info=True)
+
     def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
-        result = grader.invoke({"messages": [HumanMessage(content=payload)]})
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
+        result = grader.invoke(
+            {"messages": [HumanMessage(content=payload)]},
+            config=self._grader_invocation_config(metadata),
+        )
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
+        )
         return self._extract_graded(result)
 
     async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
-        result = await grader.ainvoke({"messages": [HumanMessage(content=payload)]})
+        metadata = self._grader_trace_metadata()
+        self._record_grader_trace_metadata(metadata)
+        result = await grader.ainvoke(
+            {"messages": [HumanMessage(content=payload)]},
+            config=self._grader_invocation_config(metadata),
+        )
+        self._record_grader_trace_metadata(
+            self._grader_trace_metadata(
+                effective_strategy=_strategy_from_result(result),
+            )
+        )
         return self._extract_graded(result)
 
     @staticmethod
@@ -673,12 +844,26 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         # not handled here -- they're `BaseException` subclasses, not
         # `Exception`, so they propagate up the call stack and preserve
         # normal Python interrupt / asyncio cancellation semantics.
-        logger.exception("RubricMiddleware grader failed")
+        metadata = self._grader_trace_metadata(
+            effective_strategy=_strategy_from_exception(exc),
+        )
+        self._record_grader_trace_metadata(metadata)
+        logger.exception(
+            "RubricMiddleware grader failed (configured_model=%r, effective_strategy=%s)",
+            metadata["rubric_grader_configured_model"],
+            metadata["rubric_grader_effective_strategy"],
+        )
+        status_code = getattr(exc, "status_code", None)
+        status_suffix = f" (HTTP {status_code})" if isinstance(status_code, int) and not isinstance(status_code, bool) else ""
         evaluation: RubricEvaluation = {
             "grading_run_id": grading_run_id,
             "iteration": iteration,
             "result": "grader_error",
-            "explanation": f"Grader raised {type(exc).__name__}: {exc}",
+            "explanation": (
+                f"Grader raised {type(exc).__name__}{status_suffix} "
+                f"(configured_model={metadata['rubric_grader_configured_model']!r}, "
+                f"effective_strategy={metadata['rubric_grader_effective_strategy']}): {exc}"
+            ),
             "criteria": [],
         }
         self._emit(runtime, "rubric_evaluation_end", grading_run_id, iteration, evaluation)

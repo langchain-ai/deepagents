@@ -254,10 +254,11 @@ class HarnessProfileConfig:
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` slot in the prompt assembly order — completely replaces
-    `BASE_AGENT_PROMPT` as the base prompt when set.
+    """`CUSTOM` slot in the prompt assembly order — replaces the base prompt
+    when set.
 
-    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
+    `None` (the default) leaves the base prompt unchanged. The main agent has
+    no authored base prompt by default.
 
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
     suffix is appended to this custom base. A caller-supplied
@@ -543,10 +544,11 @@ class HarnessProfile:
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` slot in the prompt assembly order — completely replaces
-    `BASE_AGENT_PROMPT` as the base prompt when set.
+    """`CUSTOM` slot in the prompt assembly order — replaces the base prompt
+    when set.
 
-    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
+    `None` (the default) leaves the base prompt unchanged. The main agent has
+    no authored base prompt by default.
 
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
     suffix is appended to this custom base. A caller-supplied
@@ -570,9 +572,8 @@ class HarnessProfile:
     Applied uniformly to every assembled stack that consults this
     profile: the main agent, declarative subagents whose model resolves
     to this profile, and the auto-added general-purpose subagent. Each
-    stack receives the suffix on top of its own base prompt
-    (`BASE_AGENT_PROMPT`, the subagent's authored prompt, and the GP
-    base respectively).
+    stack receives the suffix on top of its own base prompt (no base for the
+    main agent, the subagent's authored prompt, and the GP base respectively).
 
     See `create_deep_agent`'s `system_prompt` parameter or
     [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
@@ -789,7 +790,7 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     semantics — a profile that sets only the suffix layers it on top of
     whatever base the caller passes in.
 
-    Used uniformly across the main agent (`base_prompt=BASE_AGENT_PROMPT`),
+    Used uniformly across the main agent (which has no default base prompt),
     declarative subagents (`base_prompt=spec["system_prompt"]`), and the
     auto-added general-purpose subagent (`base_prompt=GP base prompt`), so a
     profile registered under a model spec applies the same overlay regardless
@@ -797,7 +798,7 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     """
     prompt = profile.base_system_prompt if profile.base_system_prompt is not None else base_prompt
     if profile.system_prompt_suffix is not None:
-        prompt = prompt + "\n\n" + profile.system_prompt_suffix
+        prompt = prompt + "\n\n" + profile.system_prompt_suffix if prompt else profile.system_prompt_suffix
     return prompt
 
 

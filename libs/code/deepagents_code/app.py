@@ -58,6 +58,7 @@ from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
     MCP_REENABLED_PENDING_ERROR,
+    SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -3071,6 +3072,16 @@ class DeepAgentsApp(App):
         # Per-turn model overrides
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
+
+        self._rubric_default_model: str | None = (server_kwargs or {}).get(
+            "model_name"
+        ) or (model_kwargs or {}).get("model_spec")
+        """Chat model captured when the rubric middleware is constructed.
+
+        Unlike `_effective_model_spec`, this does not follow per-turn `/model`
+        overrides because those only affect `ConfigurableModelMiddleware`; the
+        rubric middleware keeps using its construction-time model.
+        """
 
         self._model_params_override: dict[str, Any] | None = (
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
@@ -6333,8 +6344,10 @@ class DeepAgentsApp(App):
         if report.sdk.status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
-            sdk_version = report.sdk.primary_version
-            sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
+            sdk_version = report.display_sdk_version
+            sdk_age_suffix = await asyncio.to_thread(
+                format_sdk_age_suffix, report.effective_sdk_version
+            )
             sdk_annotation = format_sdk_version_annotation(report)
             lines.append(
                 f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}"
@@ -8094,7 +8107,10 @@ class DeepAgentsApp(App):
         # readiness before creating a placeholder that nobody will remove.
         if not self._connecting or self._initial_prompt_queued_widget is not None:
             return
-        queued_widget = QueuedUserMessage(self._initial_prompt)
+        # The `-m` prompt is always sent as literal agent text (never a slash
+        # or shell command), so a leading `/` (e.g. a file path) must render as
+        # a plain user message rather than a slash command.
+        queued_widget = QueuedUserMessage(self._initial_prompt, detect_mode=False)
         self._initial_prompt_queued_widget = queued_widget
         await self._mount_message(queued_widget)
         self._sync_status_queued()
@@ -9475,6 +9491,7 @@ class DeepAgentsApp(App):
                     collect_built_in_tools,
                     assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=self._server_kwargs.get("allow_fs_tools"),
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
@@ -10398,14 +10415,27 @@ class DeepAgentsApp(App):
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
-        Both fall back to human-readable defaults when unset. Shared by
-        `/goal show` and `/rubric show` so the default wording stays in sync.
+        When no explicit grader model is set, the model string reports the
+        rubric's construction-time chat model (`_rubric_default_model`, which
+        deliberately ignores per-turn `/model` overrides), falling back to a
+        bare "startup chat model" when that is unknown. An unset iteration cap
+        reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
+        rather than the word "default". Shared by `/goal show` and
+        `/rubric show` so the default wording stays in sync.
         """
-        model = self._rubric_model or "current chat model"
+        if self._rubric_model:
+            model = self._rubric_model
+        else:
+            chat_model = self._rubric_default_model
+            model = (
+                f"startup chat model ({chat_model})"
+                if chat_model
+                else "startup chat model"
+            )
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
-            else "SDK default"
+            else f"{SDK_DEFAULT_RUBRIC_MAX_ITERATIONS} (SDK default)"
         )
         return model, iterations
 
@@ -11553,7 +11583,7 @@ class DeepAgentsApp(App):
             title="Choose grader model for rubric",
             description=(
                 "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the current chat model."
+                "`/rubric model clear` to reuse the startup chat model."
             ),
         )
         self.push_screen(screen, handle_result)
@@ -11736,7 +11766,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                AppMessage("Rubric grader model cleared; using current chat model."),
+                AppMessage("Rubric grader model cleared; using startup chat model."),
             )
 
     async def _handle_command(self, command: str) -> None:
@@ -12095,6 +12125,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.model_config import clear_caches
 
                 clear_caches()
+                self._sync_status_model()
             except (OSError, ValueError):
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -13225,8 +13256,14 @@ class DeepAgentsApp(App):
             message: The user's message
         """
         # Mount the user message, tracking it so it can be dimmed on interrupt.
+        # Everything routed here is literal agent text (slash/shell commands go
+        # through `_handle_command`/`_handle_shell_command`), so disable mode
+        # detection: a leading `/` (e.g. a file path from `-m`) must render as a
+        # plain user message rather than a slash command.
         media_snapshot = self._image_tracker.snapshot()
-        user_message = UserMessage(message, media_snapshot=media_snapshot)
+        user_message = UserMessage(
+            message, media_snapshot=media_snapshot, detect_mode=False
+        )
         await self._mount_message(user_message)
         self._active_user_message = user_message
         await self._send_to_agent(message)
@@ -13341,15 +13378,31 @@ class DeepAgentsApp(App):
         return settings.model_provider or None
 
     def _sync_status_model(self) -> None:
-        """Update model displays with the active model and reasoning effort."""
+        """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import settings
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
+            supported_efforts_for_model,
         )
 
         provider = settings.model_provider or ""
         model = settings.model_name or ""
+        spec = self._effective_model_spec()
+        if self._chat_input is not None:
+            try:
+                efforts = supported_efforts_for_model(
+                    spec, cli_override=self._profile_override
+                )
+                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
+                self._chat_input.set_argument_hint_override("/effort", hint)
+            # A cosmetic ghost-text hint must never gate the primary model
+            # displays updated below, so swallow and log any failure here.
+            except Exception:
+                logger.warning(
+                    "Failed to refresh /effort argument hint during model sync",
+                    exc_info=True,
+                )
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
@@ -13373,12 +13426,11 @@ class DeepAgentsApp(App):
             # blank model paired with a populated effort suffix.
             self._status_bar.set_model(provider=provider, model=model, effort="")
             return
-        spec = self._effective_model_spec()
         effort = ""
         if spec:
             effort = (
                 current_effort_from_model_params(spec, self._model_params_override)
-                or default_effort_for_model(spec)
+                or default_effort_for_model(spec, cli_override=self._profile_override)
                 or ""
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
@@ -13400,21 +13452,19 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            is_effort_supported_for_model,
+            with_effort_model_params,
         )
 
-        if (
-            current_effort_from_model_params(model_spec, self._model_params_override)
-            is not None
-        ):
+        if has_explicit_effort_model_params(model_spec, self._model_params_override):
             return
         effort = await asyncio.to_thread(load_effort_for_model, model_spec)
         if effort is None:
             return
-        params = model_params_for_effort(model_spec, effort)
-        if params is None:
+        if not is_effort_supported_for_model(
+            model_spec, effort, cli_override=self._profile_override
+        ):
             # Saved label is no longer valid for this model; drop the stale
             # entry so the model default applies. The active params carry no
             # effort here (checked above), so there is nothing to strip.
@@ -13430,9 +13480,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
-        self._model_params_override = merge_effort_model_params(
+        self._model_params_override = with_effort_model_params(
+            model_spec,
             self._model_params_override,
-            params,
+            effort,
         )
 
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
@@ -13456,7 +13507,7 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 "No model is configured yet. Run `/model` to choose one."
             )
-        efforts = supported_efforts_for_model(spec)
+        efforts = supported_efforts_for_model(spec, cli_override=self._profile_override)
         if not efforts:
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."
@@ -13465,7 +13516,7 @@ class DeepAgentsApp(App):
             spec=spec,
             efforts=efforts,
             current=current_effort_from_model_params(spec, self._model_params_override),
-            default=default_effort_for_model(spec),
+            default=default_effort_for_model(spec, cli_override=self._profile_override),
         )
 
     async def _handle_effort_command(self, command: str) -> None:
@@ -13474,7 +13525,7 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        raw = command.strip()[len("/effort") :].strip().lower()
+        raw = command.strip()[len("/effort") :].strip()
         if not raw:
             await self._show_effort_selector(command)
             return
@@ -13538,21 +13589,25 @@ class DeepAgentsApp(App):
             save_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
-            merge_effort_model_params,
-            model_params_for_effort,
+            has_explicit_effort_model_params,
+            with_effort_model_params,
             without_effort_model_params,
         )
 
-        context = self._resolve_effort_context()
-        if isinstance(context, _EffortUnavailable):
-            await self._mount_message(AppMessage(context.message))
-            return
-        spec = context.spec
-
-        if effort in {"clear", "--clear", "reset"}:
-            had_override = context.current is not None
+        if effort.lower() in {"clear", "--clear", "reset"}:
+            spec = self._effective_model_spec()
+            if not spec:
+                await self._mount_message(
+                    AppMessage(
+                        "No model is configured yet. Run `/model` to choose one."
+                    )
+                )
+                return
+            had_override = has_explicit_effort_model_params(
+                spec, self._model_params_override
+            )
             self._model_params_override = without_effort_model_params(
-                self._model_params_override
+                spec, self._model_params_override
             )
             saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
@@ -13572,8 +13627,20 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(message))
             return
 
-        params = model_params_for_effort(spec, effort)
-        if params is None:
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
+            return
+        spec = context.spec
+        matched_effort = next(
+            (
+                supported_effort
+                for supported_effort in context.efforts
+                if supported_effort.casefold() == effort.casefold()
+            ),
+            None,
+        )
+        if matched_effort is None:
             supported = ", ".join(context.efforts)
             await self._mount_message(
                 ErrorMessage(
@@ -13583,21 +13650,21 @@ class DeepAgentsApp(App):
             )
             return
 
-        self._model_params_override = merge_effort_model_params(
-            self._model_params_override, params
+        self._model_params_override = with_effort_model_params(
+            spec, self._model_params_override, matched_effort
         )
-        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
+        saved = await asyncio.to_thread(save_effort_for_model, spec, matched_effort)
         self._sync_status_model()
         if not saved:
             await self._mount_message(
                 ErrorMessage(
-                    f"Reasoning effort for {spec} set to {effort} in this session, "
-                    "but the preference could not be saved."
+                    f"Reasoning effort for {spec} set to {matched_effort} in this "
+                    "session, but the preference could not be saved."
                 )
             )
             return
         await self._mount_message(
-            AppMessage(f"Reasoning effort for {spec} set to {effort}."),
+            AppMessage(f"Reasoning effort for {spec} set to {matched_effort}."),
         )
 
     async def _run_agent_task(
@@ -21736,6 +21803,7 @@ class DeepAgentsApp(App):
         }
         self._model_kwargs = new_model_kwargs
         self._server_kwargs["model_name"] = display
+        self._rubric_default_model = display
         if extra_kwargs is not None:
             self._server_kwargs["model_params"] = extra_kwargs
 

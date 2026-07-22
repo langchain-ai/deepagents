@@ -1,0 +1,19 @@
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_74f5deb053c7dc::t_f1cdf62d459272 2720-2722
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "cb90572d453cff22af057b20656737c2fb854ba2",
+  "prompts": {},
+  "sessions": {
+    "s_74f5deb053c7dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b27de2c-e910-48a5-90d0-aab89877a45a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

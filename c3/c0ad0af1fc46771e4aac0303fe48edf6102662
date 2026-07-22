@@ -1,0 +1,100 @@
+libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 367,375-378,593,598,605,612,615,621-622,629,637,1219,1221,1238,1240,1257,1259
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 383,2407-2408,2410,2415-2417
+libs/code/tests/unit_tests/test_compact_tool.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 644
+libs/deepagents/tests/unit_tests/middleware/test_memory_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 802
+libs/deepagents/deepagents/backends/__init__.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 10
+libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 25,243,285-286,297,331-332,343
+libs/deepagents/tests/unit_tests/backends/test_protocol.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 139-140
+libs/evals/tests/evals/test_memory.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 19,317-322,328-331
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 16,1381-1383,1399,1412-1413,1458-1465,1527,1566,1630-1631,1715,1742,1781,1820,1875,1917,1968,2007,2060,2156,2258,2304,2487,2593,2680,2768,3053,3079,3110,3127,3139,3160,3168,3180,3225,3250
+libs/deepagents/tests/unit_tests/backends/test_state_backend.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 1,3,22-83
+libs/deepagents/deepagents/backends/store.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 6,8,95-96,102,108-109,111-113,135-136,143-149,152-154,156-167,170,176-178,180-182,189,194,349,630
+libs/deepagents/tests/unit_tests/backends/test_file_format.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 1,5,19,27-28,30,33-34,36,39-40,42-43,45-52,55,57,70,72,83,85,98,110,121,128,133,142,147,152-153,158,160,165,170,172,178
+libs/deepagents/tests/unit_tests/test_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 143,156,170,180,185,206,211,216,221,247,252,257,262,288,293,298,303,324,329,334,356,361,366,389,394,399,421,448,477,481,510,534,552,578,583,588,616,643,672,694,719,740,760,779,798,870,890,907,924,940,951,973,978,999,1004,1025,1030,1052,1075,1095,1116,1137,1157,1184,1212,1721,1732,1745,1767,1786,1799,1812,1814,1834,1857,1881,1913,1939,1961,1984,1997,2013,2026,2030,2033,2039,2046-2047,2052,2055,2063,2069-2070,2075,2078,2087,2092,2112,2910
+libs/evals/EVAL_CATALOG.md
+  s_14c0d7b2e61fc1::t_9301c87359add1 113-127
+libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 19,357-359,362-364,367-368,370-373,375-376,564-567,570-575,580,595,599-600
+libs/deepagents/deepagents/backends/filesystem.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 134-135,141,151-152,160-162,164
+libs/deepagents/tests/integration_tests/test_filesystem_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 52,68,78,88,100,105,130,140,150,162,167,187,197,209,229,239,251,271,281,291,321,353,365,386,396,429,440-444,552,557,562,583,593,603,613,640,650,660,672,677,709,714,719,740,750,760,770,797,807,817,829,834,914,937,944
+libs/deepagents/tests/unit_tests/backends/test_store_backend_async.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 46-91,339,343,349,357,360,364,382,397
+libs/deepagents/deepagents/middleware/skills.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 118,131,805,928,950,973,995
+libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 10,84-166,256,260,266,274,361-362,364-392
+libs/deepagents/deepagents/backends/protocol.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 14,254,267-268,271,285-287,406,503,570,873-874
+libs/deepagents/deepagents/backends/utils.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 164,171-173,175-176,178-180,306,309,313-315
+libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 5,44-65,97
+libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 413-414,428-429,474-475,477-478,480-482,484-494,496-497
+libs/deepagents/tests/unit_tests/test_middleware_async.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 47,52,67,72,77,82,106,111,116,121,154,159,164,169,190,195,200,222,227,232,255,260,265,287,314,336,354,366,371,376,404,431,449,472,477,499,504,526,531,553,577,597,618,640,662,702,725,747,792
+libs/deepagents/tests/unit_tests/test_file_system_tools.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 16,56,70-71,74,114,125-126,131,175,186
+libs/deepagents/deepagents/backends/local_shell.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 111,124,127,136
+libs/deepagents/tests/unit_tests/backends/test_composite_backend_async.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 958,960,977,979,996,998,1047,1055-1058
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend_async.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 223
+libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 313-314,316,321-323
+libs/deepagents/deepagents/middleware/subagents.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 28,765
+libs/deepagents/deepagents/__init__.py
+  s_14c0d7b2e61fc1::t_700855ca77c8b9 5,31
+libs/deepagents/deepagents/middleware/memory.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 67,191,199,274,292,308,326
+libs/code/deepagents_code/offload_middleware.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 444-445,450,462,496,534,569,623
+libs/deepagents/deepagents/graph.py
+  s_14c0d7b2e61fc1::t_700855ca77c8b9 76
+  s_14c0d7b2e61fc1::t_9301c87359add1 44,322
+libs/deepagents/deepagents/backends/state.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 25,45-46,49-50,121,158,199-201,297
+libs/deepagents/deepagents/backends/composite.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 194-198
+libs/deepagents/tests/unit_tests/test_end_to_end.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 2440,2442-2444
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_14c0d7b2e61fc1::t_700855ca77c8b9 27,568,579,595,615,628,636,652,659,661,665-666
+libs/deepagents/tests/unit_tests/test_artifacts_root.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 66,81,127,155
+libs/deepagents/deepagents/middleware/summarization.py
+  s_14c0d7b2e61fc1::t_9301c87359add1 85-87,126,512,525,552-554,568-570,1394,1528,1603,1648,1680,1712-1714,1733,2039,2072
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c3c0ad0af1fc46771e4aac0303fe48edf6102662",
+  "prompts": {},
+  "sessions": {
+    "s_14c0d7b2e61fc1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f858d-2d58-7630-bbef-439d4b057c9d",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

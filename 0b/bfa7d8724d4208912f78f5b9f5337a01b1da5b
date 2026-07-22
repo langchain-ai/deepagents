@@ -1,0 +1,32 @@
+.github/scripts/context_hard_pilot.py
+  s_11751c0079f29d::t_e4ab486a026501 8,256,261-266,268-287
+  s_11751c0079f29d::t_f1130bd9a09101 15,259-260
+  s_11751c0079f29d::t_040dcd5b3c6c43 7,9,14
+  s_11751c0079f29d::t_b81a4c86be0c51 86,210
+  s_11751c0079f29d::t_e6033823fa3123 1-6,10-13,16-85,87-153,155-209,211-255,257-258,267
+  s_11751c0079f29d::t_31237610d3fc24 154
+.github/scripts/test_context_hard_pilot.py
+  s_11751c0079f29d::t_b836bcf31bc1e4 1-5,8-9,11-19,23-54,123-124,126-174,176-202,227-302,311-320,371-400
+  s_11751c0079f29d::t_532a28506132b7 321-323,358,363,365-370
+  s_11751c0079f29d::t_11107c08b7f866 55-122
+  s_11751c0079f29d::t_08587761a0bb0b 6,303-310,324-357,359-362,364,401-450
+  s_11751c0079f29d::t_040dcd5b3c6c43 7,20-22
+  s_11751c0079f29d::t_aa59a8c9597eb3 10,125
+  s_11751c0079f29d::t_b81a4c86be0c51 175,203-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "0bbfa7d8724d4208912f78f5b9f5337a01b1da5b",
+  "prompts": {},
+  "sessions": {
+    "s_11751c0079f29d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8578-81c2-71e3-bb6c-c5a78e6b3f88",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

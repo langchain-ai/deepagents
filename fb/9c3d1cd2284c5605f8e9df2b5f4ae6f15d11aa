@@ -1,0 +1,19 @@
+libs/deepagents/deepagents/middleware/summarization.py
+  s_14c0d7b2e61fc1::t_acc4005a9f3198 1735,1766-1767,1862
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "fb9c3d1cd2284c5605f8e9df2b5f4ae6f15d11aa",
+  "prompts": {},
+  "sessions": {
+    "s_14c0d7b2e61fc1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f858d-2d58-7630-bbef-439d4b057c9d",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

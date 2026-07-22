@@ -1,0 +1,23 @@
+profile_openai_agent.py
+  s_bd22c3cb096361::t_dee51fa57c62ed 1-339
+flame_openai_trace.speedscope.json
+  s_bd22c3cb096361::t_bd712836c5948e 1
+flame_openai.speedscope.json
+  s_bd22c3cb096361::t_a841080c9abee4 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "e51d8274177a1cc9c6b9745ff3949ebd53d24b34",
+  "prompts": {},
+  "sessions": {
+    "s_bd22c3cb096361": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "da399b49-f6ba-433b-95e0-030cdb6027ca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

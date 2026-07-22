@@ -1,0 +1,37 @@
+libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
+  s_74f5deb053c7dc::t_c18f6374f37271 248-251
+  s_74f5deb053c7dc::t_00758482639f3a 96-97
+libs/deepagents/tests/unit_tests/test_async_subagents.py
+  s_74f5deb053c7dc::t_18ec4b3196c782 103-104,109-110
+libs/deepagents/tests/unit_tests/test_end_to_end.py
+  s_74f5deb053c7dc::t_3c6a2c3dc7af18 4666-4667
+libs/deepagents/deepagents/graph.py
+  s_74f5deb053c7dc::t_d983d7e65081cc 749-758
+  s_74f5deb053c7dc::t_e2d361c5189f85 974
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_74f5deb053c7dc::t_5bef9c9c0ec956 2768-2780
+libs/deepagents/deepagents/middleware/async_subagents.py
+  s_74f5deb053c7dc::t_7ab2f1d26a7555 920
+libs/deepagents/deepagents/middleware/subagents.py
+  s_74f5deb053c7dc::t_7b855b822b9cc4 799
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_74f5deb053c7dc::t_058d3a6e391e97 729,735-739
+  s_74f5deb053c7dc::t_0cf2f44890b0ad 732
+  s_74f5deb053c7dc::t_7b79f7feee7564 673,675-678,682-683
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "688d82c9f173b98391331b7964ad7070df3bad9f",
+  "prompts": {},
+  "sessions": {
+    "s_74f5deb053c7dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b27de2c-e910-48a5-90d0-aab89877a45a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

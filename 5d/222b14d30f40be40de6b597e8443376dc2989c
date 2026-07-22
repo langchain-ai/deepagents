@@ -1,0 +1,713 @@
+libs/evals/UNIFIED_SCORECARD.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5-21,29-31,33,43-47,49,51,59-61,63,71,73-139,141
+openwiki/index.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-13
+libs/code/deepagents_code/config_manifest.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 921-928,1246-1247,1252-1257
+  s_14c0d7b2e61fc1::t_10987f37b727a9 920
+libs/code/deepagents_code/tui/widgets/_paste_textarea.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 20,22,65-74,86-117,126,149-151,219,227,397-463
+  s_14c0d7b2e61fc1::t_ab6fc593f12101 464
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 33-36,372,393,420,422,438,451-452,472-473,499,501,517,527
+libs/code/deepagents_code/hooks/tools.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-116
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/test_main_acp_mode.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 206-291
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/lite_tasks.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 3-6,60-65,67-76
+libs/code/tests/unit_tests/test_local_context.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,314-334,1004-1023,1114-1217,1323-1324,1353-1387,1437-1450,1540-1546,1569
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/workflows/unified_evals.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 75,204,246
+libs/code/deepagents_code/tui/modals/plugin_manager/__init__.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 16,197-198,201-206,306-315,323,444-449,455-461,514-516
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/tests/unit_tests/test_contextbench_adapter.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 81-82,85-86,88-96
+libs/code/deepagents_code/_git.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,163-336
+  s_14c0d7b2e61fc1::t_829827376d79a7 337-338
+libs/code/tests/unit_tests/test_json_types.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-35
+libs/evals/datasets/context-retrieval-evals/cb-cloud-38/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/test_unified_prep.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 39-46,74,79-106,136-152,340-341,405,414-421,423-427,476,543,551
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_hooks.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 17
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 7,29-30,35-36,40-42,46-49,54,57,70,73,84,88,91,97,102-103,111,115,120,136,160-162,173,175-177,245-246
+libs/code/THREAT_MODEL.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 234,497
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 21-23
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/hooks/models/domain.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-359
+libs/code/tests/unit_tests/tui/widgets/test_inline_prompt.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 8,17,209-292,467-523
+  s_14c0d7b2e61fc1::t_5606fcc40ca441 524-525
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/CONTRIBUTING.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 418,431,483
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/test_reload.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 845-907
+libs/code/deepagents_code/config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 512-528,534,686,785,938-940,2624-2630,4165-4198,4635-4636,4640-4641,4643-4648
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/reasoning_effort.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-6,11-12,14,18,21-24,26-28,31-32,34-40,42-44,46-57,60-63,66-67,70-71,73-81,83-85,87-89,91-92,95-98,100-102,105,107-111,113-115,117-118,121-124,126-129,132,134,137-143,146-149,152-158,161-172,176-195,198-202,205-208,212,215,217-221,224-227,229-231,235,238,240,242-263,265,268-277,280-283,287,290,292,294-295,297-313,316-319,322-324,327-328,330-332
+libs/code/deepagents_code/hooks/projection.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-229
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/ui.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 187-190
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/CHANGELOG.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5-42
+libs/code/tests/unit_tests/test_mcp_login_service.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 23-24,29
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-5,9,11,17,21,25-26,28,43,47-77,81-102,105-109,112-116,119-123,127-164,168,170-172,175-177,180-210,213-283,287-318,320,322-337,341-349,351,353-383,385-399,401-405,407,410-421,423-540,542-546,548-559,562-566,571-579,584-585,588,595-596,599,601,605-608,611-675,677-703,705-708,719-734,736-737,739-749,751-869,882,890,895,903,911-954,975,991-1004,1011,1019-1022,1042,1055,1095,1114-1115,1117-1118,1130,1165-1174
+  s_14c0d7b2e61fc1::t_c294df196afd07 1175-1176
+libs/code/tests/unit_tests/tui/widgets/test_status.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 599,602
+libs/deepagents/deepagents/middleware/_prompt_caching.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-49
+libs/code/tests/unit_tests/test_agent.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 295,306,1677-1718,1777-1781,1789-1794,1806,1816,1826,1872,3863-4458,4906-5004
+  s_14c0d7b2e61fc1::t_7679f631e8916a 5005
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1060-1066,1089,1104,1109-1129,2426-2501,2613-2616,2817,2822-2825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-49/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/scripts/test_aggregate_shards.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 495,547,559
+libs/code/deepagents_code/tui/widgets/model_selector.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 80,112
+libs/evals/MODEL_GROUPS.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 10,38,54,82,89,97,117,124,149,152,168,180
+libs/code/deepagents_code/hooks/engine.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-82
+libs/code/tests/unit_tests/smoke_tests/snapshots/system_prompt_interactive_local.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 377-378
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 27,32,36,41,83,189-192
+  s_14c0d7b2e61fc1::t_b5c1d3ecfe225d 193
+examples/nvidia_deep_agent/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 22
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5-6,9,12,16-41,50-52,66-133,181-182,203-204,207-211,213,218-515,644
+libs/code/deepagents_code/json_types.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/hooks/models/__init__.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_textual_patches.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 164-170
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+.github/scripts/test_aggregate_unified.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1002-1019
+libs/deepagents/deepagents/backends/protocol.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 441-454
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/harbor_adapters/contextbench/templates/judge.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-162
+libs/evals/datasets/context-retrieval-evals/cb-cloud-56/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/deepagents_code/_server_config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 18,24-25,73-129,323-333,380-381,389-402,458-462,518,557,594-596,628
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/deepagents_code/hooks/models/wire.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-446
+libs/code/deepagents_code/tui/widgets/_inline_prompt.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,147-158,236-240
+  s_14c0d7b2e61fc1::t_1e67a635d9141b 241-242
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/RELEASING.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 418-463
+libs/code/deepagents_code/hooks/models/adapters.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-24
+libs/code/tests/unit_tests/test_app.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 17,3736-4119,7806-7808,7815,7819,8781,9388,9407,12474-12475,12477-12491,12494,12496-12514,12516-12520,12522-12526,12528-12532,12534-12537,12539-12546,12548-12726,14006-14051,14212-14250,14541-14543,14555,14565-14588,14821-14850,14852-14855,14857-14861,14863-14871,14873-14879,14881-14885,14887-14889,14891-15156,15173-15177,15427-15429,15951-16725,16727-16730,16732-16734,16736-16737,16742,16745-16746,16751,16753-16758,16762-16763,16765-16775,16780,16783,16785,16788,16793-16794,16796,16799-16807,16815,16817,16819,16822,16824,16827-16830,16832-16834,16836-16837,16841,16844,16846-16852,16857,16861-16866,16869-16870,16872-16874,16879,16883,16888,16893,16897-16901,16911,16913-16921,16923-16924,16926-16938,26846-26914,26925-26994
+  s_14c0d7b2e61fc1::t_5e0bbb3f54a6ab 26995
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 26-30,130-137,139-141,169,218-220,244-259,292-300,303-308
+libs/code/tests/unit_tests/test_server_graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 204-209,276
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/AGENTS.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 65
+libs/code/deepagents_code/tui/widgets/approval.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 110-112,141-142,154-156,174-183,328-329,359,363,366,426-436,438-447,449-452,455,468,475,482-497,503-510,523,540-544,546-548,568,610
+libs/code/deepagents_code/main.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 26,29,69-70,702-780,2082-2092,2268,2331-2334,2414,2475,2490-2493,2589,2886-2888,2927,2960-2961,3012-3013,3045,3094,3230,3259-3260,3294-3295,3313-3314,3427-3428,3530-3532,3679,4528,4618-4623,4683
+libs/code/tests/unit_tests/test_main.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 999-1001,1023,2464-2485,2535-2620,3138,3205-3322,3329,3340-3343,3741-3811,4100,4102-4103,4122-4123,4134,4148-4151
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-7/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/tool_catalog.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 28,34,52-59,193-196,214-219,245,251-276,516,528-530,550
+libs/evals/datasets/context-retrieval-evals/cb-cloud-78/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+libs/code/tests/unit_tests/tui/widgets/test_chat_input.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 3650,3688,3746,3767,3786-3823,4181-4233
+  s_14c0d7b2e61fc1::t_80a75ab3483f18 4234
+openwiki/quickstart.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-69
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/conftest.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 161-163
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/test_validate_agent_graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-36
+openwiki/engineering/operations-and-testing.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-82
+libs/code/deepagents_code/tui/widgets/goal_review.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 25,367,392,399
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/aggregate_shards.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 285,306,450-454,502,561
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+examples/text-to-sql-agent/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 23
+libs/code/tests/unit_tests/tui/widgets/test_goal_review.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 214-246
+libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 15,424-445
+  s_14c0d7b2e61fc1::t_57fff4a0f776b7 446-447
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/tui/widgets/chat_input.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 10,448,450-452,523-524,976-979,981,983,986,1523-1525,1659-1673,1700-1703
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/deepagents_code/client/launch/server_manager.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 29-30,310,341-343,394,468,502-504,540
+libs/code/tests/unit_tests/test_model_switch.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 360,413,434,438
+libs/deepagents/deepagents/graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 46,728,812,907
+libs/deepagents/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 23-28,34,56-57,66-67,70
+libs/evals/assets/lite-scorecard-light.svg
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-44
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/harbor_adapters/contextbench/templates/test.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-4
+openwiki/architecture/index.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-35/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/tui/modals/plugin_manager/test_structure.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 19,74-95,917-951,1079,1095,1116-1119,1184,1186,1195-1196,1311-1346,1379,1395-1399
+libs/code/tests/unit_tests/hooks/models/test_models.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-428
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/scripts/test_release_please_workflow.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-20
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/UNIFIED_EVALS.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 82-85,87-89
+openwiki/.last-update.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-6
+libs/code/deepagents_code/tui/widgets/ask_user.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 32,178
+libs/code/tests/unit_tests/test_goal_rubric.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 8,19,72,668-702,713-727,765,831-942,1168-1233
+  s_14c0d7b2e61fc1::t_c4aee905e69904 1234
+libs/code/scripts/install.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 410,417-424,428,908-932,965,967-979,981-993,1095-1098,1101-1104,1111-1138,1172-1193,1195,1250,1253-1256,1299-1302,1437-1447,1460-1462,1471-1472,1474-1475,1479,1485-1488,1497,1500,1503-1505,1510-1511,1659-1660,1665-1669,1672-1676,1687-1690,1695-1697,1699-1703,1707,1711,1802,1823,1826-1827,1829-1831,1842-1844,1918,1931,2064-2073,2075
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-35/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/hooks/legacy.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-356
+AGENTS.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 419-428
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-638
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 369-421
+libs/code/tests/unit_tests/plugins/test_plugins_p0.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 187,215-216
+libs/evals/Makefile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 45
+libs/evals/assets/lite-scorecard-dark.svg
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-44
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/update_check.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 28,501-528,581,723,988
+libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/SKILL.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-50
+libs/code/deepagents_code/agent.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 16,64-67,177-265,974-1003,1054,1072-1073,1154,1209,1812,1862-1866,1889-1898,1902-1903,2058-2059,2069-2073,2107,2146-2148,2372,2444-2477,2507,2540
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/_textual_patches.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 3,16-17,30-35,37-38,106-108,148,150-152,155,158-160,202-203
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 9,11-12,14-25,34-39,41-45,49-80,82
+libs/code/deepagents_code/command_registry.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 130
+libs/code/deepagents_code/client/commands/tools.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 72-74,92-93,101,115
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/deepagents_code/_glm_5p2_profile.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-309
+libs/code/deepagents_code/auto_mode.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,13-14,19,21,23,41,49,52,91-93,189-318,320,325-329,667-677,680-818,893-897,901-909,920-945,953-955,1328-1337,1350-1561,1725-1726
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/test_glm_5p2_profile.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-363
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/tests/unit_tests/test_install_script.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 35,37,58,63,65-72,78-80,88,105-121,127-135,165,167,174,176,196,198,213,215,684-719,1926,1961-1973,1988-1990,2098-2113,2291-2294,2321,2358-2384,2407-2561,2771,2785-2836,2874
+.github/actions/uv_setup/action.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 35
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5-6,8,16,18-19,28-29,31-38,121-147,149-159,165,179-271,293-296,298-310,317,365-366,370-375,378,385-386,433,435,440-441
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/deepagents_code/client/launch/server.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 18,588-596,606-610,619-639,653-655,657-663,665-672,674-675,681,693-698,700,706-795,880-884,926,928-937,939,941-971,1015-1045,1047
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+examples/content-builder-agent/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/scripts/test_unified_workflow.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 458,468-474
+  s_14c0d7b2e61fc1::t_254e28b646b901 475-476
+libs/code/tests/unit_tests/hooks/test_engine.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-1067
+libs/code/tests/unit_tests/tui/widgets/test_approval.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 3-5,17-42,426-660,766-774,782-783,792
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_auto_mode.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6-9,11,13,21,24,27-29,43,48,193-233,311-394,554-1219
+  s_14c0d7b2e61fc1::t_cbe8f4f740eb33 1220-1221
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/deepagents_code/hooks/snapshot.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-209
+libs/code/deepagents_code/_constants.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 16-29
+libs/deepagents/tests/unit_tests/test_middleware.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 86-92,2741-2881
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_update_check.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 601-640
+libs/code/tests/unit_tests/skills/test_load.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 681-703
+libs/code/tests/unit_tests/test_server.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,378-395,539-546,576-577,956,961,969-1089,1218-1219,1223,1235-1302,1815
+libs/evals/assets/lite-scorecard-categories-dark.svg
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-57
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+openwiki/engineering/index.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/test_prune_agent_deps.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 185,247,252,271,284,308,324
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-10/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_startup_blocking.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-72
+libs/code/tests/unit_tests/test_model_config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 16,71-99,1383-1388,1391-1447,1449-1468,1497-1499,1501,1504,1508,5989-6064,6145-6209,6235-6288,6310-6327,6351-6360,6362,6377-6511,6554-6580,6589,6728-6775,6931,6934,6938-6942,6958,6961,6964,6968-6972,6987,7035-7036,7570,7577,7639-7711
+  s_14c0d7b2e61fc1::t_8871297cae02e3 7712
+libs/code/tests/unit_tests/test_debug_console.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 12,88-93,720,728,731,736-740,744-752,795-852,979-1092,1281-1323,1547-1578
+  s_14c0d7b2e61fc1::t_e9e26a1cb3993f 1579
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 27
+.github/scripts/validate_agent_graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-45
+.github/workflows/release-please.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 804-805
+libs/code/tests/unit_tests/tui/widgets/test_welcome.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 12,24,37,257-277,366-443
+  s_14c0d7b2e61fc1::t_4e502edcea0e5d 444
+libs/code/deepagents_code/tui/modals/plugin_manager/content.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 58,84-85,92-96,185-186
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-48/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/app.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 49,123-126,588,969-1025,1467-1528,2574-2576,2944-2952,3155-3163,3413-3424,3483-3494,3764,3835-3850,6559-6562,6842,6870-6877,6922,7021-7022,7158-7159,7256-7261,7452,8057-8117,8120-8122,8138,8688-8690,8752-8754,9478,12099,13346,13351,13356-13370,13398,13420-13422,13425,13430-13432,13448-13449,13451,13475,13484,13493,13557-13558,13562-13573,13575,13595-13608,13618-13619,13621,13626-13627,13632,13886,15096-15099,15235-15243,15779-15782,15786,15826-15830,15839,15841,15859-15871,15877-15891,15893-15919,15924-15938,15940-15944,15948,15951-15960,15986-16121,16123-16145,16431,16435-16443,16445,16450,16484-16505,16527,16536-16540,16571-16582,17216,17610,17922-17923,17928-17967,17979,18044-18047,19201,19257,20362,20420-20471,20512-20521
+libs/evals/datasets/context-retrieval-evals/cb-cloud-38/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/tests/unit_tests/test_configurable_model.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 625,1158-1180
+  s_14c0d7b2e61fc1::t_8d2c182e377536 1181-1182
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/scripts/unified_prep.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 27,57,63,69,76-114,116-145,147-150,267,278-279,314,335,510-515
+libs/deepagents/deepagents/backends/composite.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 280-281,317-318
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/README.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6-14,17-31
+libs/code/deepagents_code/hooks/models/transport.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-40
+libs/evals/assets/lite-scorecard-categories-light.svg
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-57
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/workflows/openwiki-update.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-51
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+openwiki/INSTRUCTIONS.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/goal_rubric.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 43,1354,1485,1495-1498,1543-1547,1552
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/deepagents_code/server_graph.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 312
+libs/code/tests/integration_tests/benchmarks/test_local_context_benchmarks.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-315
+openwiki/workflows/evaluation-and-release.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-69
+libs/code/deepagents_code/hooks/models/config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-46
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 8,23,39,3209-3280,3282,4480-4501,4538,4560,4644-4722,5295-5438
+  s_14c0d7b2e61fc1::t_a05f0a5cd18d16 5439
+libs/code/deepagents_code/tui/widgets/welcome.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 21,119-135,165-167,253,375-376,405-410
+  s_14c0d7b2e61fc1::t_0d5c6b72128b92 411
+libs/code/tests/unit_tests/client/commands/test_tools.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 337,343,359,365-392,416
+libs/code/deepagents_code/hooks/runner.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-239
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/tests/unit_tests/test_tool_catalog.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 71-187,219-221,225,673-675,703,708-710
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/code/deepagents_code/system_prompt.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 66
+libs/evals/datasets/context-retrieval-evals/calibration.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 2-3,5-17,19-50
+libs/evals/datasets/context-retrieval-evals/cb-cloud-7/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+libs/code/deepagents_code/local_context.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 259,262,270,272-282,287,290,360-367,369-370,372,374-388,391,413-414,422,447-457,460-476,522,524-542,544-549,555,559,578,582,599,611,621,627,646,649,723-726,944,946-953,956
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/client/non_interactive.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 87,1363,1429-1432,1651
+libs/code/deepagents_code/hooks/reducer.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-331
+libs/evals/datasets/context-retrieval-evals/cb-cloud-55/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+openwiki/workflows/index.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-4
+libs/evals/deepagents_clbench/system/system.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 3,7-9,11-12,14-17,20-21,24,28-30,92,106,126,139,217,227
+libs/code/deepagents_code/plugins/models.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 8-9
+libs/code/deepagents_code/model_config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 28,32-33,38-45,103-110,3394-3407,3414-3419,3430,3438-3440,3459-3483,3486,3490-3493,3503-3505,3507-3509,3515-3517,3521-3522,3525-3526,3531,3539,3542-3552,3559,3562,3564,3569-3571,3574-3579,3583-3584,3587-3599,3614,3621,3630-3715,3717,3747-3751,3800-3802,3845,3878-3894,4015-4016,4043-4052,4156-4158,4160,4187,4192-4196,4230,4243-4245,4248
+openwiki/workflows/deep-agents-code.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-83
+.github/scripts/aggregate_unified.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 110-113,126,156,164-166,186,225,379,396
+libs/code/deepagents_code/hooks/models/__init__.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/tests/evals/utils.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 518-521,531,860,866
+.github/workflows/release.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 92-94,219,302-319,326-328
+libs/code/tests/unit_tests/test_config.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 17,33,115-149,3258-3259,3268,3272,3274,3276,3281-3285,3292,3295-3296,3298,3302-3336,4177-4234,6271-6305
+  s_14c0d7b2e61fc1::t_1c1f52c0d64de0 6306
+libs/code/tests/unit_tests/test_server_manager.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 41,77-168,333-385
+  s_14c0d7b2e61fc1::t_affac48bed1826 386
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+.github/scripts/test_models.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 223-231
+libs/code/deepagents_code/mcp_tools.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1770-1787,1794-1802,2421-2491,2534-2540,2583-2646,2656-2659
+libs/code/tests/unit_tests/tui/widgets/test_ask_user.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 914-930
+.github/scripts/test_release_target_summary.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-202
+libs/code/tests/unit_tests/hooks/__init__.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/environment/.dockerignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+libs/code/deepagents_code/tui/widgets/debug_console.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 22,27,88-93,254,258-259,555,558,561,564,567,576-577,604-607,619-624,704-708,738-739,750-753,765-766,800-801,814-820,825,903,908,911,916-948,966-978,1023
+libs/code/deepagents_code/_env_vars.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 70-74,84-96
+  s_14c0d7b2e61fc1::t_3aff0446eceb74 97-98
+libs/evals/datasets/context-retrieval-evals/cb-cloud-55/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/code/deepagents_code/hooks/__init__.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-24
+libs/code/tests/unit_tests/test_main_args.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 2567-2837
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+openwiki/architecture/overview.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-58
+libs/code/tests/unit_tests/test_git.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 16,35-62,199-378
+  s_14c0d7b2e61fc1::t_9e736145214927 379-380
+libs/code/tests/unit_tests/skills/test_thread_inspector.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-676
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/evals/tests/unit_tests/test_contextbench_main.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 6,52-98,103-106,144-145,150-152,170-174
+.github/workflows/_harbor_run.yml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 92,383-391,395-396,399-400,494-498,771-778,842,919,1127,1161
+.release-please-manifest.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5
+libs/evals/datasets/context-retrieval-evals/cb-cloud-78/tests/case.json
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1
+libs/code/deepagents_code/_version.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 5
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/environment/Dockerfile
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-10
+libs/evals/datasets/context-retrieval-evals/.gitignore
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 4-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/solution/solve.sh
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/instruction.md
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-3
+.github/scripts/models.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 836-837,844-846
+libs/code/tests/unit_tests/test_extras_info.py
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 55
+examples/deep_research/pyproject.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 36
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/task.toml
+  s_14c0d7b2e61fc1::t_c30e47e13ab915 1-12
+examples/async-subagent-server/uv.lock
+  s_14c0d7b2e61fc1::t_7c99fa9a9663b3 92,94,96,362-364,366-367,369-371,377,381,391,393,641,648,650,655,662,664,669,682,684,689,697,699,775,793,795,934,936,938,1295,1300,1302
+examples/content-builder-agent/uv.lock
+  s_14c0d7b2e61fc1::t_33ee0c6a9b1347 224,829-909,914,916,918
+examples/deep_research/uv.lock
+  s_14c0d7b2e61fc1::t_b414eaf2321319 2918,2920,2922
+examples/llm-wiki/uv.lock
+  s_14c0d7b2e61fc1::t_924da55e083c7c 48,50,52,297-299,301-302,304-306,312,316,326,328,556,563,565,570,577,579,584,597,599,604,612,614,690,708,710,855,857,859,1161,1166,1168
+examples/nvidia_deep_agent/uv.lock
+  s_14c0d7b2e61fc1::t_e56fe1e0bd33ee 1968,1970,1972
+examples/text-to-sql-agent/uv.lock
+  s_14c0d7b2e61fc1::t_8a3c2ce8c3550e 1459,1461,1463
+libs/acp/uv.lock
+  s_14c0d7b2e61fc1::t_c956d4c12db005 100,102,104,446-448,450-451,453-455,461,465,475,477,760,767,769,774,781,783,802,815,817,822,830,832,922,940,942,1100,1102,1104,1811,1816,1818
+libs/cli/uv.lock
+  s_14c0d7b2e61fc1::t_7e9880f3aeab5e 63,65,67,423-425,427-428,430-432,438,442,452,454,848,855,857,862,869,871,876,889,891,896,904,906,982,1000,1002,1204,1206,1208,1859,1864,1866
+libs/code/uv.lock
+  s_14c0d7b2e61fc1::t_deb73af48228ac 5-12,17,22,24,38,40,42,47,59-160,221,233,235,240,246,248,299,304-326,344,356,358,375,379,382,384,389,392,396,398,407,457,459,461,585,590-678,683-752,757,762,764,806-885,895,900,902,1067-1069,1071-1072,1074-1076,1082,1086,1096,1098,1103,1110,1112,1117,1274,1296,1298-1299,1301,1304,1306,1308-1309,1315-1317,1329-1330,1337,1339-1340,1342-1343,1346-1347,1356,1360,1366,1368,1379-1380,1383,1547,1549,1551,1565,1577,1579,1704,1713,1715,1726,1732,1734,1739,1747,1764,1766,1771,1782,1784,1819,1829,1831,1836,1845,1847,1882,1896,1898,2129,2137,2139,2144-2163,2168,2170,2172,2270,2283,2285,2304,2313,2331,2346,2348,2419,2424,2426,2452-2533,2547,2549,2551,2694,2701,2703,2714,2753,2766,2768,2814,2823,2825,2830,2838,2840,3025,3032,3034,3194,3202,3204,3226,3264,3266,3298,3307,3309,3333,3344,3346,3367,3385,3387,3411,3427,3429-3436,3487,3493,3495,3629,3646,3648,3885,3889-3937,3945-3946,4025,4028-4079,4159,4171,4173,4178,4186,4188,4417-4422,4426,4480-4481,4484,4550,4560,4562,4567-4647,4652,4654,4656,4802,4807,4809,4888,4890,4892,5401-5500,5532,5539,5541,5568-5686,5691-5711,5716,5727,5729,5734,5739,5741,5759,5761,5763,5786,5788,5790,5795,5798-5802,5886,5896,5898,6188,6193,6195,6238-6258,6281,6286,6288,6302,6304,6306,6323,6325,6327,6350-6433,6438,6444,6446,6532,6534,6536-6546,6682,6687,6689,6694,6696,6698,6820-6953,6958,6965-7052
+libs/deepagents/uv.lock
+  s_14c0d7b2e61fc1::t_a48a0b6adacad7 59-80,122,124,126,565-567,569-570,572-574,580,584,594,596,956,963,965,985,998,1000,1005,1013,1015,1144,1162,1164,1456-1536,1559,1561,1563,2126-2146,2355-2375,2498,2503,2505
+libs/evals/harbor_adapters/contextbench/vendor/README.md
+  s_14c0d7b2e61fc1::t_3b555579ac291e 9-11
+libs/evals/harbor_adapters/contextbench/vendor/rubric.txt
+  s_14c0d7b2e61fc1::t_e3ef1a29b8e9d4 1-39
+libs/evals/uv.lock
+  s_14c0d7b2e61fc1::t_7a70c8b6c90353 136,142,144,200,202,204,415-417,419-420,422-424,430,434,444,446,451,458,460,465,506,508-509,511,514,516,518-519,525-527,539-540,547,549-550,552-553,556-557,566,570,576,578,589-590,593,653,657,662,666,791,793,795,1386,1393,1395,1414,1427,1429,1463,1471,1473,1548,1555,1557,1734,1743,1745,1769,1780,1782,1803,1821,1823,1887,1893,1895,2314,2316,2318-2326,2434,2436,2438,3007,3017,3019,3206,3208,3210-3216,3293,3298,3300
+libs/partners/daytona/uv.lock
+  s_14c0d7b2e61fc1::t_a5edbb35d3fec7 222,224,226,660-662,664-665,667-669,675,679,689,691,1086,1093,1095,1100,1107,1109,1114,1127,1129,1175,1183,1185,1283,1301,1303,2605,2610,2612
+libs/partners/modal/uv.lock
+  s_14c0d7b2e61fc1::t_0c03aeaa4af5e1 211,213,215,606-608,610-611,613-615,621,625,635,637,1027,1034,1036,1041,1048,1050,1055,1068,1070,1075,1083,1085,1224,1242,1244,2480,2485,2487
+libs/partners/runloop/uv.lock
+  s_14c0d7b2e61fc1::t_14c4addbc9dba2 52,54,56,398-400,402-403,405-407,413,417,427,429,670,677,679,684,691,693,698,711,713,718,726,728,867,885,887,1735,1740,1742
+libs/partners/vercel/uv.lock
+  s_14c0d7b2e61fc1::t_4a23f429c9b197 56,58,60,455-457,459-460,462-464,470,474,484,486,732,739,741,746,753,755,760,773,775,780,788,790,929,947,949,1908,1913,1915
+libs/talon/deepagents_talon/channels/whatsapp_bridge/package-lock.json
+  s_14c0d7b2e61fc1::t_59bef5bdc01c79 1073-1075,1086
+libs/talon/uv.lock
+  s_14c0d7b2e61fc1::t_a6deb1ff8cb6d2 73,79,81,226,228,230,777-779,781-782,784-786,792,796,806,808,813,820,822,827,874,876-877,879,882,884,886-887,893-895,907-908,915,917-918,920-921,924-925,934,938,944,946,957-958,961,1053,1055,1057,1638,1645,1647,1652,1665,1667,1672,1680,1682,1701,1708,1710,1859,1868,1870,1894,1905,1907,1928,1946,1948,2064,2070,2072,2815-2895,4072,4082,4084,4560-4643,4849,4854,4856
+libs/partners/quickjs/uv.lock
+  s_14c0d7b2e61fc1::t_071baeba77b5e8 57,59,61,483-485,487-488,490,492,498,512,514,884,891,893,898,911,913,918,926,928,1082,1100,1102,2151,2156,2158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5d222b14d30f40be40de6b597e8443376dc2989c",
+  "prompts": {},
+  "sessions": {
+    "s_14c0d7b2e61fc1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f858d-2d58-7630-bbef-439d4b057c9d",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

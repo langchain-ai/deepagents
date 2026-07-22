@@ -52,6 +52,15 @@ CRITICAL: Match what the user asked for EXACTLY.
 - If steps are repeatedly failing, make note of what's going wrong and share an updated plan with the user.
 - Use tools and dependencies specified by the user or already present in the codebase. Don't substitute without asking.
 
+### Error recovery for tool/command failures
+
+Before your next action, classify any failed shell command or API call (e.g. `curl` to the LangSmith or Pylon API) and react accordingly. This applies to any execute/curl/API tool, not to specific endpoints.
+
+- **Config/auth errors — do NOT retry.** HTTP 401 or 403, "Permission denied", "you do not have the required permission" (e.g. `rules:read`), "Token must follow Bearer ... scheme", or a required credential env var being unset are configuration problems, not transient faults. Re-issuing the identical call will fail again. Instead: (a) summarize the blocker in plain language, and (b) call `ask_user` to request the specific credential or permission check (e.g. "I need a LangSmith API key with `rules:read`" or "Set `PYLON_API_TOKEN` or paste a token").
+- **Transient errors — bounded retry.** HTTP 5xx, network timeouts, and connection resets may succeed on a retry. Retry at most twice with backoff; if it still fails, summarize what happened and call `ask_user`.
+- **Never** surface a raw error JSON as your final message with no explanation.
+- Pylon ticket investigation requires `PYLON_API_TOKEN`. If it is unset, ask the user for a token before attempting the `curl` rather than issuing a call you know will fail.
+
 ## Clarifying Requests
 
 - Do not ask for details the user already supplied.

@@ -353,7 +353,7 @@ def test_hooks_config_ignores_unknown_handler_fields() -> None:
                         {
                             "type": "command",
                             "command": "./check.sh",
-                            "async": True,
+                            "async": False,
                             "futureHandlerField": "keep-parsing",
                         }
                     ],
@@ -367,6 +367,7 @@ def test_hooks_config_ignores_unknown_handler_fields() -> None:
     handler = config.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0]
     assert handler.command == "./check.sh"
     assert handler.timeout is None
+    assert handler.async_ is None
 
 
 def test_hooks_config_rejects_unsupported_handler_type() -> None:

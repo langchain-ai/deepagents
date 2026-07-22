@@ -3,22 +3,18 @@
 import base64
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from langgraph.config import get_config, get_store
+from langgraph.config import get_store
 from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item, PutOp
-from langgraph.typing import ContextT, StateT
 
-from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
-    FileFormat,
     FileInfo,
     FileUploadResponse,
     GlobResult,
@@ -30,7 +26,6 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     _get_backend_read_file_type,
     _glob_search_files,
-    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -43,85 +38,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 
-@deprecated(
-    since="0.5.0",
-    removal="0.7.0",
-    message=(
-        "`BackendContext` is deprecated and will be removed in "
-        "deepagents==0.7.0. Namespace factories now receive a `Runtime` "
-        "instance directly — migrate "
-        '`lambda ctx: (ctx.runtime.context.user_id, "fs")` '
-        'to `lambda rt: (rt.server_info.user.identity, "fs")`.'
-    ),
-    package="deepagents",
-)
-@dataclass
-class BackendContext(Generic[StateT, ContextT]):
-    """Context passed to namespace factory functions.
-
-    !!! warning "Deprecated"
-
-        `BackendContext` will be removed in `deepagents==0.7.0`. Namespace
-        factories now receive a `Runtime` instance directly. Migrate
-        `lambda ctx: (ctx.runtime.context.user_id, "fs")` to
-        `lambda rt: (rt.server_info.user.identity, "fs")`.
-    """
-
-    state: StateT
-    runtime: "Runtime[ContextT]"
-
-
-class _NamespaceRuntimeCompat:
-    """Wrapper that duck-types as both `Runtime` and `BackendContext`.
-
-    Allows old-style namespace factories (accessing `.runtime` / `.state`)
-    to work alongside new-style factories (accessing `Runtime` attrs directly).
-
-    Will be removed in `deepagents==0.7.0`.
-    """
-
-    def __init__(self, runtime: "Runtime[Any] | None", state: object = None) -> None:
-        self._runtime = runtime
-        self._state = state
-
-    @property
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        message=(
-            "Accessing `.runtime` on the namespace factory argument is "
-            "deprecated and will be removed in deepagents==0.7.0. The "
-            "argument is now a Runtime instance — use its attributes directly "
-            "(e.g. `rt.context` instead of `ctx.runtime.context`)."
-        ),
-        package="deepagents",
-    )
-    def runtime(self) -> "Runtime[Any] | None":
-        return self._runtime
-
-    @property
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        message=(
-            "Accessing `.state` on the namespace factory argument is "
-            "deprecated and will be removed in deepagents==0.7.0. Namespace "
-            "resolution should not depend on state."
-        ),
-        package="deepagents",
-    )
-    def state(self) -> object:
-        return self._state
-
-    def __getattr__(self, name: str) -> object:
-        if self._runtime is None:
-            msg = f"Runtime is not available (running outside graph execution), cannot access '.{name}'"
-            raise AttributeError(msg)
-        return getattr(self._runtime, name)
-
-
-# Type alias for namespace factory functions. See `_NamespaceRuntimeCompat`
-# for the legacy-callable shim.
 NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
@@ -176,59 +92,31 @@ class StoreBackend(BackendProtocol):
     Uses LangGraph's Store for persistent, cross-conversation storage.
     Files are organized via namespaces and persist across all threads.
 
-    The namespace can include an optional assistant_id for multi-agent isolation.
+    Files are scoped by the caller-supplied `namespace` factory (e.g. per-user
+    or per-assistant isolation).
     """
 
     def __init__(
         self,
-        runtime: object = None,
         *,
+        namespace: NamespaceFactory,
         store: BaseStore | None = None,
-        namespace: NamespaceFactory | None = None,
-        file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize `StoreBackend`.
 
         Args:
-            runtime: Deprecated - accepted for backward compatibility but
-                ignored. Store and context are now obtained via
-                `get_store()` / `get_runtime()`.
+            namespace: Callable that receives a `Runtime` and returns a namespace
+                tuple for scoping store operations. Wildcards (`*`) are forbidden.
             store: Optional `BaseStore` instance. When provided, this store
-                is used directly. When `None` (the default), the store is
-                obtained at call time via `get_store()`, which requires
-                a LangGraph graph execution context.
-            namespace: Optional callable that receives a `Runtime` and returns
-                a namespace tuple for scoping store operations.
-                Wildcards (`*`) are forbidden.
-                If `None`, uses legacy assistant_id detection from metadata (deprecated).
-
-                Old-style callables that accept `BackendContext` still work
-                but are deprecated and will be removed in `deepagents==0.7.0`.
-
-            file_format: Storage format version. `"v1"` (default) stores
-                content as `list[str]` (lines split on `\\n`) without an
-                `encoding` field. `"v2"` stores content as a plain `str`
-                with an `encoding` field.
+                is used directly. When `None`, the store is obtained at call time
+                via `get_store()`, which requires a LangGraph graph execution
+                context.
 
         Example:
             `namespace=lambda rt: (rt.server_info.user.identity, "filesystem")`
         """
-        if runtime is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Passing `runtime` to `StoreBackend` is deprecated and "
-                    "will be removed in deepagents==0.7.0. `StoreBackend` "
-                    "now obtains store and context via "
-                    "`get_store()` / `get_runtime()`. Use `StoreBackend()` or "
-                    "`StoreBackend(store=my_store)` instead."
-                ),
-                package="deepagents",
-            )
         self._store = store
         self._namespace = namespace
-        self._file_format = file_format
 
     def _get_store(self) -> BaseStore:
         """Return the store instance.
@@ -244,99 +132,66 @@ class StoreBackend(BackendProtocol):
             msg = (
                 "StoreBackend must be used inside a LangGraph graph execution "
                 "(e.g. via create_deep_agent), or initialized with an explicit "
-                "store: StoreBackend(store=my_store)"
+                "store and namespace: StoreBackend(store=my_store, "
+                "namespace=lambda _rt: ('filesystem',))"
             )
             raise RuntimeError(msg) from None
 
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
-        If namespace was provided at init, calls it with a `_NamespaceRuntimeCompat`
-        wrapper that duck-types as both `Runtime` (new) and `BackendContext` (legacy).
-        Otherwise, uses legacy assistant_id detection from metadata (deprecated).
+        Resolves the `Runtime` from the graph execution context and passes it to
+        the namespace factory. When called outside a graph (e.g. direct backend
+        use), the runtime is unavailable and `None` is passed instead, so
+        factories that ignore their argument still work. A factory that reads
+        the runtime (e.g. `lambda rt: (rt.server_info.user.identity, ...)`)
+        raises a clear `RuntimeError` in that case rather than an opaque
+        `AttributeError` on `None`.
         """
-        if self._namespace is not None:
-            try:
-                runtime = get_runtime()
-            except (RuntimeError, KeyError):
-                runtime = None
-            # `_NamespaceRuntimeCompat` deliberately duck-types `Runtime` for
-            # legacy factories; cast because `Runtime` itself is not structural.
-            compat = cast("Runtime[Any]", _NamespaceRuntimeCompat(runtime))
-            return _validate_namespace(self._namespace(compat))
-
-        return self._get_namespace_legacy()
-
-    def _get_namespace_legacy(self) -> tuple[str, ...]:
-        """Legacy namespace resolution: check metadata for assistant_id.
-
-        Uses `get_config()` to find `assistant_id` in metadata. Returns
-        `(assistant_id, "filesystem")` when present; otherwise returns
-        `("filesystem",)`.
-
-        !!! deprecated
-
-            Pass `namespace` to `StoreBackend` instead of relying on legacy detection.
-        """
-        warn_deprecated(
-            since="0.5.0",
-            removal="0.7.0",
-            message=(
-                "`StoreBackend` without an explicit `namespace` is deprecated "
-                "and will be removed in deepagents==0.7.0. Pass "
-                "`namespace=lambda ctx: (...)` to `StoreBackend`."
-            ),
-            package="deepagents",
-        )
-        namespace = "filesystem"
-
         try:
-            cfg = get_config()
-        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
-            return (namespace,)
-
+            runtime: Runtime[Any] | None = get_runtime()
+        except (RuntimeError, KeyError):
+            runtime = None
         try:
-            assistant_id = cfg.get("metadata", {}).get("assistant_id")
-        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
-            assistant_id = None
-
-        if assistant_id:
-            return _validate_namespace((assistant_id, namespace))
-        return (namespace,)
+            namespace = self._namespace(cast("Runtime[Any]", runtime))
+        except AttributeError as exc:
+            if runtime is None:
+                msg = (
+                    "The namespace factory tried to read the Runtime, but it is "
+                    "unavailable (running outside a LangGraph graph execution). "
+                    "Use StoreBackend inside a graph (e.g. via create_deep_agent), "
+                    "or pass a namespace factory that does not read the Runtime."
+                )
+                raise RuntimeError(msg) from exc
+            raise
+        return _validate_namespace(namespace)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
-        """Convert a store `Item` to `FileData` format.
+        """Convert current and legacy persisted store content to `FileData`.
 
         Args:
             store_item: The store `Item` containing file data.
 
         Returns:
-            `FileData` dict with content and encoding.
+            `FileData` with string content and encoding. Legacy `list[str]`
+                content is joined without modifying the persisted item. Includes
+                `created_at` and `modified_at` when present.
 
-                Includes `created_at` and `modified_at` when present in the store item.
+        Raises:
+            ValueError: If the store item has no content.
+            TypeError: If content is neither a string nor a legacy list of strings.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
 
-        # BACKWARDS COMPAT: legacy list[str] format
-        if isinstance(raw_content, list):
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Store item with `list[str]` content is deprecated and "
-                    "will be removed in deepagents==0.7.0. Content should "
-                    "be stored as a plain `str`."
-                ),
-                package="deepagents",
-            )
+        if isinstance(raw_content, list) and all(isinstance(line, str) for line in raw_content):
             content = "\n".join(raw_content)
         elif isinstance(raw_content, str):
             content = raw_content
         else:
-            msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
+            msg = f"Store item `content` must be a `str` or legacy `list[str]`, got {type(raw_content).__name__}."
             raise TypeError(msg)
 
         result = FileData(
@@ -352,9 +207,6 @@ class StoreBackend(BackendProtocol):
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert `FileData` to a dict suitable for `store.put()`.
 
-        When `file_format="v1"`, returns the legacy format with `content`
-        as `list[str]` and no `encoding` key.
-
         Args:
             file_data: The `FileData` to convert.
 
@@ -364,8 +216,6 @@ class StoreBackend(BackendProtocol):
                 Includes `created_at` and `modified_at` when present in
                 the `FileData`.
         """
-        if self._file_format == "v1":
-            return _to_legacy_file_data(file_data)
         result: dict[str, Any] = {
             "content": file_data["content"],
             "encoding": file_data["encoding"],
@@ -496,9 +346,7 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-            raw = fd.get("content", "")
-            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            size = len(file_data_to_string(fd))
             infos.append(
                 {
                     "path": item.key,
@@ -779,12 +627,7 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            if fd:
-                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-                raw = fd.get("content", "")
-                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
-            else:
-                size = 0
+            size = len(file_data_to_string(fd)) if fd else 0
             infos.append(
                 {
                     "path": p,

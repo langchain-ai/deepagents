@@ -61,6 +61,10 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+from deepagents_code._glm_5p2_profile import (
+    _ensure_glm_5p2_profile_registered,
+    _GlmTerminalStallRecovery,
+)
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -1855,8 +1859,11 @@ def create_cli_agent(
                 the SDK still layers its built-in base prompt beneath your
                 text.
         interactive: When `False`, the auto-generated system prompt is
-            tailored for headless non-interactive execution. Ignored when
-            `system_prompt` is provided explicitly.
+            tailored for headless non-interactive execution, and every stack
+            gains terminal-stall recovery middleware (a runtime no-op unless the
+            resolved model is Fireworks GLM-5.2). Only the system-prompt
+            tailoring is ignored when `system_prompt` is provided explicitly;
+            the recovery wiring still applies.
         auto_approve: If `True`, no tools trigger human-in-the-loop
             interrupts — all calls (shell execution, file writes/edits,
             web search, URL fetch) run automatically.
@@ -1892,7 +1899,8 @@ def create_cli_agent(
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
-            Disabled in non-interactive mode.
+            Non-interactive callers without a resume loop must explicitly pass
+            `enable_ask_user=False`.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         memory_auto_save: When `True` (default), the memory prompt tells the
             agent to proactively persist learnings to the `AGENTS.md` sources.
@@ -2047,7 +2055,8 @@ def create_cli_agent(
     )
 
     def _subagent_cli_middleware(
-        *, has_explicit_model: bool
+        *,
+        has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
         middleware: list[AgentMiddleware[Any, Any]] = []
         # Experimental: mirror the main agent and drop TodoListMiddleware /
@@ -2057,6 +2066,11 @@ def create_cli_agent(
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        # Interactive turns may legitimately be tool-free, so terminal-stall
+        # recovery is installed only on headless stacks. The middleware itself
+        # activates only for the measured Fireworks GLM-5.2 endpoint.
+        if not interactive:
+            middleware.append(_GlmTerminalStallRecovery())
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -2090,7 +2104,7 @@ def create_cli_agent(
         if model_spec:
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
-            has_explicit_model=has_explicit_model
+            has_explicit_model=has_explicit_model,
         )
         if subagent_middleware:
             subagent["middleware"] = subagent_middleware
@@ -2129,6 +2143,9 @@ def create_cli_agent(
         # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
         *_todo_list_middleware_override(),
     ]
+    if not interactive:
+        agent_middleware.append(_GlmTerminalStallRecovery())
+
     if not interactive and mcp_tools:
         from deepagents_code.auto_mode import (
             HeadlessMCPGuardMiddleware,
@@ -2512,6 +2529,7 @@ def create_cli_agent(
         *custom_subagents,
         *(async_subagents or []),
     ]
+    _ensure_glm_5p2_profile_registered()
     agent = create_deep_agent(
         model=model,
         system_prompt=resolved_system_prompt,

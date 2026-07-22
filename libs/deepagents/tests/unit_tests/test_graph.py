@@ -651,7 +651,7 @@ class TestSystemPromptAssembly:
         assert prompt == ""
         assert BASE_AGENT_PROMPT not in prompt
 
-    def test_default_agent_prompt_restores_base(self) -> None:
+    def test_base_agent_prompt_restores_base(self) -> None:
         """Callers opt the authored prose back in via `system_prompt={"base": ...}`."""
         prompt = self._build_and_capture_system_prompt(
             "defprov",
@@ -660,7 +660,7 @@ class TestSystemPromptAssembly:
         )
         assert prompt == BASE_AGENT_PROMPT
 
-    def test_default_agent_prompt_holds_authored_prose(self) -> None:
+    def test_base_agent_prompt_holds_authored_prose(self) -> None:
         """The authored prose is preserved (not deleted) so it can be restored."""
         assert "You are a deep agent" in BASE_AGENT_PROMPT
         assert "Professional Objectivity" in BASE_AGENT_PROMPT

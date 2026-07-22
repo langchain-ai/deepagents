@@ -1,8 +1,9 @@
 """Frozen 'lite' task subsets per category for the unified evals `profile=lite`.
 
-A high-signal, low-cost slice: fewer tasks, FULL rollouts. Tasks are biased to the
-difficulty frontier (partial-pass / hard-but-solvable) measured on a weaker model
-(gpt-5.6-luna); saturated (all-pass) and verifier-unstable tasks are excluded.
+A high-signal, low-cost slice: fewer tasks, FULL rollouts. Autonomous and
+conversation use their calibrated difficulty frontiers. Context is a neutral,
+paired Terra/Luna representative sample of the frozen 30-task corpus so a lite
+run does not amplify either model's measured Context-Bench advantage.
 
 Names are the exact harbor `--include-task-name` filters per category:
   autonomous   -> registry ref `harbor-index/<task>`
@@ -56,16 +57,23 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-banking_knowledge-task-073",
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
-    # 8 — luna is strong on context, so the frontier is thin: its partials + fails.
+    # 10 — every Context-Bench query type, with extra deep-comparison and
+    # multi-hop tasks. This 1 easy / 3 medium / 6 hard source-tier slice is
+    # selected from the completed six-model, three-rollout full-30 run
+    # (29883830538). It is the closest all-model profile among stable,
+    # source-balanced candidates that preserves the full run's strict observed
+    # order; it does not target an external leaderboard order.
     "context": [
-        "cb-cloud-10",
-        "cb-cloud-41",
-        "cb-cloud-47",
-        "cb-cloud-0",
-        "cb-cloud-26",
-        "cb-cloud-49",
-        "cb-cloud-15",
-        "cb-cloud-5",
+        "cb-cloud-48",  # aggregation (medium)
+        "cb-cloud-1",  # comparison_tiebreak (easy)
+        "cb-cloud-21",  # cross_file_counting (medium)
+        "cb-cloud-49",  # multi_entity_comparison (hard)
+        "cb-cloud-65",  # multi_entity_comparison (hard)
+        "cb-cloud-69",  # multi_hop_chain (hard)
+        "cb-cloud-57",  # multi_hop_chain (hard)
+        "cb-cloud-9",  # negation (medium)
+        "cb-cloud-7",  # set_intersection (hard)
+        "cb-cloud-4",  # temporal_reasoning (hard)
     ],
 }
 

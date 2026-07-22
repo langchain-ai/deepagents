@@ -20,18 +20,18 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.3.12,<2.0.0",
-    "langchain-core>=1.4.9,<2.0.0",
-    "langchain-anthropic>=1.4.8,<2.0.0",
-    "langchain-google-genai>=4.2.7,<5.0.0",
-    "langsmith>=0.9.3",
-    "wcmatch>=10.1",
+    "langchain>=1.3.14,<2.0.0",
+    "langchain-core>=1.5.0,<2.0.0",
+    "langchain-anthropic>=1.5.0,<2.0.0",
+    "langchain-google-genai>=4.3.1,<5.0.0",
+    "langsmith>=0.10.9",
+    "wcmatch>=11.0",
 ]
 
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.6.2,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.3"]
-video = ["av>=17.0.0,<18.0.0", "pillow>=12.3.0,<13.0.0"]
+video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -53,8 +53,8 @@ test = [
   "pytest-timeout>=2.4.0,<3.0.0",
   "pytest-socket",
   "pytest-watcher>=0.6.3,<1.0.0",
-  "ruff>=0.15.20,<0.16.0",
-  "ty>=0.0.54,<1.0.0",
+  "ruff>=0.15.22,<0.16.0",
+  "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
   "langchain-openai",
@@ -63,11 +63,11 @@ test = [
   # Lazy-imported at runtime so the core package does
   # not depend on them. ty still sees the import names and
   # needs stubs, so we install them into the type-checker venv.
-  "av>=17.0.0,<18.0.0",
+  "av>=18.0.0,<19.0.0",
   "pillow>=12.3.0,<13.0.0",
 ]
 [build-system]
-requires = ["setuptools>=82.0.1", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]

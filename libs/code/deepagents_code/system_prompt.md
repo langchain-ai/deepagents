@@ -63,13 +63,7 @@ CRITICAL: Match what the user asked for EXACTLY.
 
 ## Tool Usage
 
-IMPORTANT: Use specialized tools instead of shell commands:
-
-- `read_file` over `cat`/`head`/`tail`
-- `edit_file` over `sed`/`awk`
-- `write_file` over `echo`/heredoc
-- `grep` tool over shell `grep`/`rg`
-- `glob` over shell `find`/`ls`
+{filesystem_tool_guidance}
 
 When performing multiple independent operations, make all tool calls in a single response — don't make sequential calls when parallel is possible.
 

@@ -14975,6 +14975,53 @@ class TestActionOpenEditor:
             assert app.focused is chat_input.input_widget
             assert future.done() is False
 
+    async def test_stale_ask_user_editor_does_not_intercept_chat_ctrl_x(
+        self,
+    ) -> None:
+        """A focused field must belong to the currently pending ask-user menu."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            stale_menu, stale_input, _ = await self._open_ask_user_other_editor(
+                app, pilot
+            )
+            stale_input.text = "stale answer"
+
+            messages = app.query_one("#messages", Container)
+            current_menu = AskUserMenu(
+                [{"question": "Current?", "type": "text"}],
+                id="ask-user-menu-current",
+            )
+            await messages.mount(current_menu)
+            app._pending_ask_user_widget = current_menu
+            await pilot.pause()
+            stale_input.focus()
+            await pilot.pause()
+
+            assert stale_menu.is_attached
+            assert current_menu.is_attached
+            assert app.focused is stale_input
+
+            chat_input = app.query_one(ChatInput)
+            chat_input.set_value_at_end("chat draft")
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor",
+                    return_value="edited chat draft",
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "chat draft", allow_empty=False, raise_on_error=False
+            )
+            assert stale_input.text == "stale answer"
+            assert chat_input.value == "edited chat draft"
+            assert app.focused is chat_input.input_widget
+            assert app._pending_ask_user_widget is current_menu
+
 
 class TestEditorSlashCommand:
     """Test that /editor dispatches to action_open_editor."""

@@ -16466,6 +16466,7 @@ class DeepAgentsApp(App):
         focused = self.focused
         if (
             not isinstance(focused, AskUserTextArea)
+            or menu not in focused.ancestors
             or not focused.is_attached
             or not focused.display
             or not focused.visible

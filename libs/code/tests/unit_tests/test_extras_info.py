@@ -413,6 +413,30 @@ class TestResolveSdkVersion:
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.4", "resolved")
 
+    def test_resolved_uses_newer_exact_requirement_for_editable_install(
+        self, tmp_path: Path
+    ) -> None:
+        """A newer exact dcode pin is the effective SDK version on editable main."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = MagicMock()
+        sdk_dist.read_text.return_value = (
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a8"]
+
+        def dist(name: str) -> MagicMock:
+            return {"deepagents": sdk_dist, "deepagents-code": code_dist}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="0.6.12"),
+            patch("deepagents_code.extras_info.distribution", side_effect=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("0.7.0a8", "resolved")
+
     def test_resolved_falls_back_to_metadata_when_editable_version_file_missing(
         self, tmp_path: Path
     ) -> None:
@@ -794,17 +818,17 @@ class TestVersionAnnotations:
             == " (editable; installed metadata: 0.7.0)"
         )
 
-    def test_sdk_annotation_surfaces_exact_pin_mismatch(self) -> None:
-        """An unsatisfied exact pin surfaces an actionable mismatch."""
+    def test_sdk_annotation_uses_newer_exact_pin_for_editable_install(self) -> None:
+        """A newer exact pin explains why the effective SDK version is ahead."""
         sdk = _distribution_version(
             source_version="0.6.12", metadata_version="0.6.12", editable=True
         )
         report = self._report(
-            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=False
+            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=True
         )
-        assert (
-            format_sdk_version_annotation(report)
-            == " (editable; required by deepagents-code: 0.7.0a7 — mismatch)"
+        assert report.effective_sdk_version == "0.7.0a7"
+        assert format_sdk_version_annotation(report) == (
+            " (editable; editable source: 0.6.12; required by deepagents-code: 0.7.0a7)"
         )
 
     def test_sdk_annotation_shows_ranged_requirement_mismatch(self) -> None:
@@ -818,22 +842,20 @@ class TestVersionAnnotations:
         annotation = format_sdk_version_annotation(report)
         assert "required by deepagents-code: <0.8,>=0.7 — mismatch" in annotation
 
-    def test_sdk_annotation_combines_editable_drift_and_mismatch(self) -> None:
-        """Editable, drift, and mismatch parts join in order when they co-occur.
+    def test_sdk_annotation_shows_editable_drift_without_mismatch(self) -> None:
+        """An editable source matching the exact pin is healthy.
 
-        This is the case where the displayed primary (source) version happens to
-        equal the requirement yet the (stale) installed metadata does not — the
-        drift note reconciles the apparent contradiction.
+        Stale metadata is still shown for diagnostics.
         """
         sdk = _distribution_version(
             source_version="0.7.0a7", metadata_version="0.6.12", editable=True
         )
         report = self._report(
-            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=False
+            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=True
         )
+        assert report.effective_sdk_version == "0.7.0a7"
         assert format_sdk_version_annotation(report) == (
-            " (editable; installed metadata: 0.6.12; "
-            "required by deepagents-code: 0.7.0a7 — mismatch)"
+            " (editable; installed metadata: 0.6.12)"
         )
 
 
@@ -1135,6 +1157,44 @@ class TestCollectVersionInfo:
         assert info.status == "not_installed"
         assert info.metadata_version is None
         assert info.primary_version is None
+
+    def test_collect_version_report_uses_newer_exact_pin_for_editable_sdk(
+        self, tmp_path: Path
+    ) -> None:
+        """Editable main treats a newer exact dcode pin as the effective SDK."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = MagicMock()
+        sdk_dist.read_text.return_value = (
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.read_text.return_value = None
+        code_dist.requires = ["deepagents==0.7.0a8"]
+
+        def fake_version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.45"}[name]
+
+        def fake_dist(name: str) -> MagicMock:
+            return {"deepagents": sdk_dist, "deepagents-code": code_dist}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+            patch("deepagents_code.extras_info.distribution", side_effect=fake_dist),
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.45",
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            report = collect_version_report()
+        assert report.effective_sdk_version == "0.7.0a8"
+        assert report.sdk_requirement_satisfied is True
+        assert report.sdk_requirement_mismatch is False
 
     def test_collect_version_report_flags_requirement_mismatch(self) -> None:
         """The aggregated report flags an unsatisfied declared SDK requirement."""

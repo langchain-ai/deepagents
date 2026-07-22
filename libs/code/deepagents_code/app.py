@@ -6333,7 +6333,7 @@ class DeepAgentsApp(App):
         if report.sdk.status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
-            sdk_version = report.sdk.primary_version
+            sdk_version = report.effective_sdk_version
             sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
             sdk_annotation = format_sdk_version_annotation(report)
             lines.append(

@@ -130,7 +130,7 @@ def build_version_text() -> str:
     report = collect_version_report()
     cli_annotation = format_cli_version_annotation(report.cli)
     if report.sdk.status == "resolved":
-        sdk_version = report.sdk.primary_version
+        sdk_version = report.effective_sdk_version
         sdk_annotation = format_sdk_version_annotation(report)
     else:
         sdk_version = "unknown"

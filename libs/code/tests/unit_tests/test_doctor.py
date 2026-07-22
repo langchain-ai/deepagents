@@ -122,13 +122,38 @@ class TestDiagnosticsVersionReport:
             sdk=DistributionVersion(
                 "deepagents", "0.6.12", "0.6.12", True, "~/src/sdk", "resolved"
             ),
-            sdk_requirement=Requirement("deepagents==0.7.0a7"),
+            sdk_requirement=Requirement("deepagents>=0.7,<0.8"),
             sdk_requirement_satisfied=False,
         )
         items = self._diagnostics(report)
         sdk = items["deepagents (SDK)"]
         assert sdk.ok is False
-        assert "required by deepagents-code: 0.7.0a7 — mismatch" in sdk.value
+        assert "required by deepagents-code: <0.8,>=0.7 — mismatch" in sdk.value
+
+    def test_newer_exact_sdk_pin_is_informational_for_editable_sdk(self) -> None:
+        """A newer exact dcode pin is healthy for an editable main SDK checkout."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, __version__, True, "~/src", "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", "0.6.12", "0.6.12", True, "~/src/sdk", "resolved"
+            ),
+            sdk_requirement=Requirement("deepagents==0.7.0a8"),
+            sdk_requirement_satisfied=True,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is True
+        assert sdk.value == (
+            "0.7.0a8 (editable; editable source: 0.6.12; "
+            "required by deepagents-code: 0.7.0a8)"
+        )
 
     def test_source_metadata_drift_is_informational(self) -> None:
         """Source/metadata drift annotates the values but stays healthy."""

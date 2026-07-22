@@ -76,7 +76,7 @@ def _sdk_diagnostic(report: VersionReport) -> tuple[str, bool]:
         return "not installed", False
     if sdk.status != "resolved":
         return "unknown", False
-    value = f"{sdk.primary_version}{format_sdk_version_annotation(report)}"
+    value = f"{report.effective_sdk_version}{format_sdk_version_annotation(report)}"
     return value, not report.sdk_requirement_mismatch
 
 

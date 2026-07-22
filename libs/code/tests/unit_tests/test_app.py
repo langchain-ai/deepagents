@@ -30252,3 +30252,99 @@ class TestForcedGoalCriteriaSync:
         await app._sync_goal_rubric_state_from_thread(force=False)
 
         remount.assert_not_awaited()
+
+
+class TestSanitizeFinalMessageText:
+    """Structured internal content must never surface as the final answer."""
+
+    def test_policy_decision_becomes_readable_blocked_message(self) -> None:
+        import json
+
+        from deepagents_code.app import _sanitize_final_message_text
+
+        blob = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "decision": "deny",
+                        "category": "protected_resource",
+                        "reason": "edit targets a path outside the worktree",
+                    }
+                ]
+            }
+        )
+
+        result = _sanitize_final_message_text(blob)
+
+        assert result is not None
+        assert "blocked" in result.lower()
+        assert "protected_resource" in result
+        assert "edit targets a path outside the worktree" in result
+        assert "Next step" in result
+        assert "{" not in result
+
+    def test_bare_tool_call_is_not_surfaced(self) -> None:
+        import json
+
+        from deepagents_code.app import _sanitize_final_message_text
+
+        blob = json.dumps(
+            {"name": "edit_file", "args": {"path": "/etc/passwd"}, "id": "call_1"}
+        )
+
+        assert _sanitize_final_message_text(blob) is None
+
+    def test_plain_text_passes_through(self) -> None:
+        from deepagents_code.app import _sanitize_final_message_text
+
+        assert _sanitize_final_message_text("Done.") == "Done."
+
+    def test_non_json_braces_pass_through(self) -> None:
+        from deepagents_code.app import _sanitize_final_message_text
+
+        text = "{not really json"
+        assert _sanitize_final_message_text(text) == text
+
+
+class TestConvertMessagesFiltersStructuredContent:
+    """History conversion must not render decision/tool_call JSON as text."""
+
+    def test_denied_edit_yields_plain_language_blocked_action(self) -> None:
+        import json
+
+        from langchain_core.messages import AIMessage
+
+        blob = json.dumps(
+            {
+                "decisions": [
+                    {
+                        "decision": "deny",
+                        "category": "protected_resource",
+                        "reason": "edit outside the trusted worktree",
+                    }
+                ]
+            }
+        )
+
+        data = DeepAgentsApp._convert_messages_to_data([AIMessage(content=blob)])
+
+        assert len(data) == 1
+        assert data[0].type == MessageType.ASSISTANT
+        assert "blocked" in data[0].content.lower()
+        assert "protected_resource" in data[0].content
+        assert "edit outside the trusted worktree" in data[0].content
+        assert "Next step" in data[0].content
+        assert '"decisions"' not in data[0].content
+
+    def test_bare_tool_call_content_is_not_a_final_answer(self) -> None:
+        import json
+
+        from langchain_core.messages import AIMessage
+
+        blob = json.dumps(
+            {"name": "edit_file", "args": {"path": "src/main.py"}, "id": "call_1"}
+        )
+
+        data = DeepAgentsApp._convert_messages_to_data([AIMessage(content=blob)])
+
+        assert not any(m.type == MessageType.ASSISTANT for m in data)

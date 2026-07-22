@@ -404,6 +404,72 @@ def _message_text(msg: Any) -> str:  # noqa: ANN401
     return "" if content is None else str(content)
 
 
+def _looks_like_policy_decision_batch(value: Any) -> bool:  # noqa: ANN401
+    """Return whether `value` is an approval policy-decision batch object."""
+    if not isinstance(value, dict):
+        return False
+    decisions = value.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return False
+    return any(isinstance(item, dict) and "decision" in item for item in decisions)
+
+
+def _looks_like_tool_call(value: Any) -> bool:  # noqa: ANN401
+    """Return whether `value` is a bare tool_call dict (name + args)."""
+    if not isinstance(value, dict):
+        return False
+    return isinstance(value.get("name"), str) and "args" in value
+
+
+def _humanize_policy_decision_batch(value: dict) -> str:
+    """Render a policy-decision batch as an actionable blocked-action message."""
+    decisions = value.get("decisions")
+    denials = [
+        item
+        for item in (decisions if isinstance(decisions, list) else [])
+        if isinstance(item, dict) and item.get("decision") == "deny"
+    ]
+    if not denials:
+        return (
+            "The requested action could not be completed. Review the pending "
+            "approval and either re-target the action or explicitly approve it."
+        )
+    lines = ["The requested action was blocked."]
+    for denial in denials:
+        category = str(denial.get("category") or "policy").strip() or "policy"
+        reason = str(denial.get("reason") or "").strip()
+        if reason:
+            lines.append(f'- [{category}] "{reason}"')
+        else:
+            lines.append(f"- [{category}]")
+    lines.append(
+        "Next step: re-target the action inside the trusted worktree, or "
+        "explicitly approve it if it is intended."
+    )
+    return "\n".join(lines)
+
+
+def _sanitize_final_message_text(text: str) -> str | None:
+    """Filter structured internal content out of a final assistant message.
+
+    Returns a human-readable replacement when `text` is a policy-decision
+    batch, `None` when it is a bare tool_call dict (an unterminated turn that
+    must not be surfaced as an answer), or the original text otherwise.
+    """
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return text
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return text
+    if _looks_like_policy_decision_batch(parsed):
+        return _humanize_policy_decision_batch(parsed)
+    if _looks_like_tool_call(parsed):
+        return None
+    return text
+
+
 def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
     """Return whether `msg` is a tool message in object or serialized form."""
     if isinstance(msg, dict):
@@ -14122,7 +14188,11 @@ class DeepAgentsApp(App):
                     text = text.strip()
 
                 if text:
-                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+                    sanitized = _sanitize_final_message_text(text)
+                    if sanitized:
+                        result.append(
+                            MessageData(type=MessageType.ASSISTANT, content=sanitized)
+                        )
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):

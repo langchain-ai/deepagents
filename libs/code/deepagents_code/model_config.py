@@ -100,6 +100,8 @@ def resolve_env_var(name: str) -> str | None:
                     prefixed,
                 )
             if val and logger.isEnabledFor(logging.DEBUG):
+                # `resolve_env_var` is called frequently; log each successful
+                # prefixed resolution only once per generation to avoid spam.
                 with _resolved_env_var_log_lock:
                     should_log = name not in _resolved_env_var_log_names
                     _resolved_env_var_log_names.add(name)

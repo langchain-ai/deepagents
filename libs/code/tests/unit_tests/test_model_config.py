@@ -1405,6 +1405,39 @@ class TestResolveEnvVar:
         finally:
             reset_env_resolution_log()
 
+    def test_debug_disabled_resolution_still_logs_once_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A resolve while DEBUG is off must not consume the one-time log slot."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        reset_env_resolution_log()
+        try:
+            # DEBUG disabled: resolve succeeds but records nothing, so the name
+            # must not be marked as already-logged.
+            caplog.set_level(logging.INFO, logger="deepagents_code.model_config")
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert caplog.messages == []
+
+            # DEBUG enabled: the first resolution should still emit exactly once.
+            caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 1
+            )
+        finally:
+            reset_env_resolution_log()
+
     def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None when neither form is set."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

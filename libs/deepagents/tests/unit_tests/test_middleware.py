@@ -438,7 +438,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         def slow_glob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             time.sleep(2)
@@ -446,8 +445,7 @@ class TestFilesystemMiddleware:
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=slow_glob),
+            patch.object(backend, "glob", side_effect=slow_glob),
         ):
             start = time.monotonic()
             result = glob_search_tool.invoke(
@@ -468,7 +466,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         call_count = 0
 
@@ -477,12 +474,11 @@ class TestFilesystemMiddleware:
             call_count += 1
             if call_count == 1:
                 time.sleep(2)
-            return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
+            return backend.__class__.glob(backend, *args, **kwargs)
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
+            patch.object(backend, "glob", side_effect=stuck_then_fast_glob),
         ):
             first_start = time.monotonic()
             first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
@@ -505,15 +501,13 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         def boom(*_args: object, **_kwargs: object) -> object:
             msg = "path traversal not allowed"
             raise ValueError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=boom),
+            patch.object(backend, "glob", side_effect=boom),
         ):
             result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -531,15 +525,13 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         def raise_timeout(*_args: object, **_kwargs: object) -> object:
             msg = "backend RPC timed out"
             raise TimeoutError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=raise_timeout),
+            patch.object(backend, "glob", side_effect=raise_timeout),
         ):
             result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -615,15 +607,13 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         result_with_partial_matches = GrepResult(
             error="Grep timed out after 30s with 1 matching file(s)",
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+            patch.object(backend, "grep", return_value=result_with_partial_matches),
         ):
             result = grep_search_tool.invoke(
                 {
@@ -643,7 +633,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
         result_with_partial_matches = GrepResult(
@@ -651,8 +640,7 @@ class TestFilesystemMiddleware:
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+            patch.object(backend, "grep", return_value=result_with_partial_matches),
         ):
             result = grep_search_tool.invoke(
                 {
@@ -675,15 +663,13 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         truncated_result = GrepResult(
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
             truncated=True,
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
+            patch.object(backend, "grep", return_value=truncated_result),
         ):
             result = grep_search_tool.invoke(
                 {
@@ -702,12 +688,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         truncated_result = GrepResult(matches=[], truncated=True)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
+            patch.object(backend, "grep", return_value=truncated_result),
         ):
             result = grep_search_tool.invoke(
                 {
@@ -726,15 +710,13 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         truncated_result = GlobResult(
             matches=[{"path": "/test.py", "is_dir": False}],
             truncated=True,
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", return_value=truncated_result),
+            patch.object(backend, "glob", return_value=truncated_result),
         ):
             result = glob_search_tool.invoke(
                 {
@@ -752,12 +734,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         complete_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=False)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=complete_result),
+            patch.object(backend, "grep", return_value=complete_result),
         ):
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
 
@@ -769,7 +749,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, grep_max_count=250)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         captured: dict[str, object] = {}
 
@@ -778,8 +757,7 @@ class TestFilesystemMiddleware:
             return GrepResult(matches=[])
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", side_effect=_grep),
+            patch.object(backend, "grep", side_effect=_grep),
         ):
             grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
 
@@ -790,7 +768,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, grep_max_count=1000)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         captured: dict[str, object] = {}
 
@@ -799,8 +776,7 @@ class TestFilesystemMiddleware:
             return GrepResult(matches=[])
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", side_effect=_grep),
+            patch.object(backend, "grep", side_effect=_grep),
         ):
             grep_search_tool.invoke({"pattern": "import", "max_count": 5, "runtime": _runtime()})
 
@@ -811,7 +787,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, grep_max_count=None)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         captured: dict[str, object] = {"max_count": "unset"}
 
@@ -820,8 +795,7 @@ class TestFilesystemMiddleware:
             return GrepResult(matches=[])
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", side_effect=_grep),
+            patch.object(backend, "grep", side_effect=_grep),
         ):
             grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
 
@@ -885,7 +859,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         captured: dict[str, object] = {}
 
@@ -894,8 +867,7 @@ class TestFilesystemMiddleware:
             return GrepResult(matches=[])
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", side_effect=_grep),
+            patch.object(backend, "grep", side_effect=_grep),
         ):
             grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
 
@@ -912,12 +884,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         complete_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=False)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", return_value=complete_result),
+            patch.object(backend, "glob", return_value=complete_result),
         ):
             result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
 
@@ -929,14 +899,12 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         # Enough matches to overflow the size limit so the match body is tail-cut.
         big_matches = [{"path": f"/f{i}.py", "line": i + 1, "text": "import os " * 8} for i in range(6000)]
         truncated_result = GrepResult(matches=big_matches, truncated=True)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
+            patch.object(backend, "grep", return_value=truncated_result),
         ):
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
 
@@ -950,12 +918,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         truncated_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=True)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "agrep", return_value=truncated_result),
+            patch.object(backend, "agrep", return_value=truncated_result),
         ):
             result = await grep_search_tool.ainvoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
 
@@ -968,12 +934,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         truncated_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=True)
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", return_value=truncated_result),
+            patch.object(backend, "aglob", return_value=truncated_result),
         ):
             result = await glob_search_tool.ainvoke({"pattern": "*.py", "runtime": _runtime()})
 
@@ -1242,12 +1206,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         error_result = GrepResult(error="boom: backend exploded", matches=[])
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=error_result),
+            patch.object(backend, "grep", return_value=error_result),
         ):
             result = grep_search_tool.invoke(
                 {

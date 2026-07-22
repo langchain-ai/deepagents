@@ -1615,9 +1615,6 @@ def test_skills_middleware_with_state_backend() -> None:
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 
-    backend = middleware._get_backend()
-    assert isinstance(backend, StateBackend)
-
 
 def test_skills_middleware_with_store_backend_instance() -> None:
     """Test that SkillsMiddleware can be initialized with StoreBackend instance."""

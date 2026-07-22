@@ -237,10 +237,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         self._add_cache_control = add_cache_control
         self.system_prompt = system_prompt
 
-    def _get_backend(self) -> BackendProtocol:
-        """Return the backend instance."""
-        return self._backend
-
     def _format_agent_memory(self, contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:
         """Format memory with locations and contents paired together.
 
@@ -293,7 +289,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend()
+        backend = self._backend
         contents: dict[str, str] = {}
 
         results = backend.download_files(list(self.sources))
@@ -327,7 +323,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend()
+        backend = self._backend
         contents: dict[str, str] = {}
 
         results = await backend.adownload_files(list(self.sources))

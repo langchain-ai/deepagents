@@ -657,10 +657,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
-    def _get_backend(self) -> BackendProtocol:
-        """Return the backend instance."""
-        return self._backend
-
     def _get_thread_id(self) -> str:
         """Extract `thread_id` from langgraph config.
 
@@ -1405,7 +1401,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend()
+        backend = self._backend
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
@@ -1539,7 +1535,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend()
+        backend = self._backend
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:

@@ -32,7 +32,6 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
@@ -1626,10 +1625,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._dynamic_system_prompt_cache[include_execution] = system_prompt
         return system_prompt
 
-    def _get_backend(self, _runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
-        """Return the backend instance."""
-        return self.backend
-
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -1639,7 +1634,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str,
         ) -> ToolMessage:
             """Synchronous wrapper for ls tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
@@ -1678,7 +1673,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str,
         ) -> ToolMessage:
             """Asynchronous wrapper for ls tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
@@ -1827,7 +1822,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1854,7 +1849,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1893,7 +1888,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1932,7 +1927,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1987,7 +1982,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -2029,7 +2024,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -2080,7 +2075,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -2119,7 +2114,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -2172,7 +2167,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for glob tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
@@ -2268,7 +2263,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for glob tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
@@ -2370,7 +2365,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
@@ -2416,7 +2411,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
@@ -2585,7 +2580,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     def _unsupported_tools_and_execution_state(
         self,
         tool_names: set[str | None],
-        runtime: Runtime[ContextT],
     ) -> tuple[set[str | None], bool, BackendProtocol | None]:
         """Return unsupported filesystem tools and whether execute remains active."""
         # `tools=` exclusions are enforced at `__init__` (absent from
@@ -2600,7 +2594,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not has_delete_tool and not has_execute_tool:
             return unsupported, execution_active, backend
 
-        backend = self._get_backend(runtime)  # ty: ignore[invalid-argument-type]
+        backend = self.backend
         if has_execute_tool and "execute" not in unsupported:
             execution_active = supports_execution(backend)
             if not execution_active:
@@ -2706,7 +2700,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
 
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
 
             # Runtime check - fail gracefully if not supported
             if not supports_execution(resolved_backend):
@@ -2793,7 +2787,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
 
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
 
             # Runtime check - fail gracefully if not supported
             if not supports_execution(resolved_backend):
@@ -2881,7 +2875,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system prompt appended.
         """
         tool_names: set[str | None] = {self._tool_name(tool) for tool in request.tools}
-        unsupported, execution_active, backend = self._unsupported_tools_and_execution_state(tool_names, request.runtime)
+        unsupported, execution_active, backend = self._unsupported_tools_and_execution_state(tool_names)
         visible_tools = [tool for tool in request.tools if self._tool_name(tool) not in unsupported]
         visible_fs = {name for name in (tool_names - unsupported) if name is not None}
         if unsupported:
@@ -3081,14 +3075,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return message, False
         return processed_message, True
 
-    def _get_backend_from_runtime(
-        self,
-        _state: AgentState[Any],
-        _runtime: Runtime[ContextT],
-    ) -> BackendProtocol:
-        """Return the backend instance from a bare `Runtime` hook."""
-        return self.backend
-
     def _check_eviction_needed(
         self,
         messages: list[AnyMessage],
@@ -3188,7 +3174,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
@@ -3214,7 +3200,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
@@ -3245,12 +3231,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
         return list(messages)
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, _runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:
             tool_result: The tool result to potentially evict (`ToolMessage` or `Command`).
-            runtime: The tool runtime providing access to the filesystem backend.
+            _runtime: Tool runtime supplied by the middleware hook.
 
         Returns:
             Either the original result (if small enough) or a processed result with
@@ -3263,7 +3249,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             offloaded to filesystem to prevent context window overflow.
         """
         if isinstance(tool_result, ToolMessage):
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_message, _evicted = self._process_large_message(
                 tool_result,
                 resolved_backend,
@@ -3275,7 +3261,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if update is None:
                 return tool_result
             command_messages, wrapped = self._unwrap_command_messages(update)
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_messages = []
             for message in command_messages:
                 if not isinstance(message, ToolMessage):
@@ -3296,7 +3282,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
-    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, _runtime: ToolRuntime) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.
@@ -3304,7 +3290,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         See `_intercept_large_tool_result` for full documentation.
         """
         if isinstance(tool_result, ToolMessage):
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_message, _evicted = await self._aprocess_large_message(
                 tool_result,
                 resolved_backend,
@@ -3316,7 +3302,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if update is None:
                 return tool_result
             command_messages, wrapped = self._unwrap_command_messages(update)
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_messages = []
             for message in command_messages:
                 if not isinstance(message, ToolMessage):

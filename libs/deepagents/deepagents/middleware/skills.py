@@ -847,10 +847,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
 
-    def _get_backend(self) -> BackendProtocol:
-        """Return the backend instance."""
-        return self._backend
-
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
         locations = []
@@ -951,7 +947,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend()
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 
@@ -996,7 +992,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend()
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 

@@ -304,7 +304,6 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def slow_aglob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             await asyncio.sleep(2)
@@ -312,8 +311,7 @@ class TestFilesystemMiddlewareAsync:
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=slow_aglob),
+            patch.object(backend, "aglob", side_effect=slow_aglob),
         ):
             result = await glob_search_tool.ainvoke(
                 {
@@ -329,15 +327,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def boom(*_args: object, **_kwargs: object) -> object:
             msg = "path traversal not allowed"
             raise ValueError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=boom),
+            patch.object(backend, "aglob", side_effect=boom),
         ):
             result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -349,15 +345,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def raise_timeout(*_args: object, **_kwargs: object) -> object:
             msg = "backend RPC timed out"
             raise TimeoutError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=raise_timeout),
+            patch.object(backend, "aglob", side_effect=raise_timeout),
         ):
             result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -401,15 +395,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         result_with_partial_matches = GrepResult(
             error="Grep timed out after 30s with 1 matching file(s)",
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+            patch.object(backend, "agrep", return_value=result_with_partial_matches),
         ):
             result = await grep_search_tool.ainvoke(
                 {
@@ -429,7 +421,6 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
         result_with_partial_matches = GrepResult(
@@ -437,8 +428,7 @@ class TestFilesystemMiddlewareAsync:
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+            patch.object(backend, "agrep", return_value=result_with_partial_matches),
         ):
             result = await grep_search_tool.ainvoke(
                 {

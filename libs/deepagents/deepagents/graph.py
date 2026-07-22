@@ -147,6 +147,8 @@ See `create_deep_agent`'s `system_prompt` parameter or
 [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
 for the full assembly order.
 """
+
+
 def _build_default_model() -> ChatAnthropic:
     """Construct the default model without emitting a deprecation warning.
 

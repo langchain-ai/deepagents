@@ -1764,8 +1764,7 @@ def create_cli_agent(
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
-            Non-interactive callers without a resume loop must explicitly pass
-            `enable_ask_user=False`.
+            Disabled in non-interactive mode.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         memory_auto_save: When `True` (default), the memory prompt tells the
             agent to proactively persist learnings to the `AGENTS.md` sources.

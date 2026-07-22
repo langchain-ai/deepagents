@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 # Private import: the SDK exposes no public helpers to derive the exact
 # provider/model spec that terminal-stall recovery needs to classify each call.
-from deepagents._models import (  # noqa: PLC2701
+from deepagents._models import (  # ruff:ignore[import-private-name]
     get_model_identifier,
     get_model_provider,
 )
@@ -34,9 +34,12 @@ logger = logging.getLogger(__name__)
 
 
 _FIREWORKS_GLM_5P2_SPEC = "fireworks:accounts/fireworks/models/glm-5p2"
-"""Fireworks GLM-5.2 spec. Terminal-stall recovery is scoped to this one spec
-because the output cap that produces a tool-free `finish_reason "length"` turn
-was measured only here; the other providers are intentionally excluded."""
+"""Fireworks GLM-5.2 spec.
+
+Terminal-stall recovery is scoped to this one spec because the output cap
+that produces a tool-free `finish_reason "length"` turn was measured only here;
+the other providers are intentionally excluded.
+"""
 
 _GLM_5P2_MODEL_SPECS: tuple[str, ...] = (
     _FIREWORKS_GLM_5P2_SPEC,
@@ -145,11 +148,11 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
     harness profile:
 
     - Headless-only. `create_cli_agent` installs this middleware only in
-      non-interactive mode. Interactive turns may legitimately be tool-free, so
-      they must not be forced into an action.
+        non-interactive mode. Interactive turns may legitimately be tool-free,
+        so they must not be forced into an action.
     - Fireworks-only. `_should_recover` gates on `_is_fireworks_glm_5p2_model`,
-      so only `_FIREWORKS_GLM_5P2_SPEC` recovers. The output cap that produces
-      the stall was measured only there; OpenRouter and Baseten are excluded.
+        so only `_FIREWORKS_GLM_5P2_SPEC` recovers. The output cap that produces
+        the stall was measured only there; OpenRouter and Baseten are excluded.
     """
 
     @staticmethod
@@ -286,15 +289,15 @@ def _ensure_glm_5p2_profile_registered() -> None:
     """
     # PLW0603: intentional module-level flag toggled once to keep registration
     # idempotent for the process; the concurrent-write case is benign (docstring).
-    global _glm_5p2_profile_registered  # noqa: PLW0603
+    global _glm_5p2_profile_registered  # ruff:ignore[global-statement]
     if _glm_5p2_profile_registered:
         return
 
     # Private imports: the harness registry and its lazy-load hook expose no
     # public accessor, and this profile must reach into it to register/skip per spec.
     from deepagents.profiles.harness.harness_profiles import (
-        _HARNESS_PROFILES,  # noqa: PLC2701
-        _ensure_harness_profiles_loaded,  # noqa: PLC2701
+        _HARNESS_PROFILES,  # ruff:ignore[import-private-name]
+        _ensure_harness_profiles_loaded,  # ruff:ignore[import-private-name]
     )
 
     _ensure_harness_profiles_loaded()

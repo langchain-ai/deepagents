@@ -119,14 +119,14 @@ def _model_name(configurable: dict[str, object]) -> str:
 
 
 def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, Any]) -> None:
-    """Default GLM-5.2's reasoning effort to ``"high"`` for the eval when unset.
+    """Default GLM-5.2's reasoning effort to `"high"` for the eval when unset.
 
     Experiment (for now). Fireworks GLM takes this as a nested
-    ``model_kwargs={"reasoning_effort": ...}`` on the model constructor (see
-    dcode ``reasoning_effort._fireworks_model_params``). Gated case-sensitively
+    `model_kwargs={"reasoning_effort": ...}` on the model constructor (see
+    dcode `reasoning_effort._fireworks_model_params`). Gated case-sensitively
     to dcode's exact GLM-5.2 profile specs so the shared harness is unaffected
     for other models and this default fires on precisely the specs dcode also
-    guards; an explicit provider-native ``reasoning``/``reasoning_effort`` still
+    guards; an explicit provider-native `reasoning`/`reasoning_effort` still
     wins.
     """
     if model_spec not in _GLM_5_2_MODEL_SPECS:
@@ -148,15 +148,15 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
 def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     """Build the chat model, applying provider-specific eval defaults.
 
-    OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for
-    gpt-5.x, and its model profile defaults ``reasoning_effort``. The model is
-    built here directly via ``init_chat_model``, which bypasses the Deep Agents
-    OpenAI provider profile that would set ``use_responses_api=True``, so set it
-    explicitly for ``openai:`` models.
+    OpenAI gates `reasoning_effort` + function tools to `/v1/responses` for
+    gpt-5.x, and its model profile defaults `reasoning_effort`. The model is
+    built here directly via `init_chat_model`, which bypasses the Deep Agents
+    OpenAI provider profile that would set `use_responses_api=True`, so set it
+    explicitly for `openai:` models.
 
-    The GLM-5.2 eval profiles additionally default ``reasoning_effort`` to
-    ``"high"`` via ``_apply_glm_5_2_reasoning_default``. A caller-supplied
-    ``model_kwargs`` value still wins in both cases.
+    The GLM-5.2 eval profiles additionally default `reasoning_effort` to
+    `"high"` via `_apply_glm_5_2_reasoning_default`. A caller-supplied
+    `model_kwargs` value still wins in both cases.
     """
     name = _model_name(configurable)
     kwargs = _model_kwargs(configurable)
@@ -362,28 +362,28 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
     """Build langchain-mcp-adapters connections from Harbor-forwarded servers.
 
     Harbor's LangGraph agent forwards the task environment's declared MCP servers
-    via ``configurable["mcp_servers"]`` (a list of dicts shaped like Harbor's
-    ``MCPServerConfig``: ``name``/``transport``/``url``/``command``/``args``). We
+    via `configurable["mcp_servers"]` (a list of dicts shaped like Harbor's
+    `MCPServerConfig`: `name`/`transport`/`url`/`command`/`args`). We
     connect only to those environment-declared servers, and only over remote
     transports.
 
-    ``stdio`` servers are rejected on purpose: they carry a local ``command``/
-    ``args`` that ``MultiServerMCPClient`` would execute inside the agent sandbox.
-    Since the dataset (selectable via the workflow's ``dataset_override``) controls
-    this config, honoring ``stdio`` would let an untrusted dataset run arbitrary
-    commands in CI. tau3-runtime is a remote ``streamable-http`` server, so only
-    ``streamable-http``/``sse`` (URL-based) transports are allowed.
+    `stdio` servers are rejected on purpose: they carry a local `command`/
+    `args` that `MultiServerMCPClient` would execute inside the agent sandbox.
+    Since the dataset (selectable via the workflow's `dataset_override`) controls
+    this config, honoring `stdio` would let an untrusted dataset run arbitrary
+    commands in CI. tau3-runtime is a remote `streamable-http` server, so only
+    `streamable-http`/`sse` (URL-based) transports are allowed.
 
     Args:
-        configurable: The graph's ``configurable`` mapping.
+        configurable: The graph's `configurable` mapping.
 
     Returns:
         A mapping of server name to a langchain-mcp-adapters connection dict.
 
     Raises:
         ValueError: If no MCP servers were forwarded, a server uses an
-            unsupported (e.g. ``stdio``) transport, or a server lacks a URL.
-        TypeError: If ``mcp_servers`` is not a list of mappings.
+            unsupported (e.g. `stdio`) transport, or a server lacks a URL.
+        TypeError: If `mcp_servers` is not a list of mappings.
     """
     servers = configurable.get("mcp_servers")
     if not servers:
@@ -430,15 +430,15 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     """Create a conversational Deep Agents graph for tau3-bench (and tau2) tasks.
 
     Unlike the terminal-bench graphs, this attaches the task environment's
-    ``tau3-runtime`` MCP tools (``start_conversation``, ``send_message_to_user``,
+    `tau3-runtime` MCP tools (`start_conversation`, `send_message_to_user`,
     domain tools, ...) so the agent can converse with the simulated user. The MCP
-    server connection comes from Harbor's forwarded ``configurable["mcp_servers"]``;
+    server connection comes from Harbor's forwarded `configurable["mcp_servers"]`;
     no URL is hardcoded.
 
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
-            ``configurable.model`` and the task's MCP servers in
-            ``configurable.mcp_servers``.
+            `configurable.model` and the task's MCP servers in
+            `configurable.mcp_servers`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.

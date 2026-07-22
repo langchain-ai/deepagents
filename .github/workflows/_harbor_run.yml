@@ -89,7 +89,7 @@ on:
         type: boolean
         default: false
       harbor_package_override:
-        description: "Optional Harbor package spec(s) to install instead of the locked version. Multiple specs may be given, one per line, installed together in a single resolution (e.g. harbor core plus the harbor-langsmith plugin pinned from the same branch). Empty uses the pinned Harbor."
+        description: "Optional Harbor package spec(s) to install over the locked versions. Provide one spec per line; all specs are resolved together. Leave empty to keep the locked Harbor packages."
         type: string
         default: ""
       judge_models:

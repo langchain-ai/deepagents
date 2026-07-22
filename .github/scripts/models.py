@@ -833,13 +833,17 @@ def _resolve_models(workflow: str, selection: str) -> list[str]:
         Ordered list of model spec strings.
 
     Raises:
-        ValueError: If the selection is empty or contains invalid specs.
+        ValueError: If the selection is empty, resolves to no models, or contains
+            invalid specs.
     """
     env_var, presets, tag_prefix = _WORKFLOW_CONFIG[workflow]
     normalized = selection.strip()
 
     if normalized in presets:
         specs = _filter_by_tag(f"{tag_prefix}:", presets[normalized])
+        if not specs:
+            msg = f"No models resolved from {env_var} preset {normalized!r}"
+            raise ValueError(msg)
     else:
         specs = [s.strip() for s in normalized.split(",") if s.strip()]
         if not specs:

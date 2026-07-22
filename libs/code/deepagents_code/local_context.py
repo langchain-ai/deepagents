@@ -256,10 +256,10 @@ logger = logging.getLogger(__name__)
 
 
 def _section_header() -> str:
-    """CWD line and IN_GIT flag (used by other sections).
+    """CWD line and Git metadata used by other sections.
 
     Returns:
-        Bash snippet that prints the header and sets `CWD` / `IN_GIT`.
+        Bash snippet that prints the header and sets `CWD`, `IN_GIT`, and `ROOT`.
     """
     return r"""CWD="$(pwd)"
 echo "## Local Context"
@@ -267,19 +267,27 @@ echo ""
 echo "**Current Directory**: \`${CWD}\`"
 echo ""
 
-# --- Check git once ---
+# --- Check git and resolve its root once ---
 IN_GIT=false
-if command -v git >/dev/null 2>&1 \
-    && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  IN_GIT=true
+ROOT=""
+if command -v git >/dev/null 2>&1; then
+  GIT_INFO="$(git rev-parse --is-inside-work-tree --show-toplevel 2>/dev/null)"
+  GIT_MODE="${GIT_INFO%%$'\n'*}"
+  case "$GIT_MODE" in
+    true)
+      IN_GIT=true
+      ROOT="${GIT_INFO#*$'\n'}"
+      ;;
+    false) IN_GIT=true ;;  # Bare repository or the Git directory itself.
+  esac
 fi"""
 
 
 def _section_project() -> str:
-    """Language, monorepo, git root, virtual-env detection.
+    """Language, monorepo, project-root display, virtual-env detection.
 
     Returns:
-        Bash snippet (requires `CWD` / `IN_GIT` from header).
+        Bash snippet (requires `CWD` and `ROOT` from header).
     """
     return r"""# --- Project ---
 PROJ_LANG=""
@@ -293,9 +301,6 @@ MONOREPO=false
 { [ -f lerna.json ] || [ -f pnpm-workspace.yaml ] \
   || [ -d packages ] || { [ -d libs ] && [ -d apps ]; } \
   || [ -d workspaces ]; } && MONOREPO=true
-
-ROOT=""
-$IN_GIT && ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 
 ENVS=""
 { [ -d .venv ] || [ -d venv ]; } && ENVS=".venv"
@@ -352,15 +357,38 @@ def _section_runtimes() -> str:
         Bash snippet (standalone).
     """
     return r"""# --- Runtimes ---
-RT=""
+_RT_TMP="${_DCT:-}"
+_RT_CLEANUP=false
+if [ -z "$_RT_TMP" ]; then
+  _RT_TMP="$(mktemp -d)" || exit 1
+  _RT_CLEANUP=true
+fi
+
+HAS_PYTHON=false
 if command -v python3 >/dev/null 2>&1; then
-  PV="$(python3 --version 2>/dev/null | awk '{print $2}')"
+  python3 --version > "$_RT_TMP/runtime_python" 2>/dev/null &
+  HAS_PYTHON=true
+fi
+HAS_NODE=false
+if command -v node >/dev/null 2>&1; then
+  node --version > "$_RT_TMP/runtime_node" 2>/dev/null &
+  HAS_NODE=true
+fi
+wait
+
+RT=""
+if $HAS_PYTHON && [ -s "$_RT_TMP/runtime_python" ]; then
+  IFS= read -r PV < "$_RT_TMP/runtime_python"
+  PV="${PV#* }"
+  PV="${PV%% *}"
   [ -n "$PV" ] && RT="Python ${PV}"
 fi
-if command -v node >/dev/null 2>&1; then
-  NV="$(node --version 2>/dev/null | sed 's/^v//')"
+if $HAS_NODE && [ -s "$_RT_TMP/runtime_node" ]; then
+  IFS= read -r NV < "$_RT_TMP/runtime_node"
+  NV="${NV#v}"
   [ -n "$NV" ] && RT="${RT:+${RT}, }Node ${NV}"
 fi
+$_RT_CLEANUP && rm -rf "$_RT_TMP"
 [ -n "$RT" ] && echo "**Detected Runtimes**: ${RT}" && echo ""
 """
 
@@ -382,7 +410,8 @@ if $IN_GIT; then
   fi
 
   MAINS=""
-  for b in $(git branch 2>/dev/null | sed 's/^[* ]*//'); do
+  for b in $(git for-each-ref --format='%(refname:short)' \
+      refs/heads/main refs/heads/master 2>/dev/null); do
     case "$b" in
       main) MAINS="${MAINS:+${MAINS}, }\`main\`" ;;
       master) MAINS="${MAINS:+${MAINS}, }\`master\`" ;;
@@ -390,7 +419,7 @@ if $IN_GIT; then
   done
   [ -n "$MAINS" ] && GT="${GT}, ${MAINS} available"
 
-  DC=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  DC=$(git status --porcelain 2>/dev/null | awk 'END { print NR }')
   if [ "$DC" -gt 0 ]; then
     if [ "$DC" -eq 1 ]; then GT="${GT}, 1 uncommitted change"
     else GT="${GT}, ${DC} uncommitted changes"
@@ -415,14 +444,36 @@ if command -v gh >/dev/null 2>&1; then
       | awk '
         /^JSON FIELDS/ { in_fields = 1; next }
         in_fields && /^$/ { exit }
-        in_fields { gsub(/^  /, ""); print }
-      ' \
-      | tr '\n' ' ' \
-      | sed 's/  */ /g; s/^ //; s/ $//'
+        in_fields {
+          sub(/^[[:space:]]+/, "")
+          gsub(/[[:space:]]+/, " ")
+          fields = fields (fields ? " " : "") $0
+        }
+        END {
+          sub(/^ /, "", fields)
+          sub(/ $/, "", fields)
+          if (fields != "") print fields
+        }
+      '
   }
 
-  GH_PRS_FIELDS="$(_gh_json_fields prs)"
-  GH_ISSUES_FIELDS="$(_gh_json_fields issues)"
+  _GH_TMP="${_DCT:-}"
+  _GH_CLEANUP=false
+  if [ -z "$_GH_TMP" ]; then
+    _GH_TMP="$(mktemp -d)" || exit 1
+    _GH_CLEANUP=true
+  fi
+  _gh_json_fields prs > "$_GH_TMP/gh_prs_fields" &
+  _gh_json_fields issues > "$_GH_TMP/gh_issues_fields" &
+  wait
+
+  GH_PRS_FIELDS=""
+  GH_ISSUES_FIELDS=""
+  [ -s "$_GH_TMP/gh_prs_fields" ] \
+    && IFS= read -r GH_PRS_FIELDS < "$_GH_TMP/gh_prs_fields"
+  [ -s "$_GH_TMP/gh_issues_fields" ] \
+    && IFS= read -r GH_ISSUES_FIELDS < "$_GH_TMP/gh_issues_fields"
+  $_GH_CLEANUP && rm -rf "$_GH_TMP"
   if [ -n "$GH_PRS_FIELDS" ] || [ -n "$GH_ISSUES_FIELDS" ]; then
     echo "**GitHub CLI**:"
     [ -n "$GH_PRS_FIELDS" ] \
@@ -468,30 +519,44 @@ def _section_files() -> str:
         Bash snippet (standalone).
     """
     return r"""# --- Files ---
-EXCL='node_modules|__pycache__|\.pytest_cache'
-EXCL="${EXCL}|\.mypy_cache|\.ruff_cache|\.tox"
-EXCL="${EXCL}|\.coverage|\.eggs|dist|build"
-FILES=$(
+FILE_SUMMARY=$(
   { ls -1 2>/dev/null; [ -e .deepagents ] && echo .deepagents; } |
-  grep -vE "^(${EXCL})$" |
-  sort -u
+  sort -u |
+  awk '
+    BEGIN {
+      excluded["node_modules"] = excluded["__pycache__"] = 1
+      excluded[".pytest_cache"] = excluded[".mypy_cache"] = 1
+      excluded[".ruff_cache"] = excluded[".tox"] = 1
+      excluded[".coverage"] = excluded[".eggs"] = 1
+      excluded["dist"] = excluded["build"] = 1
+    }
+    !($0 in excluded) {
+      total++
+      if (shown < 20) files[++shown] = $0
+    }
+    END {
+      print total + 0
+      print shown + 0
+      for (i = 1; i <= shown; i++) print files[i]
+    }
+  '
 )
-if [ -n "$FILES" ]; then
-  TOTAL=$(echo "$FILES" | wc -l | tr -d ' ')
-  SHOWN_FILES=$(echo "$FILES" | head -20)
-  SHOWN=$(echo "$SHOWN_FILES" | wc -l | tr -d ' ')
-  TOTAL=${TOTAL:-0}
-  SHOWN=${SHOWN:-0}
+TOTAL="${FILE_SUMMARY%%$'\n'*}"
+FILE_DETAILS="${FILE_SUMMARY#*$'\n'}"
+SHOWN="${FILE_DETAILS%%$'\n'*}"
+SHOWN_FILES="${FILE_DETAILS#*$'\n'}"
+
+if [ "$TOTAL" -gt 0 ]; then
   if [ "$SHOWN" -lt "$TOTAL" ]; then
     echo "**Files** (showing ${SHOWN} of ${TOTAL}):"
   else
     echo "**Files** (${TOTAL}):"
   fi
-  echo "$SHOWN_FILES" | while IFS= read -r f; do
+  while IFS= read -r f; do
     if [ -d "$f" ]; then echo "- ${f}/"
     else echo "- ${f}"
     fi
-  done
+  done <<< "$SHOWN_FILES"
   echo ""
 fi"""
 
@@ -510,12 +575,11 @@ if command -v tree >/dev/null 2>&1; then
   T_PREVIEW=$(tree -L 3 --noreport --dirsfirst \
     -I "$TREE_EXCL" 2>/dev/null | sed -n '1,22p;23{p;q;}')
   if [ -n "$T_PREVIEW" ]; then
-    PREVIEW_LINES=$(echo "$T_PREVIEW" | wc -l | tr -d ' ')
-    PREVIEW_LINES=${PREVIEW_LINES:-0}
+    PREVIEW_LINES=$(printf '%s\n' "$T_PREVIEW" | awk 'END { print NR }')
     T="$T_PREVIEW"
     TREE_TRUNCATED=false
     if [ "$PREVIEW_LINES" -gt 22 ]; then
-      T=$(echo "$T_PREVIEW" | head -22)
+      T=$(printf '%s\n' "$T_PREVIEW" | sed -n '1,22p')
       TREE_TRUNCATED=true
     fi
     echo "**Tree** (3 levels):"
@@ -532,7 +596,7 @@ def _section_makefile() -> str:
     """First 20 lines of Makefile (falls back to git root in monorepos).
 
     Returns:
-        Bash snippet (requires `ROOT` from `_section_project` and `CWD` from header).
+        Bash snippet (requires `ROOT` and `CWD` from `_section_header`).
     """
     return r"""# --- Makefile ---
 MK=""
@@ -544,9 +608,7 @@ fi
 if [ -n "$MK" ]; then
   echo "**Makefile** (\`${MK}\`, first 20 lines):"
   echo '```makefile'
-  head -20 "$MK"
-  TL=$(wc -l < "$MK" | tr -d ' ')
-  [ "$TL" -gt 20 ] && echo "... (truncated)"
+  awk 'NR <= 20 { print; next } { print "... (truncated)"; exit }' "$MK"
   echo '```'
 fi"""
 
@@ -556,13 +618,13 @@ def build_detect_script() -> str:
 
     Independent sections run as parallel background jobs writing to temp
     files, then results are concatenated in the original display order.
-    The header (CWD / IN_GIT) and project section (sets ROOT) run first
+    The header (sets `CWD`, `IN_GIT`, and `ROOT`) and project section run first
     because later sections depend on their variables.
 
     Returns:
         Complete bash heredoc ready for `backend.execute()`.
     """
-    # Header + project run synchronously (set CWD, IN_GIT, ROOT for others)
+    # Header (sets CWD, IN_GIT, ROOT) + project run synchronously for others
     serial_prefix = f"{_section_header()}\n{_section_project()}"
 
     # These sections are independent — run them in parallel.
@@ -581,10 +643,10 @@ def build_detect_script() -> str:
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a
-    # temp file. Stderr is captured per-section to prevent noise leakage.
+    # temp file. Section stderr is discarded to prevent noise leakage.
     parallel_setup = "_DCT=$(mktemp -d) || exit 1\ntrap 'rm -rf \"$_DCT\"' EXIT"
     parallel_block = "\n".join(
-        f'(\n{body}\n) > "$_DCT/{name}" 2>"$_DCT/{name}.err" &'
+        f'(\n{body}\n) > "$_DCT/{name}" 2>/dev/null &'
         for name, body in parallel_sections
     )
     cat_line = "cat " + " ".join(f'"$_DCT/{name}"' for name, _ in parallel_sections)
@@ -658,9 +720,10 @@ class LocalContextMiddleware(AgentMiddleware):
                 shell commands the agent runs.
         """
         self.backend = backend
-        self._mcp_context = _build_mcp_context(mcp_server_info or [])
-        self._tracing_context = _build_tracing_context(
-            tracing_project, user_tracing_project
+        tracing_context = _build_tracing_context(tracing_project, user_tracing_project)
+        mcp_context = _build_mcp_context(mcp_server_info or [])
+        self._static_context = "\n\n".join(
+            context for context in (tracing_context, mcp_context) if context
         )
 
     @staticmethod
@@ -878,16 +941,19 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         state = cast("LocalContextState", request.state)
         local_context = state.get("_local_context", "")
+        system_prompt = request.system_prompt or ""
 
-        parts = [
-            p for p in (local_context, self._tracing_context, self._mcp_context) if p
-        ]
-        if not parts:
+        if local_context:
+            if self._static_context:
+                prompt_parts = (system_prompt, local_context, self._static_context)
+            else:
+                prompt_parts = (system_prompt, local_context)
+        elif self._static_context:
+            prompt_parts = (system_prompt, self._static_context)
+        else:
             return None
 
-        system_prompt = request.system_prompt or ""
-        new_prompt = system_prompt + "\n\n" + "\n\n".join(parts)
-        return request.override(system_prompt=new_prompt)
+        return request.override(system_prompt="\n\n".join(prompt_parts))
 
     def wrap_model_call(
         self,

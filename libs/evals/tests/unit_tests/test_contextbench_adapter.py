@@ -78,16 +78,22 @@ def test_generate_task_creates_self_contained_harbor_task(tmp_path: Path) -> Non
     assert (task_dir / "solution" / "solve.sh").read_text() == (
         "#!/bin/sh\nset -eu\nprintf '%s\\n' 'Tammy Roberts' > /app/answer.txt\n"
     )
+    # The verifier is the faithful Letta model_judge (not string equality):
+    # test.sh runs judge.py, which grades /app/answer.txt against the rubric.
     assert (task_dir / "tests" / "test.sh").read_text() == (
         "#!/bin/sh\nset -eu\n"
-        "answer=$(tr '[:upper:]' '[:lower:]' < /app/answer.txt | tr -cd '[:alnum:][:space:]')\n"
-        "expected=$(printf '%s' 'tammy roberts' | tr -cd '[:alnum:][:space:]')\n"
-        'if [ "$answer" = "$expected" ]; then\n'
-        "  printf '1.0\\n' > /logs/verifier/reward.txt\n"
-        "else\n"
-        "  printf '0.0\\n' > /logs/verifier/reward.txt\n"
-        "fi\n"
+        "# Faithful Letta model_judge grader; writes /logs/verifier/reward.txt itself.\n"
+        "python3 /tests/judge.py\n"
     )
+    assert json.loads((task_dir / "tests" / "case.json").read_text()) == {
+        "input": "Which resident owns the most vehicles?",
+        "ground_truth": "Tammy Roberts",
+    }
+    assert (task_dir / "tests" / "judge.py").is_file()
+    rubric = (task_dir / "tests" / "rubric.txt").read_text()
+    assert "{input}" in rubric
+    assert "{ground_truth}" in rubric
+    assert "{submission}" in rubric
     assert (task_dir / "task.toml").read_text() == (
         'version = "1.3"\n\n'
         "[metadata]\n"

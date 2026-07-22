@@ -3023,11 +3023,7 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        self._auto_mode_eligible = self._sandbox_type is None and is_env_truthy(
-            EXPERIMENTAL
-        )
+        self._auto_mode_eligible = self._sandbox_type is None
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
@@ -7434,7 +7430,7 @@ class DeepAgentsApp(App):
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
-                "Auto is available only in the opt-in local TUI beta."
+                "Auto is available only in the local TUI."
             )
             return False
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
@@ -16292,7 +16288,7 @@ class DeepAgentsApp(App):
         if self._approval_mode is ApprovalMode.MANUAL:
             if not self._auto_mode_eligible:
                 self._warn_live_approval_mode_unavailable(
-                    "Auto is available only in the opt-in local TUI beta."
+                    "Auto is available only in the local TUI."
                 )
                 return
             target = ApprovalMode.AUTO

@@ -1991,10 +1991,7 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help=(
-            "Interactive local TUI only: enable beta classifier-backed Auto mode. "
-            "Requires DEEPAGENTS_CODE_EXPERIMENTAL=1."
-        ),
+        help="Interactive local TUI only: enable beta classifier-backed Auto mode.",
     )
     approval_group.add_argument(
         "--yolo",
@@ -4634,20 +4631,18 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
                 from deepagents_code.approval_mode import ApprovalMode
 
                 approval_mode = _resolve_approval_mode(args)
-                if approval_mode is ApprovalMode.AUTO and (
-                    not is_env_truthy(EXPERIMENTAL)
-                    or (args.sandbox and args.sandbox != "none")
+                if (
+                    approval_mode is ApprovalMode.AUTO
+                    and args.sandbox
+                    and args.sandbox != "none"
                 ):
-                    reason = (
-                        "Auto is unavailable with a sandbox"
-                        if args.sandbox and args.sandbox != "none"
-                        else f"Auto is an opt-in beta; set {EXPERIMENTAL}=1"
+                    console.print(
+                        "[yellow]Auto is unavailable with a sandbox. "
+                        "Using Manual.[/yellow]"
                     )
-                    console.print(f"[yellow]{reason}. Using Manual.[/yellow]")
                     approval_mode = ApprovalMode.MANUAL
                 if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
                     console

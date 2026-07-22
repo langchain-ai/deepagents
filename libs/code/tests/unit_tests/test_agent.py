@@ -4811,23 +4811,14 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
-    @pytest.mark.parametrize(
-        ("experimental", "expected"), [(False, False), (True, True)]
-    )
-    def test_auto_mode_requires_experimental_flag(
+    def test_auto_mode_does_not_require_experimental_flag(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        *,
-        experimental: bool,
-        expected: bool,
     ) -> None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 
-        if experimental:
-            monkeypatch.setenv(EXPERIMENTAL, "1")
-        else:
-            monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -4857,10 +4848,7 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         middleware = mock_create.call_args.kwargs["middleware"]
-        assert (
-            any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
-            is expected
-        )
+        assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
         assert "hitl_middleware" not in mock_create.call_args.kwargs
 
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:

@@ -1971,12 +1971,6 @@ def create_cli_agent(
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
-    if auto_mode_enabled and not is_env_truthy(EXPERIMENTAL):
-        logger.warning(
-            "Classifier-backed Auto requires %s=1; using Manual HITL",
-            EXPERIMENTAL,
-        )
-        auto_mode_enabled = False
     if auto_mode_enabled and (not interactive or sandbox is not None):
         logger.warning(
             "Classifier-backed Auto is unavailable outside the local interactive "

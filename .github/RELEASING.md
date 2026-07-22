@@ -343,28 +343,48 @@ For that reason, never commit PEP 440 pre-release version bumps to `main` or a l
 
 ### How to publish a pre-release
 
-Alpha releases use a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
+Every pre-release stage uses a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
+
+Choose these values before starting:
+
+| Placeholder | Meaning | Example |
+| ----------- | ------- | ------- |
+| `<BASE_BRANCH>` | The version line being released: normally `main`, or the relevant `vX.Y` branch when staging or maintaining a separate line | `v0.7` |
+| `<PACKAGE>` | The PyPI package name | `deepagents` |
+| `<PATH>` | The package directory from [Managed Packages](#managed-packages) | `libs/deepagents` |
+| `<MODULE>` | The Python module directory shown in the package's `extra-files` entry in `release-please-config.json` | `deepagents` |
+| `<SCOPE>` | The package's conventional-commit scope | `sdk` |
+| `<VERSION>` | The exact PEP 440 version that will be published | `0.7.0b1` |
+| `<VERSION_SLUG>` | `<VERSION>` with periods replaced by hyphens, used only in the branch name | `0-7-0b1` |
+| `<STAGE>` | The branch prefix: `alpha` for `aN`, `beta` for `bN`, `rc` for `rcN`, or `dev` for `.devN` | `beta` |
+
+Use the exact `<VERSION>` everywhere except the branch name. For example, beta `0.7.0b1` uses branch `beta/deepagents-0-7-0b1`, while alpha `0.7.0a1` uses `alpha/deepagents-0-7-0a1`.
+
+> [!CAUTION]
+> Dispatching the workflow publishes real artifacts to PyPI and GitHub; it is not a dry run. A coding agent must resolve and present all values above, prepare the version and lockfile changes, show the diff, and wait for explicit human approval before committing, pushing, or dispatching the workflow.
 
 1. **Create a branch from the version line you are releasing:**
 
    ```bash
    git checkout <BASE_BRANCH> && git pull
-   git checkout -b alpha/<PACKAGE>-<VERSION>
+   git checkout -b <STAGE>/<PACKAGE>-<VERSION_SLUG>
    ```
 
-   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. If no `vX.Y` branch exists, use `main` and confirm the next alpha number from existing `<PACKAGE>==*aN` tags/releases. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+   If no `vX.Y` branch exists, use `main`. Confirm the next iteration number from existing `<PACKAGE>==*` tags and releases before choosing `<VERSION>`.
 
-   For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x` and you need an installable alpha for validation, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work — the PEP 440 version `0.7.0a1` becomes `alpha/deepagents-0-7-0a1` (hyphens instead of periods) as the branch name.
+   For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x`, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work.
 
-2. **Bump the version** in both files to a [PEP 440 pre-release](https://peps.python.org/pep-0440/#pre-releases) (e.g., `0.0.35a1`):
+2. **Bump the version** in both package files to the exact `<VERSION>`:
 
-   - `libs/cli/pyproject.toml` — `version = "0.0.35a1"`
-   - `libs/cli/deepagents_cli/_version.py` — `__version__ = "0.0.35a1"`
+   - `<PATH>/pyproject.toml` — `version = "<VERSION>"`
+   - `<PATH>/<MODULE>/_version.py` — `__version__ = "<VERSION>"`
 
-3. **Regenerate package lockfiles** if the package has a `uv.lock`. The pre-commit lock check compares the local package version in the lockfile, so alpha version bumps need the same lockfile refresh as release-please PRs.
+   Use the package's `extra-files` entry in `release-please-config.json` as the source of truth for these paths. The version must use [PEP 440 pre-release syntax](https://peps.python.org/pep-0440/#pre-releases), such as `0.7.0b1`, not SemVer syntax such as `0.7.0-beta.1`.
+
+3. **Regenerate package lockfiles** if the package has a `uv.lock`. The pre-commit lock check compares the local package version in the lockfile, so every pre-release version bump needs the same lockfile refresh as a release-please PR.
 
    ```bash
-   uv lock --directory <path> --python <PYTHON_VERSION>
+   uv lock --directory <PATH> --python <PYTHON_VERSION>
    ```
 
    Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
@@ -378,19 +398,21 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 4. **Commit and push:**
 
    ```bash
-   git add <path>/pyproject.toml <path>/<module>/_version.py <path>/uv.lock
-   git commit -m "hotfix(<SCOPE>): alpha release <VERSION>"
-   git push -u origin alpha/<PACKAGE>-<VERSION>
+   git add <PATH>/pyproject.toml <PATH>/<MODULE>/_version.py <PATH>/uv.lock
+   git commit -m "hotfix(<SCOPE>): <STAGE> release <VERSION>"
+   git push -u origin <STAGE>/<PACKAGE>-<VERSION_SLUG>
    ```
 
-   Omit `<path>/uv.lock` only when the package does not have one.
+   Omit `<PATH>/uv.lock` only when the package does not have one.
 
 5. **Trigger the release workflow:**
 
+   Before dispatching, verify that both committed version files and any lockfile contain the exact `<VERSION>`. The workflow's `version` input labels the run but does not control the version built from the branch, and `dangerous-nonmain-release` bypasses the normal version-to-commit validation.
+
    - Go to **Actions** > `🚀 Package Release` > **Run workflow**
-   - Branch: `alpha/<PACKAGE>-<VERSION>`
+   - Branch: `<STAGE>/<PACKAGE>-<VERSION_SLUG>`
    - Package: `<PACKAGE>`
-   - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
+   - Version: `<VERSION>` — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
    - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally older than the workspace SDK)
 
@@ -399,7 +421,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    ```bash
    gh workflow run release.yml \
      --repo langchain-ai/deepagents \
-     --ref alpha/<PACKAGE>-<VERSION> \
+     --ref <STAGE>/<PACKAGE>-<VERSION_SLUG> \
      -f package=<PACKAGE> \
      -f version=<VERSION> \
      -f dangerous-nonmain-release=true
@@ -407,12 +429,12 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 
 6. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, a collapsible package-scoped Git log, contributor shoutouts (but no changelog), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
-7. **Clean up** — delete the branch after the workflow succeeds:
+7. **Clean up** — delete the throwaway branch only after the workflow succeeds and the published release is verified:
 
    ```bash
-   git checkout main
-   git branch -D alpha/<PACKAGE>-<VERSION>
-   git push origin --delete alpha/<PACKAGE>-<VERSION>
+   git checkout <BASE_BRANCH>
+   git branch -D <STAGE>/<PACKAGE>-<VERSION_SLUG>
+   git push origin --delete <STAGE>/<PACKAGE>-<VERSION_SLUG>
    ```
 
 #### Enrich the published pre-release notes
@@ -463,7 +485,7 @@ Pass only `--notes-file` when editing. Flags such as `--tag`, `--target`, `--pre
 
 ### Promoting a pre-release to GA
 
-After validating the alpha, merge the pending release PR (e.g., `release(deepagents-code): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps needed.
+After validating the final pre-release stage, merge the pending release PR (e.g., `release(deepagents-code): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps are needed.
 
 If no release PR exists yet (e.g., no releasable commits since the last GA, which is rare), you can force one with a package-scoped `Release-As` override. Do **not** use an empty commit on `main`: release-please assigns commits to packages by the file paths they change, not by the commit scope string. A commit titled `chore(code): ...` is not enough on its own! It must also touch a file under `libs/code` so release-please knows the override belongs to `deepagents-code` (instead of another managed package).
 
@@ -497,9 +519,9 @@ If there is no meaningful package-file edit to make, use the config-file form in
 
 ### Multiple pre-release iterations
 
-Increment the PEP 440 pre-release number on each iteration: `0.0.35a1`, `0.0.35a2`, `0.0.35a3`, etc. Each iteration follows the same branch + manual dispatch flow above.
+Increment the numeric suffix within a stage: `0.0.35a1`, `0.0.35a2`; `0.0.35b1`, `0.0.35b2`; or `0.0.35rc1`, `0.0.35rc2`. When advancing to a new stage, start that stage at `1`—for example, move from `0.0.35a3` to `0.0.35b1`, then to `0.0.35rc1`.
 
-For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
+Every iteration follows the same throwaway-branch and manual-dispatch flow above, using the matching `alpha/`, `beta/`, `rc/`, or `dev/` branch prefix.
 
 ## Developing a new version line
 

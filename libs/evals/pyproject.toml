@@ -24,7 +24,7 @@ dependencies = [
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
     "harbor[langsmith]>=0.16.1,<0.17.0",
     # LangSmith for observability
-    "langsmith>=0.9.3,<0.10.0",
+    "langsmith>=0.10.9,<0.11.0",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
@@ -80,7 +80,7 @@ Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

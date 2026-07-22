@@ -1,6 +1,5 @@
 PluginManagerScreen {
     align: center middle;
-    background: transparent;
 }
 
 PluginManagerScreen > Vertical {

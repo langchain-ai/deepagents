@@ -158,9 +158,9 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
     These may already be present in `os.environ` before any fixture runs:
     `deepagents_code.config` loads dotenv lazily on first `settings` access
     (via `_ensure_bootstrap()` / `_load_dotenv()`) and injects them from the
-    developer's global `~/.deepagents/.env`. The dangerous allowlist
-    intentionally replaces the scoped TOML approvals used by trust-list and
-    selective-project-trust tests, so leaving it set breaks those assertions.
+    developer's global `~/.deepagents/.env`. The dangerous allowlist adds
+    project-agnostic trust decisions, so leaving it set changes trust-list and
+    selective-project-trust assertions.
     Removing them here (rather than relying on each test) keeps the MCP,
     model-config, and main suites hermetic. `_isolate_global_dotenv` below
     prevents a later dotenv reread (e.g. via `/reload`) from restoring them.

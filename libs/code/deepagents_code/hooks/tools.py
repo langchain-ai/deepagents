@@ -36,10 +36,44 @@ def _edit_input(args: JsonObject) -> JsonObject:
     return _select(args, "file_path", "old_string", "new_string", "replace_all")
 
 
+def _read_input(args: JsonObject) -> JsonObject:
+    result = _select(args, "file_path", "limit")
+    if "offset" in args:
+        offset = args["offset"]
+        result["offset"] = (
+            offset + 1
+            if isinstance(offset, int) and not isinstance(offset, bool)
+            else offset
+        )
+    return result
+
+
+def _glob_input(args: JsonObject) -> JsonObject:
+    return _select(args, "pattern", "path")
+
+
+def _grep_input(args: JsonObject) -> JsonObject:
+    result = _select(args, "path", "glob", "output_mode")
+    if "pattern" in args:
+        pattern = args["pattern"]
+        result["pattern"] = re.escape(pattern) if isinstance(pattern, str) else pattern
+    if "max_count" in args:
+        result["head_limit"] = args["max_count"]
+    return result
+
+
+def _ls_input(args: JsonObject) -> JsonObject:
+    return _select(args, "path")
+
+
 _NATIVE_TO_WIRE: dict[str, tuple[str, Callable[[JsonObject], JsonObject]]] = {
     "execute": ("Bash", _bash_input),
     "write_file": ("Write", _write_input),
     "edit_file": ("Edit", _edit_input),
+    "read_file": ("Read", _read_input),
+    "glob": ("Glob", _glob_input),
+    "grep": ("Grep", _grep_input),
+    "ls": ("LS", _ls_input),
 }
 
 _MCP_WIRE_RE = re.compile(r"^mcp__.+__.+$")

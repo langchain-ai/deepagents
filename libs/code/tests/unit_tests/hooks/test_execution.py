@@ -14,7 +14,7 @@ from deepagents_code.hooks.capabilities import (
     PlainOutputPolicy,
     get_event_spec,
 )
-from deepagents_code.hooks.env import is_secret_env_name, sanitize_hook_environ
+from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
     HookContext,
@@ -29,8 +29,8 @@ from deepagents_code.hooks.models.wire import HookWireOutput
 from deepagents_code.hooks.reducer import MAX_STOP_CONTINUATIONS, reduce_hook_results
 from deepagents_code.hooks.runner import HandlerResult, run_command_handler
 from deepagents_code.hooks.snapshot import HooksSnapshot
-from deepagents_code.hooks.terminal import validate_terminal_sequence
 from deepagents_code.hooks.tools import format_mcp_wire_name, to_wire_call
+from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -116,26 +116,26 @@ def test_reducer_rejects_invalid_terminal_and_deferred_fields(
     assert "unsupported_field" in codes
 
 
-def test_sanitized_env_strips_secrets_and_otel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SAFE_PATH", "/tmp")
-    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost")
-    monkeypatch.setenv("MY_TOKEN", "placeholder")
-    monkeypatch.setenv("PYTHONPATH", "/opt/lib")
-    monkeypatch.setenv("HOME", "/home/user")
-
-    env = sanitize_hook_environ()
+def test_sanitized_env_strips_secrets_from_injected_source() -> None:
+    env = sanitize_hook_environ(
+        {
+            "SAFE_PATH": "/tmp",
+            "OPENAI_API_KEY": "placeholder",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost",
+            "MY_TOKEN": "placeholder",
+            "mixed_case_secret": "placeholder",
+            "PYTHONPATH": "/opt/lib",
+            "HOME": "/home/user",
+        }
+    )
 
     assert env["SAFE_PATH"] == "/tmp"
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost"
     assert env["PYTHONPATH"] == "/opt/lib"
     assert env["HOME"] == "/home/user"
     assert "OPENAI_API_KEY" not in env
-    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
     assert "MY_TOKEN" not in env
-    assert is_secret_env_name("ANTHROPIC_API_KEY")
-    assert is_secret_env_name("openai_api_key")
+    assert "mixed_case_secret" not in env
 
 
 def test_mcp_tool_mapping_requires_resolved_metadata() -> None:
@@ -175,9 +175,9 @@ def test_exit_and_plain_output_policies_match_registry() -> None:
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
 async def test_runner_kills_process_group_on_timeout(tmp_path: Path) -> None:
     script = tmp_path / "hook.sh"
-    grandchild_pid = tmp_path / "grandchild.pid"
+    side_effect = tmp_path / "survived"
     script.write_text(
-        f"#!/bin/sh\nsleep 30 &\necho $! > {grandchild_pid}\nwait\n",
+        f"#!/bin/sh\n(sleep 0.2; touch {side_effect}) &\nwait\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -190,18 +190,17 @@ async def test_runner_kills_process_group_on_timeout(tmp_path: Path) -> None:
     )
 
     assert [item.code for item in result.diagnostics] == ["timeout"]
-    if grandchild_pid.is_file():
-        pid = int(grandchild_pid.read_text(encoding="utf-8").strip())
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+    await asyncio.sleep(0.3)
+    assert not side_effect.exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
 async def test_runner_kills_process_group_on_cancellation(tmp_path: Path) -> None:
     script = tmp_path / "cancel.sh"
-    grandchild_pid = tmp_path / "grandchild.pid"
+    ready = tmp_path / "ready"
+    side_effect = tmp_path / "survived"
     script.write_text(
-        f"#!/bin/sh\nsleep 30 &\necho $! > {grandchild_pid}\nwait\n",
+        f"#!/bin/sh\ntouch {ready}\n(sleep 0.2; touch {side_effect}) &\nwait\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -214,14 +213,35 @@ async def test_runner_kills_process_group_on_cancellation(tmp_path: Path) -> Non
         )
     )
     for _ in range(50):
-        if grandchild_pid.is_file():
+        if ready.exists():
             break
         await asyncio.sleep(0.01)
+    assert ready.exists()
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    if grandchild_pid.is_file():
-        pid = int(grandchild_pid.read_text(encoding="utf-8").strip())
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+    await asyncio.sleep(0.3)
+    assert not side_effect.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
+async def test_runner_kills_descendants_after_shell_exits(tmp_path: Path) -> None:
+    script = tmp_path / "exited.sh"
+    side_effect = tmp_path / "survived"
+    script.write_text(
+        f"#!/bin/sh\n(sleep 0.2; touch {side_effect}) &\nexit 0\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    result = await run_command_handler(
+        _handler(str(script), timeout=0.05),
+        b"{}",
+        cwd=tmp_path,
+        default_timeout=0.05,
+    )
+
+    assert [item.code for item in result.diagnostics] == ["timeout"]
+    await asyncio.sleep(0.3)
+    assert not side_effect.exists()

@@ -13,14 +13,10 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from deepagents_code.hooks.capabilities import (
-    DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    PlainOutputPolicy,
-    get_event_spec,
-)
+from deepagents_code.hooks.capabilities import DEFAULT_COMMAND_TIMEOUT_SECONDS
 from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_OUTPUT_ADAPTER
-from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
+from deepagents_code.hooks.models.domain import HookDiagnostic
 from deepagents_code.hooks.models.wire import HookWireOutput
 
 if TYPE_CHECKING:
@@ -50,7 +46,6 @@ async def run_command_handler(
     payload: bytes,
     *,
     cwd: Path,
-    event: HookEvent | None = None,
     default_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_HOOK_OUTPUT_BYTES,
     env: dict[str, str] | None = None,
@@ -61,7 +56,6 @@ async def run_command_handler(
         handler: Snapshotted command handler.
         payload: Validated JSON sent to stdin.
         cwd: Working directory inherited from the invocation.
-        event: Event used for plain-output policy. Defaults to `handler.event`.
         default_timeout: Timeout used when the handler has no override.
         max_output_bytes: Maximum retained bytes for each output stream.
         env: Optional environment override. Defaults to a sanitized copy of the
@@ -76,7 +70,6 @@ async def run_command_handler(
     if not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
-    resolved_event = event or handler.event
     try:
         # Shell form preserves pipes, redirects, globs, and $VAR expansion to
         # match the compatible command-hook contract (no separate args field).
@@ -152,21 +145,15 @@ async def run_command_handler(
     if not stdout.strip():
         return HandlerResult(handler_id=handler.id, diagnostics=tuple(diagnostics))
 
+    plain = _decode(stdout).strip()
     try:
         decoded = json.loads(stdout)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        plain = _decode(stdout).strip()
-        policy = get_event_spec(resolved_event).plain_output_policy
-        if policy is PlainOutputPolicy.CONTEXT and plain:
-            return HandlerResult(
-                handler_id=handler.id,
-                plain_output=plain,
-                diagnostics=tuple(diagnostics),
-            )
-        diagnostics.append(
-            _diagnostic(handler.id, "malformed_json", "Hook output is not valid JSON")
+        return HandlerResult(
+            handler_id=handler.id,
+            plain_output=plain,
+            diagnostics=tuple(diagnostics),
         )
-        return HandlerResult(handler_id=handler.id, diagnostics=tuple(diagnostics))
     try:
         output = HOOK_WIRE_OUTPUT_ADAPTER.validate_python(decoded)
     except ValidationError as exc:
@@ -241,8 +228,6 @@ async def _read_bounded(
 
 async def _terminate(process: Process) -> None:
     """Kill the hook process group, then reap the direct child."""
-    if process.returncode is not None:
-        return
     if os.name == "posix" and process.pid is not None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -251,7 +236,7 @@ async def _terminate(process: Process) -> None:
         except OSError:
             with suppress(OSError):
                 process.kill()
-    else:
+    elif process.returncode is None:
         with suppress(OSError):
             process.kill()
     with suppress(OSError, TimeoutError):

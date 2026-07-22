@@ -54,6 +54,7 @@ class HooksRuntime:
         cls,
         *,
         cwd: Path,
+        workspace_trusted: bool = False,
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
     ) -> HooksRuntime:
@@ -61,6 +62,7 @@ class HooksRuntime:
 
         Args:
             cwd: Session working directory.
+            workspace_trusted: Whether project-scoped hooks may be loaded.
             config_dir: Alternate user config directory for tests.
             transcript_root: Alternate transcript store root. Defaults to
                 `{cwd}/.deepagents/transcripts`.
@@ -68,7 +70,11 @@ class HooksRuntime:
         Returns:
             A runtime ready to execute invocations for this session.
         """
-        loaded = load_hooks_config(cwd=cwd, config_dir=config_dir)
+        loaded = load_hooks_config(
+            project_root=cwd,
+            workspace_trusted=workspace_trusted,
+            config_dir=config_dir,
+        )
         snapshot = HooksSnapshot.from_config(
             loaded.config,
             diagnostics=loaded.diagnostics,

@@ -2902,7 +2902,7 @@ class ModelConfig:
 def _save_toml_field(
     section: str,
     field: str,
-    value: str,
+    value: str | bool,
     config_path: Path | None = None,
 ) -> bool:
     """Read-modify-write a `[section].<field>` key in the config file.
@@ -2910,7 +2910,7 @@ def _save_toml_field(
     Args:
         section: TOML table name (e.g., `'models'`, `'agents'`).
         field: Key within the table (e.g., `'default'`, `'recent'`).
-        value: String value to persist.
+        value: String or boolean value to persist.
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -2959,6 +2959,28 @@ def _save_toml_field(
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
+
+
+def save_goal_auto_accept_criteria(
+    enabled: bool,
+    config_path: Path | None = None,
+) -> bool:
+    """Persist whether Auto mode applies generated goal criteria without review.
+
+    Args:
+        enabled: Whether Auto should accept goal criteria automatically.
+        config_path: Path to config file. Defaults to
+            `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+    """
+    return _save_toml_field(
+        "goals",
+        "auto_accept_criteria",
+        enabled,
+        config_path,
+    )
 
 
 def _save_model_field(

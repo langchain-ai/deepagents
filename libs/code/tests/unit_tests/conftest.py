@@ -276,6 +276,7 @@ def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "DEEPAGENTS_CODE_CURSOR_STYLE",
         "DEEPAGENTS_CODE_EXPERIMENTAL",
+        "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA",
         "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -396,9 +397,14 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.fixture(autouse=True)
 def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Redirect app-managed state away from the developer's real data."""
+    """Redirect app-managed state and config away from the developer's data."""
     state_dir = tmp_path / ".state"
     monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+        tmp_path / "config.toml",
+    )
+    monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
 
     from deepagents_code import sessions
 

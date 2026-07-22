@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 ONBOARDING_MARKER_FILENAME = "onboarding_complete"
 """Marker filename under `~/.deepagents/.state` after onboarding has completed."""
 
+GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME = "goal_auto_accept_criteria_prompted_v1"
+"""Marker written after the first-run goal criteria preference is answered."""
+
 ONBOARDING_NAME_MEMORY_START = "<!-- deepagents:onboarding-name:start -->"
 """Start marker for the managed onboarding name memory block."""
 
@@ -67,6 +70,57 @@ def mark_onboarding_complete(state_dir: Path | None = None) -> bool:
         path.write_text("1\n", encoding="utf-8")
     except OSError:
         logger.warning("Could not write onboarding marker at %s", path, exc_info=True)
+        return False
+    return True
+
+
+def goal_auto_accept_prompt_marker_path(state_dir: Path | None = None) -> Path:
+    """Return the goal criteria preference prompt marker path.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        Path to the versioned one-time prompt marker.
+    """
+    return (state_dir or DEFAULT_STATE_DIR) / GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
+
+
+def has_shown_goal_auto_accept_prompt(state_dir: Path | None = None) -> bool:
+    """Return whether the goal criteria preference prompt was answered.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        `True` when the prompt marker exists, otherwise `False`.
+    """
+    try:
+        return goal_auto_accept_prompt_marker_path(state_dir).exists()
+    except OSError:
+        logger.warning("Could not inspect goal preference prompt marker", exc_info=True)
+        return False
+
+
+def mark_goal_auto_accept_prompt_shown(state_dir: Path | None = None) -> bool:
+    """Persist that the goal criteria preference prompt was answered.
+
+    Args:
+        state_dir: Optional state directory override for tests.
+
+    Returns:
+        `True` when the marker was written, otherwise `False`.
+    """
+    path = goal_auto_accept_prompt_marker_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1\n", encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "Could not write goal preference prompt marker at %s",
+            path,
+            exc_info=True,
+        )
         return False
     return True
 

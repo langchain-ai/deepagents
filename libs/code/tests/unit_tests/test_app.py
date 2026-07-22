@@ -42,7 +42,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, OptionList, Static
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import SessionStats
@@ -78,6 +78,7 @@ from deepagents_code.tui.widgets.goal_review import (
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
+    LaunchGoalCriteriaPreferenceScreen,
     LaunchNameScreen,
 )
 from deepagents_code.tui.widgets.message_store import (
@@ -487,6 +488,16 @@ class TestInitialPromptOnMount:
 class TestStartupSequence:
     """Tests for post-connect startup sequencing."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_goal_preference_prompt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keep legacy onboarding tests focused on the screens they exercise."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "false")
+
     async def test_session_start_sequence_is_idempotent_across_server_ready(
         self,
     ) -> None:
@@ -886,6 +897,150 @@ class TestStartupSequence:
 
         assert order == ["init", "initial"]
         assert app._launch_init_requested is False
+
+    async def test_launch_init_prompts_for_goal_preference_first(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fresh onboarding should ask the Auto goal policy before other setup."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+        app._save_launch_goal_auto_accept_preference = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            options = app.screen.query_one(OptionList)
+            assert options.has_focus
+            assert options.highlighted == 0
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            app._save_launch_goal_auto_accept_preference.assert_awaited_once_with(False)  # ty: ignore
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+
+    def test_goal_preference_prompt_shows_without_an_explicit_decision(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Missing settings and markers should identify a genuinely new user."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "invalid")
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+    @pytest.mark.parametrize(
+        "decision",
+        [
+            "prompt-marker",
+            "onboarding-marker",
+            "env-true",
+            "env-false",
+            "toml-true",
+            "toml-false",
+        ],
+    )
+    def test_goal_preference_prompt_skips_existing_decisions(
+        self,
+        decision: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Any explicit preference or prior onboarding decision should suppress it."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import (
+            mark_goal_auto_accept_prompt_shown,
+            mark_onboarding_complete,
+        )
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        if decision == "prompt-marker":
+            assert mark_goal_auto_accept_prompt_shown() is True
+        elif decision == "onboarding-marker":
+            assert mark_onboarding_complete() is True
+        elif decision.startswith("env-"):
+            monkeypatch.setenv(
+                GOAL_AUTO_ACCEPT_CRITERIA,
+                decision.removeprefix("env-"),
+            )
+        else:
+            enabled = decision == "toml-true"
+            DEFAULT_CONFIG_PATH.write_text(
+                f"[goals]\nauto_accept_criteria = {str(enabled).lower()}\n",
+                encoding="utf-8",
+            )
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    async def test_saving_goal_preference_marks_prompt_as_shown(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A saved first-run choice should persist and suppress future prompts."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+
+        await app._save_launch_goal_auto_accept_preference(True)
+
+        assert "auto_accept_criteria = true" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    @pytest.mark.parametrize(
+        ("saved", "marked", "warning"),
+        [
+            (False, True, "Could not save the goal criteria preference"),
+            (True, False, "Could not save that the goal criteria preference was shown"),
+            (False, False, "Could not save the goal criteria preference"),
+        ],
+    )
+    async def test_goal_preference_write_failures_warn_once_and_continue(
+        self,
+        saved: bool,
+        marked: bool,
+        warning: str,
+    ) -> None:
+        """Preference and marker failures should attempt both writes and warn once."""
+        app = DeepAgentsApp(agent=MagicMock())
+        with (
+            patch(
+                "deepagents_code.model_config.save_goal_auto_accept_criteria",
+                return_value=saved,
+            ) as save,
+            patch(
+                "deepagents_code.onboarding.mark_goal_auto_accept_prompt_shown",
+                return_value=marked,
+            ) as mark,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._save_launch_goal_auto_accept_preference(True)
+
+        save.assert_called_once_with(True)
+        mark.assert_called_once_with()
+        notify.assert_called_once()
+        assert warning in notify.call_args.args[0]
 
     async def test_launch_init_name_screen_focuses_on_mount(self) -> None:
         """The first launch modal should be active and typeable immediately."""
@@ -6408,14 +6563,20 @@ class TestGoalCommand:
         return submit
 
     @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
-    async def test_non_manual_goal_proposal_auto_accepts_without_review(
+    async def test_configured_auto_or_yolo_goal_proposal_auto_accepts(
         self,
         mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Auto and YOLO should apply a new proposal through normal acceptance."""
+        """Auto opt-in and YOLO should apply a proposal without review."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
         mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
         app = DeepAgentsApp(
             agent=MagicMock(),
             auto_approve=mode is ApprovalMode.YOLO,
@@ -6473,14 +6634,20 @@ class TestGoalCommand:
             )
 
     @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
-    async def test_non_manual_goal_generation_reconciles_queued_application(
+    async def test_configured_auto_or_yolo_reconciles_queued_application(
         self,
         mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A generated proposal should queue and continue at the turn boundary."""
+        """Auto opt-in and YOLO should apply a proposal at the turn boundary."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
         mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
         request_id = "request-create"
         app = DeepAgentsApp(
             agent=MagicMock(),
@@ -6692,13 +6859,60 @@ class TestGoalCommand:
             assert app._pending_goal_objective is None
             assert not any(app.query(GoalReviewMenu))
 
-    async def test_manual_goal_proposal_still_waits_for_review(self) -> None:
-        """Manual mode should keep the existing interactive review workflow."""
+    @pytest.mark.parametrize(
+        ("mode_name", "preference", "expected"),
+        [
+            ("manual", False, False),
+            ("manual", True, False),
+            ("auto", False, False),
+            ("auto", True, True),
+            ("yolo", False, True),
+            ("yolo", True, True),
+        ],
+    )
+    def test_live_goal_proposal_auto_accept_policy(
+        self,
+        mode_name: str,
+        preference: bool,
+        expected: bool,
+    ) -> None:
+        """Only opted-in Auto and all YOLO sessions should auto-accept."""
+        resolver = MagicMock(return_value=(preference, "test"))
+        app = DeepAgentsApp(agent=MagicMock())
+        app._session_state = TextualSessionState(approval_mode=mode_name)
+
+        with patch(
+            "deepagents_code.config.resolve_goal_auto_accept_criteria",
+            resolver,
+        ):
+            assert app._live_goal_proposal_auto_accept_enabled() is expected
+
+        if mode_name == "auto":
+            resolver.assert_called_once_with()
+        else:
+            resolver.assert_not_called()
+
+    @pytest.mark.parametrize("mode_name", ["manual", "auto"])
+    async def test_goal_proposal_waits_for_review_when_policy_requires_it(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Manual and default Auto should keep interactive goal review."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.MANUAL else "false",
+        )
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = False
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
             app._pending_goal_kind = "create"
@@ -6720,14 +6934,20 @@ class TestGoalCommand:
             await app._cancel_pending_goal_review(context="test cleanup")
 
     @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
-    async def test_non_manual_goal_amendment_preserves_continuation_context(
+    async def test_configured_auto_or_yolo_amendment_preserves_context(
         self,
         mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Auto-accepted amendments should preserve completed-work context."""
+        """Automatically accepted amendments should preserve completed work."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
         mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
         app = DeepAgentsApp(
             agent=MagicMock(),
             auto_approve=mode is ApprovalMode.YOLO,
@@ -6761,10 +6981,13 @@ class TestGoalCommand:
 
     async def test_regenerated_goal_auto_accepts_if_auto_enabled(
         self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A regenerated proposal should use the live Auto-mode policy."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         started = asyncio.Event()
@@ -6829,14 +7052,20 @@ class TestGoalCommand:
             handle.assert_awaited_once_with("add refresh tokens")
 
     @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
-    async def test_restored_pending_goal_auto_accepts_outside_manual_mode(
+    async def test_configured_auto_or_yolo_accepts_restored_proposal(
         self,
         mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Thread restoration should apply a proposal in Auto and YOLO."""
+        """Restoration should auto-apply in opted-in Auto and in YOLO."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
         mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
         app = DeepAgentsApp(
             agent=MagicMock(),
             auto_approve=mode is ApprovalMode.YOLO,
@@ -6919,10 +7148,15 @@ class TestGoalCommand:
             assert not any(app.query(GoalReviewMenu))
             handle.assert_not_awaited()
 
-    async def test_enabling_auto_accepts_mounted_goal_review(self) -> None:
-        """Switching to Auto should resolve an existing goal proposal."""
+    async def test_enabling_configured_auto_accepts_mounted_goal_review(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switching to opted-in Auto should resolve an existing proposal."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
@@ -6969,10 +7203,15 @@ class TestGoalCommand:
             assert menu not in app.query(GoalReviewMenu)
             handle.assert_awaited_once_with("add refresh tokens")
 
-    async def test_enabling_auto_honors_already_submitted_cancel(self) -> None:
-        """A submitted goal cancellation stays authoritative when Auto starts."""
+    async def test_enabling_auto_honors_already_submitted_cancel(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A submitted cancellation stays authoritative when opted-in Auto starts."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
@@ -7822,8 +8061,9 @@ class TestGoalCommand:
         usage = DeepAgentsApp._goal_usage_text()
 
         assert "Use /goal when you have a plain-language objective" in usage
-        assert "Manual mode asks you to review it before applying it" in usage
-        assert "Auto and YOLO apply it automatically" in usage
+        assert "Manual always asks you to review it" in usage
+        assert "Auto asks by default and can be configured" in usage
+        assert "YOLO applies it automatically" in usage
         assert "the goal stays active for this thread" in usage
         assert "when you want dcode to propose" not in usage
 
@@ -9776,8 +10016,8 @@ class TestGoalCommand:
                 "will not survive" in str(w._content) for w in app.query(ErrorMessage)
             )
 
-    async def test_goal_accept_subcommand_explains_manual_review(self) -> None:
-        """Bare `/goal accept` should explain where Manual reviews proposals."""
+    async def test_goal_accept_subcommand_explains_review_prompt(self) -> None:
+        """Bare `/goal accept` should explain where proposals are reviewed."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -9785,7 +10025,7 @@ class TestGoalCommand:
             await pilot.pause()
 
             assert any(
-                "Manual mode reviews goal proposals in the review prompt."
+                "Goal proposals that require review appear in the review prompt."
                 in str(w._content)
                 for w in app.query(AppMessage)
             )

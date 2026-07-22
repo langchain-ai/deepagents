@@ -1657,16 +1657,15 @@ class ChatInput(Vertical):
             )
 
     def set_argument_hint_override(self, command: str, hint: str | None) -> None:
-        """Set or clear a runtime argument hint for a slash command.
+        """Set, suppress, or restore a runtime slash-command argument hint.
 
         Args:
             command: Slash command name, with or without the leading `/`.
-            hint: Replacement hint, or `None`/empty to restore the registered
-                hint. An empty string is treated the same as `None` rather than
-                as a distinct "force-blank" state.
+            hint: Replacement hint, an empty string to suppress the registered
+                hint, or `None` to restore it.
         """
         name = command.removeprefix("/")
-        if not hint:
+        if hint is None:
             self._argument_hint_overrides.pop(name, None)
         else:
             self._argument_hint_overrides[name] = hint

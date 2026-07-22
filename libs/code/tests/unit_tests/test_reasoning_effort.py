@@ -798,7 +798,7 @@ def test_sync_status_model_refreshes_profile_argument_hint() -> None:
 
     assert app._chat_input.set_argument_hint_override.call_args_list == [  # ty: ignore[unresolved-attribute]
         call("/effort", "[Ultra|turbo-v2|clear]"),
-        call("/effort", None),
+        call("/effort", ""),
     ]
 
 

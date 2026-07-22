@@ -4209,8 +4209,8 @@ class TestArgumentHints:
             chat.set_argument_hint_override("/effort", None)
             assert chat._text_area.argument_hint == "[<level>|clear]"
 
-    async def test_empty_override_restores_registered_hint(self) -> None:
-        """An empty-string override is treated as clear, not a force-blank state."""
+    async def test_empty_override_hides_registered_hint(self) -> None:
+        """An empty override suppresses the registered hint until restored."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -4224,8 +4224,11 @@ class TestArgumentHints:
             chat.set_argument_hint_override("/effort", "[custom|clear]")
             assert chat._text_area.argument_hint == "[custom|clear]"
 
-            # "" must behave like None: restore the registered hint, not blank it.
             chat.set_argument_hint_override("/effort", "")
+            assert chat._argument_hint_overrides["effort"] == ""
+            assert chat._text_area.argument_hint == ""
+
+            chat.set_argument_hint_override("/effort", None)
             assert "effort" not in chat._argument_hint_overrides
             assert chat._text_area.argument_hint == "[<level>|clear]"
 

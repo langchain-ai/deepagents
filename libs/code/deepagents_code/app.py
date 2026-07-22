@@ -13359,7 +13359,7 @@ class DeepAgentsApp(App):
                 efforts = supported_efforts_for_model(
                     spec, cli_override=self._profile_override
                 )
-                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else None
+                hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
                 self._chat_input.set_argument_hint_override("/effort", hint)
             # A cosmetic ghost-text hint must never gate the primary model
             # displays updated below, so swallow and log any failure here.

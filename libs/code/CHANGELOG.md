@@ -4,42 +4,34 @@
 
 ## [0.1.45](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.44...deepagents-code==0.1.45) (2026-07-22)
 
-
 ### Features
 
-* **code,evals:** GLM-5.2 harness profile ([#4710](https://github.com/langchain-ai/deepagents/issues/4710)) ([47cfc33](https://github.com/langchain-ai/deepagents/commit/47cfc33cf9145347b57eb2daf6ef82cdaa342ca4))
-* **code:** add `--allow-fs-tools` filesystem tool allowlist to dcode ([#4635](https://github.com/langchain-ai/deepagents/issues/4635)) ([3fbb85e](https://github.com/langchain-ai/deepagents/commit/3fbb85e3565f270f3a567f771ebd28323f10245d))
-* **code:** add built-in thread inspector skill ([#4769](https://github.com/langchain-ai/deepagents/issues/4769)) ([2d729b3](https://github.com/langchain-ai/deepagents/commit/2d729b30c5df7265e8062bccd38026b745c6cf02))
-* **code:** add Hooks v2 execution engine ([#4880](https://github.com/langchain-ai/deepagents/issues/4880)) ([f0b198f](https://github.com/langchain-ai/deepagents/commit/f0b198faa220ad90f24713f08acc09d41e4a81de))
-* **code:** add typed hooks data models ([#4870](https://github.com/langchain-ai/deepagents/issues/4870)) ([0967012](https://github.com/langchain-ai/deepagents/commit/09670121b8d20fa8029804143852f6fcc6135dba))
-* **code:** gate debug console click-to-copy behind a checkbox ([#4810](https://github.com/langchain-ai/deepagents/issues/4810)) ([a485404](https://github.com/langchain-ai/deepagents/commit/a4854042e5fe9f3acf629b0646a6bf8e348ccc9a))
-* **code:** replace Gemini 3.5 Flash with 3.6 Flash in model switcher ([#4890](https://github.com/langchain-ai/deepagents/issues/4890)) ([5c99687](https://github.com/langchain-ai/deepagents/commit/5c99687bdecfd9e33051373581cacddbf7d0202a))
-* **code:** show experimental mode in splash and debug console ([#4863](https://github.com/langchain-ai/deepagents/issues/4863)) ([44d9dec](https://github.com/langchain-ai/deepagents/commit/44d9dec39b2570d16c285a8b0a99cbe1afab4f1b))
-
+- Added the Hooks v2 execution engine and typed hooks data models ([#4880](https://github.com/langchain-ai/deepagents/issues/4880), [#4870](https://github.com/langchain-ai/deepagents/issues/4870))
+- Added a filesystem tool allowlist for `dcode` with `--allow-fs-tools` ([#4635](https://github.com/langchain-ai/deepagents/issues/4635))
+- Added a GLM-5.2 harness profile ([#4710](https://github.com/langchain-ai/deepagents/issues/4710))
+- Added a built-in thread inspector skill ([#4769](https://github.com/langchain-ai/deepagents/issues/4769))
+- Replaced Gemini 3.5 Flash with Gemini 3.6 Flash in the model switcher ([#4890](https://github.com/langchain-ai/deepagents/issues/4890))
+- Show experimental mode in the splash screen and debug console ([#4863](https://github.com/langchain-ai/deepagents/issues/4863))
+- Gate debug console click-to-copy behind a checkbox ([#4810](https://github.com/langchain-ai/deepagents/issues/4810))
 
 ### Bug Fixes
 
-* **code:** abort project MCP approval on Esc ([#4888](https://github.com/langchain-ai/deepagents/issues/4888)) ([46bb1a8](https://github.com/langchain-ai/deepagents/commit/46bb1a86c8041d5c161d7cd07de66d068fb100c0))
-* **code:** allow cleanup of agent-created scratch files ([#4860](https://github.com/langchain-ai/deepagents/issues/4860)) ([fe08582](https://github.com/langchain-ai/deepagents/commit/fe08582a386b86f78f7a8047db067ea45e7e2650))
-* **code:** allow safe OS-temp scratch artifacts ([#4869](https://github.com/langchain-ai/deepagents/issues/4869)) ([4330534](https://github.com/langchain-ai/deepagents/commit/4330534d18cbf79260842dde0e0c450312ef55ca))
-* **code:** avoid tracking inline restart callers ([#4894](https://github.com/langchain-ai/deepagents/issues/4894)) ([0b071ef](https://github.com/langchain-ai/deepagents/commit/0b071ef71a1f0d63cb09de7ac528e030cd75af2e))
-* **code:** bust CDN cache on forced `dcode update` checks ([#4862](https://github.com/langchain-ai/deepagents/issues/4862)) ([3733526](https://github.com/langchain-ai/deepagents/commit/3733526f5faa187627c650435fa5478754c55fb4))
-* **code:** harden installer downloads and paths ([#4871](https://github.com/langchain-ai/deepagents/issues/4871)) ([9a5bbeb](https://github.com/langchain-ai/deepagents/commit/9a5bbeb7558405054e970decfc1aef5b96a026f3))
-* **code:** honor MCP server disables for plugins ([#4848](https://github.com/langchain-ai/deepagents/issues/4848)) ([eea0a84](https://github.com/langchain-ai/deepagents/commit/eea0a84d9621565a707c161c2f22878771d9b38b))
-* **code:** keep harness-profile diagnostics out of terminal output ([#4943](https://github.com/langchain-ai/deepagents/issues/4943)) ([812bae4](https://github.com/langchain-ai/deepagents/commit/812bae4afad6749add097f9d58e489df9ec703a2))
-* **code:** preserve remembered MCP approvals with env allowlist ([#4889](https://github.com/langchain-ai/deepagents/issues/4889)) ([b513bf3](https://github.com/langchain-ai/deepagents/commit/b513bf3b2aaa30738da9b9b0ced1c001efb1bd5a))
-* **code:** prevent failed exit setup from stranding the app ([#4913](https://github.com/langchain-ai/deepagents/issues/4913)) ([e4d69b0](https://github.com/langchain-ai/deepagents/commit/e4d69b04a84de226d26d9ca3adea96f1337eef04))
-* **code:** route `ctrl+x` to focused `ask_user` input ([#4926](https://github.com/langchain-ai/deepagents/issues/4926)) ([005f9bb](https://github.com/langchain-ai/deepagents/commit/005f9bb4d790e6cd92be8712ec86cd45192b699f))
-* **code:** share MCP approvals across Git worktrees ([#4939](https://github.com/langchain-ai/deepagents/issues/4939)) ([467f9dd](https://github.com/langchain-ai/deepagents/commit/467f9dd0400087c2918bcf19f270bd934cec623a))
-* **code:** show `-m` prompt as queued immediately on startup ([#4861](https://github.com/langchain-ai/deepagents/issues/4861)) ([d0e148a](https://github.com/langchain-ai/deepagents/commit/d0e148a72612137fc7bc1e49a8972643e0ca2c28))
-* **code:** skip grading during `/goal` proposals ([#4941](https://github.com/langchain-ai/deepagents/issues/4941)) ([d1ce66e](https://github.com/langchain-ai/deepagents/commit/d1ce66ea03e3726e6077c6700fc480209a849a7e))
-* **code:** thread id always copies on click in Debug Console ([#4945](https://github.com/langchain-ai/deepagents/issues/4945)) ([b4cb393](https://github.com/langchain-ai/deepagents/commit/b4cb3937bf8883e616f47621547a775ce9b29995))
-
+- Improved scratch-file handling by allowing cleanup of agent-created scratch files and safe OS-temp scratch artifacts ([#4860](https://github.com/langchain-ai/deepagents/issues/4860), [#4869](https://github.com/langchain-ai/deepagents/issues/4869))
+- Skip grading during `/goal` proposals ([#4941](https://github.com/langchain-ai/deepagents/issues/4941))
+- Improved MCP approval handling: Esc now aborts project MCP approval, disabled MCP servers are honored for plugins, remembered approvals are preserved with the env allowlist, and approvals are shared across Git worktrees ([#4888](https://github.com/langchain-ai/deepagents/issues/4888), [#4848](https://github.com/langchain-ai/deepagents/issues/4848), [#4889](https://github.com/langchain-ai/deepagents/issues/4889), [#4939](https://github.com/langchain-ai/deepagents/issues/4939))
+- Hardened installer downloads and paths ([#4871](https://github.com/langchain-ai/deepagents/issues/4871))
+- Fixed forced `dcode update` checks to bust the CDN cache ([#4862](https://github.com/langchain-ai/deepagents/issues/4862))
+- Prevented failed exit setup from stranding the app ([#4913](https://github.com/langchain-ai/deepagents/issues/4913))
+- Fixed routing so `ctrl+x` goes to the focused `ask_user` input ([#4926](https://github.com/langchain-ai/deepagents/issues/4926))
+- Show `-m` prompts as queued immediately on startup ([#4861](https://github.com/langchain-ai/deepagents/issues/4861))
+- Kept harness-profile diagnostics out of terminal output ([#4943](https://github.com/langchain-ai/deepagents/issues/4943))
+- Avoid tracking inline restart callers ([#4894](https://github.com/langchain-ai/deepagents/issues/4894))
+- Fixed debug console thread ID copying on click ([#4945](https://github.com/langchain-ai/deepagents/issues/4945))
 
 ### Performance Improvements
 
-* **code:** coordinate async shutdown teardown to cut exit latency ([#4831](https://github.com/langchain-ai/deepagents/issues/4831)) ([a2e501b](https://github.com/langchain-ai/deepagents/commit/a2e501b71f3d91769f56d5b3e433af8e03f7656e))
-* **code:** speed up local context detection ([#4922](https://github.com/langchain-ai/deepagents/issues/4922)) ([0b512d4](https://github.com/langchain-ai/deepagents/commit/0b512d4b79b1a03c7e452f1e76350cf726b1ec38))
+- Reduced exit latency by coordinating async shutdown teardown ([#4831](https://github.com/langchain-ai/deepagents/issues/4831))
+- Sped up local context detection ([#4922](https://github.com/langchain-ai/deepagents/issues/4922))
 
 ## [0.1.44](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.43...deepagents-code==0.1.44) (2026-07-20)
 

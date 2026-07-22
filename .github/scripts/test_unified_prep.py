@@ -137,14 +137,14 @@ def test_context_lite_tasks_pin_the_recalibrated_candidate():
     import lite_tasks
 
     assert lite_tasks.LITE_TASKS["context"] == [
-        "cb-cloud-10",
-        "cb-cloud-71",
-        "cb-cloud-74",
-        "cb-cloud-15",
-        "cb-cloud-35",
-        "cb-cloud-55",
-        "cb-cloud-68",
-        "cb-cloud-8",
+        "cb-cloud-4",
+        "cb-cloud-21",
+        "cb-cloud-22",
+        "cb-cloud-33",
+        "cb-cloud-48",
+        "cb-cloud-53",
+        "cb-cloud-65",
+        "cb-cloud-79",
     ]
 
 

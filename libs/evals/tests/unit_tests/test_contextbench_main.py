@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from harbor_adapters.contextbench import adapter
 from harbor_adapters.contextbench.main import main
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
 
 _FIXTURE_RECORDS = [
@@ -48,6 +47,53 @@ _FIXTURE_RECORDS = [
         },
     },
 ]
+
+
+def test_checked_in_contextbench_dataset_matches_representative_calibration() -> None:
+    """Keep the frozen Context-Bench sample aligned with its paired calibration."""
+    expected_tasks = {
+        "cb-cloud-1",
+        "cb-cloud-4",
+        "cb-cloud-6",
+        "cb-cloud-7",
+        "cb-cloud-9",
+        "cb-cloud-10",
+        "cb-cloud-21",
+        "cb-cloud-22",
+        "cb-cloud-33",
+        "cb-cloud-35",
+        "cb-cloud-38",
+        "cb-cloud-48",
+        "cb-cloud-49",
+        "cb-cloud-53",
+        "cb-cloud-54",
+        "cb-cloud-55",
+        "cb-cloud-56",
+        "cb-cloud-57",
+        "cb-cloud-62",
+        "cb-cloud-65",
+        "cb-cloud-67",
+        "cb-cloud-68",
+        "cb-cloud-69",
+        "cb-cloud-70",
+        "cb-cloud-73",
+        "cb-cloud-78",
+        "cb-cloud-79",
+        "cb-cloud-81",
+        "cb-cloud-83",
+        "cb-cloud-88",
+    }
+    evals_dir = Path(__file__).resolve().parents[2]
+    dataset_dir = evals_dir / "datasets" / "context-retrieval-evals"
+    calibration = json.loads((dataset_dir / "calibration.json").read_text())
+    dataset_tasks = {
+        task_dir.name
+        for task_dir in dataset_dir.glob("cb-cloud-*")
+        if (task_dir / "task.toml").is_file()
+    }
+
+    assert dataset_tasks == expected_tasks
+    assert set(calibration["tasks"]) == expected_tasks
 
 
 def _write_vendor_fixture(vendor_dir: Path) -> None:

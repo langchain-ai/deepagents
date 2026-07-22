@@ -31,54 +31,52 @@ Grading matches upstream Letta letta-evals: an LLM `model_judge` against the ven
 
 ## Difficulty tiers — how they were assigned
 
-Tiers are **empirical**, from a calibration run on **gpt-5.6-terra** via the **bare**
-`create_deep_agent` harness, **3 rollouts/task**, graded by the faithful Letta `model_judge`. Tier
-= terra's passed-count out of 3:
+The 30 tasks are a **representative sample**, selected from paired six-rollout results for
+**gpt-5.6-terra** and **gpt-5.6-luna** over all 100 source tasks ([run
+29881672853](https://github.com/langchain-ai/deepagents/actions/runs/29881672853)). The sample
+preserves the full-corpus aggregate: Terra was 510/600 (85.0%) and Luna 552/600 (92.0%); the
+selected 30 are 153/180 (85.0%) and 166/180 (92.2%), respectively. Both models achieved pass@6
+on 29 of the 30 selected tasks.
 
-- **easy** — terra 3/3: regression-guard floor.
-- **medium** — terra 1/3 or 2/3: intermittent discriminators.
-- **hard** — terra 0/3: deep multi-file joins.
-
-Composition: **5 easy · 21 medium · 4 hard**.
-
-Each task's `[metadata]` carries the calibrated tier as `difficulty` (stamped from
-`calibration.json` via `contextbench --stamp-tiers`) and the original Context-Bench label as
-`source_difficulty`. `calibration.json` is the machine-readable record (model, harness, grader,
-rollouts, per-task `pass_at_bare` + `tier`).
+`difficulty` and `source_difficulty` are the original Context-Bench source strata, not a
+post-hoc model-performance label: **2 easy · 10 medium · 18 hard**. The paired results are
+selection evidence, not a target leaderboard ordering. `calibration.json` is the machine-readable
+record of the source run, aggregate totals, and each task's Terra and Luna result; `pass_at_bare`
+remains the Terra fraction for compatibility with the existing adapter.
 
 ## The 30 tasks
 
-| task | tier | terra pass@3 | type | question (what it tests) |
-|---|---|:--:|---|---|
-| `cb-cloud-3` | easy | 1.00 | set_intersection | Among the 15 people with the highest total bank balance, who lives in the same state as th... |
-| `cb-cloud-4` | easy | 1.00 | temporal_reasoning | Among people living in the same state as the owner of vehicle with license plate '443-JHD'... |
-| `cb-cloud-6` | easy | 1.00 | aggregation | What is the total bank balance of the person who has the most credit cards among all resid... |
-| `cb-cloud-8` | easy | 1.00 | cross_file_counting | How many total financial and property records (bank accounts, credit cards, vehicles, and ... |
-| `cb-cloud-9` | easy | 1.00 | negation | Among all people who live in the same state as the person with internet username 'reedjust... |
-| `cb-cloud-24` | medium | 0.67 | multi_hop_chain | Who has more insurance policies: the person with the highest salary among residents of the... |
-| `cb-cloud-35` | medium | 0.67 | multi_entity_comparison | Who has more credit cards: the person with the most vehicles among residents of the same s... |
-| `cb-cloud-41` | medium | 0.67 | multi_entity_comparison | Who owns more vehicles: the person with the most credit cards among residents of the same ... |
-| `cb-cloud-49` | medium | 0.67 | multi_entity_comparison | Who has more credit cards: the person with the most vehicles among residents of the same s... |
-| `cb-cloud-55` | medium | 0.67 | multi_entity_comparison | Who owns more pets: the person with the most credit cards among people who share the same ... |
-| `cb-cloud-62` | medium | 0.67 | multi_hop_chain | Who has more insurance policies: the person with the highest salary among residents of the... |
-| `cb-cloud-65` | medium | 0.67 | multi_entity_comparison | Who has more insurance policies: the person with the highest salary among residents of the... |
-| `cb-cloud-67` | medium | 0.67 | multi_hop_chain | Who has more credit cards: the person with the highest salary among those with the same bl... |
-| `cb-cloud-68` | medium | 0.67 | multi_entity_comparison | Who has more vehicles: the person with the most credit cards among residents of the same s... |
-| `cb-cloud-69` | medium | 0.67 | multi_hop_chain | Who owns more pets: the person with the most credit cards among residents of the same stat... |
-| `cb-cloud-73` | medium | 0.67 | multi_hop_chain | Who has more internet accounts: the person with the highest total bank balance among resid... |
-| `cb-cloud-79` | medium | 0.67 | multi_hop_chain | Who owns more vehicles: the person with the most insurance policies among residents of the... |
-| `cb-cloud-81` | medium | 0.67 | multi_entity_comparison | Who owns more pets: the person with the oldest vehicle among Auto insurance policy holders... |
-| `cb-cloud-13` | medium | 0.33 | multi_entity_comparison | Who owns more vehicles: the person with the highest total bank balance among residents of ... |
-| `cb-cloud-15` | medium | 0.33 | multi_entity_comparison | Who has more credit cards: the person with the most insurance policies among JCB 16 digit ... |
-| `cb-cloud-42` | medium | 0.33 | negation | Among people who live in the same state as the owner of the pet named Jasmine and do not o... |
-| `cb-cloud-45` | medium | 0.33 | multi_hop_chain | Who owns more vehicles: the person with the most credit cards among residents of the same ... |
-| `cb-cloud-47` | medium | 0.33 | multi_entity_comparison | Who has more bank accounts: the person with the most vehicles among residents of the same ... |
-| `cb-cloud-57` | medium | 0.33 | multi_hop_chain | Who owns more vehicles: the person with the most insurance policies among residents of the... |
-| `cb-cloud-66` | medium | 0.33 | multi_hop_chain | Who owns more pets: the person with the most vehicles among residents of the same state as... |
-| `cb-cloud-83` | medium | 0.33 | multi_entity_comparison | Who owns more vehicles: the person with the highest salary among all holders of the same i... |
-| `cb-cloud-10` | hard | 0.00 | multi_hop_chain | Who has more credit cards: the person with the highest salary among residents of the same ... |
-| `cb-cloud-71` | hard | 0.00 | multi_hop_chain | Who owns more vehicles: the person with the most credit cards among Mastercard holders who... |
-| `cb-cloud-74` | hard | 0.00 | multi_entity_comparison | Who owns more vehicles: the person with the highest salary among residents of the same sta... |
-| `cb-cloud-90` | hard | 0.00 | multi_hop_chain | Who owns more vehicles: the person with the highest salary among residents of the same sta... |
+| task | source tier | Terra pass@6 | Luna pass@6 | type |
+|---|---|:--:|:--:|---|
+| `cb-cloud-1` | easy | 5/6 | 5/6 | comparison_tiebreak |
+| `cb-cloud-4` | hard | 6/6 | 2/6 | temporal_reasoning |
+| `cb-cloud-6` | medium | 6/6 | 6/6 | aggregation |
+| `cb-cloud-7` | hard | 6/6 | 6/6 | set_intersection |
+| `cb-cloud-9` | medium | 6/6 | 6/6 | negation |
+| `cb-cloud-10` | hard | 5/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-21` | medium | 6/6 | 6/6 | cross_file_counting |
+| `cb-cloud-22` | easy | 6/6 | 6/6 | negation |
+| `cb-cloud-33` | medium | 6/6 | 6/6 | comparison_tiebreak |
+| `cb-cloud-35` | hard | 6/6 | 6/6 | multi_entity_comparison |
+| `cb-cloud-38` | medium | 6/6 | 6/6 | cross_file_counting |
+| `cb-cloud-48` | medium | 6/6 | 6/6 | aggregation |
+| `cb-cloud-49` | hard | 5/6 | 6/6 | multi_entity_comparison |
+| `cb-cloud-53` | medium | 5/6 | 6/6 | set_intersection |
+| `cb-cloud-54` | medium | 6/6 | 6/6 | aggregation |
+| `cb-cloud-55` | hard | 5/6 | 6/6 | multi_entity_comparison |
+| `cb-cloud-56` | medium | 6/6 | 6/6 | comparison_tiebreak |
+| `cb-cloud-57` | hard | 5/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-62` | hard | 5/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-65` | hard | 3/6 | 5/6 | multi_entity_comparison |
+| `cb-cloud-67` | hard | 5/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-68` | hard | 5/6 | 6/6 | multi_entity_comparison |
+| `cb-cloud-69` | hard | 6/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-70` | hard | 6/6 | 6/6 | multi_entity_comparison |
+| `cb-cloud-73` | hard | 6/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-78` | medium | 0/6 | 0/6 | temporal_reasoning |
+| `cb-cloud-79` | hard | 3/6 | 6/6 | multi_hop_chain |
+| `cb-cloud-81` | hard | 2/6 | 5/6 | multi_entity_comparison |
+| `cb-cloud-83` | hard | 4/6 | 5/6 | multi_entity_comparison |
+| `cb-cloud-88` | hard | 6/6 | 6/6 | multi_hop_chain |
 
 _Full question text for each task is in its `instruction.md`; the answer key is `ground_truth` in `tests/case.json`._

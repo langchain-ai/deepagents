@@ -79,12 +79,12 @@ Within those domains the subset is a *difficulty probe* — a behavior spread ac
 
 **Why these tasks.** The 30 tasks span eight query types over the same corpus, so the set measures a range of retrieval-and-reasoning operations rather than one:
 
-- **`multi_hop_chain` · `multi_entity_comparison` (13 tasks)** — deep multi-file joins: follow a chain of relationships across files, or compare two entities each reached by its own lookup. The hardest type, and the core discriminators.
-- **`aggregation` · `cross_file_counting` (4)** — sum balances or count records scattered across files.
-- **`set_intersection` · `comparison_tiebreak` (6)** — find the entities satisfying several constraints at once, resolving ties.
-- **`negation` · `temporal_reasoning` (7)** — exclude by a condition, or reason over dates.
+- **`multi_hop_chain` · `multi_entity_comparison` (16 tasks)** — deep multi-file joins: follow a chain of relationships across files, or compare two entities each reached by its own lookup.
+- **`aggregation` · `cross_file_counting` (5)** — sum balances or count records scattered across files.
+- **`set_intersection` · `comparison_tiebreak` (5)** — find the entities satisfying several constraints at once, resolving ties.
+- **`negation` · `temporal_reasoning` (4)** — exclude by a condition, or reason over dates.
 
-Within that spread, each task earns its slot by the *role* its measured difficulty gives it. Tiers are empirical, from a calibration run on **Opus 4.8** via the **bare** `create_deep_agent` harness (3 rollouts/task; `pass@bare` = fraction solved): floors (`pass@bare` ≥ 0.90), an intermittent middle (`0.10 < pass@bare < 0.90`) that carries the most signal, and discriminators (`pass@bare` ≤ 0.10). The set is **5 easy · 9 medium · 16 hard**, weighted toward discriminators for headroom: Context-Bench is **bimodal** on a strong model (a task is solved ~1.0 or failed ~0.0), so intermittent tasks are rare — all ~9 that exist are kept, and the rest are hard so the set doesn't saturate. `pass@bare` is a *floor* (the bare default harness); a stronger harness like `dcode` is expected to solve some of the hard tier. Each task's own `pass@bare` and query type is listed in the [dataset README](datasets/context-retrieval-evals/README.md).
+The subset is a paired, six-rollout representative sample from the full 100-task Context-Bench cloud suite, calibrated on **gpt-5.6-terra** and **gpt-5.6-luna** with the **bare** `create_deep_agent` harness. In the [source run](https://github.com/langchain-ai/deepagents/actions/runs/29881672853), Terra scored 510/600 (85.0%) and Luna 552/600 (92.0%); this 30-task sample preserves that profile at 153/180 (85.0%) and 166/180 (92.2%). It also preserves source difficulty coverage: **2 easy · 10 medium · 18 hard**. These are original Context-Bench source strata, not post-hoc model tiers. The selection preserves aggregate measurement rather than targeting a cross-model leaderboard order; it is therefore appropriate for tracking the context capability without overstating a model-pair gap. The [dataset README](datasets/context-retrieval-evals/README.md) records each task's paired result and query type.
 
 ## Why this, not the pytest eval suite
 

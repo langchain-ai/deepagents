@@ -1,8 +1,9 @@
 """Frozen 'lite' task subsets per category for the unified evals `profile=lite`.
 
-A high-signal, low-cost slice: fewer tasks, FULL rollouts. Tasks are biased to the
-difficulty frontier (partial-pass / hard-but-solvable) measured on a weaker model
-(gpt-5.6-luna); saturated (all-pass) and verifier-unstable tasks are excluded.
+A high-signal, low-cost slice: fewer tasks, FULL rollouts. Autonomous and
+conversation use their calibrated difficulty frontiers. Context is a neutral,
+paired Terra/Luna representative sample of the frozen 30-task corpus so a lite
+run does not amplify either model's measured Context-Bench advantage.
 
 Names are the exact harbor `--include-task-name` filters per category:
   autonomous   -> registry ref `harbor-index/<task>`
@@ -56,21 +57,19 @@ LITE_TASKS: dict[str, list[str]] = {
         "sierra-research/tau3-bench__tau3-banking_knowledge-task-073",
         "sierra-research/tau3-bench__tau3-telecom-service-issue-airplane-mode-on-break-apn-settings-lock-sim-card-pin-overdue-bill-suspension-unseat-sim-card-persona-none",
     ],
-    # 8 — three calibrated hard tasks + four medium frontier tasks + one guard,
-    # re-picked from the five-model 30-task context results. The historical
-    # three-rollout aggregate predicts Sol 21 > Terra 19 > Luna 17 > Sonnet 15
-    # > GLM 8 (each out of 24). Two hard multi-hop tasks, one hard entity
-    # comparison, four medium entity comparisons, and the cross-file-counting
-    # guard retain the existing lite composition and task coverage.
+    # 8 — one task per Context-Bench query type. This 1 easy / 4 medium / 3 hard
+    # source-tier slice is selected from the paired six-rollout 100-task run:
+    # Terra 41/48 and Luna 43/48, preserving the full-corpus gap without using
+    # context to target a leaderboard order.
     "context": [
-        "cb-cloud-10",  # multi_hop_chain (hard)
-        "cb-cloud-71",  # multi_hop_chain (hard)
-        "cb-cloud-74",  # multi_entity_comparison (hard)
-        "cb-cloud-15",  # multi_entity_comparison (medium)
-        "cb-cloud-35",  # multi_entity_comparison (medium)
-        "cb-cloud-55",  # multi_entity_comparison (medium)
-        "cb-cloud-68",  # multi_entity_comparison (medium)
-        "cb-cloud-8",  # cross_file_counting (guard)
+        "cb-cloud-4",  # temporal_reasoning (hard)
+        "cb-cloud-21",  # cross_file_counting (medium)
+        "cb-cloud-22",  # negation (easy)
+        "cb-cloud-33",  # comparison_tiebreak (medium)
+        "cb-cloud-48",  # aggregation (medium)
+        "cb-cloud-53",  # set_intersection (medium)
+        "cb-cloud-65",  # multi_entity_comparison (hard)
+        "cb-cloud-79",  # multi_hop_chain (hard)
     ],
 }
 

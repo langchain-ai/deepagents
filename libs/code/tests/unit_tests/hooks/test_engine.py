@@ -1004,15 +1004,17 @@ def test_reducer_keeps_prompt_suppression_across_handlers(tmp_path: Path) -> Non
 async def test_migrated_legacy_handler_remains_side_effect_only(
     tmp_path: Path,
 ) -> None:
+    payload_path = tmp_path / "legacy payload.json"
     script = (
-        "import json,sys;"
+        "import json,pathlib,sys;"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(json.load(sys.stdin)));"
         "print(json.dumps({'decision':'block','reason':'legacy'}));"
         "sys.exit(2)"
     )
     config = migrate_legacy_hooks(
         [
             {
-                "command": [sys.executable, "-c", script],
+                "command": [sys.executable, "-c", script, str(payload_path)],
                 "events": ["session.start"],
             }
         ]
@@ -1033,6 +1035,10 @@ async def test_migrated_legacy_handler_remains_side_effect_only(
     assert isinstance(decision, UserPromptSubmitDecision)
     assert decision.continue_processing is True
     assert decision.context == []
+    assert json.loads(payload_path.read_text()) == {
+        "event": "session.start",
+        "thread_id": "thread-1",
+    }
 
 
 def test_reducer_permission_precedence_is_deny_ask_allow(tmp_path: Path) -> None:

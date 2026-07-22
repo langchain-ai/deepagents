@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
+from deepagents_code.hooks import migration
 from deepagents_code.hooks.capabilities import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     get_event_spec,
@@ -152,7 +153,8 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
         for group in groups:
             handler = group.hooks[0]
             assert handler.timeout == pytest.approx(LEGACY_COMMAND_TIMEOUT_SECONDS)
-            assert handler.command.endswith(">/dev/null 2>&1 || true")
+            assert "deepagents_code.hooks.migration" in handler.command
+            assert "/dev/null" not in handler.command
 
     user_dir = tmp_path / "user"
     user_dir.mkdir()
@@ -181,6 +183,25 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     assert loaded.diagnostics[0].code == "legacy_deprecated"
     assert "September 1, 2026" in loaded.diagnostics[0].message
     assert any(item.code == "legacy_migrated" for item in loaded.diagnostics)
+
+
+def test_legacy_migration_uses_windows_shell_quoting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(migration.os, "name", "nt")
+    monkeypatch.setattr(
+        migration.sys,
+        "executable",
+        r"C:\Program Files\Python\python.exe",
+    )
+
+    migrated = migrate_legacy_hooks(
+        [{"command": [r"C:\Program Files\Hooks\observer.exe", "arg with space"]}]
+    )
+    command = migrated.hooks[HookEvent.USER_PROMPT_SUBMIT][0].hooks[0].command
+
+    assert command.startswith('"C:\\Program Files\\Python\\python.exe"')
+    assert "'" not in command
 
 
 def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:

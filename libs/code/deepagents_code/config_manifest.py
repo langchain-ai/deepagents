@@ -473,7 +473,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         if raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
             name,
             raw,
         )
@@ -540,7 +540,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
             label,
             raw,
         )
@@ -918,6 +918,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_scrollbar"),
     ),
     ConfigOption(
+        key="display.debug_console_click_to_copy",
+        group="Display",
+        summary="Copy on click in the Ctrl+\\ Debug Console (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_CONSOLE_CLICK_TO_COPY,
+        toml_keys=("ui", "debug_console_click_to_copy"),
+    ),
+    ConfigOption(
         key="display.collapse_pastes",
         group="Display",
         summary="Collapse large chat-input pastes into compact placeholders.",
@@ -1234,15 +1243,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
     # which reads them only from the user-level config.toml (never a project file),
     # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
-    # env overrides are named in the summaries instead of `env_var` because the
-    # scalar resolver rejects env-backed STRUCTURED options by design.
+    # related env settings are named in the summaries instead of `env_var` because
+    # the scalar resolver rejects env-backed STRUCTURED options by design.
     ConfigOption(
         key="mcp.enabled_project_server_approvals",
         group="MCP",
         summary=(
             "Project MCP server approvals saved by project root, server name, and "
-            "server fingerprint; edited commands/URLs require re-approval. Env-only "
-            "global override (bypasses project/fingerprint binding): "
+            "server fingerprint; edited commands/URLs require re-approval. "
+            "Process-wide name allowlist (bypasses project/fingerprint binding): "
             "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
         ),
         kind=OptionKind.STRUCTURED,
@@ -1321,7 +1330,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.mode",
         group="Startup",
-        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
         kind=OptionKind.STARTUP_MODE_DELEGATE,
         default="manual",
         toml_keys=("startup", "mode"),

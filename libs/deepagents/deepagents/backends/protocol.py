@@ -438,6 +438,20 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     Backends can store files in different locations (state, filesystem,
     database, etc.) and provide a uniform interface for file operations.
 
+    File operations (`grep`, `glob`, `ls`, `read`, etc.) live on this base
+    protocol rather than only on `SandboxBackendProtocol` because not every
+    backend has a shell. `StateBackend` and `StoreBackend` store files in
+    in-memory state or a remote store with no process to exec into, so they
+    implement `grep`/`glob` in pure Python and have no `execute` at all.
+    Even on shell-capable backends, the tools are not just convenience
+    wrappers around `execute`: they enforce literal-only matching (not
+    regex), return structured `GrepResult`/`GlobResult` objects, support
+    `max_count` truncation, and pass through filesystem permission rules —
+    none of which raw `execute` + shell `grep`/`find` provides. Agent-facing
+    prompt guidance should therefore recommend these tools only when they
+    are actually registered, and never assume a shell is available as a
+    fallback.
+
     All file data is represented as dicts with the following structure:
 
     ```python

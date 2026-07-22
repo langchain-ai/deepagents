@@ -59,9 +59,15 @@ there is no cross-event delivery-ordering guarantee for the tool events. Most
 non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
 `context.offload`, `context.compact`, `permission.request`) fire in program order.
 They are dispatched with an awaited `dispatch_hook`, except `session.end` on the
-interactive TUI, which is dispatched synchronously via `_dispatch_hook_sync` at
-shutdown (the event loop is already tearing down); that path is still blocking and
-in-order, so the program-order guarantee holds. `input.required` and
+interactive TUI, which is dispatched via `_dispatch_hook_sync` at shutdown. That
+dispatch runs on a worker thread (`asyncio.to_thread`) inside the coordinated
+teardown in `app.py` so a slow hook can't block rendering or delay agent
+cancellation — it overlaps agent cleanup and server shutdown, and teardown awaits
+it before stopping the event loop, so it is dispatched once (never duplicated) and
+after every prior non-tool event; the program-order guarantee therefore holds.
+Delivery is at-most-once: a force-quit second exit can stop the loop before the
+dispatch completes and drop it.
+`input.required` and
 `user.name.set` are the exceptions with no program-order guarantee:
 `user.name.set` is always dispatched fire-and-forget, and `input.required` is
 fire-and-forget on the headless surface (awaited only in the interactive TUI).
@@ -72,14 +78,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess  # noqa: S404
+import subprocess  # ruff:ignore[suspicious-subprocess-import]
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-logger = logging.getLogger(__name__)
+# Package-scoped logger so records propagate under `deepagents_code.*` after
+# the hooks package split (legacy module previously lived at hooks.py).
+logger = logging.getLogger("deepagents_code.hooks")
 
 HOOK_TOOL_OUTPUT_LIMIT = 2000
 """Max characters of `tool_output` included in `tool.result` hook payloads.
@@ -118,7 +126,7 @@ def _load_hooks() -> list[dict[str, Any]]:
         An empty list when the file is missing or malformed so that normal
             execution is never interrupted.
     """
-    global _hooks_config  # noqa: PLW0603
+    global _hooks_config  # ruff:ignore[global-statement]
     if _hooks_config is not None:
         return _hooks_config
 
@@ -173,7 +181,7 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
         payload_bytes: JSON payload to write to the command's stdin.
     """
     try:
-        subprocess.run(  # noqa: S603
+        subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]
             command,
             input=payload_bytes,
             stdout=subprocess.DEVNULL,

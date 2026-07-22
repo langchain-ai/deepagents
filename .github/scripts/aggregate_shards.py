@@ -280,6 +280,9 @@ def make_summary(
     dataset: str | None,
     model: str | None,
     category: str | None,
+    config: str | None,
+    branch: str | None,
+    source_sha: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -298,6 +301,9 @@ def make_summary(
         "dataset": dataset,
         "model": model,
         "category": category,
+        "config": config,
+        "branch": branch,
+        "source_sha": source_sha,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -432,6 +438,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Eval category (autonomous|conversation|context), recorded in the summary.",
     )
     parser.add_argument(
+        "--config",
+        default=None,
+        help="Agent config (agent_impl) under test; recorded into summary.json.",
+    )
+    parser.add_argument(
+        "--branch",
+        default=None,
+        help="Git branch/ref the agent source came from; recorded into summary.json.",
+    )
+    parser.add_argument(
+        "--source-sha",
+        default=None,
+        help="Full immutable agent-source commit; recorded into summary.json.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -476,6 +497,9 @@ def main(argv: list[str] | None = None) -> int:
             dataset=args.dataset,
             model=args.model,
             category=args.category,
+            config=args.config,
+            branch=args.branch,
+            source_sha=args.source_sha,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
@@ -532,6 +556,9 @@ def main(argv: list[str] | None = None) -> int:
         dataset=args.dataset,
         model=args.model or (next(iter(agg.models)) if agg.models else None),
         category=args.category,
+        config=args.config,
+        branch=args.branch,
+        source_sha=args.source_sha,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,

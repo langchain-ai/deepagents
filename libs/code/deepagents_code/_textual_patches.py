@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts two independent best-effort patches over private Textual
+This module hosts three independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -13,8 +13,8 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
-2. Kitty lock-key and sub-field handling. Two related problems with the
-    pinned Textual parser:
+2. Kitty lock-key and unsupported sub-field handling. Two related problems
+    remain with the pinned Textual parser:
 
     a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
         text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
@@ -27,14 +27,15 @@ upstream.
         single character-less `caps_lock` event, regardless of the modifier,
         associated-text, or event-type sub-fields the terminal includes.
 
-    b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
-        *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
-        keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
-        fails to match and is re-emitted one byte at a time as literal text.
-        The patch strips the `:` sub-fields before Textual parses the sequence
-        so it resolves to a single key event.
+    b. Textual 8.2.8 handles `:`-separated code points in the third,
+        associated-text field, but not alternate keys in the first field
+        (`unicode:shifted:base`) or an event type in the second field
+        (`modifiers:event`). The patch strips only those unsupported sub-fields
+        before Textual parses the sequence and preserves every associated-text
+        code point.
 
-    Remove when the pinned Textual neutralizes lock keys and widens its parser.
+    Remove when Textual neutralizes lock keys and handles key-code and modifier
+    sub-fields natively.
 
 3. Double-click word selection. Stock Textual selects the entire widget on
     a click chain; these patches narrow a double-click (and double-click
@@ -102,10 +103,9 @@ else:
     # varying shapes.
     _KITTY_KEY_SEQUENCE = re.compile(r"\x1b\[(\d+)[\d;:]*u")
 
-    # Kitty extended-key sequence carrying `:` sub-fields (alternate keys or an
-    # event-type sub-field). The pinned Textual's `_re_extended_key` rejects the
-    # colons, so non-lock keys with these sub-fields would otherwise leak as
-    # literal text — strip the sub-fields so they parse to a single key event.
+    # Kitty extended-key sequence carrying `:` sub-fields. Textual 8.2.8
+    # handles them in the associated-text field, but not the key-code or
+    # modifier fields; normalize only those first two fields below.
     _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
 
     # iTerm2 reports the Caps Lock toggle as a `CSI u` sequence whose primary
@@ -145,17 +145,19 @@ else:
         return modifier_bits & _REAL_MODIFIER_MASK == 0 and not has_text
 
     def _strip_kitty_subfields(sequence: str) -> str:
-        """Drop `:` sub-fields from a kitty extended-key sequence.
+        """Drop unsupported `:` sub-fields from a kitty key sequence.
 
-        Keeps the primary value of each `;`-separated field (the unicode key
-        code, modifier mask, and associated text), which is all Textual reads.
+        Keeps the primary key code and modifier while preserving every
+        colon-separated code point in the associated-text field, which
+        Textual 8.2.8 handles natively.
 
         Returns:
-            The sequence with every `:` sub-field removed.
+            The sequence with only key-code and modifier sub-fields removed.
         """
         body, terminator = sequence[2:-1], sequence[-1]
-        primary = ";".join(field.split(":", 1)[0] for field in body.split(";"))
-        return f"\x1b[{primary}{terminator}"
+        fields = body.split(";")
+        fields[:2] = [field.split(":", 1)[0] for field in fields[:2]]
+        return f"\x1b[{';'.join(fields)}{terminator}"
 
     def _lock_key_event(sequence: str) -> events.Key | None:
         """Return a text-free lock-key event for a kitty lock-key sequence.
@@ -197,8 +199,8 @@ else:
         if _spurious_caps_lock(sequence):
             yield events.Key("caps_lock", None)
             return
-        # Normalize any other kitty sequence with `:` sub-fields so it resolves
-        # to a single key event instead of leaking raw bytes.
+        # Normalize unsupported key-code and modifier sub-fields while leaving
+        # Textual 8.2.8's colon-separated associated text intact.
         if _KITTY_SUBFIELD_KEY.fullmatch(sequence):
             sequence = _strip_kitty_subfields(sequence)
         # Fast path: \x1b<byte> on first pass. Short-circuits the ~100 ms

@@ -28,16 +28,8 @@ from deepagents_code import _env_vars, auth_store
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from typing import TypeAlias
 
-    # A parsed-JSON value. An MCP server definition is one of these (in practice
-    # a dict), but a malformed `.mcp.json` entry can be any JSON scalar/array, so
-    # the trust helpers accept the whole shape rather than lying with `Mapping`.
-    # String form keeps the recursive reference valid on Python 3.11 (no PEP 695
-    # `type` statement).
-    JSONValue: TypeAlias = (
-        "str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | None"
-    )
+    from deepagents_code.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 
@@ -3434,7 +3426,7 @@ class McpProjectServerApproval:
 
     @classmethod
     def create(
-        cls, *, project_root: str | Path | None, name: str, server: JSONValue
+        cls, *, project_root: str | Path | None, name: str, server: JsonValue
     ) -> McpProjectServerApproval | None:
         """Build an approval, normalizing the root and fingerprinting `server`.
 
@@ -3553,7 +3545,7 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
         return None
 
 
-def fingerprint_mcp_server_config(server: JSONValue) -> str:
+def fingerprint_mcp_server_config(server: JsonValue) -> str:
     """Return a stable fingerprint for an MCP server definition.
 
     The contract is a JSON-serializable value (in practice the `dict` parsed
@@ -3678,7 +3670,7 @@ class McpServerTrustLists:
         name: str,
         *,
         project_root: str | Path | None,
-        server: JSONValue,
+        server: JsonValue,
     ) -> bool:
         """Return whether `server` is approved by name or scoped fingerprint.
 
@@ -3860,12 +3852,13 @@ def load_mcp_server_trust_lists(
     Source resolution differs by list, matching each one's security direction:
 
     - `enabled` (permissive): the env var is an explicit process-wide name
-        allowlist. When set, it *replaces* scoped TOML approvals
-        (env-beats-config, as elsewhere). Clearing it via an empty env value is
-        fail-closed — it only ever pre-approves fewer servers.
+        allowlist.
     - `approvals` (permissive): TOML approvals are scoped to project root and a
-        server-definition fingerprint. Legacy flat TOML `enabled_project_servers`
-        entries are ignored because they cannot be safely scoped.
+        server-definition fingerprint. They remain active alongside env-enabled
+        names, so setting the process-wide escape hatch does not discard choices
+        remembered by the interactive prompt. Legacy flat TOML
+        `enabled_project_servers` entries are ignored because they cannot be safely
+        scoped.
     - `disabled` (restrictive): the env var *unions* with the TOML list — denies
         accumulate and a lower-effort source can never silently empty a deny
         entry set in the other, which would be a fail-open. There is
@@ -3969,13 +3962,11 @@ def load_mcp_server_trust_lists(
             _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         )
 
-    # Enabled env remains an explicit process-wide name allowlist. TOML approvals
-    # are scoped to the project root and server fingerprint; a set env var
-    # replaces those TOML approvals to preserve env-beats-config semantics.
+    # Process-wide env names and scoped TOML approvals are independent grants.
+    # Keep both active so the escape hatch cannot make the interactive prompt's
+    # successfully persisted choices ineffective on the next launch.
     enabled = frozenset(env_enabled or ())
-    approvals = frozenset(
-        () if env_enabled is not None or read_error is not None else toml_approvals
-    )
+    approvals = frozenset(() if read_error is not None else toml_approvals)
     disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
     # Corner: when `read_error` is set because `config.toml` was unreadable,
     # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*
@@ -4002,7 +3993,7 @@ def add_enabled_project_mcp_servers(
     config_path: Path | None = None,
     *,
     project_root: str | Path | None = None,
-    server_configs: Mapping[str, JSONValue] | None = None,
+    server_configs: Mapping[str, JsonValue] | None = None,
 ) -> bool:
     """Persist project-scoped MCP server approvals.
 
@@ -4398,10 +4389,18 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
 STARTUP_MODE_MANUAL = "manual"
 """Startup approval mode that keeps human-in-the-loop approvals enabled."""
 
-STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
-"""Startup approval mode that auto-approves gated tool calls at launch."""
+STARTUP_MODE_AUTO = "auto"
+"""Startup approval mode that uses classifier-backed action review."""
 
-VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_AUTO})
+STARTUP_MODE_YOLO = "yolo"
+"""Startup approval mode that executes gated actions without review."""
+
+STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
+"""Rejected legacy spelling retained only for migration diagnostics."""
+
+VALID_STARTUP_MODES = frozenset(
+    {STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO, STARTUP_MODE_YOLO}
+)
 """Accepted values for the `[startup].mode` config option."""
 
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
@@ -4411,16 +4410,16 @@ DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
 def load_startup_mode(config_path: Path | None = None) -> str:
     """Load the default startup approval mode from config.toml.
 
-    Reads `[startup].mode`, which controls whether the interactive TUI launches
-    with human-in-the-loop approvals enabled (`manual`) or auto-approved
-    (`dangerously-auto`). The explicit `-y`/`--auto-approve` flag overrides this.
+    Reads `[startup].mode`, which accepts fail-closed `manual`, classifier-backed
+    `auto`, or unrestricted `yolo`. The removed `dangerously-auto` spelling is
+    invalid and falls back to `manual`.
 
     Args:
         config_path: Path to config file.
 
     Returns:
-        `"manual"` or `"dangerously-auto"`; falls back to `"manual"` when unset,
-        unreadable, or invalid.
+        `"manual"`, `"auto"`, or `"yolo"`; falls back to `"manual"` when
+        unset, unreadable, or invalid.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -4438,7 +4437,7 @@ def load_startup_mode(config_path: Path | None = None) -> str:
             return value
         if value is not None:
             logger.warning(
-                "Ignoring [startup].mode=%r (expected 'manual' or 'dangerously-auto')",
+                "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
                 value,
             )
     except (OSError, tomllib.TOMLDecodeError):

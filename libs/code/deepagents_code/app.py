@@ -46,6 +46,7 @@ from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from textual.worker import NoActiveWorker, get_current_worker
 from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
@@ -117,6 +118,10 @@ _monotonic = time.monotonic
 _DEFERRED_START_NOTICE = (
     "No model is configured yet. Run `/model` to choose one. "
     "Deep Agents will ask for credentials for the selected provider."
+)
+
+_AUTO_MODE_ENABLED_WARNING = (
+    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
 )
 
 _BLOCKED_GOAL_RETRY_CONTEXT = (
@@ -561,6 +566,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
@@ -955,6 +961,63 @@ def _load_show_scrollbar() -> bool:
     if value is not None:
         logger.warning(
             "[ui].show_scrollbar should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
+def _load_debug_console_click_to_copy() -> bool:
+    r"""Load the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Reads `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var, falling back to
+    `[ui].debug_console_click_to_copy` from `~/.deepagents/config.toml`, and
+    finally `False` (click-to-copy off; Enter-to-copy is always available).
+
+    Returns:
+        The resolved preference.
+    """
+    from deepagents_code._env_vars import (
+        DEBUG_CONSOLE_CLICK_TO_COPY,
+        classify_env_bool,
+    )
+
+    raw = os.environ.get(DEBUG_CONSOLE_CLICK_TO_COPY)
+    if raw is not None and raw.strip():
+        env = classify_env_bool(raw)
+        if env is not None:
+            return env
+
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not read config for debug console click-to-copy preference: %s",
+            exc,
+        )
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading debug console "
+            "click-to-copy preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("debug_console_click_to_copy")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].debug_console_click_to_copy should be a boolean; got %s",
             type(value).__name__,
         )
     return False
@@ -1395,6 +1458,68 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
         return _ConfigWriteResult(
             False,
             f"Scrollbar toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
+def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
+    r"""Persist the `Ctrl+\` Debug Console click-to-copy preference.
+
+    Writes `[ui].debug_console_click_to_copy` atomically (temp file +
+    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["debug_console_click_to_copy"] = enabled
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save debug console click-to-copy preference")
+        return _ConfigWriteResult(
+            False,
+            f"Click-to-copy toggled for this session but could not be saved "
             f"({type(exc).__name__}).",
             "error",
         )
@@ -2027,16 +2152,24 @@ class TextualSessionState:
     def __init__(
         self,
         *,
-        auto_approve: bool = False,
+        approval_mode: ApprovalMode | str = "manual",
+        auto_approve: bool | None = None,
         thread_id: str | None = None,
     ) -> None:
         """Initialize session state.
 
         Args:
-            auto_approve: Whether to auto-approve tool calls
-            thread_id: Optional thread ID (generates UUID7 if not provided)
+            approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+            auto_approve: Compatibility input for the previous Boolean API.
+            thread_id: Optional thread ID (generates UUID7 if not provided).
         """
-        self.auto_approve = auto_approve
+        from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+
+        self.approval_mode = coerce_approval_mode(approval_mode)
+        if auto_approve is not None:
+            self.approval_mode = (
+                ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+            )
         self.approval_mode_key: str | None = None
         self.turn_number = 0
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
@@ -2052,6 +2185,19 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+
+    @property
+    def auto_approve(self) -> bool:
+        """Whether the compatibility unrestricted mode is active."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        return self.approval_mode is ApprovalMode.YOLO
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        self.approval_mode = ApprovalMode.YOLO if value is True else ApprovalMode.MANUAL
 
     @property
     def thread_id(self) -> str:
@@ -2370,7 +2516,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
-        Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+t", "toggle_auto_approve", "Toggle Approval Mode", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         # `check_action` steps this binding aside (returns `False`) while a
         # `DebugConsoleScreen` is active so the console's own `shift+tab`
@@ -2380,7 +2526,7 @@ class DeepAgentsApp(App):
         Binding(
             "shift+tab",
             "toggle_auto_approve",
-            "Toggle Auto-Approve",
+            "Toggle Approval Mode",
             show=False,
             priority=True,
         ),
@@ -2425,10 +2571,10 @@ class DeepAgentsApp(App):
         Binding("j", "approval_down", "Down", show=False),
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
-        Binding("1", "approval_yes", "Yes", show=False),
-        Binding("2", "approval_auto", "Auto", show=False),
+        Binding("1", "approval_position(0)", "Select first", show=False),
+        Binding("2", "approval_position(1)", "Select second", show=False),
+        Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
-        Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
@@ -2466,7 +2612,8 @@ class DeepAgentsApp(App):
         agent: Pregel | None = None,
         assistant_id: str | None = None,
         backend: CompositeBackend | None = None,
-        auto_approve: bool = False,
+        approval_mode: ApprovalMode | str = "manual",
+        auto_approve: bool | None = None,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         resume_thread: str | None = None,
@@ -2494,8 +2641,9 @@ class DeepAgentsApp(App):
             agent: Pre-configured LangGraph agent, or `None` when server
                 startup is deferred via `server_kwargs`.
             assistant_id: Agent identifier for memory storage
-            backend: Backend for file operations
-            auto_approve: Whether to start with auto-approve enabled
+            backend: Backend for file operations.
+            approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+            auto_approve: Compatibility input for the previous Boolean API.
             cwd: Current working directory to display
             thread_id: Thread ID for the session.
 
@@ -2622,13 +2770,15 @@ class DeepAgentsApp(App):
         self._backend = backend
         """Filesystem/storage backend for agent file operations."""
 
-        self._auto_approve = auto_approve
-        """Current auto-approve state for tool calls.
+        from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
 
-        Initialized from `--auto-approve` and toggled at runtime via
-        Ctrl+T / Shift+Tab or the approval menu's 'Auto' option; kept in
-        sync with `_session_state.auto_approve`.
-        """
+        self._approval_mode = coerce_approval_mode(approval_mode)
+        if auto_approve is not None:
+            self._approval_mode = (
+                ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+            )
+        self._auto_approve = self._approval_mode is ApprovalMode.YOLO
+        """Compatibility mirror of unrestricted `yolo` state."""
 
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         """Session cwd.
@@ -2791,6 +2941,15 @@ class DeepAgentsApp(App):
         responsive; holding the reference keeps the task from being GC'd
         mid-flight and lets tests await it deterministically."""
 
+        self._server_restart_tasks: set[asyncio.Task[Any]] = set()
+        """Background tasks that can restart the owned server subprocess.
+
+        Textual restart workers and detached restart callbacks register here so
+        shutdown can cancel and await them before stopping the server. Inline
+        callers on Textual's long-lived message loop are deliberately excluded.
+        (The initial boot is cleaned up by `run_textual_app` instead.)
+        """
+
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
         restart. Cleared by the next reconnect or restart so multiple deferred
@@ -2864,6 +3023,15 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        self._auto_mode_eligible = self._sandbox_type is None and is_env_truthy(
+            EXPERIMENTAL
+        )
+        if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
+            self._approval_mode = ApprovalMode.MANUAL
+            self._auto_approve = False
+        self._approval_mode_blocked = False
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
@@ -2982,6 +3150,15 @@ class DeepAgentsApp(App):
 
         Restored from `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var or
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
+        """
+
+        self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
+        r"""Whether the `Ctrl+\` Debug Console copies on click.
+
+        Restored from `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var or
+        `[ui].debug_console_click_to_copy` and re-persisted when the console's
+        "Click to copy" checkbox is toggled. Off by default; Enter-to-copy is
+        always available.
         """
 
         # Widget refs (populated in compose/on_mount)
@@ -3233,6 +3410,18 @@ class DeepAgentsApp(App):
         """Placeholder widgets mounted for messages still sitting in
         `_pending_messages`, removed as the queue drains."""
 
+        self._initial_prompt_queued_widget: QueuedUserMessage | None = None
+        """Placeholder mounted at startup for a `-m`/`--message` prompt so it
+        appears queued immediately while the server is still connecting,
+        matching the on-screen feedback of the typed-while-connecting path.
+        Unlike that path this is a cosmetic placeholder: it is not tracked in
+        `_pending_messages`/`_queued_widgets` and is never drained — instead
+        `_submit_initial_submission` removes it (via
+        `_remove_initial_prompt_placeholder`) and submits the real message.
+        Its `+1` in `_sync_status_queued` keeps the queued count honest while
+        it is live, so any path that detaches the widget must also clear this
+        pointer (see `_clear_messages`, `_discard_queue`)."""
+
         self._message_store = MessageStore()
         """Message virtualization store."""
 
@@ -3291,7 +3480,18 @@ class DeepAgentsApp(App):
         """Latest background git-branch refresh task, if one is running."""
 
         self._graceful_exit_task: asyncio.Task[None] | None = None
-        """Fire-and-forget task for deferred exit after agent worker cancellation."""
+        """Fire-and-forget task for the deferred, overlapping teardown.
+
+        Runs whenever any teardown phase has work — agent cleanup, restart
+        cancellation, server stop, pending-hook drain, or `session.end` — so it
+        may run with no agent worker at all (e.g. only to stop the server)."""
+
+        self._exiting = False
+        """Whether shutdown has begun.
+
+        New work (submissions, queue drains, server restarts) must be rejected,
+        and it doubles as the force-quit / re-entrancy sentinel for `exit()`
+        itself."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -3558,9 +3758,21 @@ class DeepAgentsApp(App):
             merged = list(get_slash_commands()) + cmds
             self._chat_input.update_slash_commands(merged)
 
-        # Set initial auto-approve state
-        if self._auto_approve:
-            self._status_bar.set_auto_approve(enabled=True)
+        self._status_bar.set_approval_mode(self._approval_mode.value)
+        if self._approval_mode.value == "auto":
+            self.notify(
+                _AUTO_MODE_ENABLED_WARNING,
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
+        elif self._approval_mode.value == "yolo":
+            self.notify(
+                "YOLO is active: gated actions run without review.",
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
 
         # `Widget.focus()` defers the actual focus change by posting a callback.
         # Terminal keys may already be ahead of that callback in the app queue,
@@ -3619,6 +3831,22 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+        # Surface a `-m`/`--message` prompt as a queued message right away,
+        # while the server is still connecting, instead of waiting for
+        # `ServerReady` to submit it. The resume-exclusion decision is read
+        # here, synchronously, before the resume-resolve task consumes
+        # `_resume_thread_intent` (see `_should_queue_initial_prompt_placeholder`).
+        if self._should_queue_initial_prompt_placeholder():
+
+            def _queue_initial_prompt_placeholder() -> None:
+                # Bare `create_task` would let any failure in the placeholder
+                # setup vanish as an unretrieved-task warning; route it through
+                # `_log_task_exception` like every other fire-and-forget task.
+                task = asyncio.create_task(self._show_initial_prompt_as_queued())
+                task.add_done_callback(_log_task_exception)
+
+            self.call_after_refresh(_queue_initial_prompt_placeholder)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -3861,6 +4089,7 @@ class DeepAgentsApp(App):
             update_status=self._update_status,
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
+            on_switch_to_manual=self._switch_to_manual_from_fallback,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             on_user_visible_output_started=self._on_user_visible_output_started,
@@ -3869,6 +4098,8 @@ class DeepAgentsApp(App):
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
+            on_auto_mode_event=self._on_auto_mode_event,
+            on_approval_mode_fallback=self._on_approval_mode_fallback,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -3970,12 +4201,12 @@ class DeepAgentsApp(App):
 
         def _create() -> TextualSessionState:
             return TextualSessionState(
-                auto_approve=self._auto_approve,
+                approval_mode=self._approval_mode,
                 thread_id=self._lc_thread_id,
             )
 
         try:
-            self._session_state = await asyncio.to_thread(_create)
+            session_state = await asyncio.to_thread(_create)
         except Exception:
             logger.exception("Failed to create session state")
             self.notify(
@@ -3984,6 +4215,11 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
             return
+        # A user can change the approval mode while session construction runs
+        # in the worker thread. Re-read the app-owned selection on the event
+        # loop so the newly assigned state cannot overwrite that newer choice.
+        session_state.approval_mode = self._approval_mode
+        self._session_state = session_state
         await self._auto_accept_pending_goal_rubric()
 
     async def _ensure_managed_ripgrep(self) -> bool:
@@ -6320,7 +6556,10 @@ class DeepAgentsApp(App):
         """Mirror the pending-message queue depth onto the status bar."""
         if self._status_bar is None:
             return
-        self._status_bar.set_queued(len(self._pending_messages))
+        depth = len(self._pending_messages)
+        if self._initial_prompt_queued_widget is not None:
+            depth += 1
+        self._status_bar.set_queued(depth)
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -6600,9 +6839,7 @@ class DeepAgentsApp(App):
         ):
             anchor = spinner
         if anchor is None:
-            first_queued = self._queued_widgets[0] if self._queued_widgets else None
-            if first_queued is not None and first_queued.parent is container:
-                anchor = first_queued
+            anchor = self._first_mounted_queued_widget(container)
         if anchor is not None:
             try:
                 await container.mount(widget, before=anchor)
@@ -6628,6 +6865,14 @@ class DeepAgentsApp(App):
             if isinstance(child, LoadingWidget | QueuedUserMessage):
                 continue
             return child
+        return None
+
+    def _first_mounted_queued_widget(self, container: Container) -> Widget | None:
+        """Return the first queued placeholder mounted in `container`."""
+        initial = self._initial_prompt_queued_widget
+        for child in container.children:
+            if child is initial or child in self._queued_widgets:
+                return child
         return None
 
     @staticmethod
@@ -6674,14 +6919,7 @@ class DeepAgentsApp(App):
             )
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
-                anchor = next(
-                    (
-                        queued
-                        for queued in self._queued_widgets
-                        if queued.parent is container
-                    ),
-                    None,
-                )
+                anchor = self._first_mounted_queued_widget(container)
             if anchor is None:
                 await container.mount(bottom)
             else:
@@ -6780,10 +7018,8 @@ class DeepAgentsApp(App):
         if not children or self._loading_widget not in children:
             return False
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             return children.index(self._loading_widget) == (
                 children.index(first_queued) - 1
             )
@@ -6919,8 +7155,8 @@ class DeepAgentsApp(App):
                 "Spinner widget not in container children; skipping reposition",
             )
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             container.move_child(self._loading_widget, before=first_queued)
             return
         non_spinner = [
@@ -6958,8 +7194,12 @@ class DeepAgentsApp(App):
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
-        # Check if ALL actions in the batch are auto-approvable shell commands
-        if settings.shell_allow_list and action_requests:
+        is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback ")
+            for request in action_requests or []
+        )
+        if settings.shell_allow_list and action_requests and not is_auto_fallback:
             all_auto_approved = True
             approved_commands = []
 
@@ -7013,7 +7253,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
+        menu = ApprovalMenu(
+            action_requests,
+            assistant_id,
+            id=unique_id,
+            auto_mode_eligible=self._auto_mode_eligible,
+        )
         menu.set_future(result_future)
 
         self._pending_approval_widget = menu
@@ -7125,22 +7370,25 @@ class DeepAgentsApp(App):
             )
         await self._mount_approval_widget(menu, result_future)
 
-    async def _write_live_approval_mode(self) -> bool:
-        """Persist the current approval mode for the active thread.
+    async def _write_live_approval_mode(self, mode: ApprovalMode | None = None) -> bool:
+        """Persist an approval mode for the active thread.
+
+        Args:
+            mode: Target mode, or the current session mode when omitted.
 
         Returns:
-            `True` when no write was needed or the write succeeded, otherwise
-            `False`.
+            `True` when the Store acknowledges the write, otherwise `False`.
         """
         if self._session_state is None or self._agent is None:
-            return True
+            return False
         from deepagents_code.approval_mode import awrite_approval_mode
 
+        target = mode or self._session_state.approval_mode
         try:
             live_key = await awrite_approval_mode(
                 self._agent,
                 self._session_state.thread_id,
-                auto_approve=bool(self._session_state.auto_approve),
+                mode=target,
             )
         except Exception:
             self._session_state.approval_mode_key = None
@@ -7161,25 +7409,77 @@ class DeepAgentsApp(App):
         """Surface live approval-mode degradation to the user."""
         self.notify(message, severity="warning", timeout=8, markup=False)
 
-    async def _on_auto_approve_enabled(self) -> None:
-        """Handle auto-approve being enabled via the HITL approval menu.
+    def _on_approval_mode_fallback(self, mode: str) -> None:
+        """Synchronize local UI state after the stream forces Manual.
 
-        Called when the user selects "Auto-approve all" from an approval
-        dialog. Syncs the auto-approve state across the app flag, status
-        bar indicator, and session state so subsequent tool calls skip
-        the approval prompt.
+        Args:
+            mode: Persisted fallback mode from the adapter.
         """
-        self._auto_approve = True
+        from deepagents_code.approval_mode import coerce_approval_mode
+
+        self._approval_mode = coerce_approval_mode(mode)
+        self._auto_approve = False
+        if self._session_state is not None:
+            self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=True)
+            self._status_bar.set_approval_mode(self._approval_mode.value)
+
+    async def _on_auto_approve_enabled(self) -> bool:
+        """Enable Auto only after the live Store acknowledges it.
+
+        Returns:
+            `True` when Auto is active for subsequent actions.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if not self._auto_mode_eligible:
+            self._warn_live_approval_mode_unavailable(
+                "Auto is available only in the opt-in local TUI beta."
+            )
+            return False
+        if not await self._write_live_approval_mode(ApprovalMode.AUTO):
+            self._warn_live_approval_mode_unavailable(
+                "Auto could not be persisted; this approval remains pending in Manual."
+            )
+            return False
+        self._approval_mode = ApprovalMode.AUTO
+        self._auto_approve = False
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
-            self._session_state.auto_approve = True
-            if not await self._write_live_approval_mode():
-                self._warn_live_approval_mode_unavailable(
-                    "Auto-approve could not sync to the running agent; "
-                    "approval prompts may continue."
-                )
-        await self._auto_accept_pending_goal_rubric()
+            self._session_state.approval_mode = ApprovalMode.AUTO
+        self.notify(
+            _AUTO_MODE_ENABLED_WARNING,
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+        return True
+
+    async def _switch_to_manual_from_fallback(self) -> bool:
+        """Persist Manual before asking again about a fallback action.
+
+        Returns:
+            `True` when Manual is active.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if not await self._write_live_approval_mode(ApprovalMode.MANUAL):
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted; the active run was cancelled "
+                "for safety."
+            )
+            self._force_interrupt_active_work()
+            return False
+        self._approval_mode_blocked = False
+        self._approval_mode = ApprovalMode.MANUAL
+        self._auto_approve = False
+        if self._session_state:
+            self._session_state.approval_mode = ApprovalMode.MANUAL
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+        return True
 
     async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
@@ -7754,8 +8054,72 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    def _should_queue_initial_prompt_placeholder(self) -> bool:
+        """Whether startup should surface the `-m` prompt as a queued placeholder.
+
+        Called synchronously from `on_mount`, before the resume-resolve task
+        consumes `_resume_thread_intent`, so the resume exclusion is decided
+        against the raw `-r` intent. Resume is excluded because that path
+        bulk-loads history on connect, which would briefly render the
+        placeholder above the restored transcript.
+
+        Returns:
+            `True` when a bare `-m` prompt should be shown as queued during the
+            initial connect; `False` when resuming or not connecting.
+        """
+        return self._connecting and self._resume_thread_intent is None
+
+    async def _show_initial_prompt_as_queued(self) -> None:
+        """Mount the `-m` prompt as a queued placeholder during connect.
+
+        Gives a `-m`/`--message` prompt the same immediate on-screen feedback
+        as a message typed into an already-running session while it reconnects:
+        the text shows as queued right away rather than after `ServerReady`.
+        Scoped to a bare prompt — skills and goals render differently and keep
+        their existing startup path. The placeholder is removed and replaced by
+        a real user message when `_submit_initial_submission` dispatches.
+        """
+        if not self._connecting:
+            return
+        if self._initial_skill is not None or self._initial_goal is not None:
+            return
+        if not (self._initial_prompt and self._initial_prompt.strip()):
+            return
+        if self._initial_prompt_queued_widget is not None:
+            return
+
+        await self._dismiss_startup_tip()
+        # `ServerReady` can arrive while tip dismissal yields. Its startup
+        # sequence may submit the prompt before this task resumes, so recheck
+        # readiness before creating a placeholder that nobody will remove.
+        if not self._connecting or self._initial_prompt_queued_widget is not None:
+            return
+        queued_widget = QueuedUserMessage(self._initial_prompt)
+        self._initial_prompt_queued_widget = queued_widget
+        await self._mount_message(queued_widget)
+        self._sync_status_queued()
+        self._reveal_connection_status()
+
+    async def _remove_initial_prompt_placeholder(self) -> None:
+        """Drop the `-m` queued placeholder before mounting the real message."""
+        widget = self._initial_prompt_queued_widget
+        if widget is None:
+            return
+        self._initial_prompt_queued_widget = None
+        if widget.is_attached:
+            # Only benign detach races are expected here; a broader
+            # `suppress(Exception)` would hide a real removal failure and
+            # strand the placeholder above the real message. Matches the
+            # narrow-suppress idiom used elsewhere for widget removal.
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
+        self._sync_status_queued()
+
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
+        if self._exiting:
+            return
+
         # These startup paths (`-m`, `--skill`, `--goal`) submit outside
         # `_submit_input`, so dismiss the startup tip here to match the
         # interactive submission behavior.
@@ -7771,6 +8135,7 @@ class DeepAgentsApp(App):
                 await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
+                await self._remove_initial_prompt_placeholder()
                 await self._handle_user_message(self._initial_prompt)
         except Exception:
             logger.exception("Unhandled error during initial submission")
@@ -8320,6 +8685,9 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
+        if self._exiting:
+            return
+
         # Any submitted prompt (interactive or external) ends the startup
         # tip's lifetime, so dismiss it here at the shared entry point rather
         # than in a single handler.
@@ -8381,6 +8749,9 @@ class DeepAgentsApp(App):
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
+        if self._exiting:
+            return
+
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
@@ -13258,6 +13629,14 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        if self._approval_mode_blocked:
+            await self._mount_message(
+                ErrorMessage(
+                    "Manual approval mode has not been persisted. Press Ctrl+T "
+                    "to retry before starting another run."
+                )
+            )
+            return
         from deepagents_code.config import settings
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
@@ -13348,9 +13727,6 @@ class DeepAgentsApp(App):
                 on_rubric_evaluation_end=(
                     _record_goal_grading_run if goal_backed_grading else None
                 ),
-                # `auto_approve` is intentionally omitted here: execute_task_textual
-                # writes it into this context from `session_state.auto_approve` at
-                # the top of every stream iteration, so seeding it would be dead.
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
@@ -13481,6 +13857,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or not self._pending_messages
             or self._exit
+            or self._exiting
             or self._connecting
         ):
             return
@@ -14690,6 +15067,10 @@ class DeepAgentsApp(App):
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
         self._active_user_message = None
+        # Same reasoning for the startup `-m` placeholder: remove_children()
+        # below detaches its widget, so the pointer must not outlive it or
+        # `_sync_status_queued`'s `+1` would strand the queued count.
+        self._initial_prompt_queued_widget = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -14825,6 +15206,15 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        # The startup `-m` placeholder represents a pending submission even
+        # though it is not stored in `_pending_messages`. Cancel the backing
+        # prompt along with the widget so a later `ServerReady` cannot submit
+        # work the user already discarded.
+        placeholder = self._initial_prompt_queued_widget
+        if placeholder is not None:
+            self._initial_prompt = None
+            self._initial_prompt_queued_widget = None
+            placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
 
@@ -15360,12 +15750,14 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
-        # A second exit() while a graceful exit is already pending means the
-        # user is forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). Tear down
+        # A second exit() while shutdown is already underway means the user is
+        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set by
+        # the first exit() below, before it decides whether to defer, so this
+        # guard fires for both the deferred and immediate first paths. Tear down
         # immediately rather than arming another bounded wait — the first call
         # already ran cleanup and cancelled the worker, so re-running it would
         # only make the force-quit wait out another window.
-        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+        if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
 
@@ -15405,8 +15797,11 @@ class DeepAgentsApp(App):
             self._cleanup_external_event_source_sync()
             self._external_event_source = None
 
-        # Dispatch synchronously — the event loop is about to be torn down by
-        # super().exit(), so an async task would never complete.
+        # `session.end` is dispatched inside the deferred teardown below (off
+        # the Textual event loop via `asyncio.to_thread`) rather than
+        # synchronously here, so a slow hook can neither block rendering nor
+        # delay agent-cancellation cleanup from starting. Build the payload now,
+        # capturing `_lc_thread_id` at exit time, and hand it to the task.
         from deepagents_code.hooks import (
             _dispatch_hook_sync,
             _load_hooks,
@@ -15415,14 +15810,14 @@ class DeepAgentsApp(App):
         )
 
         hooks = _load_hooks()
+        session_end_payload: bytes | None = None
         if hooks:
-            payload = json.dumps(
+            session_end_payload = json.dumps(
                 {
                     "event": "session.end",
                     "thread_id": getattr(self, "_lc_thread_id", ""),
                 },
             ).encode()
-            _dispatch_hook_sync("session.end", payload, hooks)
 
         from deepagents_code.terminal_escape import reset_terminal_background
 
@@ -15435,46 +15830,210 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
+        self._exiting = True
 
-        # Defer super().exit() so the agent worker's cancellation handler
-        # (which, for remote agents, sends a server-side run cancel, and in all
-        # cases persists interrupt state) has a bounded window to complete
-        # before the event loop is torn down. This gives the server a chance to
-        # finish persisting the in-flight run's trace instead of being
-        # SIGTERM'd mid-request.
+        # Defer super().exit() so teardown can overlap independent slow phases
+        # instead of serializing them, while keeping the Textual event loop
+        # responsive throughout (so a shutdown toast can render). The ordering
+        # constraint is that the agent worker's cancellation handler — which,
+        # for remote agents, sends a server-side run cancel and in all cases
+        # persists interrupt state *through* the server — must finish (or hit
+        # its bounded window) before the server is stopped, so the in-flight
+        # run's trace is not SIGTERM'd mid-request. Once that dependency is
+        # satisfied, server shutdown and the pending-hook drain touch
+        # independent resources and run concurrently. `session.end` overlaps
+        # everything, dispatched off-loop from the start of teardown.
         agent_worker = self._agent_worker if self._agent_running else None
         should_wait_for_agent = (
             agent_worker is not None and not agent_worker.is_finished
         )
         should_drain_hooks = has_pending_hooks()
+        restart_tasks = {task for task in self._server_restart_tasks if not task.done()}
+        # Keep compatibility with a `/restart` task scheduled just before it
+        # enters the centralized tracker (and with callers/tests that seed the
+        # strong-reference field directly).
+        restart_task = self._restart_respawn_task
+        if restart_task is not None and not restart_task.done():
+            restart_tasks.add(restart_task)
+        should_wait_for_restart = bool(restart_tasks)
+        for task in restart_tasks:
+            task.cancel()
+        # Capture the current server so a concurrent respawn can't swap it out
+        # from under the teardown task. Cleanup is still guaranteed by the outer
+        # `finally` in `run_textual_app`; `ServerProcess.stop()` is idempotent
+        # and serialized, so the two callers never race or double-clean.
+        server_proc = self._server_proc
 
-        if should_wait_for_agent or should_drain_hooks:
-            from deepagents_code.config import get_glyphs
+        if (
+            should_wait_for_agent
+            or should_wait_for_restart
+            or should_drain_hooks
+            or server_proc is not None
+            or session_end_payload is not None
+        ):
+            refreshed: asyncio.Event | None = None
+            if should_wait_for_agent or should_drain_hooks:
+                from deepagents_code.config import get_glyphs
 
-            # Surface a single toast so the user knows shutdown is intentionally
-            # waiting rather than hung. Gate `_graceful_exit` on an explicit
-            # refresh so even an already-finished worker or hook drain can't tear
-            # down Textual before the queued notification has been rendered.
-            # Immediate/idle exits skip this branch and stay toast-free, and a
-            # repeated exit while shutdown is still pending hits the force-quit
-            # guard above before reaching here, so it stays toast-free too.
-            self.notify(
-                f"Finishing pending work before exit{get_glyphs().ellipsis}",
-                markup=False,
-            )
-            refreshed = asyncio.Event()
-            if not self.call_after_refresh(refreshed.set):
-                # A closing message pump can't render the toast, but it must not
-                # strand shutdown waiting on a refresh that will never happen.
-                refreshed.set()
+                # Surface a single toast so the user knows shutdown is intentionally
+                # waiting rather than hung. Gate `_graceful_exit` on an explicit
+                # refresh so even an already-finished worker or hook drain can't tear
+                # down Textual before the queued notification has been rendered.
+                # Immediate/idle exits skip this branch and stay toast-free, and a
+                # repeated exit while shutdown is still pending hits the force-quit
+                # guard above before reaching here, so it stays toast-free too.
+                self.notify(
+                    f"Finishing pending work before exit{get_glyphs().ellipsis}",
+                    markup=False,
+                )
+                refreshed = asyncio.Event()
+                if not self.call_after_refresh(refreshed.set):
+                    # A closing message pump can't render the toast, but it must not
+                    # strand shutdown waiting on a refresh that will never happen.
+                    refreshed.set()
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
+                teardown_start = time.monotonic()
+
+                # Fire `session.end` off the event loop immediately so it
+                # overlaps agent cleanup and server shutdown. It reuses the same
+                # blocking `_dispatch_hook_sync` (identical payload and per-hook
+                # timeouts as the old synchronous path), just on a worker thread,
+                # and is awaited in the `finally` below (before the event loop is
+                # stopped). It is dispatched once and never duplicated; delivery
+                # is at-most-once — a force-quit can still drop it.
+                session_end_task: asyncio.Task[None] | None = None
+                if session_end_payload is not None:
+                    payload = session_end_payload
+
+                    async def _dispatch_session_end() -> None:
+                        phase_start = time.monotonic()
+                        try:
+                            await asyncio.to_thread(
+                                _dispatch_hook_sync,
+                                "session.end",
+                                payload,
+                                hooks,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "session.end hook dispatch raised before app exit",
+                                exc_info=True,
+                            )
+                        finally:
+                            logger.debug(
+                                "Teardown phase 'session.end hooks' took %.3fs",
+                                time.monotonic() - phase_start,
+                            )
+
+                    session_end_task = asyncio.ensure_future(_dispatch_session_end())
+
+                async def _drain_hooks() -> None:
+                    phase_start = time.monotonic()
+                    try:
+                        # Bound the drain so a hung hook subprocess can't stall
+                        # an interactive quit indefinitely. Each hook is already
+                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
+                        # thread, but a slow/many-hook config could still exceed
+                        # the graceful-exit budget; a dropped final tool.result is
+                        # announced rather than letting the UI feel frozen. The
+                        # headless surface leaves its drain unbounded on purpose —
+                        # a script exit favors a complete audit trail over shutdown
+                        # latency.
+                        await asyncio.wait_for(
+                            drain_pending_hooks(),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook drain did not finish within %ss before app "
+                            "exit; a final tool.result hook may be dropped",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Hook drain raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'pending-hook drain' took %.3fs",
+                            time.monotonic() - phase_start,
+                        )
+
+                async def _stop_server() -> None:
+                    if server_proc is None:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        # `stop()` blocks on SIGTERM/SIGKILL waits; offload it so
+                        # the event loop stays responsive and it overlaps the
+                        # hook drain instead of serializing behind it.
+                        await asyncio.to_thread(server_proc.stop)
+                    except Exception:
+                        logger.warning(
+                            "Server shutdown raised before app exit",
+                            exc_info=True,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'server shutdown' took %.3fs",
+                            time.monotonic() - phase_start,
+                        )
+
+                async def _finish_restart() -> None:
+                    if not restart_tasks:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        # Bound the wait for symmetry with the agent-cleanup and
+                        # hook-drain phases: the tasks were already cancelled in
+                        # `exit()` and their cleanup is internally bounded (the
+                        # shielded `_stop_process` thread, ~`_SHUTDOWN_TIMEOUT` +
+                        # SIGKILL grace), but a wedged cancellation must not stall
+                        # shutdown longer than the other phases' explicit budgets.
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                *restart_tasks,
+                                return_exceptions=True,
+                            ),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                        for restart_result in results:
+                            if isinstance(restart_result, asyncio.CancelledError):
+                                continue
+                            if isinstance(restart_result, BaseException):
+                                logger.warning(
+                                    "Server restart raised unexpectedly before "
+                                    "app exit",
+                                    exc_info=(
+                                        type(restart_result),
+                                        restart_result,
+                                        restart_result.__traceback__,
+                                    ),
+                                )
+                    except TimeoutError:
+                        logger.warning(
+                            "Server restart cleanup did not finish within %ss "
+                            "before app exit",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'server restart cleanup' (%d tasks) "
+                            "took %.3fs",
+                            len(restart_tasks),
+                            time.monotonic() - phase_start,
+                        )
+
                 try:
-                    await refreshed.wait()
+                    if refreshed is not None:
+                        await refreshed.wait()
                     worker = agent_worker
                     if should_wait_for_agent and worker is not None:
+                        phase_start = time.monotonic()
                         try:
                             await asyncio.wait_for(
                                 asyncio.shield(worker.wait()),
@@ -15502,32 +16061,62 @@ class DeepAgentsApp(App):
                                 "Agent worker wait raised unexpectedly before app exit",
                                 exc_info=True,
                             )
-                    try:
-                        # Bound the drain so a hung hook subprocess can't stall
-                        # an interactive quit indefinitely. Each hook is already
-                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
-                        # thread, but a slow/many-hook config could still exceed
-                        # the graceful-exit budget; a dropped final tool.result is
-                        # announced rather than letting the UI feel frozen. The
-                        # headless surface leaves its drain unbounded on purpose —
-                        # a script exit favors a complete audit trail over shutdown
-                        # latency.
-                        await asyncio.wait_for(
-                            drain_pending_hooks(),
-                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
-                        )
-                    except TimeoutError:
-                        logger.warning(
-                            "Hook drain did not finish within %ss before app "
-                            "exit; a final tool.result hook may be dropped",
-                            _GRACEFUL_EXIT_WAIT_SECONDS,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Hook drain raised unexpectedly before app exit",
-                            exc_info=True,
-                        )
+                        finally:
+                            logger.debug(
+                                "Teardown phase 'agent cleanup' took %.3fs",
+                                time.monotonic() - phase_start,
+                            )
+
+                    # Agent cleanup has finished or hit its window; only now is
+                    # it safe to finish cancellation of any detached restart,
+                    # then stop the server. Server shutdown and the pending-hook
+                    # drain are independent, so overlap them. Each coroutine
+                    # swallows its own `Exception`s, and `return_exceptions=True`
+                    # keeps a stray one from cancelling its sibling; a
+                    # `CancelledError` (force-quit) still propagates and is
+                    # handled by the `finally` below. Inspect the results anyway
+                    # so a future edit that lets an exception escape a child
+                    # coroutine is surfaced rather than silently swallowed.
+                    await _finish_restart()
+                    results = await asyncio.gather(
+                        _stop_server(), _drain_hooks(), return_exceptions=True
+                    )
+                    for phase_result in results:
+                        if isinstance(phase_result, asyncio.CancelledError):
+                            continue
+                        if isinstance(phase_result, BaseException):
+                            logger.warning(
+                                "Teardown phase raised before app exit",
+                                exc_info=(
+                                    type(phase_result),
+                                    phase_result,
+                                    phase_result.__traceback__,
+                                ),
+                            )
                 finally:
+                    # Await `session.end` here rather than in the `try` so a
+                    # force-quit cancellation still honors delivery (at-most-once)
+                    # instead of orphaning the task. Scoped guard so a failed or
+                    # cancelled dispatch can never keep `super().exit()` from
+                    # running below.
+                    if session_end_task is not None:
+                        try:
+                            await session_end_task
+                        except BaseException:
+                            # Reached when teardown itself is cancelled
+                            # (force-quit) before the await returns; the
+                            # dispatch thread may still be running. Genuine
+                            # dispatch failures are already logged at `warning`
+                            # inside the task, so keep this at `debug`.
+                            logger.debug(
+                                "session.end await interrupted during teardown "
+                                "(force-quit); dispatch may not have completed",
+                                exc_info=True,
+                            )
+                    logger.debug(
+                        "Teardown total took %.3fs",
+                        time.monotonic() - teardown_start,
+                    )
                     # This is the only call that stops the event loop, so it
                     # must run on every path the try/except can take, including
                     # an unexpected BaseException (e.g. SystemExit) propagating
@@ -15575,6 +16164,39 @@ class DeepAgentsApp(App):
         if panel is not None:
             panel.on_subagent_event(event)
 
+    async def _on_auto_mode_event(self, event: dict[str, Any]) -> None:
+        """Render one compact sanitized Auto event in the transcript.
+
+        Args:
+            event: Validated custom-stream event from the server middleware.
+        """
+        kind = event.get("event")
+        reason = str(event.get("reason") or "")
+        if kind == "fallback":
+            if event.get("mode") == "manual":
+                from deepagents_code.approval_mode import ApprovalMode
+
+                persisted = await self._write_live_approval_mode(ApprovalMode.MANUAL)
+                self._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                if not persisted:
+                    logger.warning("Could not persist server-requested Manual fallback")
+                text = f"Auto fell back to Manual: {reason}"
+                self.notify(text, severity="warning", timeout=10, markup=False)
+            else:
+                text = (
+                    "Auto fallback: human approval required "
+                    f"(denials {event.get('consecutive_denials', 0)}, "
+                    f"unavailable {event.get('consecutive_unavailable', 0)}, "
+                    f"total {event.get('total_denials', 0)})."
+                )
+        elif kind == "denial":
+            text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
+        elif kind == "unavailable":
+            text = f"Auto classifier unavailable: {reason}"
+        else:
+            text = f"Auto warning: {reason}"
+        await self._mount_message(AppMessage(text))
+
     def action_toggle_subagent_panel(self) -> None:
         """Expand or collapse the subagent fan-out panel."""
         panel = self._get_subagent_panel()
@@ -15582,11 +16204,10 @@ class DeepAgentsApp(App):
             panel.toggle()
 
     async def action_toggle_auto_approve(self) -> None:
-        """Toggle auto-approve mode for the current session.
+        """Toggle between Manual and Auto after Store acknowledgement.
 
-        When enabled, all tool calls (shell execution, file writes/edits,
-        web search, URL fetch) run without prompting. Updates the status
-        bar indicator and session state.
+        A session launched in YOLO moves to Manual; normal key navigation never
+        enters unrestricted mode.
         """
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
@@ -15640,34 +16261,55 @@ class DeepAgentsApp(App):
         if self._pending_ask_user_widget is not None:
             self._pending_ask_user_widget.action_previous_question()
             return
-        self._auto_approve = not self._auto_approve
-        if self._status_bar:
-            self._status_bar.set_auto_approve(enabled=self._auto_approve)
-        if self._session_state:
-            self._session_state.auto_approve = self._auto_approve
-            if not await self._write_live_approval_mode():
-                if self._auto_approve:
-                    self._warn_live_approval_mode_unavailable(
-                        "Auto-approve could not sync to the running agent; "
-                        "approval prompts may continue."
-                    )
-                elif self._agent_running:
-                    # Switching to manual mid-run, but the agent never saw it:
-                    # cancel the active run rather than let it keep auto-approving.
-                    self._session_state.approval_mode_key = None
-                    self._warn_live_approval_mode_unavailable(
-                        "Manual approval could not sync to the running agent; "
-                        "the active run was cancelled for safety."
-                    )
-                    self._force_interrupt_active_work()
-                else:
-                    self._warn_live_approval_mode_unavailable(
-                        "Manual approval could not sync to the running agent; "
-                        "start a new run before continuing."
-                    )
+        from deepagents_code.approval_mode import ApprovalMode
 
-        if self._live_goal_auto_approve_enabled():
-            await self._auto_accept_pending_goal_rubric()
+        if self._approval_mode is ApprovalMode.MANUAL:
+            if not self._auto_mode_eligible:
+                self._warn_live_approval_mode_unavailable(
+                    "Auto is available only in the opt-in local TUI beta."
+                )
+                return
+            target = ApprovalMode.AUTO
+        else:
+            target = ApprovalMode.MANUAL
+
+        # With no usable agent/session pair there is no running graph to update.
+        # Stage the selection locally; `execute_task_textual` persists it before
+        # the first `astream` after connection. This is also important for an
+        # initial prompt, which can run before generic deferred actions drain.
+        should_persist_live = (
+            self._agent is not None and self._session_state is not None
+        )
+        if should_persist_live and not await self._write_live_approval_mode(target):
+            if target is ApprovalMode.AUTO:
+                self._warn_live_approval_mode_unavailable(
+                    "Auto could not be persisted; remaining in Manual."
+                )
+                return
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted; active work was cancelled and "
+                "new runs are blocked."
+            )
+            if self._agent_running:
+                self._force_interrupt_active_work()
+            return
+
+        self._approval_mode_blocked = False
+        self._approval_mode = target
+        self._auto_approve = target is ApprovalMode.YOLO
+        if self._session_state:
+            self._session_state.approval_mode = target
+        if self._status_bar:
+            self._status_bar.set_approval_mode(target.value)
+        if target is ApprovalMode.AUTO:
+            self.notify(
+                "Automated review (beta) is enabled. It checks approval-gated "
+                "actions, but may not catch every issue.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""
@@ -15760,17 +16402,26 @@ class DeepAgentsApp(App):
         return focused.id == "chat-input" or focused in self._chat_input.walk_children()
 
     def action_approval_yes(self) -> None:
-        """Handle yes/1 in approval menu."""
+        """Handle the semantic approve key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_approve()
 
+    def action_approval_position(self, position: int) -> None:
+        """Select an approval option by its visible position.
+
+        Args:
+            position: Zero-based position of the displayed option.
+        """
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_position(position)
+
     def action_approval_auto(self) -> None:
-        """Handle auto/2 in approval menu."""
+        """Handle the semantic Auto key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_auto()
 
     def action_approval_no(self) -> None:
-        """Handle no/3 in approval menu."""
+        """Handle the semantic reject key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
@@ -16498,6 +17149,7 @@ class DeepAgentsApp(App):
         (`_maybe_offer_deferred_web_search_restart`, via `call_after_refresh`).
         """
         task = asyncio.create_task(self._offer_restart_for_web_search())
+        self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
 
     async def _resume_server_after_auth_change(self) -> None:
@@ -16891,7 +17543,7 @@ class DeepAgentsApp(App):
                 server_proc.update_env(
                     **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name},
                 )
-                await server_proc.restart()
+                await self._restart_server_process(server_proc)
                 # `ServerProcess.restart()` may rebind to a different port
                 # if the original is still in TIME_WAIT, so rebuild the
                 # client against the current URL rather than reusing it.
@@ -17203,9 +17855,51 @@ class DeepAgentsApp(App):
                 self._build_debug_snapshot(),
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
+                click_to_copy=self._debug_console_click_to_copy,
+                on_click_to_copy_change=self._persist_debug_console_click_to_copy,
             ),
             handle_result,
         )
+
+    def _persist_debug_console_click_to_copy(self, enabled: bool) -> None:
+        r"""Persist the Debug Console click-to-copy toggle off the UI thread.
+
+        Keeps the in-memory preference in sync so a reopened console reflects
+        the latest choice, and writes `[ui].debug_console_click_to_copy` off the
+        UI thread via `asyncio.to_thread` so a slow disk never blocks the toggle.
+        A write failure degrades to a toast rather than losing the session-level
+        change.
+
+        Args:
+            enabled: The new click-to-copy state to persist.
+        """
+        self._debug_console_click_to_copy = enabled
+
+        async def _persist() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    _save_debug_console_click_to_copy_result, enabled
+                )
+                if result.message is not None:
+                    self.notify(
+                        result.message,
+                        severity=result.severity,
+                        timeout=6,
+                        markup=False,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to persist debug console click-to-copy preference",
+                    exc_info=True,
+                )
+                self.notify(
+                    "Click-to-copy toggled for this session but could not be saved.",
+                    severity="error",
+                    timeout=6,
+                    markup=False,
+                )
+
+        self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
         """Capture a point-in-time session/runtime snapshot for the console.
@@ -17218,7 +17912,7 @@ class DeepAgentsApp(App):
             Ordered `SnapshotField` rows for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
-        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
@@ -17282,7 +17976,11 @@ class DeepAgentsApp(App):
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
             _thread_field(),
             _safe("CWD", lambda: self._cwd),
-            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Approval mode", lambda: self._approval_mode.value),
+            _safe(
+                "Experimental",
+                lambda: "on" if is_env_truthy(EXPERIMENTAL) else "off",
+            ),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),
@@ -18436,6 +19134,7 @@ class DeepAgentsApp(App):
             task = asyncio.create_task(
                 self._restart_server_for_mcp_refresh("forced reconnect")
             )
+            self._track_server_restart_task(task)
             task.add_done_callback(_log_task_exception)
 
         try:
@@ -18491,6 +19190,7 @@ class DeepAgentsApp(App):
                 # `action_reconnect` gates dismiss on pending state, so the
                 # implicit `force=False` reconnect is correct.
                 task = asyncio.create_task(self._reconnect_from_viewer_safe())
+                self._track_server_restart_task(task)
                 task.add_done_callback(_log_task_exception)
                 return
             if result:
@@ -19595,6 +20295,7 @@ class DeepAgentsApp(App):
         self._sync_status_connection()
         task = asyncio.create_task(self._run_restart_respawn())
         self._restart_respawn_task = task
+        self._track_server_restart_task(task)
         task.add_done_callback(_log_task_exception)
 
     async def _run_restart_respawn(self) -> None:
@@ -19652,6 +20353,58 @@ class DeepAgentsApp(App):
             ),
         )
 
+    def _track_server_restart_task(self, task: asyncio.Task[Any]) -> None:
+        """Register a task that may restart the owned server.
+
+        Args:
+            task: Task to cancel and await during app teardown.
+        """
+        self._server_restart_tasks.add(task)
+        task.add_done_callback(self._server_restart_tasks.discard)
+
+    async def _restart_server_process(
+        self,
+        server_proc: ServerProcess,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109
+    ) -> None:
+        """Run one server restart unless app teardown has begun.
+
+        Textual workers register their underlying task here because `run_worker`
+        does not expose it at the scheduling site. The task stays registered for
+        its whole lifetime so shutdown can cancel and await server-touching work
+        after `restart()` returns, such as MCP preload or agent rebuilding.
+        Detached `asyncio.create_task` callers register at their scheduling site;
+        inline callers on Textual's long-lived message loop remain untracked.
+
+        Args:
+            server_proc: Owned server process to restart.
+            timeout: Optional outer timeout for the full restart.
+
+        Raises:
+            asyncio.CancelledError: If app teardown has already begun, or if
+                `server_proc.restart()` is cancelled because a terminal `stop()`
+                bumped the stop generation mid-restart.
+            RuntimeError: Propagated from `server_proc.restart()` on failure.
+            TimeoutError: If `timeout` is set and the restart exceeds it.
+        """  # noqa: DOC502  # restart() raises RuntimeError; wait_for() times out.
+        if self._exiting:
+            raise asyncio.CancelledError
+
+        try:
+            get_current_worker()
+        except NoActiveWorker:
+            pass
+        else:
+            task = asyncio.current_task()
+            if task is not None and task not in self._server_restart_tasks:
+                self._track_server_restart_task(task)
+        restart = server_proc.restart()
+        if timeout is None:
+            await restart
+        else:
+            await asyncio.wait_for(restart, timeout=timeout)
+
     async def _respawn_server(
         self,
         *,
@@ -19692,7 +20445,16 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
 
             try:
-                await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
+                await self._restart_server_process(
+                    server_proc,
+                    timeout=restart_timeout,
+                )
+            # `asyncio.CancelledError` is intentionally NOT caught here (it is a
+            # `BaseException`): `_restart_server_process` raises it only when app
+            # teardown has begun or a terminal `stop()` bumped the server's stop
+            # generation mid-restart — i.e. only during shutdown. Let it propagate
+            # to the outer `BaseException` handler below, which resets
+            # `_connecting`/`_reconnecting`, syncs connection status, and re-raises.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False
@@ -21078,7 +21840,8 @@ async def run_textual_app(
     agent: Any = None,  # noqa: ANN401
     assistant_id: str | None = None,
     backend: CompositeBackend | None = None,
-    auto_approve: bool = False,
+    approval_mode: ApprovalMode | str = "manual",
+    auto_approve: bool | None = None,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     resume_thread: str | None = None,
@@ -21109,7 +21872,8 @@ async def run_textual_app(
         agent: Pre-configured LangGraph agent (optional).
         assistant_id: Agent identifier for memory storage.
         backend: Backend for file operations.
-        auto_approve: Whether to start with auto-approve enabled.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for the previous Boolean API.
         cwd: Current working directory to display.
         thread_id: Thread ID for the session.
 
@@ -21167,6 +21931,7 @@ async def run_textual_app(
         agent=agent,
         assistant_id=assistant_id,
         backend=backend,
+        approval_mode=approval_mode,
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,

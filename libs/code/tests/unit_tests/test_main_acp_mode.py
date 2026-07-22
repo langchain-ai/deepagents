@@ -247,6 +247,48 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
     assert mock_create_agent.call_args.kwargs["fs_tools"] == ["ls", "read_file"]
 
 
+def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
+    """`--acp` without `--allow-fs-tools` forwards `fs_tools=None` (unrestricted)."""
+    args = _make_acp_args()  # no allow_fs_tools override
+    model_result = SimpleNamespace(
+        model=object(),
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
+        apply_to_settings=MagicMock(),
+    )
+    run_agent = AsyncMock(return_value=None)
+    resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp"]),
+        patch(
+            "deepagents_code.main.check_cli_dependencies",
+            side_effect=AssertionError("check_cli_dependencies should be skipped"),
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_code.model_config.save_recent_model", return_value=True),
+        patch("deepagents_code.config.create_model", return_value=model_result),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
+        patch("deepagents_code.tools.fetch_url", new=object()),
+        patch("deepagents_code.tools.get_current_thread_id", new=object()),
+        patch("deepagents_code.tools.web_search", new=object()),
+        patch(
+            "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
+        ) as mock_create_agent,
+        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch("acp.run_agent", run_agent),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    mock_create_agent.assert_called_once()
+    assert mock_create_agent.call_args.kwargs["fs_tools"] is None
+
+
 def test_mcp_preload_includes_plugin_configs() -> None:
     """The TUI metadata preload should include enabled plugin MCP servers."""
     project_root = object()

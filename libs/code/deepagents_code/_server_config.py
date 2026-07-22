@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
@@ -70,43 +70,39 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
         raise ValueError(msg) from exc
 
 
-def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
+def _read_env_allow_fs_tools() -> list[FsToolName] | None:
     """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
 
-    The parent process writes only `None`, `"all"`, or a non-empty list
-    (produced by `main._parse_allow_fs_tools_flag`), but this runs in the server
-    subprocess where the variable could be tampered with or arrive from a skewed
-    serialization format. Because the value is a security control, an
-    unrecognized shape must fail closed (raise) rather than falling through to
-    an unrestricted filesystem: any non-list, non-`"all"` value would otherwise
-    reach `FilesystemMiddleware`, which treats such a value as *unrestricted*
-    (all tools). (`_read_env_json` already fails closed on malformed JSON.)
+    The parent writes only an absent variable (unrestricted — `None`, which is
+    also what `--allow-fs-tools all` collapses to) or a non-empty JSON list of
+    tool names (`main._parse_allow_fs_tools_flag`). This runs in the server
+    subprocess, where the variable could be tampered with, so — because the
+    value is a security control — any unrecognized shape must fail closed
+    (raise) rather than fall through to an unrestricted filesystem.
+    (`_read_env_json` already fails closed on malformed JSON.)
 
-    The empty list is rejected here too so the fail-closed guarantee is
-    self-contained rather than relying on downstream behavior: a legitimate
-    allowlist is always non-empty (it must include `"read_file"`), so `[]` can
-    only be tampering. Unknown tool names are rejected here as well — each is
-    validated against the SDK's `FsToolName` — so the returned list genuinely
-    satisfies its `list[FsToolName]` type instead of relying on
-    `FilesystemMiddleware` silently dropping unrecognized names (which would
-    make the `cast` below assert membership that was never checked). Importing
-    `deepagents` here is fine: this runs only in the server subprocess, which
-    already imports the SDK to build the agent (not the arg-parsing hot path
-    guarded in `main`). The `"read_file"` requirement itself stays enforced
-    downstream by `FilesystemMiddleware`, which raises when it is absent.
+    `[]` and unknown tool names are rejected here, not deferred downstream, so
+    the returned list genuinely satisfies `list[FsToolName]` and the `cast`
+    asserts membership that was actually checked. Importing `deepagents` here is
+    fine: the subprocess already imports the SDK to build the agent (this is not
+    the arg-parsing hot path guarded in `main`). The `"read_file"` requirement
+    stays enforced downstream by `FilesystemMiddleware`, which raises when it is
+    absent.
 
     Returns:
-        `None` (absent), `"all"`, or a non-empty list of filesystem tool-name
-            strings, each a valid `FsToolName`.
+        `None` when the variable is absent, or a non-empty list of filesystem
+            tool-name strings, each a valid `FsToolName`.
 
     Raises:
-        ValueError: If the variable parses to anything other than `None`,
-            `"all"`, or a non-empty list of strings, or if any list element is
-            not a recognized filesystem tool name.
+        ValueError: If the present variable parses to anything other than a
+            non-empty list of strings, or if any list element is not a
+            recognized filesystem tool name.
     """
+    env_name = f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS"
+    if env_name not in os.environ:
+        return None
+
     raw = _read_env_json("ALLOW_FS_TOOLS")
-    if raw is None or raw == "all":
-        return raw
     if isinstance(raw, list) and raw and all(isinstance(name, str) for name in raw):
         from typing import get_args
 
@@ -124,7 +120,7 @@ def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
         return cast("list[FsToolName]", raw)
     msg = (
         f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: {raw!r}; expected "
-        "'all' or a non-empty list of filesystem tool names."
+        "a non-empty list of filesystem tool names."
     )
     raise ValueError(msg)
 
@@ -322,17 +318,15 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
-    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None
+    allow_fs_tools: list[FsToolName] | None = None
     """Allowlist for `FilesystemMiddleware`'s `tools` param, from
     `--allow-fs-tools`.
 
-    `None` and `"all"` both mean "all filesystem tools" but differ
-    behaviorally downstream (see `create_cli_agent`): `None` inherits the SDK's
-    own default `FilesystemMiddleware` (no replacement), while `"all"` actively
-    reinstalls an unrestricted instance. A list is an explicit allowlist of
-    filesystem tool names and must include `"read_file"`.
-
-    Do not collapse `"all"` into `None`: they install different middleware.
+    `None` means "all filesystem tools" and is also what `--allow-fs-tools all`
+    parses to: it leaves the SDK's own default `FilesystemMiddleware` in place
+    (no replacement). A list is an explicit allowlist of filesystem tool names,
+    must include `"read_file"`, and installs a restricted replacement (see
+    `create_cli_agent`).
     """
 
     rubric_model: str | None = None
@@ -543,7 +537,7 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
-        allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
+        allow_fs_tools: list[FsToolName] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
         mcp_config_path: str | None,

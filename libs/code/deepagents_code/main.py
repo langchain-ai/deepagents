@@ -710,7 +710,7 @@ from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
 
 def _parse_allow_fs_tools_flag(
     raw: str | None,
-) -> "Literal['all'] | list[FsToolName] | None":
+) -> "list[FsToolName] | None":
     """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
 
     Args:
@@ -718,8 +718,9 @@ def _parse_allow_fs_tools_flag(
             comma-separated list of filesystem tool names.
 
     Returns:
-        `None` when the flag is absent, the literal string `"all"`, or a
-            list of trimmed, lower-cased tool names.
+        `None` when the flag is absent *or* the value is `"all"` (both mean
+            "leave the SDK default filesystem middleware in place — all tools"),
+            or a list of trimmed, lower-cased tool names.
 
             Tool names are matched case-insensitively
             (like the `"all"` sentinel), so `READ_FILE` and `read_file`
@@ -741,7 +742,13 @@ def _parse_allow_fs_tools_flag(
         sys.exit(2)
     normalized = text.lower()
     if normalized == "all":
-        return "all"
+        # `"all"` collapses to `None`: both mean "all filesystem tools". `None`
+        # leaves the SDK's own default `FilesystemMiddleware` untouched, which is
+        # strictly safer than reinstalling a hand-built unrestricted instance
+        # (that would have to re-derive descriptions/permissions and could drift
+        # from the SDK default). Only an explicit sub-list installs a
+        # replacement middleware.
+        return None
     # Lower-case each token so tool names are case-insensitive, matching the
     # `"all"` sentinel above. SDK `FsToolName` members are all lower-case.
     names = [token.strip().lower() for token in text.split(",") if token.strip()]
@@ -2082,7 +2089,9 @@ def parse_args() -> argparse.Namespace:
         help="Allowlist of filesystem tools to expose to the agent: 'all', or "
         "a comma-separated list of tool names (ls, read_file, write_file, "
         "edit_file, delete, glob, grep, execute). 'read_file' must be "
-        "included in an explicit list. Default is 'all'.",
+        "included in an explicit list. Note 'execute' is the shell tool: "
+        "omitting it from the list removes shell access even if shell is "
+        "otherwise enabled. Default is 'all'.",
     )
 
     parser.add_argument(
@@ -2259,7 +2268,7 @@ async def run_textual_cli_async(
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: "Literal['all'] | list[FsToolName] | None" = None,
+    allow_fs_tools: "list[FsToolName] | None" = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2466,7 +2475,7 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    allow_fs_tools: "Literal['all'] | list[FsToolName] | None" = None,
+    allow_fs_tools: "list[FsToolName] | None" = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 

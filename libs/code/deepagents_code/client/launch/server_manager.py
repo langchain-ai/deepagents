@@ -21,7 +21,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -307,7 +307,7 @@ async def start_server_and_get_agent(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,
@@ -465,7 +465,7 @@ async def server_session(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,

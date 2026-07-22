@@ -56,7 +56,7 @@ enumerated tools the `fs_tools` allowlist governs.
 Sourced from the shared `_constants.FS_TOOL_NAMES` so it cannot diverge from the
 copy `main` uses; the `get_args(FsToolName)` drift guard in `test_tool_catalog`
 pins it so a new or renamed SDK filesystem tool fails the test instead of
-silently escaping the post-filter below.
+silently escaping the leak check below.
 """
 
 
@@ -195,7 +195,7 @@ def collect_built_in_tools(
     *,
     assistant_id: str = "agent",
     enable_interpreter: bool = False,
-    fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    fs_tools: list[FsToolName] | None = None,
 ) -> list[ToolEntry]:
     """Enumerate the built-in tools the agent binds by default.
 
@@ -214,12 +214,11 @@ def collect_built_in_tools(
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
             the list matches the tools the agent actually binds.
         fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent so
-            it is built exactly like the runtime session, then applied as a
-            defensive post-filter below. The SDK's `FilesystemMiddleware` omits
-            disallowed tools from the node entirely, so forwarding alone already
-            narrows the enumeration; the post-filter is a backstop that keeps
-            the listing correct if that ever stops holding (see the comment on
-            the filter below).
+            it is built exactly like the runtime session. The SDK's
+            `FilesystemMiddleware` omits disallowed tools from the node
+            entirely, so forwarding alone narrows the enumeration; a defensive
+            check below verifies no disallowed tool leaked through and logs
+            loudly if one did (see the comment on that check).
 
     Returns:
         Built-in tools in bind order.
@@ -251,45 +250,41 @@ def collect_built_in_tools(
     if tools is None:
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
-    # Defensive backstop, normally a no-op: the SDK's `FilesystemMiddleware`
+    # Defensive detection, normally silent: the SDK's `FilesystemMiddleware`
     # omits disallowed filesystem tools from the bound node entirely (not merely
     # hiding them from the model's schema), so `collect_tools_from_agent` already
-    # returns only the allowlisted filesystem tools. This filter is kept as
-    # belt-and-braces in case that SDK behavior changes, or the by-name
-    # middleware replacement ever left a second, unrestricted
-    # `FilesystemMiddleware` bound.
+    # returns only the allowlisted filesystem tools. This check verifies that
+    # invariant instead of trusting it, in case the SDK behavior changes or the
+    # by-name middleware replacement ever left a second, unrestricted
+    # `FilesystemMiddleware` bound. (`None` — the unrestricted default — skips
+    # the check.)
     #
-    # If it ever *does* remove something, that is not a benign display tidy-up:
-    # it means the enumeration — built from the same `create_cli_agent` the
-    # runtime uses — surfaced a disallowed filesystem tool, i.e. the allowlist
-    # did not actually take effect. Silently reshaping the listing would hide
-    # exactly the discrepancy this backstop exists to catch and make `/tools`
-    # falsely report a restricted surface over an unrestricted agent, so we log
-    # loudly rather than swallow. (`"all"` and `None` intentionally skip
-    # filtering.)
+    # If a disallowed tool *does* leak through, that is not a benign display
+    # tidy-up: the enumeration is built from the same `create_cli_agent` the
+    # runtime uses, so a leaked tool means the allowlist did not actually take
+    # effect on the agent. We deliberately return the *unfiltered* list (and log
+    # loudly) rather than scrubbing it: silently reshaping the listing would
+    # delete the one visible signal that enforcement broke and make `/tools`
+    # falsely report a restricted surface over an unrestricted agent. Showing
+    # the real (leaked) tool, plus the error log, surfaces the discrepancy this
+    # check exists to catch.
     if isinstance(fs_tools, list):
         enabled = frozenset(fs_tools)
-        removed = [
+        leaked = [
             tool.name
             for tool in tools
             if tool.name in _FILESYSTEM_TOOL_NAMES and tool.name not in enabled
         ]
-        filtered = [
-            tool
-            for tool in tools
-            if tool.name not in _FILESYSTEM_TOOL_NAMES or tool.name in enabled
-        ]
-        if removed:
+        if leaked:
             logger.error(
-                "Filesystem tool allowlist backstop removed %s from the tool "
+                "Filesystem tool allowlist backstop detected %s in the tool "
                 "listing: the enumerated agent exposed disallowed filesystem "
                 "tool(s) not in the allowlist %s. This indicates the allowlist "
-                "was not applied to the underlying agent; the displayed listing "
-                "no longer reflects the agent's actual tools.",
-                removed,
+                "was not applied to the underlying agent; the listing reflects "
+                "the agent's actual (unrestricted) tools.",
+                leaked,
                 sorted(enabled),
             )
-        return filtered
     return tools
 
 
@@ -529,7 +524,7 @@ def collect_catalog(
     *,
     assistant_id: str = "agent",
     enable_interpreter: bool = False,
-    fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    fs_tools: list[FsToolName] | None = None,
     include_mcp: bool = True,
     mcp_config_path: str | None = None,
     trust_project_mcp: bool | None = None,

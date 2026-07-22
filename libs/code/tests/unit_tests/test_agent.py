@@ -7,11 +7,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from deepagents import FsToolName
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
@@ -3994,110 +3993,7 @@ class TestCreateCliAgentFsToolsWiring:
         assert allowlisted
         assert all(tools == ["ls", "read_file"] for tools in allowlisted)
 
-    def test_all_adds_unrestricted_filesystem_middleware(self, tmp_path: Path) -> None:
-        """`fs_tools="all"` installs a `FilesystemMiddleware` with every tool."""
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-
-        mock_settings = self._build_mock_settings(tmp_path)
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-
-        fs_calls, fs_factory = self._fs_middleware_spy()
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch(
-                "deepagents_code.agent.FilesystemMiddleware",
-                side_effect=fs_factory,
-            ),
-            patch(
-                "deepagents_code.agent.create_deep_agent",
-                return_value=mock_agent,
-            ) as mock_create,
-            patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
-        ):
-            create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                fs_tools="all",
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=True,
-            )
-
-        _, kwargs = mock_create.call_args
-        fs_middleware = [
-            m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
-        ]
-        assert len(fs_middleware) == 1
-        # `"all"` is forwarded verbatim as the SDK's unrestricted sentinel.
-        # Filter to allowlist-driven constructions (see the restricted-list test).
-        allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
-        assert allowlisted
-        assert all(tools == "all" for tools in allowlisted)
-
-    def test_none_and_all_install_different_middleware(self, tmp_path: Path) -> None:
-        """`None` and `"all"` are NOT interchangeable — guards the I4 collapse.
-
-        Both mean "all filesystem tools" but differ structurally: `None` inherits
-        the SDK's own default `FilesystemMiddleware` (dcode appends nothing), while
-        `"all"` actively reinstalls an unrestricted instance. The distinction is
-        load-bearing (serialization in `_server_config.to_env` and the middleware
-        gate in `create_cli_agent` both key off `is not None`) but is documented
-        only in prose. A refactor that collapses `"all"` into `None` (or vice
-        versa) would typecheck; this test fails instead. Asserting the contrast in
-        one place documents the invariant beyond the split single-arm tests.
-        """
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-
-        # Built once: the helper creates dirs, so it cannot run twice per tmp_path.
-        mock_settings = self._build_mock_settings(tmp_path)
-
-        def middleware_passed_for(
-            fs_tools: Literal["all"] | list[FsToolName] | None,
-        ) -> list[type]:
-            mock_agent = Mock()
-            mock_agent.with_config.return_value = mock_agent
-            fake_model = _make_fake_chat_model()
-            with (
-                patch("deepagents_code.agent.settings", mock_settings),
-                patch("deepagents_code.agent.SkillsMiddleware"),
-                patch("deepagents_code.agent.MemoryMiddleware"),
-                patch(
-                    "deepagents_code.agent.create_deep_agent",
-                    return_value=mock_agent,
-                ) as mock_create,
-                patch(
-                    "deepagents._models.init_chat_model",
-                    return_value=fake_model,
-                ),
-            ):
-                create_cli_agent(
-                    model="fake-model",
-                    assistant_id="test",
-                    fs_tools=fs_tools,
-                    enable_memory=False,
-                    enable_skills=False,
-                    enable_shell=True,
-                )
-            _, kwargs = mock_create.call_args
-            return [type(m) for m in kwargs["middleware"]]
-
-        none_middleware = middleware_passed_for(None)
-        all_middleware = middleware_passed_for("all")
-
-        # `None` appends no FilesystemMiddleware (SDK default stays); `"all"` does.
-        assert FilesystemMiddleware not in none_middleware
-        assert FilesystemMiddleware in all_middleware
-        assert none_middleware != all_middleware
-
-    def test_all_preserves_harness_descriptions_for_main_and_subagent(
+    def test_allowlist_preserves_harness_descriptions_for_main_and_subagent(
         self, tmp_path: Path
     ) -> None:
         """Allowlisting retains model-specific filesystem tool guidance."""
@@ -4124,7 +4020,7 @@ class TestCreateCliAgentFsToolsWiring:
             create_cli_agent(
                 model="nvidia:nvidia/nemotron-3-ultra-550b-a55b",
                 assistant_id="test",
-                fs_tools="all",
+                fs_tools=["ls", "read_file"],
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=True,
@@ -4351,6 +4247,91 @@ class TestCreateCliAgentFsToolsWiring:
             assert len(fs) == 1, f"{subagent['name']} missing FS middleware"
         allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
         assert all(tools == ["ls", "read_file"] for tools in allowlisted)
+
+    def test_subagent_uses_its_own_model_harness_descriptions(
+        self, tmp_path: Path
+    ) -> None:
+        """A subagent's injected FS middleware carries *its own* model's guidance.
+
+        `_inject_fs_tools_into_subagents` resolves harness tool descriptions per
+        subagent: from `subagent["model"]` when it has one, else the main
+        model's. Here a `researcher` subagent has an explicit model distinct from
+        the runtime model, while the auto-added `general-purpose` inherits the
+        runtime model. We stub `_get_harness_tool_descriptions` to return a
+        per-model sentinel and assert each subagent's `read_file` description
+        reflects the right model — a regression that passed the main model's
+        descriptions to every subagent (the pre-fix behavior all other tests
+        missed) would give `researcher` the main sentinel and fail here.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        researcher_model = "anthropic:claude-haiku-4-5-20251001"
+
+        def fake_descriptions(model: object) -> dict[str, str]:
+            if model == researcher_model:
+                return {"read_file": "RESEARCHER-MODEL-GUIDANCE"}
+            return {"read_file": "MAIN-MODEL-GUIDANCE"}
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        user_subagent = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "You research.",
+            "model": researcher_model,
+        }
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[user_subagent],
+            ),
+            patch(
+                "deepagents_code.agent._get_harness_tool_descriptions",
+                side_effect=fake_descriptions,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = {s["name"]: s for s in kwargs["subagents"]}
+
+        def read_file_description(subagent: dict[str, Any]) -> str:
+            fs = next(
+                m for m in subagent["middleware"] if isinstance(m, FilesystemMiddleware)
+            )
+            return next(t for t in fs.tools if t.name == "read_file").description
+
+        # The researcher gets its own model's guidance; general-purpose (which
+        # inherits the runtime model) gets the main model's.
+        assert "RESEARCHER-MODEL-GUIDANCE" in read_file_description(
+            subagents["researcher"]
+        )
+        assert "MAIN-MODEL-GUIDANCE" in read_file_description(
+            subagents["general-purpose"]
+        )
+        assert "MAIN-MODEL-GUIDANCE" not in read_file_description(
+            subagents["researcher"]
+        )
 
     def test_compiled_subagent_raises_rather_than_bypassing(self) -> None:
         """A compiled subagent can't carry injected middleware → fail loud.

@@ -94,9 +94,9 @@ class TestCollectBuiltInTools:
             & names
         )
 
-    def test_all_lists_every_filesystem_tool(self) -> None:
-        """`fs_tools="all"` skips filtering, so every filesystem tool is listed."""
-        names = {tool.name for tool in collect_built_in_tools(fs_tools="all")}
+    def test_none_lists_every_filesystem_tool(self) -> None:
+        """`fs_tools=None` (unrestricted default) lists every filesystem tool."""
+        names = {tool.name for tool in collect_built_in_tools(fs_tools=None)}
         assert {
             "ls",
             "read_file",
@@ -108,17 +108,18 @@ class TestCollectBuiltInTools:
             "execute",
         } <= names
 
-    def test_backstop_strips_and_logs_when_disallowed_tool_leaks_through(
+    def test_backstop_surfaces_and_logs_when_disallowed_tool_leaks_through(
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """If the SDK ever stops narrowing, the post-filter must not silently lie.
+        """If the SDK ever stops narrowing, the listing must not silently lie.
 
         Normally the SDK's `FilesystemMiddleware` omits disallowed tools from the
-        node, so the post-filter is a no-op. Here we simulate that guarantee
-        breaking (a disallowed `write_file` reaches enumeration) and assert the
-        backstop both (a) removes it from the listing and (b) logs an error,
-        rather than silently reshaping the display over an unrestricted agent.
+        node, so the check is a no-op. Here we simulate that guarantee breaking
+        (a disallowed `write_file` reaches enumeration) and assert the backstop
+        (a) keeps it in the listing — because the agent really does expose it, so
+        hiding it would misreport a restricted surface over an unrestricted
+        agent — and (b) logs an error so the discrepancy is visible.
         """
         leaked = [
             ToolEntry(name="read_file", description="read"),
@@ -140,10 +141,12 @@ class TestCollectBuiltInTools:
                 tool.name for tool in collect_built_in_tools(fs_tools=["read_file"])
             }
 
-        assert "write_file" not in names
+        # The leaked tool is surfaced, not scrubbed: the listing reflects the
+        # agent's real (unrestricted) tools rather than a false restricted view.
+        assert "write_file" in names
         assert {"read_file", "task"} <= names
         assert any(
-            "allowlist backstop removed" in record.getMessage()
+            "allowlist backstop detected" in record.getMessage()
             and "write_file" in record.getMessage()
             for record in caplog.records
         )

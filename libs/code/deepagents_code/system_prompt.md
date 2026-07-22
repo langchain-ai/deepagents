@@ -63,6 +63,11 @@ CRITICAL: Match what the user asked for EXACTLY.
 
 ## Tool Usage
 
+IMPORTANT: Use specialized tools instead of shell commands:
+
+- `edit_file` over `sed`/`awk`
+- `write_file` over `echo`/heredoc
+
 When performing multiple independent operations, make all tool calls in a single response — don't make sequential calls when parallel is possible.
 
 <good-example>

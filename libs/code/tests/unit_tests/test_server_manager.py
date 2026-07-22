@@ -74,9 +74,9 @@ class TestServerConfigRoundTrip:
 
         assert restored == original
 
-    def test_allow_fs_tools_all_round_trips(self) -> None:
-        """The `"all"` sentinel survives the env round trip as a string."""
-        original = ServerConfig(allow_fs_tools="all")
+    def test_allow_fs_tools_list_round_trips(self) -> None:
+        """An explicit allowlist survives the env round trip as a JSON list."""
+        original = ServerConfig(allow_fs_tools=["ls", "read_file"])
         env_dict = original.to_env()
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
@@ -84,14 +84,14 @@ class TestServerConfigRoundTrip:
                     os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
-        assert restored.allow_fs_tools == "all"
+        assert restored.allow_fs_tools == ["ls", "read_file"]
 
     def test_from_env_absent_allow_fs_tools_is_none(self) -> None:
         """An absent `ALLOW_FS_TOOLS` var deserializes to `None` (unrestricted).
 
-        `None` is the "flag omitted" state and must not be confused with `"all"`
-        (they install different middleware). Guards the `raw is None` passthrough
-        in `_read_env_allow_fs_tools`.
+        `None` is the "flag omitted" state (also what `--allow-fs-tools all`
+        collapses to); it leaves the SDK default in place. Guards the
+        absent-variable passthrough in `_read_env_allow_fs_tools`.
         """
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop(f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS", None)
@@ -109,7 +109,9 @@ class TestServerConfigRoundTrip:
         the fail-closed guarantee is self-contained, not SDK-dependent).
         """
         bad_values = (
-            '"read_file"',  # bare string that is not "all"
+            "null",  # explicit null is not the same as an absent variable
+            '"all"',  # the "all" sentinel is collapsed to None before serialize
+            '"read_file"',  # bare string, not a list
             "42",  # number
             "true",  # boolean
             "{}",  # object

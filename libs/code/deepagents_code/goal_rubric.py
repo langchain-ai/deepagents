@@ -1481,7 +1481,7 @@ def _create_goal_criteria_agent(
     repository_root: str,
     context_tools: Sequence[BaseTool | Callable[..., Any]],
     auto_mode_enabled: bool,
-    fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    fs_tools: list[FsToolName] | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a criteria agent with the parent runtime's Auto eligibility.
 
@@ -1540,7 +1540,7 @@ def _create_goal_criteria_agent(
     ]
     if repository_backend is not None:
         repository_tools = cast("list[FsToolName]", ["ls", "read_file", "glob", "grep"])
-        if fs_tools is not None and fs_tools != "all":
+        if fs_tools is not None:
             repository_tools = [name for name in repository_tools if name in fs_tools]
         middleware.extend(
             [

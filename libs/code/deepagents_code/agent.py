@@ -11,7 +11,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import FsToolName, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
@@ -201,7 +201,7 @@ def _get_harness_tool_descriptions(
 def _inject_fs_tools_into_subagents(
     custom_subagents: list[SubAgent | CompiledSubAgent],
     *,
-    fs_tools: Literal["all"] | list[FsToolName],
+    fs_tools: list[FsToolName],
     backend: CompositeBackend,
     main_tool_descriptions: dict[str, str],
 ) -> None:
@@ -215,8 +215,8 @@ def _inject_fs_tools_into_subagents(
     Args:
         custom_subagents: Sync subagent specs to mutate. Must be raw `SubAgent`
             dicts; see the `CompiledSubAgent` guard below.
-        fs_tools: The allowlist (`"all"` or an explicit list) to pass through to
-            each subagent's `FilesystemMiddleware`.
+        fs_tools: The explicit allowlist to pass through to each subagent's
+            `FilesystemMiddleware`.
         backend: Composite backend shared with the main agent's middleware.
         main_tool_descriptions: Harness tool descriptions to use for a subagent
             that inherits the runtime model (no explicit `model` key).
@@ -1769,7 +1769,7 @@ def create_cli_agent(
     auto_mode_enabled: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
-    fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    fs_tools: list[FsToolName] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     memory_auto_save: bool = True,
@@ -1844,16 +1844,15 @@ def create_cli_agent(
             `True`), used directly instead of reading `settings.shell_allow_list`
             (which may not be set in the server subprocess environment).
         fs_tools: Allowlist of filesystem tools to expose to the agent, from
-            `--allow-fs-tools`. `None` (default) leaves `FilesystemMiddleware`
-            at its SDK default (all tools). `"all"` reinstalls an unrestricted
-            `FilesystemMiddleware` (equivalent to the default); an explicit list
-            (which must include `"read_file"`) installs one restricted to those
-            tool names. In both cases the instance replaces the SDK's default
-            for the main agent and every synchronous subagent (including
-            `general-purpose`) as well as the nested goal-criteria agent, so
-            delegation cannot bypass the restriction. Async subagents are
-            unaffected (they run on their own remote backend, not the local
-            filesystem).
+            `--allow-fs-tools`. `None` (default; also what `--allow-fs-tools
+            all` parses to) leaves `FilesystemMiddleware` at its SDK default
+            (all tools). An explicit list (which must include `"read_file"`)
+            installs a `FilesystemMiddleware` restricted to those tool names,
+            replacing the SDK's default for the main agent and every synchronous
+            subagent (including `general-purpose`) as well as the nested
+            goal-criteria agent, so delegation cannot bypass the restriction.
+            Async subagents are unaffected (they run on their own remote
+            backend, not the local filesystem).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -2389,6 +2388,8 @@ def create_cli_agent(
         )
 
     if fs_tools is not None:
+        # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an
+        # omitted flag both arrive as `None`, leaving the SDK default in place).
         main_tool_descriptions = _get_harness_tool_descriptions(model)
         # Overrides the SDK's default `FilesystemMiddleware` (matched by
         # `.name` in `create_deep_agent`'s custom-middleware merge) for the
@@ -2401,14 +2402,10 @@ def create_cli_agent(
                 custom_tool_descriptions=main_tool_descriptions,
             )
         )
-        # Caller-supplied subagents never inherit the main agent's `middleware=`.
-        # The SDK auto-inherits main-agent middleware only into the
-        # *auto-created* `general-purpose` subagent, and even there only for
-        # middleware whose `.name` overrides a default GP slot. dcode always
-        # supplies its own `general-purpose` spec, so that inheritance path never
-        # fires here. The restriction must therefore be injected into each
-        # subagent's own `middleware` list, or delegating via `task` could bypass
-        # `--allow-fs-tools`.
+        # dcode always supplies its own `general-purpose` spec, so the SDK's
+        # auto-created-GP middleware inheritance path never fires; the
+        # restriction must be injected into each subagent's own `middleware`
+        # list, or delegating via `task` could bypass `--allow-fs-tools`.
         _inject_fs_tools_into_subagents(
             custom_subagents,
             fs_tools=fs_tools,

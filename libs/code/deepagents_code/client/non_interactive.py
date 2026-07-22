@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -1360,7 +1360,7 @@ async def run_non_interactive(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
+    allow_fs_tools: list[FsToolName] | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
     rubric_model: str | None = None,

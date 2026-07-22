@@ -2572,10 +2572,11 @@ class TestParseAllowFsToolsFlag:
 
         assert _parse_allow_fs_tools_flag(None) is None
 
-    def test_all_sentinel(self) -> None:
+    def test_all_collapses_to_none(self) -> None:
+        """`all` collapses to `None` (both mean "leave the SDK default")."""
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
-        assert _parse_allow_fs_tools_flag("all") == "all"
+        assert _parse_allow_fs_tools_flag("all") is None
 
     def test_explicit_list(self) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
@@ -2631,8 +2632,8 @@ class TestParseAllowFsToolsFlag:
     def test_all_is_case_insensitive(self) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
-        assert _parse_allow_fs_tools_flag("ALL") == "all"
-        assert _parse_allow_fs_tools_flag("All") == "all"
+        assert _parse_allow_fs_tools_flag("ALL") is None
+        assert _parse_allow_fs_tools_flag("All") is None
 
     def test_list_trims_and_skips_blank_tokens(self) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag

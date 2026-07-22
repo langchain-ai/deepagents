@@ -19,7 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.cache import LRUCache
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
@@ -418,6 +418,14 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._scroll_selected_visible()
         self.refresh()
 
+    def clear_selection(self) -> None:
+        """Clear the selected-record highlight, if one is set."""
+        if self._selected_index is None:
+            return
+        self._selected_index = None
+        self._render_line_cache.clear()
+        self.refresh()
+
     def _scroll_selected_visible(self) -> None:
         if self._selected_index is None or not self._wrap_prefix:
             return
@@ -568,6 +576,8 @@ class _DebugLogView(ScrollView, can_focus=True):
         _scroll_x, scroll_y = self.scroll_offset
         record = self._record_at_visual_y(scroll_y + event.y)
         if record is None:
+            # A click on empty space below the records clears the highlight.
+            self.clear_selection()
             return
         index = self._content_index_at_visual_y(scroll_y + event.y)
         if index is not None:
@@ -917,6 +927,36 @@ class DebugConsoleScreen(ModalScreen[None]):
         event.prevent_default()
         event.stop()
         self.focus_previous(_FOCUS_CYCLE)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Dismiss transient overlays when the user clicks outside them.
+
+        Clicking a focusable control already blurs (and so closes) the open level
+        dropdown, but clicking a non-focusable area (the snapshot, labels, help,
+        or empty modal space) does not. This mirrors that outside-click dismissal
+        for both the dropdown and the log's click-to-copy selection highlight.
+        """
+        offset = event.screen_offset
+        select = self._level_select()
+        if select.expanded and not self._point_in_level_select(select, offset):
+            overlay = select.query_one(SelectOverlay)
+            select.expanded = False
+            # Re-focus the select only when focus is still trapped on the now
+            # hidden overlay; if the click already moved focus to another
+            # control, leave it there.
+            if self.focused is overlay:
+                select.focus()
+        log = self.query_one("#debug-log", _DebugLogView)
+        if not log.region.contains(offset.x, offset.y):
+            log.clear_selection()
+
+    @staticmethod
+    def _point_in_level_select(select: Select[FilterValue], offset: Offset) -> bool:
+        """Return whether *offset* falls on the select box or its open overlay."""
+        if select.region.contains(offset.x, offset.y):
+            return True
+        overlay = select.query_one(SelectOverlay)
+        return overlay.display and overlay.region.contains(offset.x, offset.y)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""

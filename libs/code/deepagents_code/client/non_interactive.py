@@ -1427,7 +1427,9 @@ async def run_non_interactive(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
-            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
         rubric: Acceptance criteria for `RubricMiddleware`. When provided, the

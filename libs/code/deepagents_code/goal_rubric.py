@@ -1491,8 +1491,10 @@ def _create_goal_criteria_agent(
         repository_root: Absolute path that bounds repository reads.
         context_tools: External context tools available to the criteria agent.
         auto_mode_enabled: Whether Auto may bypass delegated context approval.
-        fs_tools: Parent filesystem-tool allowlist. The criteria agent exposes
-            only the allowed subset of its read-only repository tools.
+        fs_tools: Parent filesystem-tool allowlist.
+
+            The criteria agent exposes only the allowed subset of its read-only
+            repository tools.
 
     Returns:
         Compiled criteria agent graph.

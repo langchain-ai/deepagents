@@ -22,12 +22,13 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import BinaryOperatorAggregate
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 
+from deepagents_code._ask_user_types import ASK_USER_AUTHORIZATION_METADATA_KEY
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
     ApprovalMode,
@@ -250,9 +251,11 @@ def _request(
     runtime = SimpleNamespace(
         context={
             "thread_id": thread_id,
+            "turn_id": "turn-1",
             "approval_mode_key": key,
             "approval_mode": "auto",
         },
+        execution_info=SimpleNamespace(thread_id=thread_id),
         store=active_store,
         stream_writer=lambda _event: None,
     )
@@ -1508,6 +1511,212 @@ async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> Non
     classifier_metadata = cast("dict[str, object]", classifier_config["metadata"])
     assert classifier_metadata["lc_source"] == "auto_mode_classifier"
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_classifier_accepts_trusted_same_turn_ask_user_answer(
+    tmp_path: Path,
+) -> None:
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        raw_user_text="commit and push my changes",
+    )
+    question = "The remote branch is ahead. How should I integrate it before pushing?"
+    selected_answer = "Rebase my new local commit onto the remote branch, then push"
+    request.messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {
+                            "questions": [
+                                {
+                                    "question": question,
+                                    "type": "multiple_choice",
+                                    "choices": [
+                                        {"value": selected_answer},
+                                        {
+                                            "value": (
+                                                "Merge the remote branch "
+                                                "into the local branch, "
+                                                "then push"
+                                            )
+                                        },
+                                    ],
+                                }
+                            ]
+                        },
+                        "id": "ask-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content=f"Q: {question}\nA: {selected_answer}",
+                name="ask_user",
+                tool_call_id="ask-1",
+                additional_kwargs={
+                    ASK_USER_AUTHORIZATION_METADATA_KEY: {
+                        "version": 1,
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "tool_call_id": "ask-1",
+                        "answers": [selected_answer],
+                    }
+                },
+            ),
+        ]
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/mdrxy/code/async-teardown"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "answer": selected_answer,
+        }
+    ]
+    serialized_answers = json.dumps(payload["same_turn_user_answers"])
+    assert question not in serialized_answers
+    assert "Merge the remote branch" not in serialized_answers
+
+    policy_message = cast("SystemMessage", model.calls[0][0])
+    policy = cast("str", policy_message.content)
+    assert "Do not require the user to retype" in policy
+    assert "answer itself must unambiguously state the action" in policy
+    assert "additional or chained action" in policy
+    assert "ordinary push does not authorize force-push" in policy
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "content_only",
+        "stale_turn",
+        "wrong_tool",
+        "wrong_execution_thread",
+        "duplicate_call_id",
+    ],
+)
+async def test_classifier_ignores_untrusted_or_stale_ask_user_answers(
+    tmp_path: Path, case: str
+) -> None:
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+    )
+    answer = "Rebase my commit"
+    receipt: dict[str, object] = {
+        "version": 1,
+        "thread_id": "thread-1",
+        "turn_id": "older-turn" if case == "stale_turn" else "turn-1",
+        "tool_call_id": "ask-1",
+        "answers": [answer],
+    }
+    request.messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {
+                            "questions": [
+                                {
+                                    "question": "How should I integrate?",
+                                    "type": "multiple_choice",
+                                    "choices": [{"value": answer}],
+                                }
+                            ]
+                        },
+                        "id": "ask-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content=f"Q: How should I integrate?\nA: {answer}",
+                name="execute" if case == "wrong_tool" else "ask_user",
+                tool_call_id="ask-1",
+                additional_kwargs=(
+                    {}
+                    if case == "content_only"
+                    else {ASK_USER_AUTHORIZATION_METADATA_KEY: receipt}
+                ),
+            ),
+        ]
+    )
+    if case == "wrong_execution_thread":
+        cast("Any", request.runtime).execution_info = SimpleNamespace(
+            thread_id="other-thread"
+        )
+    elif case == "duplicate_call_id":
+        request.messages.append(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {"file_path": "README.md"},
+                        "id": "ask-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
 
 
 async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable(

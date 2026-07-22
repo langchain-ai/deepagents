@@ -69,6 +69,19 @@ class AskUserRequest(TypedDict):
     """ID of the originating tool call, used to route the response back."""
 
 
+ASK_USER_AUTHORIZATION_METADATA_KEY = "deepagents_code_ask_user_authorization"
+
+
+class AskUserAuthorizationReceipt(TypedDict):
+    """Trusted same-turn authorization recorded after an ask_user response."""
+
+    version: Literal[1]
+    thread_id: str
+    turn_id: str
+    tool_call_id: str
+    answers: list[str]
+
+
 class AskUserAnswered(TypedDict):
     """Widget result when the user submits answers."""
 

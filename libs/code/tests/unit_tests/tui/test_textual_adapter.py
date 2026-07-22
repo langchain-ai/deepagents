@@ -1769,6 +1769,8 @@ class TestExecuteTaskTextualTurnMarkers:
         assert first_meta["turn_id"]
         assert second_meta["turn_id"]
         assert first_meta["turn_id"] != second_meta["turn_id"]
+        assert agent.contexts[0]["turn_id"] == first_meta["turn_id"]
+        assert agent.contexts[1]["turn_id"] == second_meta["turn_id"]
         # The session's auto-approve mode is labeled onto every turn's trace.
         assert first_meta["dcode_auto_approve"] is True
         assert second_meta["dcode_auto_approve"] is True

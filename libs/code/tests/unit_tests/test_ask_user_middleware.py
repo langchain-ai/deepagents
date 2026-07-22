@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from langchain_core.messages import SystemMessage, ToolMessage
 
+from deepagents_code._ask_user_types import ASK_USER_AUTHORIZATION_METADATA_KEY
 from deepagents_code.ask_user import (
     AskUserMiddleware,
     _parse_answers,
@@ -18,15 +20,19 @@ if TYPE_CHECKING:
     from langgraph.types import Command
 
 
-def _extract_tool_message_content(command: Command[object]) -> str:
-    """Extract `ToolMessage.content` from a command update payload."""
+def _extract_tool_message(command: Command[object]) -> ToolMessage:
     update = command.update
     assert isinstance(update, dict)
     messages = update.get("messages")
     assert isinstance(messages, list)
     message = messages[0]
     assert isinstance(message, ToolMessage)
-    return str(message.content)
+    return message
+
+
+def _extract_tool_message_content(command: Command[object]) -> str:
+    """Extract `ToolMessage.content` from a command update payload."""
+    return str(_extract_tool_message(command).content)
 
 
 class TestValidateQuestions:
@@ -83,13 +89,65 @@ class TestParseAnswers:
         assert "Q: Name?" in _extract_tool_message_content(cmd)
         assert "A: Alice" in _extract_tool_message_content(cmd)
 
+    def test_records_trusted_same_turn_authorization_receipt(self) -> None:
+        cmd = _parse_answers(
+            {"answers": ["Rebase my commit onto the remote branch"]},
+            [
+                {
+                    "question": "How should I integrate the remote branch?",
+                    "type": "multiple_choice",
+                    "choices": [
+                        {"value": "Rebase my commit onto the remote branch"},
+                        {"value": "Merge the remote branch"},
+                    ],
+                }
+            ],
+            "ask-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        message = _extract_tool_message(cmd)
+        assert message.name == "ask_user"
+        assert message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY] == {
+            "version": 1,
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "tool_call_id": "ask-1",
+            "answers": ["Rebase my commit onto the remote branch"],
+        }
+
+    def test_answer_without_trusted_runtime_identity_has_no_receipt(self) -> None:
+        cmd = _parse_answers(
+            {"answers": ["Rebase my commit"]},
+            [
+                {
+                    "question": "How should I integrate?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "Rebase my commit"}],
+                }
+            ],
+            "ask-1",
+        )
+
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(cmd).additional_kwargs
+        )
+
     def test_cancelled_status_uses_cancelled_placeholder(self) -> None:
         cmd = _parse_answers(
             {"status": "cancelled", "answers": ["ignored"]},
             [{"question": "Name?", "type": "text"}],
             "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
         )
         assert "A: (cancelled)" in _extract_tool_message_content(cmd)
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(cmd).additional_kwargs
+        )
 
     def test_error_status_uses_error_placeholder(self) -> None:
         cmd = _parse_answers(
@@ -154,10 +212,71 @@ class TestParseAnswers:
                 {"question": "Color?", "type": "text"},
             ],
             "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
         )
         content = _extract_tool_message_content(cmd)
         assert "Q: Name?\nA: Alice" in content
         assert "Q: Color?\nA: (no answer)" in content
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(cmd).additional_kwargs
+        )
+
+
+class TestAskUserTool:
+    def test_runtime_identity_is_bound_to_resumed_answer(self) -> None:
+        middleware = AskUserMiddleware()
+        ask_tool = cast("Any", middleware.tools[0])
+        questions = [
+            {
+                "question": "How should I integrate?",
+                "type": "multiple_choice",
+                "choices": [{"value": "Rebase my commit"}],
+            }
+        ]
+
+        with patch(
+            "deepagents_code.ask_user.interrupt",
+            return_value={"answers": ["Rebase my commit"]},
+        ):
+            command = ask_tool.func(
+                questions=questions,
+                tool_call_id="ask-1",
+                runtime=SimpleNamespace(
+                    context={"thread_id": "thread-1", "turn_id": "turn-1"},
+                    execution_info=SimpleNamespace(thread_id="thread-1"),
+                ),
+            )
+
+        receipt = _extract_tool_message(command).additional_kwargs[
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+        ]
+        assert receipt["thread_id"] == "thread-1"
+        assert receipt["turn_id"] == "turn-1"
+        assert set(ask_tool.args) == {"questions"}
+
+    def test_context_thread_mismatch_does_not_mint_receipt(self) -> None:
+        ask_tool = cast("Any", AskUserMiddleware().tools[0])
+        questions = [{"question": "Proceed?", "type": "text"}]
+
+        with patch(
+            "deepagents_code.ask_user.interrupt",
+            return_value={"answers": ["yes"]},
+        ):
+            command = ask_tool.func(
+                questions=questions,
+                tool_call_id="ask-1",
+                runtime=SimpleNamespace(
+                    context={"thread_id": "forged-thread", "turn_id": "turn-1"},
+                    execution_info=SimpleNamespace(thread_id="thread-1"),
+                ),
+            )
+
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(command).additional_kwargs
+        )
 
 
 class TestWrapModelCall:

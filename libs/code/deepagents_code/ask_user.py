@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
@@ -16,12 +17,17 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langchain.tools import InjectedToolCallId
+from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
-from deepagents_code._ask_user_types import AskUserRequest, Question
+from deepagents_code._ask_user_types import (
+    ASK_USER_AUTHORIZATION_METADATA_KEY,
+    AskUserAuthorizationReceipt,
+    AskUserRequest,
+    Question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +103,28 @@ def _validate_questions(questions: list[Question]) -> None:
             raise ValueError(msg)
 
 
+def _context_string(context: object, name: str) -> str | None:
+    value = (
+        context.get(name)
+        if isinstance(context, Mapping)
+        else getattr(context, name, None)
+    )
+    return value if isinstance(value, str) and value else None
+
+
+def _execution_thread_id(runtime: object) -> str | None:
+    execution_info = getattr(runtime, "execution_info", None)
+    thread_id = getattr(execution_info, "thread_id", None)
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
 def _parse_answers(
     response: object,
     questions: list[Question],
     tool_call_id: str,
+    *,
+    thread_id: str | None = None,
+    turn_id: str | None = None,
 ) -> Command[Any]:
     """Parse an interrupt response into a `Command` with a `ToolMessage`.
 
@@ -117,12 +141,15 @@ def _parse_answers(
         response: Raw value returned by `interrupt()`.
         questions: The questions that were asked.
         tool_call_id: Originating tool call ID for the `ToolMessage`.
+        thread_id: Trusted runtime thread identity.
+        turn_id: Trusted runtime user-turn identity.
 
     Returns:
         `Command` containing a formatted `ToolMessage` with Q&A pairs.
     """
     status: str = "answered"
     error_text: str | None = None
+    answers_are_strings = False
     answers: list[str]
     if not isinstance(response, dict):
         logger.error(
@@ -153,6 +180,9 @@ def _parse_answers(
         else:
             raw_answers = response_dict["answers"]
             if isinstance(raw_answers, list):
+                answers_are_strings = all(
+                    isinstance(answer, str) for answer in raw_answers
+                )
                 answers = [str(answer) for answer in raw_answers]
             else:
                 logger.error(
@@ -190,14 +220,38 @@ def _parse_answers(
         detail = error_text or "ask_user interaction failed"
         answers = [f"(error: {detail})" for _ in questions]
 
+    additional_kwargs: dict[str, object] = {}
+    if (
+        status == "answered"
+        and answers_are_strings
+        and len(answers) == len(questions)
+        and thread_id is not None
+        and turn_id is not None
+    ):
+        receipt = AskUserAuthorizationReceipt(
+            version=1,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
+            answers=list(answers),
+        )
+        additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY] = receipt
+
     formatted_answers = []
-    for i, q in enumerate(questions):
+    for i, question in enumerate(questions):
         answer = answers[i] if i < len(answers) else "(no answer)"
-        formatted_answers.append(f"Q: {q['question']}\nA: {answer}")
+        formatted_answers.append(f"Q: {question['question']}\nA: {answer}")
     result_text = "\n\n".join(formatted_answers)
     return Command(
         update={
-            "messages": [ToolMessage(result_text, tool_call_id=tool_call_id)],
+            "messages": [
+                ToolMessage(
+                    result_text,
+                    name="ask_user",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs=additional_kwargs,
+                )
+            ],
         }
     )
 
@@ -232,12 +286,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         def _ask_user(
             questions: list[Question],
             tool_call_id: Annotated[str, InjectedToolCallId],
+            runtime: ToolRuntime[Any, Any],
         ) -> Command[Any]:
             """Ask the user one or more questions.
 
             Args:
                 questions: Questions to present to the user.
                 tool_call_id: Tool call identifier injected by LangChain.
+                runtime: Trusted graph runtime for thread and turn identity.
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
@@ -254,7 +310,19 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
             # would swallow this interrupt and silently break ask_user.
             response = interrupt(ask_request)
-            return _parse_answers(response, questions, tool_call_id)
+            execution_thread_id = _execution_thread_id(runtime)
+            context_thread_id = _context_string(runtime.context, "thread_id")
+            return _parse_answers(
+                response,
+                questions,
+                tool_call_id,
+                thread_id=(
+                    execution_thread_id
+                    if execution_thread_id == context_thread_id
+                    else None
+                ),
+                turn_id=_context_string(runtime.context, "turn_id"),
+            )
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]

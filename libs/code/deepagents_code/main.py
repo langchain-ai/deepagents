@@ -4764,13 +4764,13 @@ def cli_main() -> None:
             except Exception:
                 logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # Suppress the traceback while preserving the conventional SIGINT status.
         # `console` may not be bound if Ctrl+C arrives during config import.
         try:
             console.print("\n\n[yellow]Interrupted[/yellow]")
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
-        sys.exit(0)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

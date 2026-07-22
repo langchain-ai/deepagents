@@ -1028,7 +1028,7 @@ class TestStartupAutoUpdate:
         ):
             cli_main()
 
-        assert exc_info.value.code == 0
+        assert exc_info.value.code == 130
         launch.assert_not_called()
         captured = capsys.readouterr()
         assert "Interrupted" in captured.out + captured.err

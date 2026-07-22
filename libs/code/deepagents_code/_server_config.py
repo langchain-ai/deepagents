@@ -86,8 +86,10 @@ def _read_env_allow_fs_tools() -> list[FsToolName] | None:
     asserts membership that was actually checked. Importing `deepagents` here is
     fine: the subprocess already imports the SDK to build the agent (this is not
     the arg-parsing hot path guarded in `main`). The `"read_file"` requirement
-    stays enforced downstream by `FilesystemMiddleware`, which raises when it is
-    absent.
+    is not checked here: `ServerConfig.__post_init__` enforces it when the
+    returned value is placed on the config (with `FilesystemMiddleware` as a
+    final backstop), so a tampered list without `read_file` still fails closed
+    at construction.
 
     Returns:
         `None` when the variable is absent, or a non-empty list of filesystem
@@ -375,7 +377,8 @@ class ServerConfig:
 
         Raises:
             TypeError: If `rubric_max_iterations` is a boolean.
-            ValueError: If `shell_allow_list` is an empty list or
+            ValueError: If `shell_allow_list` is an empty list,
+                `allow_fs_tools` is an empty list or omits `"read_file"`, or
                 `rubric_max_iterations` is non-positive.
         """
         if self.sandbox_type == "none":
@@ -383,6 +386,20 @@ class ServerConfig:
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
             raise ValueError(msg)
+        # `allow_fs_tools` is a security control: `None` means unrestricted, but
+        # an explicit list must be a usable allowlist. Own the non-empty +
+        # `read_file`-required invariant here (the single authoritative point
+        # for both the env round-trip via `from_env` and direct construction)
+        # rather than deferring to `FilesystemMiddleware`, which would only
+        # surface the violation a process boundary away. `_parse_allow_fs_tools_flag`
+        # still enforces the same rule at the CLI for a friendlier error.
+        if self.allow_fs_tools is not None:
+            if len(self.allow_fs_tools) == 0:
+                msg = "allow_fs_tools must be None or a non-empty list"
+                raise ValueError(msg)
+            if "read_file" not in self.allow_fs_tools:
+                msg = "allow_fs_tools must include 'read_file'"
+                raise ValueError(msg)
         if isinstance(self.rubric_max_iterations, bool):
             msg = "rubric_max_iterations must be None or a positive integer"
             raise TypeError(msg)

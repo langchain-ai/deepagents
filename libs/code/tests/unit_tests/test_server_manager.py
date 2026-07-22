@@ -86,6 +86,22 @@ class TestServerConfigRoundTrip:
 
         assert restored.allow_fs_tools == ["ls", "read_file"]
 
+    def test_rejects_allow_fs_tools_without_read_file(self) -> None:
+        """An explicit allowlist missing `read_file` fails at construction.
+
+        `ServerConfig.__post_init__` owns this invariant so a tampered env value
+        (which `_read_env_allow_fs_tools` intentionally does not check for
+        `read_file`) fails closed here rather than a process boundary away in
+        `FilesystemMiddleware`.
+        """
+        with pytest.raises(ValueError, match="allow_fs_tools must include"):
+            ServerConfig(allow_fs_tools=["ls"])
+
+    def test_rejects_empty_allow_fs_tools(self) -> None:
+        """An empty explicit allowlist is rejected at construction."""
+        with pytest.raises(ValueError, match="allow_fs_tools must be None"):
+            ServerConfig(allow_fs_tools=[])
+
     def test_from_env_absent_allow_fs_tools_is_none(self) -> None:
         """An absent `ALLOW_FS_TOOLS` var deserializes to `None` (unrestricted).
 

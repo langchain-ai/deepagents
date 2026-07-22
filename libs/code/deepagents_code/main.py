@@ -699,12 +699,9 @@ def _parse_interpreter_tools_flag(
     return names
 
 
-# Mirror of the SDK's `FsToolName` literal members, sourced from the
-# dependency-free `_constants` module so it is not duplicated (see the docstring
-# there for why it is hardcoded rather than derived from `deepagents.FsToolName`,
-# and the `get_args(FsToolName)` drift guard in `test_main_args` that pins it).
-# `_constants` triggers no `deepagents` import, so the arg-parsing hot path stays
-# clean (AGENTS.md "Startup performance").
+# Aliased from the dependency-free `_constants` module (see its docstring for
+# why the set is hardcoded, how the drift guard pins it, and why importing it
+# here keeps the arg-parsing hot path free of a `deepagents` import).
 from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
 
 

@@ -50,13 +50,11 @@ BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
 
 _FILESYSTEM_TOOL_NAMES = FS_TOOL_NAMES
-"""Mirror of the SDK's `FsToolName` literal members, used to identify which
-enumerated tools the `fs_tools` allowlist governs.
+"""Which enumerated tools the `fs_tools` allowlist governs.
 
-Sourced from the shared `_constants.FS_TOOL_NAMES` so it cannot diverge from the
-copy `main` uses; the `get_args(FsToolName)` drift guard in `test_tool_catalog`
-pins it so a new or renamed SDK filesystem tool fails the test instead of
-silently escaping the leak check below.
+Aliased from the shared `_constants.FS_TOOL_NAMES` (see its docstring); the
+drift guard in `test_tool_catalog` pins it so a new or renamed SDK filesystem
+tool fails a test instead of silently escaping the leak check below.
 """
 
 
@@ -250,24 +248,15 @@ def collect_built_in_tools(
     if tools is None:
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
-    # Defensive detection, normally silent: the SDK's `FilesystemMiddleware`
-    # omits disallowed filesystem tools from the bound node entirely (not merely
-    # hiding them from the model's schema), so `collect_tools_from_agent` already
-    # returns only the allowlisted filesystem tools. This check verifies that
-    # invariant instead of trusting it, in case the SDK behavior changes or the
-    # by-name middleware replacement ever left a second, unrestricted
-    # `FilesystemMiddleware` bound. (`None` — the unrestricted default — skips
-    # the check.)
-    #
-    # If a disallowed tool *does* leak through, that is not a benign display
-    # tidy-up: the enumeration is built from the same `create_cli_agent` the
-    # runtime uses, so a leaked tool means the allowlist did not actually take
-    # effect on the agent. We deliberately return the *unfiltered* list (and log
-    # loudly) rather than scrubbing it: silently reshaping the listing would
-    # delete the one visible signal that enforcement broke and make `/tools`
-    # falsely report a restricted surface over an unrestricted agent. Showing
-    # the real (leaked) tool, plus the error log, surfaces the discrepancy this
-    # check exists to catch.
+    # Defensive backstop against a change in SDK behavior. The SDK's
+    # `FilesystemMiddleware` omits disallowed tools from the bound node
+    # entirely, so `collect_tools_from_agent` should already return only
+    # allowlisted filesystem tools. If a disallowed tool *does* leak through,
+    # enforcement broke on the real agent (this enumeration is built from the
+    # same `create_cli_agent` the runtime uses). Return the *unfiltered* list
+    # and log loudly rather than scrubbing: scrubbing would hide the one signal
+    # that enforcement failed and make `/tools` report a restricted surface over
+    # an unrestricted agent. (`None` — the unrestricted default — skips this.)
     if isinstance(fs_tools, list):
         enabled = frozenset(fs_tools)
         leaked = [

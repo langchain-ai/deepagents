@@ -2449,6 +2449,14 @@ def create_cli_agent(
         # `.name` in `create_deep_agent`'s custom-middleware merge) for the
         # main agent. Preserve the SDK harness's model-specific tool metadata
         # on the replacement.
+        #
+        # NOTE: this replacement only carries `backend`/`tools`/descriptions.
+        # The SDK also builds its default with `_permissions`; dcode passes no
+        # filesystem `permissions` to `create_deep_agent` today, so there is
+        # nothing to preserve. If dcode ever adopts filesystem permissions,
+        # they must be threaded through here (and into
+        # `_inject_fs_tools_into_subagents`) or `--allow-fs-tools` would
+        # silently strip them.
         agent_middleware.append(
             FilesystemMiddleware(
                 backend=composite_backend,

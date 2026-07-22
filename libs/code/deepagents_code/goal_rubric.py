@@ -1539,7 +1539,9 @@ def _create_goal_criteria_agent(
         _CriteriaContextBudgetMiddleware(),
     ]
     if repository_backend is not None:
-        repository_tools = cast("list[FsToolName]", ["ls", "read_file", "glob", "grep"])
+        # Annotated (not `cast`) so the type checker validates each literal
+        # against `FsToolName` and rejects a typo at check time.
+        repository_tools: list[FsToolName] = ["ls", "read_file", "glob", "grep"]
         if fs_tools is not None:
             repository_tools = [name for name in repository_tools if name in fs_tools]
         middleware.extend(

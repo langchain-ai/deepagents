@@ -116,30 +116,28 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default base system prompt for every deep agent (`BASE`).
+"""Authored base prompt (persona + task guidance), available for opt-in.
 
-The final system prompt sent to the model is composed from up to four
+Not injected by default. `create_deep_agent` passes an empty string as the
+base, so a deep agent ships with no authored base prompt. Callers who want
+this built-in persona and task guidance back pass it explicitly, e.g.
+`create_deep_agent(system_prompt=BASE_AGENT_PROMPT)`, or set it as a
+`HarnessProfile.base_system_prompt`.
+
+The final system prompt sent to the model is composed from up to three
 named parts:
 
 - `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
     `SystemMessage`); when unset, no `USER` segment is included.
-- `BASE` — this constant.
-- `CUSTOM` — `HarnessProfile.base_system_prompt`. When set on a matching
-    profile, replaces `BASE` outright; when unset, `BASE` is used.
+- `BASE` — empty by default; replaced by `HarnessProfile.base_system_prompt`
+    when set on a matching profile.
 - `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
     matching profile, appended last; when unset, no `SUFFIX` segment is
     included.
 
-The order is always `USER` -> (`BASE` or `CUSTOM`) -> `SUFFIX`, joined by
-blank lines (`\\n\\n`). Two invariants follow:
-
-1. `USER` is always at the front, so caller instructions take precedence
-   over SDK and profile content regardless of which model is selected.
-2. `SUFFIX` is always at the end, so model-tuning guidance sits closest
-   to the conversation history (where the model attends most).
-
-When `USER` is a `SystemMessage`, the right-hand assembly is appended as
-an additional text content block onto the message's existing
+The order is always `USER` -> `BASE` -> `SUFFIX`, joined by blank lines
+(`\\n\\n`). When `USER` is a `SystemMessage`, the right-hand assembly is
+appended as an additional text content block onto the message's existing
 `content_blocks` list, preserving any `cache_control` markers the caller
 set.
 

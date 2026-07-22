@@ -160,10 +160,7 @@ class TestDiagnosticsVersionReport:
         items = self._diagnostics(report)
         sdk = items["deepagents (SDK)"]
         assert sdk.ok is True
-        assert sdk.value == (
-            "0.7.0a8 (editable; editable source: 0.6.12; "
-            "required by deepagents-code: 0.7.0a8)"
-        )
+        assert sdk.value == ("0.7.0a8+editable (workspace HEAD; source marker: 0.6.12)")
 
     def test_source_metadata_drift_is_informational(self) -> None:
         """Source/metadata drift annotates the values but stays healthy."""
@@ -189,6 +186,37 @@ class TestDiagnosticsVersionReport:
         assert cli.value == f"{__version__} (installed metadata: 0.1.40)"
         assert sdk.ok is True
         assert "installed metadata: 0.6.12" in sdk.value
+
+    def test_invalid_editable_sdk_source_version_is_unhealthy(self) -> None:
+        """Stale metadata cannot make a broken editable SDK look healthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code",
+                __version__,
+                __version__,
+                True,
+                "/repo/libs/code",
+                "resolved",
+            ),
+            sdk=DistributionVersion(
+                "deepagents",
+                None,
+                "0.6.12",
+                True,
+                "/repo/libs/deepagents",
+                "resolved",
+            ),
+            sdk_requirement=Requirement("deepagents==0.7.0a8"),
+            sdk_requirement_satisfied=False,
+        )
+        sdk = self._diagnostics(report)["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert "invalid source marker: unavailable" in sdk.value
 
     def test_sdk_not_installed_is_unhealthy(self) -> None:
         """A missing SDK is reported as not installed and unhealthy."""

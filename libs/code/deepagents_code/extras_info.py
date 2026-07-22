@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import re
+import tomllib
 from dataclasses import dataclass
 from importlib.metadata import (
     PackageNotFoundError,
@@ -228,13 +229,31 @@ class VersionReport:
     """Whether the effective SDK version satisfies `sdk_requirement`.
 
     `None` when the comparison cannot be made (no declared requirement, the SDK
-    is not installed, or an unparseable version).
+    version cannot be resolved — genuinely not installed or an unexpected
+    metadata error — or an unparseable version).
     """
 
     @property
     def effective_sdk_version(self) -> str | None:
-        """SDK version diagnostics should present as effective."""
+        """Published SDK baseline represented by the running client checkout."""
         return _effective_sdk_version(self.cli, self.sdk, self.sdk_requirement)
+
+    @property
+    def sdk_is_workspace_head(self) -> bool:
+        """Whether the SDK is the editable sibling workspace represented by its pin."""
+        return _uses_exact_requirement_as_effective_version(
+            self.cli, self.sdk, self.sdk_requirement
+        )
+
+    @property
+    def display_sdk_version(self) -> str | None:
+        """SDK version string for user-facing diagnostics and trace metadata."""
+        return _display_sdk_version(self.cli, self.sdk, self.sdk_requirement)
+
+    @property
+    def sdk_source_version_invalid(self) -> bool:
+        """Whether an editable SDK has no parseable live source version."""
+        return self.sdk.editable and _parse_version(self.sdk.source_version) is None
 
     @property
     def sdk_requirement_mismatch(self) -> bool:
@@ -408,6 +427,11 @@ def sdk_requirement_from_cli(
         )
         return None
 
+    return _sdk_requirement_from_entries(requirements)
+
+
+def _sdk_requirement_from_entries(requirements: list[str]) -> Requirement | None:
+    """Return the applicable base SDK requirement from dependency entries."""
     target = canonicalize_name("deepagents")
     for raw in requirements:
         try:
@@ -441,6 +465,38 @@ def sdk_requirement_from_cli(
     return None
 
 
+def _sdk_requirement_from_cli_source(source_path: str | None) -> Requirement | None:
+    """Read the SDK requirement from an editable dcode source checkout.
+
+    Editable installation metadata can lag the working tree after an update, so
+    workspace diagnostics must use the live `pyproject.toml` dependency instead.
+
+    Returns:
+        The current source requirement, or `None` when it cannot be read safely.
+    """
+    root = _resolve_source_path(source_path)
+    if root is None:
+        return None
+    pyproject = root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        project = data.get("project")
+        if not isinstance(project, dict):
+            return None
+        dependencies = project.get("dependencies")
+        if not isinstance(dependencies, list) or not all(
+            isinstance(entry, str) for entry in dependencies
+        ):
+            return None
+    except (OSError, TypeError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read deepagents requirement from editable dcode source",
+            exc_info=True,
+        )
+        return None
+    return _sdk_requirement_from_entries(dependencies)
+
+
 def _exact_pin(requirement: Requirement | None) -> str | None:
     """Return the single `==` pin from `requirement`, if it has one."""
     if requirement is None:
@@ -466,6 +522,20 @@ def _parse_version(value: str | None) -> Version | None:
         return None
 
 
+def _with_editable_local_version(value: str) -> str:
+    """Add an `editable` local segment to a normalized version string.
+
+    Returns:
+        The version with an `editable` local segment, or the original value when
+            it cannot be parsed.
+    """
+    parsed = _parse_version(value)
+    if parsed is None:
+        return value
+    local = f"{parsed.local}.editable" if parsed.local else "editable"
+    return f"{parsed.public}+{local}"
+
+
 def _resolve_source_path(path: str | None) -> Path | None:
     """Resolve an editable source path for workspace-shape comparisons.
 
@@ -475,7 +545,15 @@ def _resolve_source_path(path: str | None) -> Path | None:
     if path is None:
         return None
     try:
-        return Path(path).expanduser().resolve(strict=False)
+        normalized = path
+        if re.match(r"^/?[A-Za-z]:[/\\]", normalized):
+            # PEP 610 paths can arrive as `/C:/repo` while `url2pathname`
+            # returns `C:\repo`. Normalize both before asking `Path` to resolve
+            # them so Windows workspace siblings share the same anchor.
+            normalized = normalized.removeprefix("/")
+            normalized = f"{normalized[0].upper()}{normalized[1:]}"
+            normalized = normalized.replace("\\", "/")
+        return Path(normalized).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         logger.debug("Could not resolve editable source path %r", path, exc_info=True)
         return None
@@ -507,14 +585,14 @@ def _editable_sdk_is_cli_workspace_sibling(
 def _uses_exact_requirement_as_effective_version(
     cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> bool:
-    """Whether an exact `deepagents-code` pin should override editable SDK markers.
+    """Whether an exact `deepagents-code` pin represents sibling workspace HEAD.
 
     Main does not track every SDK alpha release in `libs/deepagents`, so the
     sibling SDK package in the same monorepo checkout can carry the previous
     stable marker while `deepagents-code` intentionally declares a newer exact
-    alpha requirement. In that case the exact requirement is the better client
-    SDK generation for diagnostics. Ranged requirements and unrelated editable
-    SDK checkouts are never inferred this way.
+    alpha requirement. In that case the pin is the nearest published SDK baseline
+    represented by the running workspace. Ranged requirements and unrelated
+    editable SDK checkouts are never inferred this way.
 
     Returns:
         `True` when the exact pin is newer than every known editable SDK marker
@@ -526,11 +604,20 @@ def _uses_exact_requirement_as_effective_version(
     if pinned is None:
         return False
     parsed_source = _parse_version(sdk.source_version)
+    if parsed_source is None:
+        return False
     parsed_metadata = _parse_version(sdk.metadata_version)
-    markers = [
-        parsed for parsed in (parsed_source, parsed_metadata) if parsed is not None
-    ]
-    return bool(markers) and pinned > max(markers)
+    markers = [parsed_source]
+    if parsed_metadata is not None:
+        markers.append(parsed_metadata)
+    return pinned > max(markers)
+
+
+def _sdk_requirement_for_cli(cli: DistributionVersion) -> Requirement | None:
+    """Return the live SDK requirement appropriate for the CLI install type."""
+    if cli.editable:
+        return _sdk_requirement_from_cli_source(cli.source_path)
+    return sdk_requirement_from_cli()
 
 
 def _effective_sdk_version(
@@ -541,6 +628,18 @@ def _effective_sdk_version(
     if _uses_exact_requirement_as_effective_version(cli, sdk, requirement):
         return pinned
     return sdk.primary_version
+
+
+def _display_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version string for diagnostics and trace metadata."""
+    version = _effective_sdk_version(cli, sdk, requirement)
+    if version is None or not _uses_exact_requirement_as_effective_version(
+        cli, sdk, requirement
+    ):
+        return version
+    return _with_editable_local_version(version)
 
 
 def _sdk_requirement_comparison_version(
@@ -593,7 +692,7 @@ def collect_version_report() -> VersionReport:
     """
     cli = collect_cli_version_info()
     sdk = collect_sdk_version_info()
-    requirement = sdk_requirement_from_cli()
+    requirement = _sdk_requirement_for_cli(cli)
     satisfied = _requirement_satisfied(
         requirement, _sdk_requirement_comparison_version(cli, sdk, requirement)
     )
@@ -652,28 +751,29 @@ def format_cli_version_annotation(info: DistributionVersion) -> str:
 
 
 def format_sdk_version_annotation(report: VersionReport) -> str:
-    """Return the editable/drift/mismatch annotation for the SDK version line.
+    """Return the workspace/editable/drift/mismatch SDK version annotation.
 
     Args:
         report: The collected version report.
 
     Returns:
-        A trailing ` (...)` suffix flagging an editable SDK install, raw
-            source/metadata facts when they differ from the effective version,
-            and an actionable requirement mismatch when the effective SDK version
-            does not satisfy the requirement declared by `deepagents-code`. Empty
-            when none applies.
+        A trailing ` (...)` suffix identifying sibling workspace HEAD or a
+            general editable install, preserving raw source/metadata facts when
+            useful, and flagging an actionable requirement mismatch. Empty when
+            none applies.
     """
     info = report.sdk
+    workspace_head = report.sdk_is_workspace_head
     parts: list[str] = []
-    if info.editable:
+    if workspace_head:
+        parts.append("workspace HEAD")
+    elif info.editable:
         parts.append("editable")
-    if (
-        info.editable
-        and info.source_version is not None
-        and info.source_version != report.effective_sdk_version
-    ):
-        parts.append(f"editable source: {info.source_version}")
+    if workspace_head and info.source_version is not None:
+        parts.append(f"source marker: {info.source_version}")
+    elif report.sdk_source_version_invalid:
+        marker = info.source_version or "unavailable"
+        parts.append(f"invalid source marker: {marker}")
     metadata_needs_annotation = info.has_drift or (
         info.editable
         and info.source_version is None
@@ -682,29 +782,22 @@ def format_sdk_version_annotation(report: VersionReport) -> str:
     if metadata_needs_annotation and info.metadata_version is not None:
         parts.append(f"installed metadata: {info.metadata_version}")
     if (
-        report.sdk_requirement is not None
-        and _uses_exact_requirement_as_effective_version(
-            report.cli, info, report.sdk_requirement
-        )
+        not workspace_head
+        and report.sdk_requirement_mismatch
+        and report.sdk_requirement is not None
     ):
-        required = _format_requirement_display(report.sdk_requirement)
-        parts.append(f"required by deepagents-code: {required}")
-    elif report.sdk_requirement_mismatch and report.sdk_requirement is not None:
         required = _format_requirement_display(report.sdk_requirement)
         parts.append(f"required by deepagents-code: {required} — mismatch")
     return _join_annotation_parts(parts)
 
 
 def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
-    """Resolve the effective `deepagents` SDK version.
+    """Resolve the diagnostic `deepagents` SDK version.
 
-    Compatibility wrapper for callers that only need the effective SDK version
-    and lookup status. Editable installs can carry a stale stable marker on
-    `main`; when `deepagents-code` declares a newer exact SDK pin, that pin is
-    treated as the effective client SDK generation. Distinguishes a genuinely
-    missing package from an unexpected metadata error so diagnostic callers can
-    report the two differently, while collapse-friendly callers can ignore the
-    split.
+    Compatibility wrapper for callers that only need one SDK version string and
+    lookup status. For sibling monorepo packages whose stable source marker trails
+    dcode's exact SDK pin, the pin identifies the nearest published baseline and
+    an `+editable` local segment identifies the running workspace HEAD.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
@@ -714,8 +807,8 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     sdk = collect_sdk_version_info()
     if sdk.status != "resolved":
         return None, sdk.status
-    requirement = sdk_requirement_from_cli()
-    return _effective_sdk_version(cli, sdk, requirement), "resolved"
+    requirement = _sdk_requirement_for_cli(cli)
+    return _display_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

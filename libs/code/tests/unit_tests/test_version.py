@@ -93,7 +93,7 @@ def test_cli_version_flag() -> None:
     assert f"deepagents-code {__version__}" in result.stdout
     from deepagents_code.extras_info import collect_version_report
 
-    sdk_version = collect_version_report().effective_sdk_version
+    sdk_version = collect_version_report().display_sdk_version
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
     # Extras block is plain-text (no markdown table or headings).
     assert "Installed optional dependencies:" in result.stdout
@@ -108,7 +108,7 @@ async def test_version_slash_command_message_format() -> None:
     from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = collect_version_report().effective_sdk_version
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -228,7 +228,7 @@ async def test_version_slash_command_includes_sdk_release_age() -> None:
     from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = collect_version_report().effective_sdk_version
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -526,9 +526,8 @@ def test_build_version_text_reports_editable_drift_and_newer_sdk_pin() -> None:
     # version line carries only the source/metadata drift, not `editable`.
     assert f"deepagents-code {__version__} (installed metadata: 0.1.40)" in text
     assert (
-        "deepagents (SDK) 0.7.0a7 "
-        "(editable; editable source: 0.6.12; "
-        "required by deepagents-code: 0.7.0a7)" in text
+        "deepagents (SDK) 0.7.0a7+editable "
+        "(workspace HEAD; source marker: 0.6.12)" in text
     )
 
 
@@ -540,13 +539,20 @@ async def test_version_slash_command_reports_editable_drift_and_newer_sdk_pin() 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        with patch(
-            "deepagents_code.extras_info.collect_version_report",
-            return_value=_editable_exact_pin_version_report(),
+        with (
+            patch(
+                "deepagents_code.extras_info.collect_version_report",
+                return_value=_editable_exact_pin_version_report(),
+            ),
+            patch(
+                "deepagents_code.update_check.get_sdk_release_time",
+                return_value=None,
+            ) as get_sdk_release_time,
         ):
             await app._handle_command("/version")
         await pilot.pause()
 
+        get_sdk_release_time.assert_called_once_with("0.7.0a7")
         content = str(
             [m for m in app.query(AppMessage) if not m._is_markdown][-1]._content
         )
@@ -555,9 +561,8 @@ async def test_version_slash_command_reports_editable_drift_and_newer_sdk_pin() 
             "(installed metadata: 0.1.40)" in content
         )
         assert (
-            "deepagents (SDK) version: 0.7.0a7 "
-            "(editable; editable source: 0.6.12; "
-            "required by deepagents-code: 0.7.0a7)" in content
+            "deepagents (SDK) version: 0.7.0a7+editable "
+            "(workspace HEAD; source marker: 0.6.12)" in content
         )
 
 

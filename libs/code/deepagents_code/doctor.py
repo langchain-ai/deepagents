@@ -65,9 +65,9 @@ def _sdk_diagnostic(report: VersionReport) -> tuple[str, bool]:
 
     A genuinely missing package reads as `not installed`, an unexpected lookup
     failure as `unknown`, and a resolved version carries its editable/drift/
-    mismatch annotation. A dependency-requirement mismatch is unhealthy; drift
-    between the source and installed metadata alone is informational, since it
-    is normal while editing SDK source.
+    mismatch annotation. A dependency-requirement mismatch or invalid editable
+    source marker is unhealthy; drift between valid source and installed
+    metadata alone is informational, since it is normal while editing SDK source.
     """
     from deepagents_code.extras_info import format_sdk_version_annotation
 
@@ -76,8 +76,10 @@ def _sdk_diagnostic(report: VersionReport) -> tuple[str, bool]:
         return "not installed", False
     if sdk.status != "resolved":
         return "unknown", False
-    value = f"{report.effective_sdk_version}{format_sdk_version_annotation(report)}"
-    return value, not report.sdk_requirement_mismatch
+    value = f"{report.display_sdk_version}{format_sdk_version_annotation(report)}"
+    return value, not (
+        report.sdk_requirement_mismatch or report.sdk_source_version_invalid
+    )
 
 
 def _build_commit() -> str | None:

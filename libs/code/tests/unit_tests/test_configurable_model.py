@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from langchain.agents.middleware.types import (
     ExtendedModelResponse,
@@ -19,11 +20,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
+    _TRANSIENT_FAULT_MAX_RETRIES,
     ConfigurableModelMiddleware,
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _is_transient_model_fault,
 )
 
 
@@ -1370,3 +1373,173 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class StreamChunkTimeoutError(Exception):
+    """Stand-in for a provider `StreamChunkTimeoutError` (no import dependency)."""
+
+
+def _http_status_error(status_code: int) -> Exception:
+    """Build an exception exposing a `status_code` attribute for classification."""
+    exc = Exception(f"HTTP {status_code}")
+    exc.status_code = status_code  # type: ignore[attr-defined]
+    return exc
+
+
+class TestTransientFaultClassifier:
+    """The transient-fault predicate matches only retryable network faults."""
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.ConnectError("Connection error."),
+            httpx.RemoteProtocolError("peer closed connection without response"),
+            httpx.ReadError("read"),
+            httpx.ReadTimeout("timed out"),
+            StreamChunkTimeoutError("No streaming chunk received..."),
+            _http_status_error(500),
+            _http_status_error(503),
+            _http_status_error(429),
+        ],
+    )
+    def test_transient_faults_are_retryable(self, exc: Exception) -> None:
+        assert _is_transient_model_fault(exc) is True
+
+    def test_wrapped_transient_fault_detected(self) -> None:
+        grouped = ExceptionGroup(
+            "boom", [httpx.RemoteProtocolError("peer closed connection")]
+        )
+        assert _is_transient_model_fault(grouped) is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ValueError("bad request"),
+            _http_status_error(400),
+            _http_status_error(422),
+        ],
+    )
+    def test_non_transient_faults_not_retried(self, exc: Exception) -> None:
+        assert _is_transient_model_fault(exc) is False
+
+
+class TestTransientFaultRecovery:
+    """Model calls retry transient faults and recover on persistent failure."""
+
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            httpx.ConnectError("Connection error."),
+            httpx.RemoteProtocolError("peer closed connection without response"),
+            StreamChunkTimeoutError("No streaming chunk received..."),
+            httpx.ReadTimeout("timed out"),
+        ],
+    )
+    def test_transient_fault_is_retried_then_succeeds(self, fault: Exception) -> None:
+        calls = {"n": 0}
+
+        def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise fault
+            return _make_response()
+
+        request = _make_request(_make_model("gpt-5.5"))
+        with patch("deepagents_code.configurable_model.time.sleep"):
+            result = _mw.wrap_model_call(request, handler)
+
+        assert calls["n"] == 2
+        response = (
+            result.model_response
+            if isinstance(result, ExtendedModelResponse)
+            else result
+        )
+        assert response.result[0].content == "response"
+
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            httpx.ConnectError("Connection error."),
+            httpx.RemoteProtocolError("peer closed connection without response"),
+            StreamChunkTimeoutError("No streaming chunk received..."),
+            httpx.ReadTimeout("timed out"),
+        ],
+    )
+    def test_persistent_fault_yields_user_facing_message(
+        self, fault: Exception
+    ) -> None:
+        calls = {"n": 0}
+
+        def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            calls["n"] += 1
+            raise fault
+
+        request = _make_request(_make_model("gpt-5.5"))
+        with patch("deepagents_code.configurable_model.time.sleep"):
+            result = _mw.wrap_model_call(request, handler)
+
+        assert calls["n"] == _TRANSIENT_FAULT_MAX_RETRIES + 1
+        response = (
+            result.model_response
+            if isinstance(result, ExtendedModelResponse)
+            else result
+        )
+        message = response.result[0]
+        assert isinstance(message, AIMessage)
+        assert isinstance(message.content, str)
+        assert message.content.strip()
+        assert "session state is preserved" in message.content
+
+    def test_non_transient_fault_propagates(self) -> None:
+        fault = ValueError("schema error")
+
+        def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            raise fault
+
+        request = _make_request(_make_model("gpt-5.5"))
+        with pytest.raises(ValueError, match="schema error"):
+            _mw.wrap_model_call(request, handler)
+
+    async def test_async_persistent_fault_yields_user_facing_message(self) -> None:
+        calls = {"n": 0}
+        fault = httpx.RemoteProtocolError("peer closed connection")
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            calls["n"] += 1
+            raise fault
+
+        request = _make_request(_make_model("gpt-5.5"))
+        with patch("deepagents_code.configurable_model.asyncio.sleep"):
+            result = await _mw.awrap_model_call(request, handler)
+
+        assert calls["n"] == _TRANSIENT_FAULT_MAX_RETRIES + 1
+        response = (
+            result.model_response
+            if isinstance(result, ExtendedModelResponse)
+            else result
+        )
+        message = response.result[0]
+        assert isinstance(message, AIMessage)
+        assert "session state is preserved" in message.content
+
+    async def test_async_transient_fault_is_retried_then_succeeds(self) -> None:
+        calls = {"n": 0}
+        fault = httpx.ReadTimeout("timed out")
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise fault
+            return _make_response()
+
+        request = _make_request(_make_model("gpt-5.5"))
+        with patch("deepagents_code.configurable_model.asyncio.sleep"):
+            result = await _mw.awrap_model_call(request, handler)
+
+        assert calls["n"] == 2
+        response = (
+            result.model_response
+            if isinstance(result, ExtendedModelResponse)
+            else result
+        )
+        assert response.result[0].content == "response"

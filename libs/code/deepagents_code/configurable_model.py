@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import httpx
 from deepagents._models import (  # noqa: PLC2701
     get_model_identifier,
     model_matches_spec,
@@ -24,6 +26,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -37,6 +40,210 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_FAULT_MAX_RETRIES = 3
+"""Number of retry attempts for a transient provider network fault before the
+recovery wrapper surfaces a user-facing message. The provider SDK's own
+connection-level `max_retries` handles pre-stream faults; these retries cover the
+mid-stream framing/timeout faults it does not, so a network blip on a long turn
+does not discard the in-progress session."""
+
+_TRANSIENT_FAULT_BACKOFF_BASE_SECONDS = 1.0
+"""Base delay for exponential backoff between transient-fault retries."""
+
+_TOO_MANY_REQUESTS_STATUS = 429
+_SERVER_ERROR_MIN_STATUS = 500
+_SERVER_ERROR_MAX_STATUS = 600
+
+
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield an exception, its causes, and exception-group members once each."""
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """Return whether an HTTP status is a retryable transient fault (5xx/429)."""
+    return status_code == _TOO_MANY_REQUESTS_STATUS or (
+        _SERVER_ERROR_MIN_STATUS <= status_code < _SERVER_ERROR_MAX_STATUS
+    )
+
+
+def _is_transient_model_fault(exc: BaseException) -> bool:
+    """Return whether a chat-model fault is transient and safe to retry.
+
+    Matches only network/stream faults that are safe to retry: connection
+    errors, peer-closed-connection framing faults (`RemoteProtocolError`),
+    request/read timeouts, no-streaming-chunk timeouts
+    (`StreamChunkTimeoutError`), and HTTP 5xx/429. Non-retryable
+    400/schema/policy/context-overflow errors are intentionally excluded --
+    those are handled by separate issues.
+    """
+    for current in _exception_chain(exc):
+        if isinstance(
+            current,
+            (
+                httpx.ConnectError,
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.TimeoutException,
+            ),
+        ):
+            return True
+
+        error_type = type(current)
+        module = error_type.__module__
+        name = error_type.__name__
+
+        if module.startswith("httpcore") and name in {
+            "ConnectError",
+            "RemoteProtocolError",
+            "ReadError",
+            "ReadTimeout",
+            "ConnectTimeout",
+            "PoolTimeout",
+            "WriteTimeout",
+        }:
+            return True
+
+        # Provider SDK network faults, matched by name to avoid import-time
+        # dependencies on optional provider packages.
+        if name in {
+            "APIConnectionError",
+            "APITimeoutError",
+            "StreamChunkTimeoutError",
+        }:
+            return True
+
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int) and _is_retryable_status(status_code):
+            return True
+
+    return False
+
+
+def _transient_fault_message(retries: int, exc: BaseException) -> AIMessage:
+    """Build the user-facing message emitted after transient retries are spent.
+
+    Returns:
+        An `AIMessage` telling the developer the connection dropped, retries were
+            exhausted, and session state is preserved so they can retry to resume.
+    """
+    detail = f"{type(exc).__name__}: {exc}".strip()
+    text = (
+        f"The model provider connection dropped after {retries} "
+        f"{'retry' if retries == 1 else 'retries'} ({detail}). Your session "
+        "state is preserved -- retry to resume."
+    )
+    return AIMessage(content=text)
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Compute the exponential-backoff delay before a retry.
+
+    Returns:
+        The delay in seconds for the given 0-indexed `attempt`.
+    """
+    return _TRANSIENT_FAULT_BACKOFF_BASE_SECONDS * (2**attempt)
+
+
+def _recover_response(last_exc: BaseException) -> ModelResponse:
+    """Log the exhausted transient fault and build the recovery response.
+
+    Returns:
+        A `ModelResponse` whose single message is the user-facing recovery text.
+    """
+    logger.error(
+        "Transient model provider fault persisted after %d retries; "
+        "surfacing recovery message",
+        _TRANSIENT_FAULT_MAX_RETRIES,
+        exc_info=last_exc,
+    )
+    return ModelResponse(
+        result=[_transient_fault_message(_TRANSIENT_FAULT_MAX_RETRIES, last_exc)]
+    )
+
+
+def _call_with_retries(
+    request: ModelRequest,
+    handler: Callable[[ModelRequest], ModelResponse],
+) -> ModelResponse:
+    """Invoke the model, retrying transient faults and recovering on exhaustion.
+
+    Retries only transient/retryable network faults with exponential backoff.
+    After retries are exhausted the exception is caught rather than propagated to
+    the `agent` root; a user-facing message is returned as the final assistant
+    output so the checkpointed thread state is not lost. Non-transient errors
+    propagate unchanged.
+
+    Returns:
+        The downstream model response, or a recovery message when retries spent.
+    """
+    for attempt in range(_TRANSIENT_FAULT_MAX_RETRIES):
+        try:
+            return handler(request)
+        except Exception as exc:
+            if not _is_transient_model_fault(exc):
+                raise
+            delay = _backoff_seconds(attempt)
+            logger.warning(
+                "Transient model provider fault (attempt %d/%d); retrying in %.1fs",
+                attempt + 1,
+                _TRANSIENT_FAULT_MAX_RETRIES,
+                delay,
+                exc_info=True,
+            )
+            time.sleep(delay)
+    try:
+        return handler(request)
+    except Exception as exc:
+        if not _is_transient_model_fault(exc):
+            raise
+        return _recover_response(exc)
+
+
+async def _acall_with_retries(
+    request: ModelRequest,
+    handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+) -> ModelResponse:
+    """Async variant of `_call_with_retries`.
+
+    Returns:
+        The downstream model response, or a recovery message when retries spent.
+    """
+    for attempt in range(_TRANSIENT_FAULT_MAX_RETRIES):
+        try:
+            return await handler(request)
+        except Exception as exc:
+            if not _is_transient_model_fault(exc):
+                raise
+            delay = _backoff_seconds(attempt)
+            logger.warning(
+                "Transient model provider fault (attempt %d/%d); retrying in %.1fs",
+                attempt + 1,
+                _TRANSIENT_FAULT_MAX_RETRIES,
+                delay,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay)
+    try:
+        return await handler(request)
+    except Exception as exc:
+        if not _is_transient_model_fault(exc):
+            raise
+        return _recover_response(exc)
 
 
 @dataclass(frozen=True)
@@ -573,7 +780,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        response = _call_with_retries(resolved.request, handler)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -591,7 +798,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        response = await _acall_with_retries(resolved.request, handler)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

@@ -1351,13 +1351,19 @@ class TestResolveEnvVar:
 
         assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-canonical"
 
-    def test_prefix_beats_canonical(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """DEEPAGENTS_CODE_ prefixed var takes priority over canonical."""
+    def test_prefix_beats_canonical_without_logging(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Prefixed variables take priority without logging routine resolution."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-override")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         from deepagents_code.model_config import resolve_env_var
 
         assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+        assert caplog.records == []
 
     def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None when neither form is set."""
@@ -1386,14 +1392,18 @@ class TestResolveEnvVar:
         assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
 
     def test_empty_prefix_blocks_canonical(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Empty prefix var blocks fallback to canonical (explicit disable)."""
+        """Empty prefix blocks canonical fallback and logs the misconfiguration."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "")
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         from deepagents_code.model_config import resolve_env_var
 
         assert resolve_env_var("ANTHROPIC_API_KEY") is None
+        assert "blocking non-empty ANTHROPIC_API_KEY" in caplog.text
 
     def test_skips_double_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Names already carrying the prefix don't get double-prefixed."""

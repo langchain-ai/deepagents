@@ -91,8 +91,6 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
-            if val:
-                logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 

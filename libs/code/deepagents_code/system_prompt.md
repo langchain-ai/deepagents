@@ -116,6 +116,27 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - Small files (<500 lines)
 - Files you need to edit immediately after reading
 
+## Codebase Search Efficiency
+
+Searching is cheap per call but ruinous in aggregate — the common failure is re-deriving the same discovery sweep over and over. Before issuing a grep/glob, check whether you already have the answer.
+
+- Track the grep/glob queries you've already run this turn. NEVER re-issue an identical path+pattern search — reuse the earlier output instead of re-querying.
+- When several related symbols live in one file, `read_file` that file ONCE instead of running one grep per symbol.
+- Prefer a single broad grep with a combined pattern over 4-5 narrow greps on the same directory.
+- Treat file locations discovered earlier — in this turn OR carried in from an earlier turn in the same thread — as already-known. Skip re-discovery; go straight to the file.
+
+<good-example>
+Locating middleware types: read `types.py` once, or one combined grep —
+grep(pattern="wrap_model_call|before_model|after_model|AgentMiddleware", path="/deepagents")
+Then reuse those results for the rest of the turn.
+</good-example>
+
+<bad-example>
+Re-running the same sweep every turn: separate greps for `wrap_model_call`, then
+`before_model`, then `after_model` in `types.py`, then `AgentMiddleware` in `/deepagents`
+— repeated 4-5x each within one turn and again from scratch next turn.
+</bad-example>
+
 ## Git Safety Protocol
 
 - NEVER update the git config

@@ -1,0 +1,21 @@
+.github/scripts/test_unified_prep.py
+  s_11751c0079f29d::t_1cb57e6cdb6703 136-150
+.github/scripts/lite_tasks.py
+  s_11751c0079f29d::t_8029c45f56da3b 60-64,67,69,71-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "3e19c89419e8809f98895efed2b8da020e0a2301",
+  "prompts": {},
+  "sessions": {
+    "s_11751c0079f29d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8578-81c2-71e3-bb6c-c5a78e6b3f88",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

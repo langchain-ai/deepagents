@@ -786,6 +786,64 @@ class TestDebugConsoleScreen:
             await pilot.pause()
             assert not isinstance(app.screen, DebugConsoleScreen)
 
+    async def test_outside_click_collapses_open_level_dropdown(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            select = screen.query_one("#debug-level-filter", Select)
+            select.action_show_overlay()
+            await pilot.pause()
+            assert select.expanded
+
+            # A click on a non-focusable area outside the dropdown closes it
+            # without dismissing the console.
+            await pilot.click(screen.query_one(".debug-console-title", Static))
+            await pilot.pause()
+            assert not select.expanded
+            assert isinstance(app.screen, DebugConsoleScreen)
+
+    async def test_outside_click_preserves_log_selection_highlight(self) -> None:
+        logger.info("debug-console-outside-click-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            index = next(
+                index
+                for index, record in enumerate(log.records)
+                if "debug-console-outside-click-marker" in record.message
+            )
+            log._select_record(index)
+            await pilot.pause()
+            assert log._selected_index == index
+
+            await pilot.click(screen.query_one(".debug-console-title", Static))
+            await pilot.pause()
+            assert log._selected_index == index
+
+    async def test_outside_click_clears_click_to_copy_focus_highlight(
+        self,
+    ) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            checkbox = screen.query_one("#debug-click-to-copy", Checkbox)
+
+            await pilot.click(checkbox)
+            await pilot.pause()
+            assert checkbox.value
+            assert checkbox.has_focus
+
+            await pilot.click(screen.query_one(".debug-console-title", Static))
+            await pilot.pause()
+            assert not checkbox.has_focus
+
     async def test_click_copy_invokes_clipboard_with_logical_record(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

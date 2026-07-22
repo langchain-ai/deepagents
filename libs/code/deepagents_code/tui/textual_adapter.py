@@ -58,6 +58,7 @@ from deepagents_code._session_stats import (
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
+    CorruptedFilePathError,
     ToolCallBuffer,
     ToolCallBufferKey,
     ToolStatus,
@@ -67,6 +68,7 @@ from deepagents_code._tool_stream import (
     count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
+    validate_file_path_arg,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
@@ -1574,6 +1576,24 @@ async def execute_task_textual(
                             # a successful parse + mount below.
                             parsed_args = buffer.parse_args()
                             if parsed_args is None:
+                                continue
+
+                            # Reject a reconstructed file-tool path argument that
+                            # carries the summarization argument-corruption
+                            # signature before dispatch, so a garbled `file_path`
+                            # is surfaced as a recoverable error rather than
+                            # echoed into a FileNotFoundError cascade.
+                            try:
+                                validate_file_path_arg(buffer_name, parsed_args)
+                            except CorruptedFilePathError as exc:
+                                logger.warning(
+                                    "Skipping corrupted file-tool call %s: %s",
+                                    buffer_id,
+                                    exc,
+                                )
+                                if buffer_id is not None:
+                                    _dispatch_tool_error_hook(buffer_name)
+                                tool_call_buffers.pop(buffer_key, None)
                                 continue
 
                             # Flush pending text before tool call

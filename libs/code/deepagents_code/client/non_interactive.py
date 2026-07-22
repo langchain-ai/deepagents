@@ -43,6 +43,7 @@ from deepagents_code._cli_context import CLIContext
 from deepagents_code._session_stats import SessionStats, print_usage_table
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
+    CorruptedFilePathError,
     ToolCallBuffer,
     ToolCallBufferKey,
     ToolStatus,
@@ -52,6 +53,7 @@ from deepagents_code._tool_stream import (
     count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
+    validate_file_path_arg,
 )
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
@@ -543,6 +545,24 @@ def _process_ai_message(
             # means a redelivery of a completed call's arg chunks does not
             # re-fire `tool.use` and spawn a spurious orphan.
             parsed_args = buffer.parse_args()
+            # Reject a reconstructed file-tool path argument carrying the
+            # summarization argument-corruption signature before dispatch, so a
+            # garbled `file_path` surfaces as a recoverable error rather than
+            # echoing into a FileNotFoundError cascade. Mirrors the interactive
+            # surface's check in `textual_adapter`.
+            if isinstance(buffer_name, str) and parsed_args is not None:
+                try:
+                    validate_file_path_arg(buffer_name, parsed_args)
+                except CorruptedFilePathError as exc:
+                    logger.warning(
+                        "Skipping corrupted file-tool call %s: %s", buffer_id, exc
+                    )
+                    if buffer_id is not None:
+                        dispatch_hook_fire_and_forget(
+                            "tool.error", build_tool_error_payload(buffer_name)
+                        )
+                    state.tool_call_buffers.pop(buffer_key, None)
+                    continue
             if (
                 isinstance(buffer_name, str)
                 and buffer_id is not None

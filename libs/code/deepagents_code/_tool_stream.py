@@ -150,6 +150,73 @@ raise), so a hook consumer still sees the result rather than a dropped event."""
 MAX_JSON_CONTAINER_DEPTH = sys.getrecursionlimit()
 """Maximum JSON container nesting accepted for streamed tool-call args."""
 
+FILE_PATH_TOOLS = frozenset({"read_file", "write_file", "edit_file", "delete"})
+"""Tools whose `file_path`/`path` argument is an identifier, never prose.
+
+A reconstructed arg for one of these that carries a truncation marker or
+whitespace-separated prose is corruption, not a real path — see
+`validate_file_path_arg`."""
+
+FILE_PATH_ARG_KEYS = ("file_path", "path")
+"""Argument keys that carry a file-tool path, checked in precedence order."""
+
+# The deepagents summarization middleware truncates over-long tool-call
+# arguments to a short head plus one of these markers and reinjects them into
+# conversation history; a `file_path` mangled that way echoes back on later
+# turns. A path argument that contains one of these markers cannot be a real
+# path, so we treat it as the corruption signature rather than dispatching it.
+_TRUNCATION_MARKERS = ("…", "...", "[truncated", "[output truncated", "[elided")
+
+
+class CorruptedFilePathError(ValueError):
+    """A reconstructed file-tool `file_path` argument is corruption, not a path.
+
+    Raised by `validate_file_path_arg` so a surface can emit a distinct
+    recoverable error instructing the model to re-derive the path from its last
+    known-good read, instead of dispatching the garbled value and looping on a
+    `FileNotFoundError` cascade.
+    """
+
+
+def validate_file_path_arg(tool_name: str, tool_args: dict[str, Any]) -> None:
+    """Reject a reconstructed file-tool path argument that shows corruption.
+
+    File-tool path arguments (`file_path`/`path`) are identifiers, so a value
+    carrying a summarization truncation marker or whitespace-separated prose is
+    the mid-session argument-corruption signature, not a real path. Raising here
+    lets a surface surface a recoverable error before dispatch rather than
+    letting the garbled path hit a `FileNotFoundError` cascade with no recovery.
+
+    Args:
+        tool_name: The tool being dispatched.
+        tool_args: The reconstructed tool-call arguments.
+
+    Raises:
+        CorruptedFilePathError: If a file tool's path argument is corrupted.
+    """
+    if tool_name not in FILE_PATH_TOOLS:
+        return
+    for key in FILE_PATH_ARG_KEYS:
+        value = tool_args.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        if any(marker in value for marker in _TRUNCATION_MARKERS):
+            msg = (
+                f"{tool_name} argument {key!r} looks corrupted (contains a "
+                f"truncation marker): {value!r}. Re-derive the path from the "
+                "last known-good read instead of retrying this value."
+            )
+            raise CorruptedFilePathError(msg)
+        # A real path never contains an embedded space-separated phrase; an
+        # injected prose fragment (the other corruption shape) does.
+        if " " in value.strip():
+            msg = (
+                f"{tool_name} argument {key!r} looks corrupted (contains "
+                f"injected prose): {value!r}. Re-derive the path from the "
+                "last known-good read instead of retrying this value."
+            )
+            raise CorruptedFilePathError(msg)
+
 
 def normalize_tool_status(raw_status: object, tool_name: str) -> ToolStatus:
     """Map a raw `ToolMessage.status` to the two-value hook domain, fail-closed.

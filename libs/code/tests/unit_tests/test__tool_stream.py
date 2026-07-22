@@ -12,6 +12,7 @@ import pytest
 
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
+    CorruptedFilePathError,
     ToolCallBuffer,
     build_tool_error_payload,
     build_tool_result_payload,
@@ -19,6 +20,7 @@ from deepagents_code._tool_stream import (
     count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
+    validate_file_path_arg,
 )
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
 
@@ -501,3 +503,72 @@ class TestCountUnemittedToolCalls:
         assert result == (2, 1)
         assert result.unparsed == 2
         assert result.idless_parsed == 1
+
+
+class TestValidateFilePathArg:
+    """Reconstructed file-tool path args are validated before dispatch.
+
+    Guards against the summarization argument-corruption cascade: a `file_path`
+    truncated to a short head plus a marker, or with an injected prose fragment,
+    is corruption rather than a real path and must be rejected so the surface can
+    emit a recoverable error instead of looping on a FileNotFoundError.
+    """
+
+    def test_well_formed_path_passes(self) -> None:
+        """A normal file_path is accepted for a file tool."""
+        validate_file_path_arg("edit_file", {"file_path": "src/deepagents_code/app.py"})
+
+    def test_long_well_formed_path_with_large_content_unchanged(self) -> None:
+        """A 120-char file_path passes even alongside a 3000-char new_string.
+
+        Mirrors the summarization unit test on the SDK side: the identifier arg
+        must never be treated as corrupt just because a sibling content arg is
+        long.
+        """
+        file_path = "src/" + "a" * 113 + ".py"
+        assert len(file_path) == 120
+        args = {"file_path": file_path, "new_string": "x" * 3000}
+        validate_file_path_arg("edit_file", args)
+
+    def test_path_key_variant_passes(self) -> None:
+        """The `path` arg key is also accepted when well-formed."""
+        validate_file_path_arg("read_file", {"path": "notes/todo.md"})
+
+    def test_non_file_tool_never_validated(self) -> None:
+        """A non-file tool's args with spaces/markers are left alone."""
+        validate_file_path_arg("execute", {"command": "ls -la ..."})
+
+    def test_truncation_marker_rejected(self) -> None:
+        """A path sliced to a head plus an ellipsis marker is corruption."""
+        with pytest.raises(CorruptedFilePathError, match="corrupted"):
+            validate_file_path_arg("edit_file", {"file_path": "src/deepagents_c..."})
+
+    def test_output_truncated_marker_rejected(self) -> None:
+        """A path carrying a bracketed truncation marker is corruption."""
+        with pytest.raises(CorruptedFilePathError):
+            validate_file_path_arg(
+                "read_file", {"file_path": "src/app[output truncated]"}
+            )
+
+    def test_injected_prose_rejected(self) -> None:
+        """A path with an embedded space-separated phrase is corruption."""
+        with pytest.raises(CorruptedFilePathError, match="injected prose"):
+            validate_file_path_arg(
+                "edit_file", {"file_path": "src/app.py and then continue editing"}
+            )
+
+    def test_corrupted_path_after_good_read_surfaces_error(self) -> None:
+        """A corrupted path arriving after a good read raises, not silently retries.
+
+        Simulates the reported cascade: an earlier `read_file` on a valid path
+        succeeds, then a later `edit_file` on the same buffer key echoes a
+        truncated path. The guardrail surfaces the recoverable error rather than
+        letting the garbled value dispatch and loop.
+        """
+        validate_file_path_arg("read_file", {"file_path": "src/module.py"})
+        with pytest.raises(CorruptedFilePathError):
+            validate_file_path_arg("edit_file", {"file_path": "src/module.py, r..."})
+
+    def test_missing_path_arg_passes(self) -> None:
+        """A file tool call missing its path arg is not our concern here."""
+        validate_file_path_arg("edit_file", {"new_string": "x"})

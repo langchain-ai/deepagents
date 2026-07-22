@@ -9,11 +9,14 @@ from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from prompt_toolkit.layout import Layout
 
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
@@ -995,6 +998,40 @@ class TestStartupAutoUpdate:
 
         assert exc_info.value.code == 130
         launch.assert_not_called()
+
+    def test_yolo_acknowledgement_interrupt_aborts_before_tui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An interrupted YOLO acknowledgement never launches Textual."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode", "--yolo"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch(
+                "deepagents_code.main._resolve_approval_mode",
+                return_value=ApprovalMode.YOLO,
+            ),
+            patch(
+                "deepagents_code.main._ensure_yolo_acknowledged",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 130
+        launch.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Interrupted" in captured.out + captured.err
 
     def test_project_mcp_server_selection_cancel_aborts_before_tui(
         self, capsys: pytest.CaptureFixture[str]
@@ -3614,6 +3651,119 @@ class TestCheckMcpProjectTrustPrompt:
         assert "require approval" not in err
 
 
+def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
+    """Assert every text control in `layout` suppresses the terminal cursor.
+
+    Walks the layout instead of indexing into a fixed container/window shape so
+    the check stays valid if the selector's nesting changes.
+    """
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    controls = [
+        control
+        for control in layout.find_all_controls()
+        if isinstance(control, FormattedTextControl)
+    ]
+    assert controls
+    assert all(control.show_cursor is False for control in controls)
+
+
+class TestPromptYoloAcknowledgement:
+    """Tests for the inline YOLO acknowledgement selector."""
+
+    def test_yolo_selector_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The selector suppresses the stray first-character terminal cursor."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+    @pytest.mark.parametrize("key", ["c-c", "c-d"])
+    def test_yolo_selector_interrupt_keys_raise_keyboard_interrupt(
+        self,
+        key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl+C and Ctrl+D propagate an interrupt out of the selector."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                bindings = captured["key_bindings"].bindings
+                interrupt = next(
+                    binding.handler
+                    for binding in bindings
+                    if any(
+                        getattr(bound_key, "value", bound_key) == key
+                        for bound_key in binding.keys
+                    )
+                )
+                outcome: dict[str, object] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(exit=lambda **kwargs: outcome.update(kwargs))
+                )
+                interrupt(event)
+                exception = outcome.get("exception")
+                assert isinstance(exception, KeyboardInterrupt)
+                raise exception
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        with pytest.raises(KeyboardInterrupt):
+            _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Ctrl+C quit" in rendered
+
+
 class TestSelectProjectServersToPersist:
     """Tests for the "always allow" subset selection helpers."""
 
@@ -3739,11 +3889,43 @@ class TestSelectProjectServersToPersist:
         assert "Choose how to continue" not in rendered
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
-    def test_action_picker_escape_aborts(
+    def test_action_picker_hides_terminal_cursor(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Esc aborts the launch instead of selecting the deny action."""
+        """The inline picker suppresses the stray first-character terminal cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustAction,
+            _run_project_mcp_trust_action_picker,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _ProjectMcpTrustAction:
+                return _ProjectMcpTrustAction.DENY
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        _run_project_mcp_trust_action_picker(Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    @pytest.mark.parametrize("key", ["escape", "c-d"])
+    def test_action_picker_abort_keys_cancel(
+        self,
+        key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc and Ctrl+D abort instead of selecting the deny action."""
         from rich.console import Console
 
         from deepagents_code.main import (
@@ -3761,8 +3943,6 @@ class TestSelectProjectServersToPersist:
                 captured.update(kwargs)
 
             def run(self) -> _ProjectMcpTrustPromptOutcome:
-                from prompt_toolkit.keys import Keys
-
                 bindings = captured["key_bindings"].bindings
                 holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
                 event = SimpleNamespace(
@@ -3773,7 +3953,10 @@ class TestSelectProjectServersToPersist:
                 abort = next(
                     binding.handler
                     for binding in bindings
-                    if Keys.Escape in binding.keys
+                    if any(
+                        getattr(bound_key, "value", bound_key) == key
+                        for bound_key in binding.keys
+                    )
                 )
                 abort(event)
                 return holder["value"]
@@ -3785,7 +3968,7 @@ class TestSelectProjectServersToPersist:
         rendered = "".join(
             text for _style, text in captured["layout"].container.content.text()
         )
-        assert "Esc abort" in rendered
+        assert "Esc/Ctrl+D abort" in rendered
         assert "Esc deny" not in rendered
 
     def test_select_action_forwards_picker_cancelled(
@@ -3882,6 +4065,38 @@ class TestSelectProjectServersToPersist:
 
         assert names == ["reference"]
         assert captured["full_screen"] is False
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both checkbox windows suppress the stray first-character cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                return []
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(

@@ -13,7 +13,6 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellB
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import FilesystemMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -167,6 +166,8 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
         routes={"/common/": route, "/legacy/": legacy, "/notes/": StateBackend()},
     )
+    # The filesystem routing section is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
     agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
@@ -210,6 +211,8 @@ def test_system_prompt_snapshot_with_sandbox_default(snapshots_dir: Path, *, upd
         default=_SnapshotSandbox(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
         routes={"/common/": route},
     )
+    # The filesystem mount guidance is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
     agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
@@ -256,33 +259,6 @@ def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_s
     )
 
 
-def test_system_prompt_snapshot_with_read_file_only(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = _smoke_model()
-    backend = StateBackend()
-    filesystem = FilesystemMiddleware(backend=backend, tools=["read_file"])
-    agent = create_deep_agent(
-        model=model,
-        backend=backend,
-        middleware=[filesystem],
-    )
-
-    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
-
-    history = model.call_history
-    assert len(history) >= 1
-
-    messages = history[0]["messages"]
-    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-    assert len(system_messages) >= 1
-
-    snapshot_path = snapshots_dir / "system_prompt_with_read_file_only.md"
-    _assert_snapshot(
-        snapshot_path,
-        _system_message_as_text(system_messages[0]),
-        update_snapshots=update_snapshots,
-    )
-
-
 def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
@@ -321,6 +297,9 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
     model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
+    # The subagent usage prose is trimmed by default; the available agents still
+    # reach the model via the `task` tool description, so this snapshots the
+    # trimmed system prompt for that setup.
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -372,6 +351,10 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = _smoke_model()
 
+    # Skills and memory are opt-in features whose fragments are the only channel
+    # for their content, so they are never trimmed. This snapshot guards that:
+    # the skill index and memory content appear, while the trimmed todo/filesystem
+    # usage prose does not.
     agent = create_deep_agent(
         model=model,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],

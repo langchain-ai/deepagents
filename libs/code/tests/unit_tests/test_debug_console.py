@@ -85,6 +85,12 @@ class TestDebugConsoleScreen:
             assert "openai:gpt-test" in text
             assert "/tmp/[brackets]/work" in text
 
+    def test_footer_omits_click_to_copy_hint(self) -> None:
+        footer = str(DebugConsoleScreen._render_help())
+
+        assert "Enter copy line" in footer
+        assert "check 'Click to copy'" not in footer
+
     async def test_live_tail_writes_buffered_records(self) -> None:
         logger.info("debug-console-tail-marker")
         app = _Harness()

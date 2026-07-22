@@ -990,8 +990,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · "
-            "Enter copy line · check 'Click to copy' to copy on click",
+            "Esc close · Ctrl+L clear view · c copy visible logs · Enter copy line",
             "dim italic",
         )
 

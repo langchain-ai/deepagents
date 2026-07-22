@@ -108,6 +108,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
+from langgraph.channels import UntrackedValue
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -292,11 +293,11 @@ class SkillMetadata(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
-    """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
+    skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr, UntrackedValue(list)]]
+    """List of loaded skill metadata from configured sources. Not propagated to parent agents or checkpoints."""
 
-    skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
-    """Skill source loading errors. Not propagated to parent agents."""
+    skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr, UntrackedValue(list)]]
+    """Skill source loading errors. Not propagated to parent agents or checkpoints."""
 
 
 class SkillsStateUpdate(TypedDict):
@@ -955,97 +956,65 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
-        """Load skills metadata before agent execution (synchronous).
-
-        Loads skills once per session from all configured sources. If
-        `skills_metadata` is already present in state (from a prior turn or
-        checkpointed session), the load is skipped and `None` is returned.
-
-        Skills are loaded in source order with later sources overriding
-        earlier ones if they contain skills with the same name (last one wins).
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-            config: Runnable config.
-
-        Returns:
-            State update with `skills_metadata` populated, or `None` if already present.
-        """
-        # Skip if skills_metadata is already present in state (even if empty)
+    def _load_skills_update(self, state: SkillsState, runtime: Runtime, config: RunnableConfig | None = None) -> SkillsStateUpdate | None:
+        """Load skills metadata when it is not already available in state."""
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._get_backend(state, runtime, config or {})
         all_skills: dict[str, SkillMetadata] = {}
-        skills_load_errors: list[str] = []
+        errors: list[str] = []
 
-        # Load skills from each source in order
-        # Later sources override earlier ones (last one wins)
         for source_path in self.sources:
             source_skills, source_error = _list_skills_with_errors(backend, source_path)
             if source_error is not None:
-                skills_load_errors.append(source_error)
+                errors.append(source_error)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
-        skills = list(all_skills.values())
-        update = SkillsStateUpdate(skills_metadata=skills)
-        if skills_load_errors:
-            # Log even when `system_prompt_template is None`, otherwise the
-            # warnings only reach the model via the prompt fragment and
-            # silently disappear when the fragment is suppressed.
-            logger.warning("Skills load errors: %s", skills_load_errors)
-            update["skills_load_errors"] = skills_load_errors
+        update = SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        if errors:
+            logger.warning("Skills load errors: %s", errors)
+            update["skills_load_errors"] = errors
         return update
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
-        """Load skills metadata before agent execution (async).
-
-        Loads skills once per session from all configured sources. If
-        `skills_metadata` is already present in state (from a prior turn or
-        checkpointed session), the load is skipped and `None` is returned.
-
-        Skills are loaded in source order with later sources overriding
-        earlier ones if they contain skills with the same name (last one wins).
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-            config: Runnable config.
-
-        Returns:
-            State update with `skills_metadata` populated, or `None` if already present.
-        """
-        # Skip if skills_metadata is already present in state (even if empty)
+    async def _aload_skills_update(self, state: SkillsState, runtime: Runtime, config: RunnableConfig | None = None) -> SkillsStateUpdate | None:
+        """Load skills metadata when it is not already available in state."""
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._get_backend(state, runtime, config or {})
         all_skills: dict[str, SkillMetadata] = {}
-        skills_load_errors: list[str] = []
+        errors: list[str] = []
 
-        # Load skills from each source in order
-        # Later sources override earlier ones (last one wins)
         for source_path in self.sources:
             source_skills, source_error = await _alist_skills_with_errors(backend, source_path)
             if source_error is not None:
-                skills_load_errors.append(source_error)
+                errors.append(source_error)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
-        skills = list(all_skills.values())
-        update = SkillsStateUpdate(skills_metadata=skills)
-        if skills_load_errors:
-            # Log even when `system_prompt_template is None`, otherwise the
-            # warnings only reach the model via the prompt fragment and
-            # silently disappear when the fragment is suppressed.
-            logger.warning("Skills load errors: %s", skills_load_errors)
-            update["skills_load_errors"] = skills_load_errors
+        update = SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        if errors:
+            logger.warning("Skills load errors: %s", errors)
+            update["skills_load_errors"] = errors
         return update
+
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Load skills metadata before agent execution."""
+        return self._load_skills_update(state, runtime, config)
+
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Load skills metadata before agent execution."""
+        return await self._aload_skills_update(state, runtime, config)
+
+    def before_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig | None = None) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Restore untracked skills metadata before each model call if needed."""
+        return self._load_skills_update(state, runtime, config)
+
+    async def abefore_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig | None = None) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Restore untracked skills metadata before each model call if needed."""
+        return await self._aload_skills_update(state, runtime, config)
 
     def wrap_model_call(
         self,

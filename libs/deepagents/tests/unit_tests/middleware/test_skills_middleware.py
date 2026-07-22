@@ -18,9 +18,11 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -1848,6 +1850,61 @@ def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) ->
     assert len(result["messages"]) > 0
 
 
+def test_skills_metadata_restored_after_interrupt() -> None:
+    """Untracked skills metadata must be reloaded after HITL resume."""
+    checkpointer = InMemorySaver()
+    skill_content = make_skill_content("test-skill", "A test skill for interrupt resume")
+    timestamp = datetime.now(UTC).isoformat()
+    skill_files = {
+        "/skills/user/test-skill/SKILL.md": {
+            "content": skill_content,
+            "encoding": "utf-8",
+            "created_at": timestamp,
+            "modified_at": timestamp,
+        }
+    }
+
+    @tool
+    def needs_approval(value: str) -> str:
+        """Return the approved value."""
+        return value
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_1", "name": "needs_approval", "args": {"value": "ok"}}],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        skills=["/skills/user"],
+        tools=[needs_approval],
+        interrupt_on={"needs_approval": True},
+        model=fake_model,
+        checkpointer=checkpointer,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "skills-interrupt-restore"}}
+
+    agent.invoke(
+        {"messages": [HumanMessage(content="Use the approved tool.")], "files": skill_files},
+        config,
+    )
+    checkpoint = agent.checkpointer.get(config)
+    assert "skills_metadata" not in checkpoint["channel_values"]
+
+    agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+
+    assert len(fake_model.call_history) == 2
+    resumed_messages = fake_model.call_history[1]["messages"]
+    resumed_system = resumed_messages[0]
+    assert resumed_system.type == "system"
+    assert "test-skill" in resumed_system.text
+
+
 def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:
     """Test that skills work gracefully when no skills are found (empty directory)."""
     # Create empty skills directory
@@ -1920,17 +1977,7 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
     state_values = agent.get_state(config).values
     assert "/skills/user/test-skill/SKILL.md" in state_values["files"]
     checkpoint = agent.checkpointer.get(config)
-    assert checkpoint["channel_values"]["skills_metadata"] == [
-        {
-            "allowed_tools": [],
-            "compatibility": None,
-            "description": "A test skill for default backend",
-            "license": None,
-            "metadata": {},
-            "name": "test-skill",
-            "path": "/skills/user/test-skill/SKILL.md",
-        },
-    ]
+    assert "skills_metadata" not in checkpoint["channel_values"]
 
 
 def create_store_skill_item(content: str) -> dict:

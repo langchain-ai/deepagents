@@ -3410,6 +3410,18 @@ class DeepAgentsApp(App):
         """Placeholder widgets mounted for messages still sitting in
         `_pending_messages`, removed as the queue drains."""
 
+        self._initial_prompt_queued_widget: QueuedUserMessage | None = None
+        """Placeholder mounted at startup for a `-m`/`--message` prompt so it
+        appears queued immediately while the server is still connecting,
+        matching the on-screen feedback of the typed-while-connecting path.
+        Unlike that path this is a cosmetic placeholder: it is not tracked in
+        `_pending_messages`/`_queued_widgets` and is never drained — instead
+        `_submit_initial_submission` removes it (via
+        `_remove_initial_prompt_placeholder`) and submits the real message.
+        Its `+1` in `_sync_status_queued` keeps the queued count honest while
+        it is live, so any path that detaches the widget must also clear this
+        pointer (see `_clear_messages`, `_discard_queue`)."""
+
         self._message_store = MessageStore()
         """Message virtualization store."""
 
@@ -3819,6 +3831,22 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+        # Surface a `-m`/`--message` prompt as a queued message right away,
+        # while the server is still connecting, instead of waiting for
+        # `ServerReady` to submit it. The resume-exclusion decision is read
+        # here, synchronously, before the resume-resolve task consumes
+        # `_resume_thread_intent` (see `_should_queue_initial_prompt_placeholder`).
+        if self._should_queue_initial_prompt_placeholder():
+
+            def _queue_initial_prompt_placeholder() -> None:
+                # Bare `create_task` would let any failure in the placeholder
+                # setup vanish as an unretrieved-task warning; route it through
+                # `_log_task_exception` like every other fire-and-forget task.
+                task = asyncio.create_task(self._show_initial_prompt_as_queued())
+                task.add_done_callback(_log_task_exception)
+
+            self.call_after_refresh(_queue_initial_prompt_placeholder)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
         """Toast if startup disabled tracing because credentials were missing."""
@@ -6528,7 +6556,10 @@ class DeepAgentsApp(App):
         """Mirror the pending-message queue depth onto the status bar."""
         if self._status_bar is None:
             return
-        self._status_bar.set_queued(len(self._pending_messages))
+        depth = len(self._pending_messages)
+        if self._initial_prompt_queued_widget is not None:
+            depth += 1
+        self._status_bar.set_queued(depth)
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -6808,9 +6839,7 @@ class DeepAgentsApp(App):
         ):
             anchor = spinner
         if anchor is None:
-            first_queued = self._queued_widgets[0] if self._queued_widgets else None
-            if first_queued is not None and first_queued.parent is container:
-                anchor = first_queued
+            anchor = self._first_mounted_queued_widget(container)
         if anchor is not None:
             try:
                 await container.mount(widget, before=anchor)
@@ -6836,6 +6865,14 @@ class DeepAgentsApp(App):
             if isinstance(child, LoadingWidget | QueuedUserMessage):
                 continue
             return child
+        return None
+
+    def _first_mounted_queued_widget(self, container: Container) -> Widget | None:
+        """Return the first queued placeholder mounted in `container`."""
+        initial = self._initial_prompt_queued_widget
+        for child in container.children:
+            if child is initial or child in self._queued_widgets:
+                return child
         return None
 
     @staticmethod
@@ -6882,14 +6919,7 @@ class DeepAgentsApp(App):
             )
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
-                anchor = next(
-                    (
-                        queued
-                        for queued in self._queued_widgets
-                        if queued.parent is container
-                    ),
-                    None,
-                )
+                anchor = self._first_mounted_queued_widget(container)
             if anchor is None:
                 await container.mount(bottom)
             else:
@@ -6988,10 +7018,8 @@ class DeepAgentsApp(App):
         if not children or self._loading_widget not in children:
             return False
 
-        if self._queued_widgets:
-            first_queued = self._queued_widgets[0]
-            if first_queued not in children:
-                return False
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             return children.index(self._loading_widget) == (
                 children.index(first_queued) - 1
             )
@@ -7127,8 +7155,8 @@ class DeepAgentsApp(App):
                 "Spinner widget not in container children; skipping reposition",
             )
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        first_queued = self._first_mounted_queued_widget(container)
+        if first_queued is not None:
             container.move_child(self._loading_widget, before=first_queued)
             return
         non_spinner = [
@@ -8026,6 +8054,67 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Startup command worker raised unexpectedly")
 
+    def _should_queue_initial_prompt_placeholder(self) -> bool:
+        """Whether startup should surface the `-m` prompt as a queued placeholder.
+
+        Called synchronously from `on_mount`, before the resume-resolve task
+        consumes `_resume_thread_intent`, so the resume exclusion is decided
+        against the raw `-r` intent. Resume is excluded because that path
+        bulk-loads history on connect, which would briefly render the
+        placeholder above the restored transcript.
+
+        Returns:
+            `True` when a bare `-m` prompt should be shown as queued during the
+            initial connect; `False` when resuming or not connecting.
+        """
+        return self._connecting and self._resume_thread_intent is None
+
+    async def _show_initial_prompt_as_queued(self) -> None:
+        """Mount the `-m` prompt as a queued placeholder during connect.
+
+        Gives a `-m`/`--message` prompt the same immediate on-screen feedback
+        as a message typed into an already-running session while it reconnects:
+        the text shows as queued right away rather than after `ServerReady`.
+        Scoped to a bare prompt — skills and goals render differently and keep
+        their existing startup path. The placeholder is removed and replaced by
+        a real user message when `_submit_initial_submission` dispatches.
+        """
+        if not self._connecting:
+            return
+        if self._initial_skill is not None or self._initial_goal is not None:
+            return
+        if not (self._initial_prompt and self._initial_prompt.strip()):
+            return
+        if self._initial_prompt_queued_widget is not None:
+            return
+
+        await self._dismiss_startup_tip()
+        # `ServerReady` can arrive while tip dismissal yields. Its startup
+        # sequence may submit the prompt before this task resumes, so recheck
+        # readiness before creating a placeholder that nobody will remove.
+        if not self._connecting or self._initial_prompt_queued_widget is not None:
+            return
+        queued_widget = QueuedUserMessage(self._initial_prompt)
+        self._initial_prompt_queued_widget = queued_widget
+        await self._mount_message(queued_widget)
+        self._sync_status_queued()
+        self._reveal_connection_status()
+
+    async def _remove_initial_prompt_placeholder(self) -> None:
+        """Drop the `-m` queued placeholder before mounting the real message."""
+        widget = self._initial_prompt_queued_widget
+        if widget is None:
+            return
+        self._initial_prompt_queued_widget = None
+        if widget.is_attached:
+            # Only benign detach races are expected here; a broader
+            # `suppress(Exception)` would hide a real removal failure and
+            # strand the placeholder above the real message. Matches the
+            # narrow-suppress idiom used elsewhere for widget removal.
+            with suppress(NoMatches, ScreenStackError):
+                await widget.remove()
+        self._sync_status_queued()
+
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
         if self._exiting:
@@ -8046,6 +8135,7 @@ class DeepAgentsApp(App):
                 await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
+                await self._remove_initial_prompt_placeholder()
                 await self._handle_user_message(self._initial_prompt)
         except Exception:
             logger.exception("Unhandled error during initial submission")
@@ -14977,6 +15067,10 @@ class DeepAgentsApp(App):
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
         self._active_user_message = None
+        # Same reasoning for the startup `-m` placeholder: remove_children()
+        # below detaches its widget, so the pointer must not outlive it or
+        # `_sync_status_queued`'s `+1` would strand the queued count.
+        self._initial_prompt_queued_widget = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -15112,6 +15206,15 @@ class DeepAgentsApp(App):
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        # The startup `-m` placeholder represents a pending submission even
+        # though it is not stored in `_pending_messages`. Cancel the backing
+        # prompt along with the widget so a later `ServerReady` cannot submit
+        # work the user already discarded.
+        placeholder = self._initial_prompt_queued_widget
+        if placeholder is not None:
+            self._initial_prompt = None
+            self._initial_prompt_queued_widget = None
+            placeholder.remove()
         self._deferred_actions.clear()
         self._sync_status_queued()
 
@@ -15648,16 +15751,15 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # A second exit() while shutdown is already underway means the user is
-        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set at
-        # the top of the first exit() below, before it decides whether to defer,
-        # so this guard fires for both the deferred and immediate first paths.
-        # Tear down immediately rather than arming another bounded wait — the
-        # first call already ran cleanup and cancelled the worker, so re-running
-        # it would only make the force-quit wait out another window.
+        # forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). `_exiting` is set by
+        # the first exit() below, before it decides whether to defer, so this
+        # guard fires for both the deferred and immediate first paths. Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
         if self._exiting:
             super().exit(result=result, return_code=return_code, message=message)
             return
-        self._exiting = True
 
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
@@ -15728,6 +15830,7 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
+        self._exiting = True
 
         # Defer super().exit() so teardown can overlap independent slow phases
         # instead of serializing them, while keeping the Textual event loop
@@ -20279,10 +20382,12 @@ class DeepAgentsApp(App):
             timeout: Optional outer timeout for the full restart.
 
         Raises:
-            asyncio.CancelledError: If app teardown has already begun.
+            asyncio.CancelledError: If app teardown has already begun, or if
+                `server_proc.restart()` is cancelled because a terminal `stop()`
+                bumped the stop generation mid-restart.
             RuntimeError: Propagated from `server_proc.restart()` on failure.
             TimeoutError: If `timeout` is set and the restart exceeds it.
-        """  # noqa: DOC502  # RuntimeError/TimeoutError propagate from restart()
+        """  # noqa: DOC502  # restart() raises RuntimeError; wait_for() times out.
         if self._exiting:
             raise asyncio.CancelledError
 
@@ -20347,12 +20452,9 @@ class DeepAgentsApp(App):
             # `asyncio.CancelledError` is intentionally NOT caught here (it is a
             # `BaseException`): `_restart_server_process` raises it only when app
             # teardown has begun or a terminal `stop()` bumped the server's stop
-            # generation mid-restart — i.e. only during shutdown. Letting it
-            # propagate means the `_connecting`/`_reconnecting` reset below is
-            # skipped, but that is safe because UI state no longer matters during
-            # shutdown and the `/restart` caller (`_run_restart_respawn`) resets
-            # those flags in its own `finally`. If a future edit ever lets this
-            # fire outside teardown, add a reset on the cancellation path.
+            # generation mid-restart — i.e. only during shutdown. Let it propagate
+            # to the outer `BaseException` handler below, which resets
+            # `_connecting`/`_reconnecting`, syncs connection status, and re-raises.
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 self._reconnecting = False

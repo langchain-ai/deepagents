@@ -13831,7 +13831,7 @@ class DeepAgentsApp(App):
                     self._last_consumed_next_previous_rubric = self._active_rubric
                     self._next_rubric = None
                     self._sync_status_rubric()
-        if goal_notice_ready and not goal_notice_written:
+        if graph_input is None and goal_notice_ready and not goal_notice_written:
             goal_notice_ready = await self._ensure_goal_state_notice()
 
         latest_goal_grade: RubricEvaluationEnd | None = None

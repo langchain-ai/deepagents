@@ -17,7 +17,8 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
@@ -1215,8 +1216,9 @@ def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
     Editable installs can leave package metadata behind the source checkout, so
-    this uses the shared resolver that prefers the editable source version and
-    falls back to metadata when needed.
+    this uses the shared resolver that prefers the editable source marker. A
+    sibling monorepo workspace whose marker trails dcode's exact pin reports the
+    pinned release baseline with a `+editable` suffix.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.
@@ -1275,7 +1277,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
             if editable:
                 url = data.get("url", "")
                 if url.startswith("file://"):
-                    path = unquote(urlparse(url).path)
+                    path = url2pathname(urlparse(url).path)
                     home = str(Path.home())
                     if path.startswith(home):
                         path = "~" + path[len(home) :]
@@ -1684,7 +1686,9 @@ def build_stream_config(
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
-    can differ from a remote graph's Deep Agents runtime version.
+    can differ from a remote graph's Deep Agents runtime version. For sibling
+    monorepo packages, a `+editable` suffix identifies workspace HEAD relative
+    to the pinned published SDK baseline.
 
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
@@ -3103,7 +3107,7 @@ def is_langsmith_redaction_enabled() -> bool:
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
-        return True
+        return False
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
 
@@ -3177,8 +3181,8 @@ def configure_langsmith_secret_redaction() -> bool:
     try:
         if not is_langsmith_redaction_enabled():
             logger.warning(
-                "LangSmith tracing is active but secret redaction is disabled "
-                "via %s; secrets may be uploaded to traces unredacted.",
+                "LangSmith tracing is active without secret redaction; secrets may "
+                "be uploaded to traces unredacted. Set %s=true to enable redaction.",
                 LANGSMITH_REDACT,
             )
             return False

@@ -1040,7 +1040,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Tracing",
         summary="Redact detected secrets from LangSmith agent traces before upload.",
         kind=OptionKind.BOOL,
-        default=True,
+        default=False,
         env_var=_env_vars.LANGSMITH_REDACT,
         toml_keys=("tracing", "langsmith_redact"),
     ),

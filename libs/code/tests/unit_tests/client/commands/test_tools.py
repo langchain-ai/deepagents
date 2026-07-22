@@ -362,6 +362,34 @@ class TestToolsList:
             trust_project_mcp=True,
         )
 
+    def test_list_invalid_allow_fs_tools_exits(self) -> None:
+        """A malformed `--allow-fs-tools` fails fast with exit 2, before catalog.
+
+        `_parse_allow_fs_tools_flag` is unit-tested exhaustively in isolation;
+        this pins the command-level contract that the bad value aborts the
+        `tools list` request rather than degrading to an unrestricted listing.
+        """
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            interpreter=False,
+            sandbox="none",
+            allow_fs_tools="bogus",
+            no_mcp=True,
+            mcp_config=None,
+            trust_project_mcp=False,
+        )
+        with (
+            patch(
+                "deepagents_code.tool_catalog.collect_catalog",
+                return_value=ToolCatalog(groups=()),
+            ) as collect,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            run_tools_command(args)
+        assert exc_info.value.code == 2
+        collect.assert_not_called()
+
     def test_list_defaults_trust_project_mcp_to_none(self) -> None:
         """Absent `--trust-project-mcp` forwards `None`.
 

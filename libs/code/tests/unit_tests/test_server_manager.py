@@ -86,6 +86,19 @@ class TestServerConfigRoundTrip:
 
         assert restored.allow_fs_tools == "all"
 
+    def test_from_env_absent_allow_fs_tools_is_none(self) -> None:
+        """An absent `ALLOW_FS_TOOLS` var deserializes to `None` (unrestricted).
+
+        `None` is the "flag omitted" state and must not be confused with `"all"`
+        (they install different middleware). Guards the `raw is None` passthrough
+        in `_read_env_allow_fs_tools`.
+        """
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop(f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS", None)
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools is None
+
     def test_from_env_rejects_invalid_allow_fs_tools_shape(self) -> None:
         """A tampered/skewed ALLOW_FS_TOOLS value fails closed rather than open.
 

@@ -7,10 +7,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import Mock, patch
 
 import pytest
+from deepagents import FsToolName
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
@@ -292,6 +293,7 @@ def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> N
         create_cli_agent(
             model=model,
             assistant_id="test-agent",
+            fs_tools=["read_file"],
             enable_memory=False,
             enable_skills=False,
             enable_shell=False,
@@ -302,6 +304,7 @@ def test_goal_criteria_tools_wire_fallback_and_none_backend(tmp_path: Path) -> N
 
     make_criteria.assert_called_once()
     assert make_criteria.call_args.kwargs["repository_backend"] is None
+    assert make_criteria.call_args.kwargs["fs_tools"] == ["read_file"]
     make_fallback.assert_called_once()
     # Primary and fallback agents share one model, and the middleware receives
     # both so graph-level failures can degrade to goal-only generation.
@@ -3861,6 +3864,19 @@ class TestCreateCliAgentFsToolsWiring:
 
         return calls, factory
 
+    def test_harness_tool_descriptions_accepts_model_instance(self) -> None:
+        """`_get_harness_tool_descriptions` handles a resolved model, not just a spec.
+
+        The string-spec branch is exercised throughout this class via
+        `model="fake-model"`; the `BaseChatModel` branch (taken when the agent is
+        built from an already-instantiated model) is otherwise unexercised. It
+        must resolve a profile and return a plain dict rather than raise.
+        """
+        from deepagents_code.agent import _get_harness_tool_descriptions
+
+        result = _get_harness_tool_descriptions(_make_fake_chat_model())
+        assert isinstance(result, dict)
+
     def test_restricted_middleware_replaces_sdk_default_by_name(self) -> None:
         """The security guarantee rests on the SDK's replace-by-name merge.
 
@@ -4025,6 +4041,61 @@ class TestCreateCliAgentFsToolsWiring:
         allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
         assert allowlisted
         assert all(tools == "all" for tools in allowlisted)
+
+    def test_none_and_all_install_different_middleware(self, tmp_path: Path) -> None:
+        """`None` and `"all"` are NOT interchangeable — guards the I4 collapse.
+
+        Both mean "all filesystem tools" but differ structurally: `None` inherits
+        the SDK's own default `FilesystemMiddleware` (dcode appends nothing), while
+        `"all"` actively reinstalls an unrestricted instance. The distinction is
+        load-bearing (serialization in `_server_config.to_env` and the middleware
+        gate in `create_cli_agent` both key off `is not None`) but is documented
+        only in prose. A refactor that collapses `"all"` into `None` (or vice
+        versa) would typecheck; this test fails instead. Asserting the contrast in
+        one place documents the invariant beyond the split single-arm tests.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        # Built once: the helper creates dirs, so it cannot run twice per tmp_path.
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        def middleware_passed_for(
+            fs_tools: Literal["all"] | list[FsToolName] | None,
+        ) -> list[type]:
+            mock_agent = Mock()
+            mock_agent.with_config.return_value = mock_agent
+            fake_model = _make_fake_chat_model()
+            with (
+                patch("deepagents_code.agent.settings", mock_settings),
+                patch("deepagents_code.agent.SkillsMiddleware"),
+                patch("deepagents_code.agent.MemoryMiddleware"),
+                patch(
+                    "deepagents_code.agent.create_deep_agent",
+                    return_value=mock_agent,
+                ) as mock_create,
+                patch(
+                    "deepagents._models.init_chat_model",
+                    return_value=fake_model,
+                ),
+            ):
+                create_cli_agent(
+                    model="fake-model",
+                    assistant_id="test",
+                    fs_tools=fs_tools,
+                    enable_memory=False,
+                    enable_skills=False,
+                    enable_shell=True,
+                )
+            _, kwargs = mock_create.call_args
+            return [type(m) for m in kwargs["middleware"]]
+
+        none_middleware = middleware_passed_for(None)
+        all_middleware = middleware_passed_for("all")
+
+        # `None` appends no FilesystemMiddleware (SDK default stays); `"all"` does.
+        assert FilesystemMiddleware not in none_middleware
+        assert FilesystemMiddleware in all_middleware
+        assert none_middleware != all_middleware
 
     def test_all_preserves_harness_descriptions_for_main_and_subagent(
         self, tmp_path: Path

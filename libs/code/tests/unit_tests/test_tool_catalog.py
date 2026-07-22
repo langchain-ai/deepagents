@@ -108,6 +108,70 @@ class TestCollectBuiltInTools:
             "execute",
         } <= names
 
+    def test_backstop_strips_and_logs_when_disallowed_tool_leaks_through(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """If the SDK ever stops narrowing, the post-filter must not silently lie.
+
+        Normally the SDK's `FilesystemMiddleware` omits disallowed tools from the
+        node, so the post-filter is a no-op. Here we simulate that guarantee
+        breaking (a disallowed `write_file` reaches enumeration) and assert the
+        backstop both (a) removes it from the listing and (b) logs an error,
+        rather than silently reshaping the display over an unrestricted agent.
+        """
+        leaked = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="write_file", description="write"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=leaked,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            names = {
+                tool.name for tool in collect_built_in_tools(fs_tools=["read_file"])
+            }
+
+        assert "write_file" not in names
+        assert {"read_file", "task"} <= names
+        assert any(
+            "allowlist backstop removed" in record.getMessage()
+            and "write_file" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_backstop_silent_when_allowlist_already_applied(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backstop must stay quiet when enumeration already respects it."""
+        applied = [
+            ToolEntry(name="read_file", description="read"),
+            ToolEntry(name="task", description="delegate"),
+        ]
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(SimpleNamespace(), None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tools_from_agent",
+                return_value=applied,
+            ),
+            caplog.at_level("ERROR", logger="deepagents_code.tool_catalog"),
+        ):
+            collect_built_in_tools(fs_tools=["read_file"])
+
+        assert not caplog.records
+
     def test_filesystem_tool_names_match_sdk(self) -> None:
         """`_FILESYSTEM_TOOL_NAMES` must not drift from the SDK's `FsToolName`."""
         from typing import get_args

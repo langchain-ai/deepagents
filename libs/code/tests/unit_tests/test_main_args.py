@@ -2741,6 +2741,33 @@ class TestAllowFsToolsArgument:
             cli_main()
         assert mock_run.await_args.kwargs["allow_fs_tools"] == ["ls", "read_file"]  # ty: ignore
 
+    def test_invalid_value_exits_before_startup_side_effects(self) -> None:
+        """Malformed allowlists fail before migration, installs, or prompts."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-n", "task", "--allow-fs-tools", "bogus"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.state_migration.migrate_legacy_state") as migrate,
+            patch("deepagents_code.main.check_optional_tools") as check_tools,
+            patch("deepagents_code.main._run_startup_auto_update") as update,
+            patch("deepagents_code.main._check_mcp_project_trust") as trust,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        migrate.assert_not_called()
+        check_tools.assert_not_called()
+        update.assert_not_called()
+        trust.assert_not_called()
+
     def test_not_forwarded_as_none_when_omitted(self) -> None:
         """When --allow-fs-tools is omitted, allow_fs_tools=None is forwarded."""
         from deepagents_code.main import cli_main

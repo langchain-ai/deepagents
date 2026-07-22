@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from deepagents_code._constants import FS_TOOL_NAMES
 from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
@@ -48,15 +49,14 @@ Emitted verbatim in the `--json` output, so it is a public contract; keep it a
 BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
 
-_FILESYSTEM_TOOL_NAMES = frozenset(
-    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
-)
+_FILESYSTEM_TOOL_NAMES = FS_TOOL_NAMES
 """Mirror of the SDK's `FsToolName` literal members, used to identify which
 enumerated tools the `fs_tools` allowlist governs.
 
-Kept as a literal set (the `get_args(FsToolName)` drift guard
-in `test_tool_catalog` pins it) so a new or renamed SDK filesystem tool fails
-the test instead of silently escaping the post-filter below.
+Sourced from the shared `_constants.FS_TOOL_NAMES` so it cannot diverge from the
+copy `main` uses; the `get_args(FsToolName)` drift guard in `test_tool_catalog`
+pins it so a new or renamed SDK filesystem tool fails the test instead of
+silently escaping the post-filter below.
 """
 
 
@@ -252,22 +252,44 @@ def collect_built_in_tools(
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
     # Defensive backstop, normally a no-op: the SDK's `FilesystemMiddleware`
-    # omits disallowed filesystem tools from the node entirely (its own source
-    # comment: "Excluded tools are omitted here entirely, not just hidden from
-    # the model's schema"), so `collect_tools_from_agent` already returns only
-    # the allowlisted filesystem tools. This filter is kept as belt-and-braces
-    # so `/tools` / `dcode tools list` still reflects an explicit allowlist if
-    # that SDK behavior changes, or if the by-name middleware replacement ever
-    # left a second, unrestricted `FilesystemMiddleware` bound. Since it only
-    # ever removes already-absent tools, it is safe to keep and safe to drop.
-    # (`"all"` and `None` intentionally skip filtering.)
+    # omits disallowed filesystem tools from the bound node entirely (not merely
+    # hiding them from the model's schema), so `collect_tools_from_agent` already
+    # returns only the allowlisted filesystem tools. This filter is kept as
+    # belt-and-braces in case that SDK behavior changes, or the by-name
+    # middleware replacement ever left a second, unrestricted
+    # `FilesystemMiddleware` bound.
+    #
+    # If it ever *does* remove something, that is not a benign display tidy-up:
+    # it means the enumeration — built from the same `create_cli_agent` the
+    # runtime uses — surfaced a disallowed filesystem tool, i.e. the allowlist
+    # did not actually take effect. Silently reshaping the listing would hide
+    # exactly the discrepancy this backstop exists to catch and make `/tools`
+    # falsely report a restricted surface over an unrestricted agent, so we log
+    # loudly rather than swallow. (`"all"` and `None` intentionally skip
+    # filtering.)
     if isinstance(fs_tools, list):
         enabled = frozenset(fs_tools)
-        return [
+        removed = [
+            tool.name
+            for tool in tools
+            if tool.name in _FILESYSTEM_TOOL_NAMES and tool.name not in enabled
+        ]
+        filtered = [
             tool
             for tool in tools
             if tool.name not in _FILESYSTEM_TOOL_NAMES or tool.name in enabled
         ]
+        if removed:
+            logger.error(
+                "Filesystem tool allowlist backstop removed %s from the tool "
+                "listing: the enumerated agent exposed disallowed filesystem "
+                "tool(s) not in the allowlist %s. This indicates the allowlist "
+                "was not applied to the underlying agent; the displayed listing "
+                "no longer reflects the agent's actual tools.",
+                removed,
+                sorted(enabled),
+            )
+        return filtered
     return tools
 
 

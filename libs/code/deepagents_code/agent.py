@@ -1850,9 +1850,10 @@ def create_cli_agent(
             (which must include `"read_file"`) installs one restricted to those
             tool names. In both cases the instance replaces the SDK's default
             for the main agent and every synchronous subagent (including
-            `general-purpose`), so delegating via `task` cannot bypass the
-            restriction. Async subagents are unaffected (they run on their own
-            remote backend, not the local filesystem).
+            `general-purpose`) as well as the nested goal-criteria agent, so
+            delegation cannot bypass the restriction. Async subagents are
+            unaffected (they run on their own remote backend, not the local
+            filesystem).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -2400,14 +2401,14 @@ def create_cli_agent(
                 custom_tool_descriptions=main_tool_descriptions,
             )
         )
-        # Caller-supplied subagents never inherit the main agent's `middleware=`
-        # (the SDK auto-inherits only into the *auto-created* `general-purpose`
-        # subagent, and even there only middleware whose `.name` overrides a
-        # default GP slot — see `_gp_inheritable` in `deepagents.graph`). dcode
-        # always supplies its own `general-purpose` spec, so that inheritance
-        # path never fires here. The restriction must therefore be injected into
-        # each subagent's own `middleware` list, or delegating via `task` could
-        # bypass `--allow-fs-tools`.
+        # Caller-supplied subagents never inherit the main agent's `middleware=`.
+        # The SDK auto-inherits main-agent middleware only into the
+        # *auto-created* `general-purpose` subagent, and even there only for
+        # middleware whose `.name` overrides a default GP slot. dcode always
+        # supplies its own `general-purpose` spec, so that inheritance path never
+        # fires here. The restriction must therefore be injected into each
+        # subagent's own `middleware` list, or delegating via `task` could bypass
+        # `--allow-fs-tools`.
         _inject_fs_tools_into_subagents(
             custom_subagents,
             fs_tools=fs_tools,
@@ -2444,6 +2445,7 @@ def create_cli_agent(
             repository_root=criteria_root,
             context_tools=goal_criteria_tools,
             auto_mode_enabled=auto_mode_enabled,
+            fs_tools=fs_tools,
         )
         criteria_fallback_agent = create_goal_criteria_fallback_agent(model=model)
         agent_middleware.append(

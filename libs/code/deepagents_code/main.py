@@ -699,14 +699,13 @@ def _parse_interpreter_tools_flag(
     return names
 
 
-# Mirror of the SDK's `FsToolName` literal members. Hardcoded rather than
-# derived from `deepagents.FsToolName` because `deepagents` must not be imported
-# on the arg-parsing hot path (see AGENTS.md "Startup performance"). The
-# `get_args(FsToolName)` drift guard in `test_main_args` pins this set so a new
-# or renamed SDK filesystem tool fails the test instead of silently diverging.
-_FS_TOOL_NAMES = frozenset(
-    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
-)
+# Mirror of the SDK's `FsToolName` literal members, sourced from the
+# dependency-free `_constants` module so it is not duplicated (see the docstring
+# there for why it is hardcoded rather than derived from `deepagents.FsToolName`,
+# and the `get_args(FsToolName)` drift guard in `test_main_args` that pins it).
+# `_constants` triggers no `deepagents` import, so the arg-parsing hot path stays
+# clean (AGENTS.md "Startup performance").
+from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
 
 
 def _parse_allow_fs_tools_flag(
@@ -3522,6 +3521,9 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        allow_fs_tools = _parse_allow_fs_tools_flag(
+            getattr(args, "allow_fs_tools", None)
+        )
 
         if _show_bare_command_group_help(args):
             return
@@ -3668,9 +3670,7 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                    allow_fs_tools=_parse_allow_fs_tools_flag(
-                        getattr(args, "allow_fs_tools", None)
-                    ),
+                    allow_fs_tools=allow_fs_tools,
                 )
             )
             sys.exit(exit_code)
@@ -4483,9 +4483,6 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
-            allow_fs_tools = _parse_allow_fs_tools_flag(
-                getattr(args, "allow_fs_tools", None)
-            )
             _warn_if_interpreter_tools_without_interpreter(
                 args, enable_interpreter=enable_interpreter
             )
@@ -4625,9 +4622,6 @@ def cli_main() -> None:
             try:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
-                )
-                allow_fs_tools = _parse_allow_fs_tools_flag(
-                    getattr(args, "allow_fs_tools", None)
                 )
                 # A stderr warning here would be clobbered by the alternate
                 # screen the moment the TUI launches; the app surfaces the

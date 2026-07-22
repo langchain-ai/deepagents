@@ -1177,6 +1177,59 @@ async def test_plugin_skill_adapter_namespaces_nested_subfolders(
     } == expected_names
 
 
+def test_plugin_skills_middleware_hook_runs_without_attribute_error(
+    tmp_path: Path,
+) -> None:
+    """Regression: constructing and invoking the hook must not raise."""
+    skills_root = tmp_path / "plugin" / "skills"
+    _write_skill(skills_root / "review" / "SKILL.md", name="review")
+
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False),
+        sources=[(str(skills_root), "Plugin", "myplugin")],
+        system_prompt=None,
+    )
+    sync_update = middleware.before_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+    )
+    assert sync_update is not None
+    assert {skill["name"] for skill in sync_update["skills_metadata"]} == {
+        "myplugin:review"
+    }
+
+
+async def test_plugin_skills_middleware_skips_when_backend_unavailable(
+    tmp_path: Path,
+) -> None:
+    """An unresolvable backend degrades to skipping load, not aborting the turn."""
+    skills_root = tmp_path / "plugin" / "skills"
+    _write_skill(skills_root / "review" / "SKILL.md", name="review")
+
+    def _missing_backend(_runtime: object) -> None:
+        return None
+
+    middleware = PluginSkillsMiddleware(
+        backend=cast("Any", _missing_backend),
+        sources=[(str(skills_root), "Plugin", "myplugin")],
+        system_prompt=None,
+    )
+
+    class _Runtime:
+        context = None
+        stream_writer = None
+        store = None
+
+    sync_update = middleware.before_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", _Runtime()), config={}
+    )
+    async_update = await middleware.abefore_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", _Runtime()), config={}
+    )
+
+    assert sync_update is None
+    assert async_update is None
+
+
 def test_plugin_skill_discovery_skips_symlinks_outside_source(
     tmp_path: Path,
 ) -> None:

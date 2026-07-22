@@ -263,6 +263,27 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             for source in sources
         )
 
+    def _resolve_backend(
+        self,
+        state: sdk_skills.SkillsState,
+        runtime: Runtime,
+        config: RunnableConfig,
+    ) -> BackendProtocol | None:
+        """Resolve the skill backend, returning `None` if it is unavailable.
+
+        Delegates to the SDK base `_get_backend` so backend factory callables
+        resolve the same way they do for the SDK middleware.
+
+        Returns:
+            The resolved backend, or `None` when it is missing or unresolvable
+            so skill loading is skipped rather than aborting the turn.
+        """
+        try:
+            return self._get_backend(state, runtime, config)
+        except Exception:  # noqa: BLE001  # a bad backend must skip skills, not kill the turn
+            logger.warning("Skipping plugin skill loading: backend unavailable")
+            return None
+
     @staticmethod
     def _state_update(
         all_skills: dict[str, sdk_skills.SkillMetadata],
@@ -282,19 +303,22 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def before_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,  # noqa: ARG002
-        config: RunnableConfig,  # noqa: ARG002
+        runtime: Runtime,
+        config: RunnableConfig,
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Load and namespace plugin skills before collision resolution.
 
         Returns:
             A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            when skills are already loaded or the backend is unavailable.
         """
         if "skills_metadata" in state:
             return None
 
-        backend = self._backend
+        backend = self._resolve_backend(state, runtime, config)
+        if backend is None:
+            return None
+
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
@@ -328,19 +352,22 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     async def abefore_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,  # noqa: ARG002
-        config: RunnableConfig,  # noqa: ARG002
+        runtime: Runtime,
+        config: RunnableConfig,
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Asynchronously load and namespace skills before collision resolution.
 
         Returns:
             A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            when skills are already loaded or the backend is unavailable.
         """
         if "skills_metadata" in state:
             return None
 
-        backend = self._backend
+        backend = self._resolve_backend(state, runtime, config)
+        if backend is None:
+            return None
+
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []

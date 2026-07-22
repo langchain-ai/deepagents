@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import singledispatch
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from langchain_core.messages import ToolMessage
@@ -9,7 +10,6 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
-    HookDiagnostic,
     HookEvent,
     NotificationEvent,
     PermissionRequestEvent,
@@ -50,20 +50,21 @@ if TYPE_CHECKING:
 
     from langgraph.types import Command
 
-    from deepagents_code.hooks.models.domain import HookInvocation
+    from deepagents_code.hooks.models.domain import (
+        AgentIdentity,
+        HookDomainEvent,
+        HookInvocation,
+    )
     from deepagents_code.hooks.models.wire import HookWireInput
 
 
-class _CoreWireFields(TypedDict):
+class _BaseWireFields(TypedDict):
     session_id: str
     transcript_path: str
     cwd: str
     permission_mode: NotRequired[WirePermissionMode]
     prompt_id: NotRequired[UUID]
     effort: NotRequired[Effort]
-
-
-class _CommonWireFields(_CoreWireFields):
     agent_id: NotRequired[str]
     agent_type: NotRequired[str]
 
@@ -71,7 +72,7 @@ class _CommonWireFields(_CoreWireFields):
 def project_hook_input(
     invocation: HookInvocation,
     *,
-    transcript_path: Path | None = None,
+    transcript_path: Path,
     agent_transcript_path: Path | None = None,
 ) -> HookWireInput:
     """Project a native hook invocation into the compatible wire contract.
@@ -83,120 +84,13 @@ def project_hook_input(
 
     Returns:
         A validated event-specific wire input.
-
-    Raises:
-        TypeError: If the invocation carries an unsupported event model.
-        ValueError: If a required materialized transcript path is missing.
     """
-    event = invocation.event
-    if isinstance(event, SessionStartEvent):
-        result = SessionStartWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.SESSION_START,
-            source=event.cause,
-            model=event.model,
-        )
-    elif isinstance(event, UserPromptSubmitEvent):
-        result = UserPromptSubmitWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.USER_PROMPT_SUBMIT,
-            prompt=event.prompt,
-        )
-    elif isinstance(event, SessionEndEvent):
-        result = SessionEndWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.SESSION_END,
-            reason=event.cause,
-        )
-    elif isinstance(event, PermissionRequestEvent):
-        tool_name, tool_input = to_wire_call(event.call)
-        result = PermissionRequestWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.PERMISSION_REQUEST,
-            tool_name=tool_name,
-            tool_input=tool_input,
-        )
-    elif isinstance(event, NotificationEvent):
-        result = NotificationWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.NOTIFICATION,
-            message=event.notification.message,
-            title=event.notification.title,
-            notification_type=_notification_type(event.notification.type),
-        )
-    elif isinstance(event, PreToolUseEvent):
-        tool_name, tool_input = to_wire_call(event.call)
-        result = PreToolUseWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.PRE_TOOL_USE,
-            tool_name=tool_name,
-            tool_input=tool_input,
-            tool_use_id=event.call.id,
-        )
-    elif isinstance(event, PostToolUseEvent):
-        tool_name, tool_input = to_wire_call(event.call)
-        result = PostToolUseWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.POST_TOOL_USE,
-            tool_name=tool_name,
-            tool_input=tool_input,
-            tool_response=_tool_result(event.result),
-            tool_use_id=event.call.id,
-            duration_ms=event.duration_ms,
-        )
-    elif isinstance(event, PreCompactEvent):
-        result = PreCompactWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.PRE_COMPACT,
-            trigger=event.trigger,
-            custom_instructions=event.custom_instructions,
-        )
-    elif isinstance(event, StopEvent):
-        result = StopWireInput(
-            **_common_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.STOP,
-            stop_hook_active=event.continuation_count > 0,
-            last_assistant_message=event.last_assistant_message,
-            background_tasks=[
-                BackgroundTaskWire.model_validate(task.model_dump())
-                for task in event.background_tasks
-            ],
-            session_crons=[
-                SessionCronWire.model_validate(cron.model_dump())
-                for cron in event.session_crons
-            ],
-        )
-    elif isinstance(event, SubagentStartEvent):
-        result = SubagentStartWireInput(
-            **_core_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.SUBAGENT_START,
-            agent_id=event.agent.id,
-            agent_type=event.agent.name,
-        )
-    elif isinstance(event, SubagentStopEvent):
-        if agent_transcript_path is None:
-            msg = "SubagentStop requires a materialized agent transcript path"
-            raise ValueError(msg)
-        result = SubagentStopWireInput(
-            **_core_fields(invocation, transcript_path),
-            hook_event_name=HookEvent.SUBAGENT_STOP,
-            stop_hook_active=event.continuation_count > 0,
-            agent_id=event.agent.id,
-            agent_type=event.agent.name,
-            agent_transcript_path=str(agent_transcript_path),
-            last_assistant_message=event.last_assistant_message,
-            background_tasks=[
-                BackgroundTaskWire.model_validate(task.model_dump())
-                for task in event.background_tasks
-            ],
-            session_crons=[
-                SessionCronWire.model_validate(cron.model_dump())
-                for cron in event.session_crons
-            ],
-        )
-    else:
-        msg = f"Unsupported hook event: {type(event).__name__}"
-        raise TypeError(msg)
+    result = _project_event(
+        invocation.event,
+        invocation,
+        transcript_path,
+        agent_transcript_path,
+    )
 
     payload = HOOK_WIRE_INPUT_ADAPTER.dump_python(
         result,
@@ -207,45 +101,234 @@ def project_hook_input(
     return HOOK_WIRE_INPUT_ADAPTER.validate_python(payload)
 
 
-def _core_fields(
+@singledispatch
+def _project_event(
+    event: HookDomainEvent,
+    _invocation: HookInvocation,
+    _transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    msg = f"Unsupported hook event: {type(event).__name__}"
+    raise TypeError(msg)
+
+
+@_project_event.register(SessionStartEvent)
+def _project_session_start(
+    event: SessionStartEvent,
     invocation: HookInvocation,
-    transcript_path: Path | None,
-) -> _CoreWireFields:
-    context = invocation.context
-    if transcript_path is None:
-        msg = "HookInvocation requires a materialized transcript path"
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return SessionStartWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.SESSION_START,
+        source=event.cause,
+        model=event.model,
+    )
+
+
+@_project_event.register(UserPromptSubmitEvent)
+def _project_user_prompt_submit(
+    event: UserPromptSubmitEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return UserPromptSubmitWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.USER_PROMPT_SUBMIT,
+        prompt=event.prompt,
+    )
+
+
+@_project_event.register(SessionEndEvent)
+def _project_session_end(
+    event: SessionEndEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return SessionEndWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.SESSION_END,
+        reason=event.cause,
+    )
+
+
+@_project_event.register(PermissionRequestEvent)
+def _project_permission_request(
+    event: PermissionRequestEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    tool_name, tool_input = to_wire_call(event.call)
+    return PermissionRequestWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.PERMISSION_REQUEST,
+        tool_name=tool_name,
+        tool_input=tool_input,
+    )
+
+
+@_project_event.register(NotificationEvent)
+def _project_notification(
+    event: NotificationEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return NotificationWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.NOTIFICATION,
+        message=event.notification.message,
+        title=event.notification.title,
+        notification_type=_notification_type(event.notification.type),
+    )
+
+
+@_project_event.register(PreToolUseEvent)
+def _project_pre_tool_use(
+    event: PreToolUseEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    tool_name, tool_input = to_wire_call(event.call)
+    return PreToolUseWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.PRE_TOOL_USE,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_use_id=event.call.id,
+    )
+
+
+@_project_event.register(PostToolUseEvent)
+def _project_post_tool_use(
+    event: PostToolUseEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    tool_name, tool_input = to_wire_call(event.call)
+    return PostToolUseWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.POST_TOOL_USE,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_response=_tool_result(event.result),
+        tool_use_id=event.call.id,
+        duration_ms=event.duration_ms,
+    )
+
+
+@_project_event.register(PreCompactEvent)
+def _project_pre_compact(
+    event: PreCompactEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return PreCompactWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.PRE_COMPACT,
+        trigger=event.trigger,
+        custom_instructions=event.custom_instructions,
+    )
+
+
+@_project_event.register(StopEvent)
+def _project_stop(
+    event: StopEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return StopWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.STOP,
+        stop_hook_active=event.continuation_count > 0,
+        last_assistant_message=event.last_assistant_message,
+        background_tasks=[
+            BackgroundTaskWire.model_validate(task.model_dump())
+            for task in event.background_tasks
+        ],
+        session_crons=[
+            SessionCronWire.model_validate(cron.model_dump())
+            for cron in event.session_crons
+        ],
+    )
+
+
+@_project_event.register(SubagentStartEvent)
+def _project_subagent_start(
+    event: SubagentStartEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return SubagentStartWireInput(
+        **_base_fields(invocation, transcript_path, agent=event.agent),
+        hook_event_name=HookEvent.SUBAGENT_START,
+    )
+
+
+@_project_event.register(SubagentStopEvent)
+def _project_subagent_stop(
+    event: SubagentStopEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    agent_transcript_path: Path | None,
+) -> HookWireInput:
+    if agent_transcript_path is None:
+        msg = "SubagentStop requires a materialized agent transcript path"
         raise ValueError(msg)
-    fields: _CoreWireFields = {
+    return SubagentStopWireInput(
+        **_base_fields(invocation, transcript_path, agent=event.agent),
+        hook_event_name=HookEvent.SUBAGENT_STOP,
+        stop_hook_active=event.continuation_count > 0,
+        agent_transcript_path=str(agent_transcript_path),
+        last_assistant_message=event.last_assistant_message,
+        background_tasks=[
+            BackgroundTaskWire.model_validate(task.model_dump())
+            for task in event.background_tasks
+        ],
+        session_crons=[
+            SessionCronWire.model_validate(cron.model_dump())
+            for cron in event.session_crons
+        ],
+    )
+
+
+def _base_fields(
+    invocation: HookInvocation,
+    transcript_path: Path,
+    *,
+    agent: AgentIdentity | None = None,
+) -> _BaseWireFields:
+    context = invocation.context
+    fields: _BaseWireFields = {
         "session_id": context.thread_id,
         "transcript_path": str(transcript_path),
         "cwd": str(context.cwd),
     }
-    permission_mode = _permission_mode(context.approval_mode)
-    if permission_mode is not None:
-        fields["permission_mode"] = permission_mode
+    fields["permission_mode"] = _permission_mode(context.approval_mode)
     if context.prompt_id is not None:
         fields["prompt_id"] = context.prompt_id
     if context.effort is not None:
         fields["effort"] = Effort(level=context.effort)
-    return fields
-
-
-def _common_fields(
-    invocation: HookInvocation,
-    transcript_path: Path | None,
-) -> _CommonWireFields:
-    fields: _CommonWireFields = {**_core_fields(invocation, transcript_path)}
-    agent = invocation.context.agent
-    if agent is not None:
-        fields["agent_id"] = agent.id
-        fields["agent_type"] = agent.name
+    identity = agent or context.agent
+    if identity is not None:
+        fields["agent_id"] = identity.id
+        fields["agent_type"] = identity.name
     return fields
 
 
 def serialize_hook_input(
     invocation: HookInvocation,
     *,
-    transcript_path: Path | None = None,
+    transcript_path: Path,
     agent_transcript_path: Path | None = None,
 ) -> bytes:
     """Serialize a hook invocation as validated compatible JSON.
@@ -269,27 +352,10 @@ def serialize_hook_input(
     )
 
 
-def projection_diagnostics(invocation: HookInvocation) -> tuple[HookDiagnostic, ...]:
-    """Return visible diagnostics for lossy domain-to-wire projection."""
-    if invocation.context.approval_mode is ApprovalMode.AUTO:
-        return (
-            HookDiagnostic(
-                code="unsupported_permission_mode",
-                severity="warning",
-                message=(
-                    "AUTO approval mode has no proven compatible hook permission "
-                    "mode and was omitted"
-                ),
-                field="permission_mode",
-            ),
-        )
-    return ()
-
-
-def _permission_mode(mode: ApprovalMode) -> WirePermissionMode | None:
+def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
     return {
         ApprovalMode.MANUAL: WirePermissionMode.DEFAULT,
-        ApprovalMode.AUTO: None,
+        ApprovalMode.AUTO: WirePermissionMode.AUTO,
         ApprovalMode.YOLO: WirePermissionMode.BYPASS_PERMISSIONS,
     }[mode]
 

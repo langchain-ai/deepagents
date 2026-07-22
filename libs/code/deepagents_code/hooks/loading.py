@@ -151,7 +151,7 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
 
     Returns:
         UTF-8 JSON with sorted keys, event order fixed to `HookEvent`, and
-        `None` fields omitted. Unsupported MVP fields such as `async` are
+        `None` fields omitted. Unsupported fields such as `async` are
         excluded so equivalent configs hash identically.
     """
     payload = {

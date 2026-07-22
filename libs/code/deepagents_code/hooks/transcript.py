@@ -35,7 +35,7 @@ from langchain_core.messages import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from deepagents_code.hooks.env import is_secret_env_name
+from deepagents_code.config_manifest import _is_secret_env
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
@@ -319,7 +319,7 @@ def redact_transcript_value(value: object) -> JsonValue:
         return {
             str(key): (
                 "[redacted]"
-                if is_secret_env_name(str(key))
+                if _is_secret_env(str(key))
                 else redact_transcript_value(item)
             )
             for key, item in value.items()

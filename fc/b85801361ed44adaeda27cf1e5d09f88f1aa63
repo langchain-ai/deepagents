@@ -1,0 +1,857 @@
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-59/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-12/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-54/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-30/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-21/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-86/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-74/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-58/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-96/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-28/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-85/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-14/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-34/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-20/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-82/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-94/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-80/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-87/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-95/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-44/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-98/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-71/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-91/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-72/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-60/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-77/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-84/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-88/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-76/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-25/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-90/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-17/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-61/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-63/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-19/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-39/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-33/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-93/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-53/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-97/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-27/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-70/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-29/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-40/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-75/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-46/task.toml
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-52/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-89/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-99/environment/.dockerignore
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-23/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/instruction.md
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-92/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-51/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/solution/solve.sh
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-43/environment/Dockerfile
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/tests/case.json
+  s_172bca4d3f2099::t_fd244a0e0f32c1 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fcb85801361ed44adaeda27cf1e5d09f88f1aa63",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

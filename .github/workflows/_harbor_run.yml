@@ -577,7 +577,7 @@ jobs:
             exit 1
           fi
           retry_reward_flag=()
-          if [ "$HARBOR_N_RETRIES" != "0" ]; then
+          if [ "$HARBOR_N_RETRIES" -ne 0 ]; then
             retry_reward_flag=(--retry-if-reward-below 1.0)
           fi
           if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then

@@ -840,22 +840,15 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
     """
     console.print()
     console.print(
-        "[bold red]YOLO mode lets the agent act on its own, without stopping to "
-        "ask you first.[/bold red]"
+        "[bold red]YOLO mode: the agent acts on its own, with no approval "
+        "prompts.[/bold red]"
     )
     console.print(
-        "Normally dcode pauses for your approval before doing anything risky "
-        "(this is Manual mode). YOLO turns that safeguard off: the agent can run "
-        "any command, create, change, or delete files, and call outside tools on "
-        "its own. It will also follow instructions hidden in content it reads or "
-        "fetches, which someone could have planted to trick it. None of this is "
-        "sandboxed, so it all runs directly on your machine and your files."
+        "It can run any command, change files, and use outside tools — even "
+        "acting on instructions hidden in content it reads. Nothing is "
+        "sandboxed; it all affects your real machine."
     )
-    console.print()
-    console.print(
-        '[dim]Not sure? Choose "Use Manual" below to keep reviewing actions '
-        "before they run.[/dim]"
-    )
+    console.print('[dim]Not sure? Pick "Use Manual" below.[/dim]')
     console.print()
     if not (sys.stdin.isatty() and sys.stderr.isatty()):
         return False

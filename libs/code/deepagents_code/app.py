@@ -17982,14 +17982,18 @@ class DeepAgentsApp(App):
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
-        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+        def _safe(
+            label: str, fn: Callable[[], str], *, copyable: bool = False
+        ) -> SnapshotField:
             try:
-                return SnapshotField(label=label, value=fn())
+                return SnapshotField(label=label, value=fn(), copyable=copyable)
             except Exception as exc:  # a diagnostic must still open on a bad field
                 # WARNING (not DEBUG) so the traceback lands in the always-on
                 # in-memory buffer and is visible in the console itself; the
                 # package logger sits at INFO by default, which drops DEBUG.
                 logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                # A failed field degrades to a non-copyable ``(unavailable: ...)``
+                # placeholder regardless of the requested `copyable` flag.
                 return SnapshotField(
                     label=label, value=f"(unavailable: {type(exc).__name__})"
                 )
@@ -18005,6 +18009,24 @@ class DeepAgentsApp(App):
             return (
                 f"{stats.input_tokens} in / {stats.output_tokens} out "
                 f"/ {stats.request_count} req"
+            )
+
+        def _model_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable metadata tracks
+            # whether a model is actually configured: the "(not configured)"
+            # placeholder is not worth copying. Degrades defensively like the
+            # other fields so the overlay still opens on a bad subsystem.
+            try:
+                model = self._effective_model_spec()
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Model' failed", exc_info=True)
+                return SnapshotField(
+                    label="Model", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Model",
+                value=model or "(not configured)",
+                copyable=bool(model),
             )
 
         def _thread_field() -> SnapshotField:
@@ -18038,10 +18060,10 @@ class DeepAgentsApp(App):
             return "in-memory only"
 
         return [
-            _safe("Version", lambda: __version__),
-            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Version", lambda: __version__, copyable=True),
+            _model_field(),
             _thread_field(),
-            _safe("CWD", lambda: self._cwd),
+            _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(
                 "Experimental",

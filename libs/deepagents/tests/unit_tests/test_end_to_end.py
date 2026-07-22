@@ -2,7 +2,6 @@
 
 import base64
 import json
-import warnings
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -2442,12 +2441,11 @@ class TestSummarizationOffloadToState:
     """Test that SummarizationMiddleware offloads conversation history to StateBackend."""
 
     def test_offloaded_file_persisted_in_state(self) -> None:
-        """Summarization should write the offloaded history to state via files_update.
+        """Summarization should write the offloaded history to the `files` state channel.
 
-        Uses `create_deep_agent` with default `StateBackend` so that
-        `backend.write` returns a `files_update` dict. The `Command`
-        produced by `wrap_model_call` must propagate that dict so the file
-        is persisted in graph state under the `files` channel.
+        Uses `create_deep_agent` with default `StateBackend`, which applies
+        writes as channel writes to the `files` state key. The offloaded
+        conversation-history file must be persisted in graph state there.
         """
         fake_model = FakeChatModelWithHistory(
             messages=iter(
@@ -2717,69 +2715,6 @@ class TestStateBackendConfigKeys:
         ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
         assert "/data/notes.md" in ls_msg.content
 
-    def test_backward_compat_lambda_factory(self) -> None:
-        """The old `lambda rt: StateBackend(rt)` factory pattern still works."""
-        model = FixedGenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "write_file",
-                                "args": {"file_path": "/compat.txt", "content": "works"},
-                                "id": "call_w",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "read_file",
-                                "args": {"file_path": "/compat.txt"},
-                                "id": "call_r",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="Done."),
-                ]
-            )
-        )
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            agent = create_deep_agent(
-                model=model,
-                backend=StateBackend,
-            )
-            result = agent.invoke({"messages": [HumanMessage(content="go")]})
-
-        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
-        assert any("works" in m.content for m in tool_msgs)
-
-    def test_state_backend_runtime_deprecation(self) -> None:
-        """Passing runtime to StateBackend emits a DeprecationWarning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            StateBackend("ignored_runtime_value")
-
-        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert "runtime" in str(deprecations[0].message).lower()
-
-    def test_store_backend_runtime_deprecation(self) -> None:
-        """Passing runtime to StoreBackend emits a DeprecationWarning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            StoreBackend("ignored_runtime_value")
-
-        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert "runtime" in str(deprecations[0].message).lower()
-
     def test_store_backend_explicit_store_works(self) -> None:
         """StoreBackend(store=my_store) works without a graph context."""
         model = FixedGenericFakeChatModel(
@@ -2864,22 +2799,6 @@ class TestStateBackendConfigKeys:
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
         assert any("via get_store" in m.content for m in tool_msgs)
-
-    def test_backend_factory_deprecation(self) -> None:
-        """Passing a callable factory as backend emits a DeprecationWarning."""
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            agent = create_deep_agent(
-                model=model,
-                backend=StateBackend,
-            )
-            agent.invoke({"messages": [HumanMessage(content="go")]})
-
-        dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
-        assert len(factory_warnings) >= 1
 
     def test_state_backend_upload_files_works_in_graph_context(self) -> None:
         """upload_files called in an after-model middleware hook stores readable files."""

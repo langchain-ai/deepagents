@@ -3231,12 +3231,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
         return list(messages)
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, _runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:
             tool_result: The tool result to potentially evict (`ToolMessage` or `Command`).
-            _runtime: Tool runtime supplied by the middleware hook.
 
         Returns:
             Either the original result (if small enough) or a processed result with
@@ -3282,7 +3281,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
-    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, _runtime: ToolRuntime) -> ToolMessage | Command:
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.
@@ -3347,7 +3346,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
 
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        return self._intercept_large_tool_result(tool_result)
 
     async def awrap_tool_call(
         self,
@@ -3372,4 +3371,4 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
 
-        return await self._aintercept_large_tool_result(tool_result, request.runtime)
+        return await self._aintercept_large_tool_result(tool_result)

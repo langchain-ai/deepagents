@@ -1,6 +1,5 @@
 """Async tests for StoreBackend."""
 
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -347,15 +346,7 @@ async def test_store_backend_intercept_large_tool_result_async():
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -387,17 +378,8 @@ async def test_store_backend_aintercept_large_tool_result_async():
         response_metadata={"provider": "mock"},
     )
 
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     # Use the async intercept path (what awrap_tool_call uses)
-    result = await middleware._aintercept_large_tool_result(tool_message, rt)
+    result = await middleware._aintercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
 from deepagents.backends import filesystem as fs_module
@@ -377,20 +376,11 @@ def test_filesystem_backend_rejects_oversized_mkv_before_read(tmp_path: Path, mo
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
     root = tmp_path
-    rt = ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id="test_fs",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content

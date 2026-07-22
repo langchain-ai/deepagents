@@ -1,7 +1,6 @@
 from typing import Any, Never
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import PutOp
@@ -264,15 +263,7 @@ def test_store_backend_intercept_large_tool_result():
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content

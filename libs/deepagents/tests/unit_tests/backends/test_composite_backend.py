@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -18,18 +17,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
-
-
-def make_runtime(tid: str = "tc", *, store=None):
-    """Minimal ToolRuntime - only needed for _intercept_large_tool_result calls."""
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tid,
-        store=store or InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
 
 
 def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
@@ -605,7 +592,6 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
 def test_composite_backend_intercept_large_tool_result():
     mem_store = InMemoryStore()
-    rt = make_runtime("t10", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
@@ -616,7 +602,7 @@ def test_composite_backend_intercept_large_tool_result():
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -629,7 +615,6 @@ def test_composite_backend_intercept_large_tool_result():
 def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
     mem_store = InMemoryStore()
-    rt = make_runtime("t11", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
@@ -641,7 +626,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
 
     large_content = "w" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_routed_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content

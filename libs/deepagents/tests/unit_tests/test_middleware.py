@@ -1715,11 +1715,10 @@ class TestFilesystemMiddleware:
         """Test that small ToolMessages pass through unchanged."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert result == tool_message
 
@@ -1727,11 +1726,10 @@ class TestFilesystemMiddleware:
         """Test that large ToolMessages are intercepted and saved to filesystem."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
@@ -1741,11 +1739,10 @@ class TestFilesystemMiddleware:
         """Test that ToolMessage name is preserved after eviction."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123", name="example_tool")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         assert result.name == "example_tool"
@@ -1754,7 +1751,6 @@ class TestFilesystemMiddleware:
         """Test that ToolMessage artifact and metadata fields are preserved after eviction."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
@@ -1768,7 +1764,7 @@ class TestFilesystemMiddleware:
             additional_kwargs={"source": "unit-test"},
             response_metadata={"provider": "mock"},
         )
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         processed_message = result
@@ -1783,12 +1779,11 @@ class TestFilesystemMiddleware:
         """Test that Commands with small messages pass through unchanged."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         assert result.update["messages"][0].content == small_content
@@ -1797,12 +1792,11 @@ class TestFilesystemMiddleware:
         """Test that Commands with large messages are intercepted."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
@@ -1812,13 +1806,12 @@ class TestFilesystemMiddleware:
         """Test that file updates are properly merged with existing files and other keys preserved."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         existing_file = FileData(content="existing", created_at="2021-01-01", modified_at="2021-01-01")
         command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         assert "/existing.txt" in result.update["files"]
@@ -1829,7 +1822,6 @@ class TestFilesystemMiddleware:
         """Commands prefixed with a `REMOVE_ALL_MESSAGES` sentinel are handled."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -1839,7 +1831,7 @@ class TestFilesystemMiddleware:
                 "files": {},
             }
         )
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1853,7 +1845,6 @@ class TestFilesystemMiddleware:
         """Async path handles `REMOVE_ALL_MESSAGES`-prefixed message lists."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -1863,7 +1854,7 @@ class TestFilesystemMiddleware:
                 "files": {},
             }
         )
-        result = await middleware._aintercept_large_tool_result(command, runtime)
+        result = await middleware._aintercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1877,7 +1868,6 @@ class TestFilesystemMiddleware:
         """A small ToolMessage stays prefixed with the sentinel and unchanged."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
@@ -1888,7 +1878,7 @@ class TestFilesystemMiddleware:
                 "custom_key": "custom_value",
             }
         )
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1903,7 +1893,6 @@ class TestFilesystemMiddleware:
         """Non-tool messages in a sentinel-prefixed update survive in order."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         ai_message = AIMessage(content="Use a tool")
         large_content = "y" * 5000
@@ -1921,7 +1910,7 @@ class TestFilesystemMiddleware:
                 "custom_key": "custom_value",
             }
         )
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1938,7 +1927,6 @@ class TestFilesystemMiddleware:
         """Async path preserves non-tool messages in sentinel-prefixed updates."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         ai_message = AIMessage(content="Use a tool")
         large_content = "y" * 5000
@@ -1948,7 +1936,7 @@ class TestFilesystemMiddleware:
                 "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message],
             }
         )
-        result = await middleware._aintercept_large_tool_result(command, runtime)
+        result = await middleware._aintercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1963,7 +1951,6 @@ class TestFilesystemMiddleware:
         """A sentinel-only message list stays as just the sentinel."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         command = Command(
             update={
@@ -1971,7 +1958,7 @@ class TestFilesystemMiddleware:
                 "custom_key": "custom_value",
             }
         )
-        result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command)
 
         assert isinstance(result, Command)
         messages = result.update["messages"]
@@ -1991,11 +1978,10 @@ class TestFilesystemMiddleware:
         """Test that tool_call_id with dangerous characters is sanitized in file path."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test/call.id")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_call_id") is not None
@@ -2004,12 +1990,11 @@ class TestFilesystemMiddleware:
         """Test that content blocks with large text get evicted and converted to string."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("test_cb")
 
         # Create list with content block with large text
         content_blocks = [{"type": "text", "text": "x" * 5000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_cb")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_cb") is not None
@@ -2021,12 +2006,11 @@ class TestFilesystemMiddleware:
         """Test that content blocks with small text are not evicted."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_small_cb")
 
         # Create list with content block with small text
         content_blocks = [{"type": "text", "text": "small text"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_small_cb")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         # Should return original message unchanged
         assert result == tool_message
@@ -2036,11 +2020,10 @@ class TestFilesystemMiddleware:
         """Test that non-text-only content blocks are not evicted regardless of size."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("test_other")
 
         content_blocks = [{"type": "image", "base64": "x" * 5000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert result == tool_message
 
@@ -2049,12 +2032,11 @@ class TestFilesystemMiddleware:
         mem_store = InMemoryStore()
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
-        runtime = _runtime("test_single")
 
         # Create single text block with large text
         content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_single")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         # Check that the file contains actual text, not stringified dict
@@ -2072,14 +2054,13 @@ class TestFilesystemMiddleware:
         mem_store = InMemoryStore()
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
-        runtime = _runtime("test_multi")
 
         content_blocks = [
             {"type": "text", "text": "First block " * 500},
             {"type": "text", "text": "Second block " * 500},
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_multi")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         item = mem_store.get(("filesystem",), "/large_tool_results/test_multi")
@@ -2096,7 +2077,6 @@ class TestFilesystemMiddleware:
         mem_store = InMemoryStore()
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
-        runtime = _runtime("test_mixed")
 
         image_block = {"type": "image", "url": "https://example.com/image.png"}
         content_blocks = [
@@ -2104,7 +2084,7 @@ class TestFilesystemMiddleware:
             image_block,
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         item = mem_store.get(("filesystem",), "/large_tool_results/test_mixed")
@@ -2123,14 +2103,13 @@ class TestFilesystemMiddleware:
         """Test that text+image content is not evicted when only the image is large."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_no_evict")
 
         content_blocks = [
             {"type": "text", "text": "small text"},
             {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"},
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert result == tool_message
 
@@ -2925,7 +2904,6 @@ class TestFilesystemMiddleware:
         """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
-        runtime = _runtime("test_123")
 
         # Create content with 15 lines (more than head_lines + tail_lines = 10) to trigger truncation
         # Some lines are longer than 1000 chars to test line truncation
@@ -2949,7 +2927,7 @@ class TestFilesystemMiddleware:
         large_content = "\n".join(lines_content)
 
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message)
 
         assert isinstance(result, ToolMessage)
         content_sample_section = result.content

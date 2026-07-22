@@ -136,14 +136,16 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     assert set(migrated.hooks) == {
         HookEvent.USER_PROMPT_SUBMIT,
         HookEvent.PRE_COMPACT,
-        HookEvent.STOP,
         HookEvent.SESSION_END,
         HookEvent.NOTIFICATION,
     }
     assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 1
     assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 1
     assert migrated.hooks[HookEvent.PRE_COMPACT][0].matcher == "manual"
-    assert migrated.hooks[HookEvent.NOTIFICATION][0].matcher == "agent_needs_input"
+    assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
+        "agent_completed",
+        "agent_needs_input",
+    ]
     assert HookEvent.SESSION_START not in migrated.hooks
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
     for groups in migrated.hooks.values():
@@ -179,6 +181,25 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     assert loaded.diagnostics[0].code == "legacy_deprecated"
     assert "September 1, 2026" in loaded.diagnostics[0].message
     assert any(item.code == "legacy_migrated" for item in loaded.diagnostics)
+
+
+def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:
+    migrated = migrate_legacy_hooks([{"command": ["echo", "all"]}])
+
+    assert set(migrated.hooks) == {
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+        HookEvent.PRE_COMPACT,
+    }
+    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 1
+    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 1
+    assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
+        "agent_completed",
+        "agent_needs_input",
+    ]
+    assert HookEvent.PRE_TOOL_USE not in migrated.hooks
+    assert HookEvent.PERMISSION_REQUEST not in migrated.hooks
 
 
 def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:

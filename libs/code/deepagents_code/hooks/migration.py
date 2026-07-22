@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 _LEGACY_EVENT_MAP: dict[str, tuple[HookEvent, str | None]] = {
     "session.start": (HookEvent.USER_PROMPT_SUBMIT, None),
     "user.prompt": (HookEvent.USER_PROMPT_SUBMIT, None),
-    "task.complete": (HookEvent.STOP, None),
+    "task.complete": (HookEvent.NOTIFICATION, "agent_completed"),
     "session.end": (HookEvent.SESSION_END, None),
     "context.offload": (HookEvent.PRE_COMPACT, "manual"),
     "context.compact": (HookEvent.PRE_COMPACT, "manual"),

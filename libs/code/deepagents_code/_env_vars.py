@@ -159,10 +159,8 @@ EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 
 Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
-values). Currently gates dropping the SDK's `TodoListMiddleware` (and its
-`write_todos` tool) from the agent and its subagents, along with the matching
-todo-list prompt guidance. Behavior behind this flag may change or be removed
-without notice.
+values). Currently gates the beta classifier-backed Auto approval mode.
+Behavior behind this flag may change or be removed without notice.
 """
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"

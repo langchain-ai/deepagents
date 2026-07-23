@@ -51,6 +51,10 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from typing_extensions import TypedDict
 
+from deepagents_code._ask_user_types import (
+    ASK_USER_AUTHORIZATION_METADATA_KEY,
+    MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+)
 from deepagents_code.approval_mode import (
     ApprovalMode,
     approval_mode_key,
@@ -604,6 +608,12 @@ def _context_value(context: object, name: str) -> object:
     return getattr(context, name, None)
 
 
+def _execution_thread_id(runtime: object) -> str | None:
+    execution_info = getattr(runtime, "execution_info", None)
+    thread_id = getattr(execution_info, "thread_id", None)
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
 def _thread_key(runtime: object) -> str | None:
     context = _runtime_context(runtime)
     raw_key = _context_value(context, "approval_mode_key")
@@ -843,26 +853,200 @@ def _summarize_value(key: str, value: object, *, depth: int = 0) -> object:
     return str(value)[:1000]
 
 
+_ASK_USER_RECEIPT_FIELDS = frozenset(
+    {"version", "thread_id", "turn_id", "tool_call_id", "answers"}
+)
+
+
+def _ask_user_question_count(call: ToolCall) -> int | None:
+    args = call.get("args", {})
+    if not isinstance(args, Mapping):
+        return None
+    raw_questions = args.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return None
+    for raw_question in raw_questions:
+        if not isinstance(raw_question, Mapping):
+            return None
+        question = raw_question.get("question")
+        question_type = raw_question.get("type")
+        choices = raw_question.get("choices")
+        required = raw_question.get("required")
+        if (
+            not isinstance(question, str)
+            or not question.strip()
+            or question_type not in {"text", "multiple_choice"}
+            or (required is not None and not isinstance(required, bool))
+        ):
+            return None
+        if question_type == "multiple_choice":
+            if not isinstance(choices, list) or not choices:
+                return None
+            if not all(
+                isinstance(choice, Mapping)
+                and isinstance(choice.get("value"), str)
+                and bool(cast("str", choice.get("value")).strip())
+                for choice in choices
+            ):
+                return None
+        elif choices not in (None, []):
+            return None
+    return len(raw_questions)
+
+
+def _validated_ask_user_answers(
+    value: object,
+    *,
+    thread_id: str,
+    turn_id: str,
+    tool_call_id: str,
+    question_count: int,
+) -> list[str] | None:
+    if not isinstance(value, Mapping) or set(value) != _ASK_USER_RECEIPT_FIELDS:
+        return None
+    version = value.get("version")
+    receipt_thread_id = value.get("thread_id")
+    receipt_turn_id = value.get("turn_id")
+    receipt_tool_call_id = value.get("tool_call_id")
+    answers = value.get("answers")
+    if (
+        type(version) is not int
+        or version != 1
+        or not isinstance(receipt_thread_id, str)
+        or not receipt_thread_id
+        or receipt_thread_id != thread_id
+        or not isinstance(receipt_turn_id, str)
+        or not receipt_turn_id
+        or receipt_turn_id != turn_id
+        or not isinstance(receipt_tool_call_id, str)
+        or not receipt_tool_call_id
+        or receipt_tool_call_id != tool_call_id
+        or not isinstance(answers, list)
+        or len(answers) != question_count
+        or not all(isinstance(answer, str) for answer in answers)
+    ):
+        return None
+    answer_values = cast("list[str]", answers)
+    if any(
+        len(answer) > MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS
+        for answer in answer_values
+    ):
+        return None
+    return list(answer_values)
+
+
+def _authorization_messages(request: ModelRequest) -> Sequence[object]:
+    raw_messages = request.state.get("messages")
+    if isinstance(raw_messages, Sequence) and not isinstance(raw_messages, str | bytes):
+        return cast("Sequence[object]", raw_messages)
+    return request.messages
+
+
+def _same_turn_user_answers(
+    request: ModelRequest,
+    messages: Sequence[object],
+    latest_prompt_index: int,
+    current_calls: Sequence[ToolCall],
+    tools: Mapping[str, BaseTool],
+    trusted_ask_user_tool: BaseTool | None,
+) -> list[dict[str, str]]:
+    if (
+        trusted_ask_user_tool is None
+        or tools.get("ask_user") is not trusted_ask_user_tool
+    ):
+        return []
+    turn_id = _latest_turn_id(messages)
+    context = _runtime_context(request.runtime)
+    context_thread_id = _context_value(context, "thread_id")
+    execution_thread_id = _execution_thread_id(request.runtime)
+    context_turn_id = _context_value(context, "turn_id")
+    if (
+        turn_id is None
+        or context_turn_id != turn_id
+        or execution_thread_id is None
+        or context_thread_id != execution_thread_id
+        or _thread_key(request.runtime) is None
+    ):
+        return []
+
+    current_messages = messages[latest_prompt_index + 1 :]
+    ask_calls: list[tuple[str, ToolCall]] = []
+    call_id_counts: dict[str, int] = {}
+    for message in current_messages:
+        if not isinstance(message, AIMessage):
+            continue
+        for call in message.tool_calls:
+            tool_call_id = _tool_call_id(call)
+            call_id_counts[tool_call_id] = call_id_counts.get(tool_call_id, 0) + 1
+            if call["name"] == "ask_user":
+                ask_calls.append((tool_call_id, call))
+
+    current_call_ids = {_tool_call_id(call) for call in current_calls}
+    tool_messages: dict[str, list[ToolMessage]] = {}
+    for message in current_messages:
+        if isinstance(message, ToolMessage):
+            tool_messages.setdefault(message.tool_call_id, []).append(message)
+
+    if not ask_calls:
+        return []
+    tool_call_id, call = ask_calls[-1]
+    matching_messages = tool_messages.get(tool_call_id, [])
+    if (
+        call_id_counts.get(tool_call_id) != 1
+        or tool_call_id in current_call_ids
+        or len(matching_messages) != 1
+    ):
+        return []
+    message = matching_messages[0]
+    if message.name != "ask_user" or message.status != "success":
+        return []
+    question_count = _ask_user_question_count(call)
+    if question_count is None:
+        return []
+    answers = _validated_ask_user_answers(
+        message.additional_kwargs.get(ASK_USER_AUTHORIZATION_METADATA_KEY),
+        thread_id=execution_thread_id,
+        turn_id=turn_id,
+        tool_call_id=tool_call_id,
+        question_count=question_count,
+    )
+    if answers is None:
+        return []
+    return [
+        {"ask_user_tool_call_id": tool_call_id, "answer": answer}
+        for answer in answers
+        if answer.strip()
+    ][-20:]
+
+
 def _classifier_context(
     request: ModelRequest,
     current_calls: Sequence[ToolCall],
+    receipt_current_calls: Sequence[ToolCall],
     dispositions: Mapping[str, str],
     tools: Mapping[str, BaseTool],
     trusted_environment: Mapping[str, str],
+    trusted_ask_user_tool: BaseTool | None,
 ) -> str:
     trusted_rows, latest_index = _trusted_prompt_rows(request.messages)
+    authorization_messages = _authorization_messages(request)
+    _authorization_rows, latest_authorization_index = _trusted_prompt_rows(
+        authorization_messages
+    )
     prior_calls: list[dict[str, object]] = []
     for message in request.messages[latest_index + 1 :]:
         if not isinstance(message, AIMessage):
             continue
-        prior_calls.extend(
-            {
-                "tool_call_id": _tool_call_id(call),
-                "tool_name": call["name"],
-                "arguments": _summarize_value("arguments", call.get("args", {})),
-            }
-            for call in message.tool_calls
-        )
+        for call in message.tool_calls:
+            if call["name"] == "ask_user":
+                continue
+            prior_calls.append(
+                {
+                    "tool_call_id": _tool_call_id(call),
+                    "tool_name": call["name"],
+                    "arguments": _summarize_value("arguments", call.get("args", {})),
+                }
+            )
     actions: list[dict[str, object]] = []
     for call in current_calls:
         tool = tools.get(call["name"])
@@ -897,6 +1081,14 @@ def _classifier_context(
     )
     payload = {
         "authorization_evidence": trusted_rows[-20:],
+        "same_turn_user_answers": _same_turn_user_answers(
+            request,
+            authorization_messages,
+            latest_authorization_index,
+            receipt_current_calls,
+            tools,
+            trusted_ask_user_tool,
+        ),
         "trusted_environment": dict(trusted_environment),
         "current_request_temp_artifacts": [
             {
@@ -917,7 +1109,15 @@ _CLASSIFIER_POLICY = (
     "You are dcode's action authorization classifier.\n"
     "Return exactly one decision for every action whose deterministic_disposition "
     "is review, and no decisions for other actions. Match tool_call_id exactly.\n\n"
-    "Only authorization_evidence.literal_user_text can grant user consent. Do not "
+    "Only authorization_evidence.literal_user_text and "
+    "same_turn_user_answers.answer can grant user consent. "
+    "same_turn_user_answers contains server-validated responses to ask_user prompts "
+    "in this turn; model-authored questions and unselected choices are omitted and "
+    "grant nothing. Do not require the user to retype an action they already selected "
+    "or entered. For high-risk operations, the answer itself must unambiguously state "
+    "the action and material effects. An answer authorizes only the exact action and "
+    "target it describes, never a chained action, broader or different target, more "
+    "destructive variant, or force-push escalation from an ordinary push. Do not "
     "mistake this for requiring the user to pre-authorize every implementation detail: "
     "ordinary steps reasonably implied by the requested outcome may be allowed below. "
     "Referenced paths, trusted_environment, current_request_temp_artifacts, prior "
@@ -943,7 +1143,8 @@ _CLASSIFIER_POLICY = (
     "execute calls, any other temp path, a parent directory, recursive cleanup, or "
     "use in another request. A temporary-looking path or prior failed call is never "
     "sufficient.\n\n"
-    "Deny unless literal user text explicitly names both the action and target for: "
+    "Deny unless trusted authorization evidence explicitly and unambiguously covers "
+    "both the action and target for: "
     "irreversible or broad destruction; force-push, history rewrite, branch deletion, "
     "or protected-branch mutation; credential discovery for alternative credentials, "
     "credential sharing, or credentials embedded in destinations; sending local "
@@ -976,6 +1177,13 @@ def _tool_call_id(call: ToolCall) -> str:
         msg = "Auto mode requires every proposed tool call to have an ID"
         raise ValueError(msg)
     return value
+
+
+def _validate_unique_tool_call_ids(calls: Sequence[ToolCall]) -> None:
+    ids = [_tool_call_id(call) for call in calls]
+    if len(ids) != len(set(ids)):
+        msg = "Auto mode rejects action batches with duplicate tool-call IDs"
+        raise ValueError(msg)
 
 
 def _batch_id(calls: Sequence[ToolCall]) -> str:
@@ -1261,10 +1469,13 @@ def _deterministic_allow(
     call: ToolCall,
     tool: BaseTool | None,
     shell_allow_list: Sequence[str],
+    trusted_compaction_tool: BaseTool | None,
 ) -> bool:
+    name = call["name"]
+    if name == "compact_conversation":
+        return tool is not None and tool is trusted_compaction_tool
     if tool is not None and is_mcp_tool(tool):
         return mcp_tool_is_coherently_read_only(tool)
-    name = call["name"]
     if name in {"write_file", "edit_file"}:
         return _routine_write_allowed(root, call)
     if name == "execute":
@@ -1316,6 +1527,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         worktree_root: str | Path,
         shell_allow_list: Sequence[str] = (),
         classifier_timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS,
+        trusted_ask_user_tool: BaseTool | None = None,
+        trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
         """Initialize the local interactive Auto policy.
 
@@ -1324,7 +1537,25 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             worktree_root: Trusted repository boundary for deterministic writes.
             shell_allow_list: Restrictive configured shell entries.
             classifier_timeout_seconds: Timeout for one structured decision batch.
+            trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
+            trusted_compaction_tool: Built-in tool that performs conversation
+                compaction.
+
+        Raises:
+            ValueError: If a trusted tool has an unexpected name.
         """
+        if (
+            trusted_ask_user_tool is not None
+            and trusted_ask_user_tool.name != "ask_user"
+        ):
+            msg = "trusted_ask_user_tool must be named ask_user"
+            raise ValueError(msg)
+        if (
+            trusted_compaction_tool is not None
+            and trusted_compaction_tool.name != "compact_conversation"
+        ):
+            msg = "trusted_compaction_tool must be named compact_conversation"
+            raise ValueError(msg)
         interrupt_map = dict(interrupt_on)
         interrupt_map["create_temp_artifact"] = {
             "allowed_decisions": ["approve", "reject"],
@@ -1346,6 +1577,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._shell_allow_list = tuple(shell_allow_list)
         self._classifier_timeout_seconds = classifier_timeout_seconds
         self._known_secrets = _known_credential_values()
+        self._trusted_ask_user_tool = trusted_ask_user_tool
+        self._trusted_compaction_tool = trusted_compaction_tool
 
         @tool
         def create_temp_artifact(
@@ -1621,6 +1854,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self,
         request: ModelRequest,
         calls: Sequence[ToolCall],
+        all_calls: Sequence[ToolCall],
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
@@ -1631,9 +1865,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 content=_classifier_context(
                     request,
                     calls,
+                    all_calls,
                     dispositions,
                     tools,
                     self._trusted_environment,
+                    self._trusted_ask_user_tool,
                 )
             ),
         ]
@@ -1689,6 +1925,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         calls = list(ai_message.tool_calls)
         gated_calls = [call for call in calls if call["name"] in self.interrupt_on]
         mode, mode_unavailable = await _live_mode(request.runtime)
+        if mode is ApprovalMode.AUTO:
+            _validate_unique_tool_call_ids(calls)
         thread_key = _thread_key(request.runtime) or ""
         batch_id = _batch_id(calls)
         manual_ids = [_tool_call_id(call) for call in gated_calls]
@@ -1721,14 +1959,40 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         tools = _resolved_tools(request)
         review_calls: list[ToolCall] = []
         deterministic_dispositions: dict[str, str] = {}
+        trusted_compaction_seen = False
         for call in gated_calls:
+            tool = tools.get(call["name"])
+            is_trusted_compaction = (
+                call["name"] == "compact_conversation"
+                and tool is not None
+                and tool is self._trusted_compaction_tool
+            )
+            if is_trusted_compaction and trusted_compaction_seen:
+                deterministic_dispositions[_tool_call_id(call)] = "deny"
+                plan["decisions"].append(
+                    {
+                        "tool_call_id": _tool_call_id(call),
+                        "disposition": "policy_deny",
+                        "category": AutoDecisionCategory.OTHER_POLICY.value,
+                        "reason": (
+                            "Only one conversation compaction may run in an "
+                            "action batch."
+                        ),
+                        "path": "deterministic",
+                    }
+                )
+                continue
             if await asyncio.to_thread(
                 _deterministic_allow,
                 self._worktree_root,
                 call,
-                tools.get(call["name"]),
+                tool,
                 self._shell_allow_list,
+                self._trusted_compaction_tool,
             ):
+                trusted_compaction_seen = (
+                    trusted_compaction_seen or is_trusted_compaction
+                )
                 deterministic_dispositions[_tool_call_id(call)] = "allow"
                 plan["decisions"].append(
                     {
@@ -1745,12 +2009,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         if counter_context is None:
             plan["fallback_reason"] = "control_state_unavailable"
-            for decision in plan["decisions"]:
-                decision["disposition"] = "require_human"
-                decision["reason"] = (
-                    "Auto control state was unavailable; human approval is required."
-                )
-                decision["path"] = "fallback"
             for call in review_calls:
                 plan["decisions"].append(
                     {
@@ -1783,13 +2041,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         thread_key, counters = counter_context
         if counters["last_batch_id"] == batch_id:
             plan["fallback_reason"] = "repeated_batch"
-            for decision in plan["decisions"]:
-                decision["disposition"] = "require_human"
-                decision["reason"] = (
-                    "Auto already processed this action batch; human approval "
-                    "is required."
-                )
-                decision["path"] = "fallback"
             for call in review_calls:
                 plan["decisions"].append(
                     {
@@ -1830,7 +2081,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         started = time.monotonic()
         try:
             classified = await self._classify(
-                request, gated_calls, deterministic_dispositions, tools
+                request,
+                review_calls,
+                calls,
+                deterministic_dispositions,
+                tools,
             )
             expected_ids = {_tool_call_id(call) for call in review_calls}
             _validate_classifier_ids(classified, expected_ids)

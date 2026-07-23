@@ -27,6 +27,7 @@ from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     RubricGraderState,
     _is_transient_grader_transport_error,
+    _without_internal_control_messages,
 )
 
 if TYPE_CHECKING:
@@ -181,6 +182,33 @@ class TestReliableRubricMiddleware:
         middleware = ReliableRubricMiddleware(model="fake-model")
 
         assert middleware.max_iterations == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+
+    def test_filters_goal_controls_before_sdk_grading(self) -> None:
+        visible = HumanMessage(content="user request")
+        state_notice = HumanMessage(
+            content="goal state",
+            additional_kwargs={"lc_source": "goal_state"},
+        )
+        continuation = HumanMessage(
+            content="goal continuation",
+            additional_kwargs={"lc_source": "goal_control"},
+        )
+        summary = HumanMessage(
+            content="conversation summary",
+            additional_kwargs={"lc_source": "summarization"},
+        )
+        state = cast(
+            "RubricState",
+            {
+                "rubric": "tests pass",
+                "messages": [visible, state_notice, continuation, summary],
+            },
+        )
+
+        filtered = _without_internal_control_messages(state)
+
+        assert filtered["messages"] == [visible, summary]
+        assert state["messages"] == [visible, state_notice, continuation, summary]
 
     async def test_retries_only_grading_without_mutating_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")

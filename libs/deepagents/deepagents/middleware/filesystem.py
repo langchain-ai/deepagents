@@ -941,30 +941,18 @@ LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
 This is useful for exploring the filesystem and finding the right file to read or edit.
 You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
 
-_READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem.
-
-Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+_READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.
 
 Usage:
-- {first_line}
-- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-    - First scan: read_file(file_path="...", limit=100) to see file structure
-    - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
-    - Omit `limit` to use the default window; increase it only when necessary for editing
-- Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
-- Results are returned with line numbers starting at the first line read (`offset` + 1, so 1 by default), followed by two spaces and the source content
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- Large tool results are sometimes offloaded to a file instead of returned inline; the tool message gives the path. Read that file here, using `offset`/`limit` to page through it.
-- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
-
-For multimodal reads (image, audio, video, PDF, etc.):
-- Use `read_file(file_path=...)`
+- {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
+- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
+- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
+- Speculatively batch multiple `read_file` calls in one response when several files may be useful.
+- An empty file returns a system-reminder warning in place of contents.
+- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
+- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).
 {multimodal_bullets}
-- If file details were compacted from history, call `read_file` again on the same path
-
-- You should ALWAYS make sure a file has been read before editing it."""
+- Always read a file before editing it."""
 """Shared `read_file` description body for the text-only and video-aware variants.
 
 The two variants differ only in the `{first_line}` and `{multimodal_bullets}`
@@ -991,9 +979,9 @@ READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must read the file before editing. This tool will error if you attempt an edit without reading the file first.
-- When editing, preserve the exact indentation (tabs/spaces) from the read output. Never include line number prefixes in old_string or new_string.
-- ALWAYS prefer editing existing files over creating new ones.
+- You must read the file before editing; this tool errors otherwise.
+- Preserve the exact indentation from the read output, and never include line-number prefixes in old_string or new_string.
+- Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
 
 
@@ -1013,15 +1001,9 @@ Usage:
 - This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
-GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
+GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
-Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
-Returns a list of absolute file paths that match the pattern.
-
-Examples:
-- `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in the backend's default root
-- `/subdir/**/*.md` - Find all markdown files under /subdir"""
+Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.
@@ -1029,23 +1011,9 @@ _GREP_REGEX_EXECUTE_FALLBACK = "\n- If you genuinely need regex, use the execute
 
 _GREP_TOOL_DESCRIPTION_TEMPLATE = """Search for a LITERAL text pattern across files (NOT regex).
 
-Returns matching files or content based on output_mode. The pattern is matched
-verbatim: regex metacharacters are treated as ordinary characters, NOT operators.
+The pattern is matched verbatim: regex metacharacters are ordinary characters, not operators. To match any of several strings, run a separate grep for each; `grep(pattern="foo|bar")` searches for the literal text "foo|bar", and `.*` or `\\.` match those characters literally.{execute_fallback}
 
-Do NOT pass a regex. In particular:
-- To match any of several strings, run a SEPARATE grep for each one. There is no
-  `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
-- Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.{execute_fallback}
-
-Offloaded large tool results are saved in a `large_tool_results/` directory
-inside the agent's artifacts root (`/large_tool_results/` by default). To search
-across them when you do not know the exact file path, grep that directory.
-
-Examples:
-- Search all files: `grep(pattern="TODO")`
-- Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`
-- Literal special chars are fine: `grep(pattern="def __init__(self):")`"""
+Returns matching files or content per `output_mode`. Offloaded large tool results live under the artifacts root (`/large_tool_results/` by default); grep that directory to search them when you do not know the exact path."""
 
 GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
 _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="")
@@ -1056,48 +1024,15 @@ _EXECUTE_GLOB_SEARCH_GUIDANCE = "You MUST avoid using shell find for searches. I
 _EXECUTE_GLOB_BAD_EXAMPLE = "\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead"
 _EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead"
 
-_EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox environment.
+_EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
 
 Usage:
-Executes a given command in the sandbox environment with proper handling and security measures.
-Before executing the command, please follow these steps:
-1. Directory Verification:
-   - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-   - Examples of proper quoting:
-     - cd "/Users/name/My Documents" (correct)
-     - cd /Users/name/My Documents (incorrect - will fail)
-     - python "/path/with spaces/script.py" (correct)
-     - python /path/with spaces/script.py (incorrect - will fail)
-   - After ensuring proper quoting, execute the command
-   - Capture the output of the command
-Usage notes:
-  - Commands run in an isolated sandbox environment
-  - Returns combined stdout/stderr output with exit code
-  - If the output is very large, it may be truncated
-  - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
-  - A timeout of 0 may disable timeouts on backends that support no-timeout execution
-  - VERY IMPORTANT: {search_guidance}You MUST avoid read tools like cat, head, tail, and use read_file to read files.
-  - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
-    - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
-    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
-  - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of cd
+- Quote paths containing spaces (e.g. cd "/path/with spaces").
+- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).
+- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
-Examples:
-  Good examples:
-    - execute(command="pytest /foo/bar/tests")
-    - execute(command="python /path/to/script.py")
-    - execute(command="npm install && npm test")
-    - execute(command="make build", timeout=300)
-
-  Bad examples (avoid these):
-    - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-    - execute(command="cat file.txt")  # Use read_file tool instead{glob_bad_example}{grep_bad_example}
-
-Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
-If execution is not supported, the tool will return an error message."""
+Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
 
 EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
     search_guidance=_EXECUTE_SEARCH_GUIDANCE,

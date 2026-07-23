@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
     SummarizationToolMiddleware,
+    compute_summarization_defaults,
     create_summarization_middleware,
     create_summarization_tool_middleware,
 )
@@ -30,7 +32,6 @@ if TYPE_CHECKING:
         FileDownloadResponse,
         WriteResult,
     )
-    from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -52,6 +53,17 @@ model-initiated compaction-failure message, so a failure emitted by either path
 is recognized. Because the scan is bounded to messages produced by the current
 `/offload` attempt, a stale failure from an unrelated prior turn is not matched.
 Only the *prefix position* is load-bearing; wording after it is free to change.
+"""
+
+AUTO_SUMMARIZATION_TOKEN_BUDGET = 150_000
+"""Fixed cumulative-input token budget that forces auto-summarization.
+
+The SDK default trigger is fraction-based (~85% of the model's context window),
+so on large-context models compaction only fires near the model limit. Long
+execute/grep-heavy turns re-feed history and large tool outputs into every model
+call, letting cumulative input climb into the six figures without ever tripping
+the fraction gate. OR-combining this fixed budget with the fraction default makes
+compaction fire once cumulative input exceeds this budget, whichever comes first.
 """
 
 _OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
@@ -635,4 +647,39 @@ def _create_cli_compaction_middleware(
     return CLICompactionMiddleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,
+    )
+
+
+def _create_cli_summarization_middleware(
+    model: str | BaseChatModel,
+    backend: BackendProtocol,
+) -> SummarizationMiddleware:
+    """Create auto-summarization middleware with a lowered fixed-budget trigger.
+
+    Replaces the SDK's default `SummarizationMiddleware` (matched by `.name` in
+    `create_deep_agent`'s custom-middleware merge) so compaction fires once
+    cumulative input exceeds `AUTO_SUMMARIZATION_TOKEN_BUDGET`, OR-combined with
+    the SDK's model-aware fraction default so near-limit compaction still applies.
+
+    Args:
+        model: Startup model or model specification.
+        backend: Agent backend used for archive persistence.
+
+    Returns:
+        Auto-summarization middleware carrying the lowered trigger.
+    """
+    from deepagents._models import (  # noqa: PLC2701
+        resolve_model,
+    )
+
+    resolved = resolve_model(model) if isinstance(model, str) else model
+    defaults = compute_summarization_defaults(resolved)
+    trigger = defaults["trigger"]
+    triggers = trigger if isinstance(trigger, list) else [trigger]
+    return SummarizationMiddleware(
+        model=resolved,
+        backend=backend,
+        trigger=[("tokens", AUTO_SUMMARIZATION_TOKEN_BUDGET), *triggers],
+        keep=defaults["keep"],
+        truncate_args_settings=defaults["truncate_args_settings"],
     )

@@ -101,7 +101,10 @@ from deepagents_code.offload import (
     _artifacts_root,
     _offload_fallback_root,
 )
-from deepagents_code.offload_middleware import _create_cli_compaction_middleware
+from deepagents_code.offload_middleware import (
+    _create_cli_compaction_middleware,
+    _create_cli_summarization_middleware,
+)
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -2931,7 +2934,16 @@ def create_cli_agent(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
-    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
+    # Replace the SDK's default fraction-based auto-summarization with a lowered
+    # fixed-budget trigger so long multi-step turns compact before cumulative
+    # input context balloons into the six figures. Matched by `.name`, so
+    # `create_deep_agent`'s merge swaps the SDK default in place.
+    agent_middleware.extend(
+        (
+            _create_cli_summarization_middleware(model, composite_backend),
+            _create_cli_compaction_middleware(model, composite_backend),
+        )
+    )
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

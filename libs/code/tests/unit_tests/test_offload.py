@@ -7,11 +7,14 @@ import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.utils import validate_path
+
+if TYPE_CHECKING:
+    from deepagents.middleware.summarization import SummarizationMiddleware
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
@@ -2266,3 +2269,50 @@ class TestOffloadHelpers:
         assert _find_compaction_failure([ok]) is None
         # Serialized-dict tool message form is handled too.
         assert _find_compaction_failure([{"type": "tool", "content": "ok"}]) is None
+
+
+class TestAutoSummarizationTrigger:
+    """The lowered fixed-budget auto-summarization trigger."""
+
+    @staticmethod
+    def _make_middleware(
+        profile: dict[str, Any] | None,
+    ) -> SummarizationMiddleware:
+        from deepagents.backends import StateBackend
+        from langchain_core.language_models.fake_chat_models import (
+            GenericFakeChatModel,
+        )
+
+        from deepagents_code.offload_middleware import (
+            _create_cli_summarization_middleware,
+        )
+
+        model = GenericFakeChatModel(messages=iter([]))
+        if profile is not None:
+            model.profile = profile  # ty: ignore[invalid-assignment]
+        return _create_cli_summarization_middleware(model, StateBackend())
+
+    def test_replaces_sdk_default_by_name(self) -> None:
+        middleware = self._make_middleware({"max_input_tokens": 200_000})
+        assert middleware.name == "SummarizationMiddleware"
+
+    def test_or_combines_fixed_budget_with_fraction_default(self) -> None:
+        from deepagents_code.offload_middleware import (
+            AUTO_SUMMARIZATION_TOKEN_BUDGET,
+        )
+
+        middleware = self._make_middleware({"max_input_tokens": 200_000})
+        trigger = middleware._lc_helper.trigger
+        assert isinstance(trigger, list)
+        assert trigger[0] == ("tokens", AUTO_SUMMARIZATION_TOKEN_BUDGET)
+        assert ("fraction", 0.85) in trigger
+
+    def test_fixed_budget_applies_without_profile(self) -> None:
+        from deepagents_code.offload_middleware import (
+            AUTO_SUMMARIZATION_TOKEN_BUDGET,
+        )
+
+        middleware = self._make_middleware(None)
+        trigger = middleware._lc_helper.trigger
+        assert isinstance(trigger, list)
+        assert ("tokens", AUTO_SUMMARIZATION_TOKEN_BUDGET) in trigger

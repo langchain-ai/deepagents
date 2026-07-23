@@ -2164,6 +2164,7 @@ def create_cli_agent(
     enable_interpreter: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -2288,6 +2289,10 @@ def create_cli_agent(
         rubric_max_iterations: Explicit grader iterations per rubric attempt
             before the agent terminates with `'max_iterations_reached'`; `None`
             uses the SDK default.
+        recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
+            for the main agent. When `None`, it is resolved from the
+            `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
+            in `config.toml`, then the default via `resolve_recursion_limit`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -2959,6 +2964,11 @@ def create_cli_agent(
         *(async_subagents or []),
     ]
     _ensure_glm_5p2_profile_registered()
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    effective_recursion_limit = (
+        recursion_limit if recursion_limit is not None else resolve_recursion_limit()
+    )
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -2970,5 +2980,5 @@ def create_cli_agent(
         checkpointer=checkpointer,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
-    ).with_config(config)
+    ).with_config({**config, "recursion_limit": effective_recursion_limit})
     return agent, composite_backend

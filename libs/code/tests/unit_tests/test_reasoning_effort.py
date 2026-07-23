@@ -1381,3 +1381,25 @@ def test_effort_selector_format_label_combines_current_default() -> None:
         default_effort="high",
     )
     assert "(current, default)" in str(screen._format_label("high"))
+
+
+async def test_effort_selector_dims_underlying_content() -> None:
+    """The modal must inherit the translucent `ModalScreen` backdrop.
+
+    Like the other selector modals, `/effort` should dim the content
+    underneath rather than render a fully transparent overlay. The alpha is
+    in (0, 1) only under a non-ansi theme, so pin `textual-dark`.
+    """
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        app.theme = "textual-dark"
+        await pilot.pause()
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-5.5",
+                efforts=("low", "high"),
+                current_effort="low",
+            )
+        )
+        await pilot.pause()
+        assert 0 < app.screen.styles.background.a < 1

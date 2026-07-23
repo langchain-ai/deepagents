@@ -177,9 +177,7 @@ class HooksSnapshot:
 
     def configured_events(self) -> frozenset[HookEvent]:
         """Return events that have at least one compiled handler."""
-        return frozenset(
-            event for event, handlers in self.handlers.items() if handlers
-        )
+        return frozenset(event for event, handlers in self.handlers.items() if handlers)
 
     def configured_server_events(self) -> frozenset[HookEvent]:
         """Return server-owned events that have at least one compiled handler."""

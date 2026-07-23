@@ -304,13 +304,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     - `execute`: run shell commands
     - `task`: call subagents
 
-    Todo-list support (the `write_todos` tool) is opt-in: pass
-    [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
-    via `middleware=` to enable it on the main agent. It is not propagated to
-    the automatic general-purpose subagent; to give that subagent todos,
-    override it with a subagent named `general-purpose` whose `middleware`
-    list includes `TodoListMiddleware`.
-
     The `execute` tool allows running shell commands if the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
     For non-sandbox backends, the `execute` tool will return an error message.
@@ -372,16 +365,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware.
-
-            Todo-list support is opt-in here: passing a
-            [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
-            instance enables the `write_todos` tool on the main agent only. It
-            is not propagated to the automatic general-purpose subagent; to give
-            that subagent todos, override it with a subagent named
-            `general-purpose` whose `middleware` list includes it.
-
-            The full ordering is:
+            but before the tail middleware. The full ordering is:
 
             Base stack:
 
@@ -794,11 +778,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
-        # Inherit middleware that overrides a default GP slot (including excluded
-        # ones) without carrying over middleware that's specific to the main
-        # agent. Main-agent-only middleware (e.g. an opt-in TodoListMiddleware)
-        # is not mirrored here; to give the general-purpose subagent that
-        # middleware, override it with a subagent named `general-purpose`.
+        # Inherit only middleware that overrides a default GP slot (including excluded
+        # ones) without carrying over middleware that's specific to the main agent.
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(

@@ -10613,16 +10613,6 @@ class DeepAgentsApp(App):
             await self._resume_goal()
             return
 
-        if subcommand in {"accept", "edit"}:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "Goal proposals that require review appear in the review prompt. "
-                    "Use `/goal <objective>` to draft criteria."
-                )
-            )
-            return
-
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
             self._cancel_goal_proposal_worker()
@@ -10662,10 +10652,8 @@ class DeepAgentsApp(App):
             "  /goal model [provider:model|clear]\n"
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
-            "draft a checklist. Manual always asks you to review it; Auto asks by "
-            "default and can be configured to apply it automatically; YOLO applies "
-            "it automatically. Once applied, the goal stays "
-            "active for this thread until paused, completed, blocked, or cleared. "
+            "draft a checklist for it. Once applied, the goal stays active for "
+            "this thread until paused, completed, blocked, or cleared. "
             "Follow-up prompts continue working toward that goal."
         )
 
@@ -11173,12 +11161,6 @@ class DeepAgentsApp(App):
         )
         if self._queued_goal_application == application:
             return True
-        if automatic:
-            await self._mount_message(
-                AppMessage(
-                    "Goal criteria automatically accepted without manual review."
-                )
-            )
         if self._agent_running or self._agent_reconciling:
             self._queued_goal_application = application
             if not automatic:

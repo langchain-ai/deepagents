@@ -6619,12 +6619,6 @@ class TestGoalCommand:
             await app._show_goal_state()
             await pilot.pause()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                rendered.count(
-                    "Goal criteria automatically accepted without manual review."
-                )
-                == 1
-            )
             assert "Goal accepted. It will stay active for this thread" in rendered
             assert "Goal:\nadd refresh tokens exactly" in rendered
             assert "Criteria:\n- tests pass\n- no unrelated files" in rendered
@@ -8061,9 +8055,7 @@ class TestGoalCommand:
         usage = DeepAgentsApp._goal_usage_text()
 
         assert "Use /goal when you have a plain-language objective" in usage
-        assert "Manual always asks you to review it" in usage
-        assert "Auto asks by default and can be configured" in usage
-        assert "YOLO applies it automatically" in usage
+        assert "draft a checklist for it" in usage
         assert "the goal stays active for this thread" in usage
         assert "when you want dcode to propose" not in usage
 
@@ -10014,20 +10006,6 @@ class TestGoalCommand:
             )
             assert not any(
                 "will not survive" in str(w._content) for w in app.query(ErrorMessage)
-            )
-
-    async def test_goal_accept_subcommand_explains_review_prompt(self) -> None:
-        """Bare `/goal accept` should explain where proposals are reviewed."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await app._handle_command("/goal accept")
-            await pilot.pause()
-
-            assert any(
-                "Goal proposals that require review appear in the review prompt."
-                in str(w._content)
-                for w in app.query(AppMessage)
             )
 
     async def test_goal_show_with_no_goal_reports_empty(self) -> None:

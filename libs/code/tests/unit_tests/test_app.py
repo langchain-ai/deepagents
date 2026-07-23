@@ -8469,7 +8469,11 @@ class TestGoalCommand:
 
     async def test_goal_model_selector_uses_goal_copy(self) -> None:
         """`/goal model` selector should brand itself for goals, not rubrics."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             with patch.object(app, "push_screen") as push_screen:
@@ -8479,8 +8483,34 @@ class TestGoalCommand:
             screen = push_screen.call_args.args[0]
             assert screen._title == "Choose grader model for goal"
             assert "/goal model clear" in screen._description
+            assert "startup chat model (openai:gpt-5.5)" in screen._description
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
+
+    async def test_grader_model_selector_bare_default_without_startup_model(
+        self,
+    ) -> None:
+        """Selector copy uses the bare label when no startup model is known.
+
+        Covers both `/goal` and `/rubric` sources so a per-site interpolation typo
+        (rendering the `(<model>)` suffix without a model) is caught.
+        """
+        for source, clear_cmd in (
+            ("goal", "/goal model clear"),
+            ("rubric", "/rubric model clear"),
+        ):
+            app = DeepAgentsApp(agent=MagicMock())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._rubric_default_model is None
+                with patch.object(app, "push_screen") as push_screen:
+                    await app._show_rubric_model_selector(source=source)
+                    await pilot.pause()
+
+                screen = push_screen.call_args.args[0]
+                assert clear_cmd in screen._description
+                assert "reuse the startup chat model." in screen._description
+                assert "startup chat model (" not in screen._description
 
     async def test_goal_model_selector_cancel_reports_unchanged(self) -> None:
         """Escaping the goal grader picker should leave a short chat note."""
@@ -8507,11 +8537,15 @@ class TestGoalCommand:
 
     async def test_goal_model_clear_already_default_short_circuits(self) -> None:
         """`/goal model clear` should no-op when already on the startup chat model."""
-        app = DeepAgentsApp(agent=MagicMock())
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             app._rubric_model = None
-            app._server_kwargs = {}
+            app._server_kwargs = {"model_name": "openai:gpt-5.5"}
             app._server_proc = MagicMock()
 
             with patch.object(
@@ -8525,15 +8559,48 @@ class TestGoalCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Goal grader model already uses the startup chat model." in rendered
+            assert (
+                "Goal grader model already uses the startup chat model "
+                "(openai:gpt-5.5)." in rendered
+            )
 
-    async def test_goal_model_clear_uses_goal_copy(self) -> None:
-        """A successful `/goal model clear` should use goal-branded confirmation."""
+    async def test_goal_model_clear_already_default_uses_bare_label(self) -> None:
+        """The already-default no-op omits the suffix when no startup model is known."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
+            assert app._rubric_default_model is None
+            app._rubric_model = None
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+            ) as respawn:
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            respawn.assert_not_awaited()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal grader model already uses the startup chat model." in rendered
+            assert "startup chat model (" not in rendered
+
+    async def test_goal_model_clear_uses_goal_copy(self) -> None:
+        """A successful `/goal model clear` should use goal-branded confirmation."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
             app._rubric_model = "openai:gpt-5.1"
-            app._server_kwargs = {"rubric_model": "openai:gpt-5.1"}
+            app._server_kwargs = {
+                "model_name": "openai:gpt-5.5",
+                "rubric_model": "openai:gpt-5.1",
+            }
             app._server_proc = MagicMock()
 
             with patch.object(
@@ -8546,7 +8613,10 @@ class TestGoalCommand:
                 await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Goal grader model cleared; using startup chat model." in rendered
+            assert (
+                "Goal grader model cleared; using the startup chat model "
+                "(openai:gpt-5.5)." in rendered
+            )
             assert "Rubric grader model" not in rendered
 
     async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
@@ -11413,7 +11483,7 @@ class TestRubricCommand:
             assert app._rubric_max_iterations == 21
             assert app._server_kwargs["rubric_max_iterations"] == 21
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations set to 21" in rendered
+            assert "Max iterations set to 21" in rendered
 
     async def test_rubric_max_iterations_command_rejects_non_positive(
         self,
@@ -11459,7 +11529,7 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations set to 12" in rendered
+            assert "Max iterations set to 12" in rendered
 
     async def test_set_rubric_max_iterations_rolls_back_on_failed_respawn(self) -> None:
         """A failed respawn should restore the previous cap."""
@@ -11546,6 +11616,101 @@ class TestRubricCommand:
                 "already use the SDK default "
                 f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})." in rendered
             )
+
+    async def test_set_rubric_max_iterations_noop_when_setting_sdk_default_value(
+        self,
+    ) -> None:
+        """Setting the concrete SDK default while unset should not respawn."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(SDK_DEFAULT_RUBRIC_MAX_ITERATIONS)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "already use the SDK default "
+                f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})." in rendered
+            )
+
+    async def test_set_rubric_max_iterations_explicit_default_is_not_unset(
+        self,
+    ) -> None:
+        """An explicit cap equal to the SDK default is distinct from unset.
+
+        The no-op guard fires only when the cap is unset (`None`). Re-issuing the
+        same explicit default value must fall through to the `== value` branch and
+        report "already set to N" rather than the "SDK default" no-op wording, so a
+        regression that dropped the `is None` precondition would be caught.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            app._server_kwargs = {
+                "rubric_max_iterations": SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            }
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(SDK_DEFAULT_RUBRIC_MAX_ITERATIONS)
+            await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert f"already set to {SDK_DEFAULT_RUBRIC_MAX_ITERATIONS}." in rendered
+            assert "SDK default" not in rendered
+
+    async def test_set_rubric_max_iterations_clear_from_explicit_default_respawns(
+        self,
+    ) -> None:
+        """Clearing an explicitly-set default cap must respawn, not short-circuit.
+
+        With the cap explicitly pinned to the SDK default value, clearing it
+        (`None`) is a real state change: the guard's `is None` precondition is
+        false, so the request must fall through to the respawn path.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            app._server_kwargs = {
+                "rubric_max_iterations": SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            }
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as respawn:
+                await app._set_rubric_max_iterations(None)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            assert app._server_kwargs["rubric_max_iterations"] is None
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="",
+            )
+            app._server_proc.persist_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="",
+            )
+            assert respawn.await_count == 1
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Max iterations cleared; using the SDK default." in rendered
 
     async def test_rubric_max_iterations_command_clears_owned_server(self) -> None:
         """`/rubric max-iterations clear` resets the cap to the SDK default."""
@@ -11809,7 +11974,9 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model cleared; using startup chat model." in rendered
+            assert (
+                "Rubric grader model cleared; using the startup chat model." in rendered
+            )
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""

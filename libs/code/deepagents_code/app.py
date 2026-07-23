@@ -10725,26 +10725,30 @@ class DeepAgentsApp(App):
             return
         await self._set_rubric_max_iterations(value)
 
+    def _startup_chat_model_label(self) -> str:
+        """Return the construction-time chat model label used as the grader default.
+
+        Uses `_rubric_default_model` (not per-turn `/model` overrides) because the
+        rubric middleware keeps the model chosen when the graph was built. A
+        failed-startup retry rebuilds the graph and re-captures this value; a
+        `/model` override on a live server does not touch it. Falls back to a bare
+        "startup chat model" when that value is unknown.
+        """
+        chat_model = self._rubric_default_model
+        if chat_model:
+            return f"startup chat model ({chat_model})"
+        return "startup chat model"
+
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
         When no explicit grader model is set, the model string reports the
-        rubric's construction-time chat model (`_rubric_default_model`, which
-        deliberately ignores per-turn `/model` overrides), falling back to a
-        bare "startup chat model" when that is unknown. An unset iteration cap
+        construction-time startup chat model label. An unset iteration cap
         reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
         rather than the word "default". Shared by `/goal show` and
         `/rubric show` so the default wording stays in sync.
         """
-        if self._rubric_model:
-            model = self._rubric_model
-        else:
-            chat_model = self._rubric_default_model
-            model = (
-                f"startup chat model ({chat_model})"
-                if chat_model
-                else "startup chat model"
-            )
+        model = self._rubric_model or self._startup_chat_model_label()
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
@@ -11941,17 +11945,18 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        startup_model = self._startup_chat_model_label()
         if source == "goal":
             title = "Choose grader model for goal"
             description = (
                 "Pick the model used to grade goal acceptance criteria. Clear it "
-                "with `/goal model clear` to reuse the startup chat model."
+                f"with `/goal model clear` to reuse the {startup_model}."
             )
         else:
             title = "Choose grader model for rubric"
             description = (
                 "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the startup chat model."
+                f"`/rubric model clear` to reuse the {startup_model}."
             )
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -11975,30 +11980,34 @@ class DeepAgentsApp(App):
                     execute=partial(self._set_rubric_max_iterations, value),
                 ),
             )
-            self.notify(
-                "Rubric max iterations will change after current work finishes."
-            )
+            self.notify("Max iterations will change after current work finishes.")
             return
 
         if self._server_kwargs is None and self._server_proc is None:
             await self._mount_message(
                 ErrorMessage(
-                    "Rubric max-iterations switching is unavailable in this session "
+                    "Max-iterations switching is unavailable in this session "
                     "because it does not own a restartable server."
                 )
             )
             return
 
-        if self._rubric_max_iterations == value:
-            message = (
-                f"Rubric max iterations already set to {value}."
-                if value is not None
-                else (
-                    "Rubric max iterations already use the SDK default "
+        # Unset (`None`) means the construction-time SDK default. Setting that
+        # concrete default number is therefore a no-op when no override is staged.
+        if self._rubric_max_iterations is None and (
+            value is None or value == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "Max iterations already use the SDK default "
                     f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})."
                 )
             )
-            await self._mount_message(AppMessage(message))
+            return
+        if self._rubric_max_iterations == value:
+            await self._mount_message(
+                AppMessage(f"Max iterations already set to {value}.")
+            )
             return
 
         previous = self._rubric_max_iterations
@@ -12013,11 +12022,9 @@ class DeepAgentsApp(App):
                 **{env_key: env_value},
             )
             restarted = await self._respawn_server(
-                log_message=(
-                    "Server restart failed while changing rubric max iterations"
-                ),
+                log_message=("Server restart failed while changing max iterations"),
                 mcp_failure_log=(
-                    "MCP metadata preload after rubric max-iterations change failed"
+                    "MCP metadata preload after max-iterations change failed"
                 ),
                 mcp_failure_toast=(
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
@@ -12039,11 +12046,11 @@ class DeepAgentsApp(App):
 
         if value is None:
             await self._mount_message(
-                AppMessage("Rubric max iterations cleared; using the SDK default."),
+                AppMessage("Max iterations cleared; using the SDK default."),
             )
         else:
             await self._mount_message(
-                AppMessage(f"Rubric max iterations set to {value}."),
+                AppMessage(f"Max iterations set to {value}."),
             )
 
     async def _set_rubric_model(
@@ -12122,7 +12129,10 @@ class DeepAgentsApp(App):
                 return
         elif self._rubric_model is None:
             await self._mount_message(
-                AppMessage(f"{label} model already uses the startup chat model.")
+                AppMessage(
+                    f"{label} model already uses the "
+                    f"{self._startup_chat_model_label()}."
+                )
             )
             return
 
@@ -12166,7 +12176,10 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"{label} model set to {display}."))
         else:
             await self._mount_message(
-                AppMessage(f"{label} model cleared; using startup chat model."),
+                AppMessage(
+                    f"{label} model cleared; using the "
+                    f"{self._startup_chat_model_label()}."
+                ),
             )
 
     async def _handle_command(self, command: str) -> None:

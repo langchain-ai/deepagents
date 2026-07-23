@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
+from deepagents.graph import _LEGACY_BASE_AGENT_PROMPT
 from deepagents.backends import LocalShellBackend
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
@@ -345,12 +346,14 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
-    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
-    # prompt-free default. The sandbox workdir is already enforced by the shell
-    # backend's `root_dir`.
+    # DIAGNOSTIC (throwaway branch): restore the authored base system prompt
+    # that the lean change emptied, to test whether it alone recovers
+    # autonomous/context scores vs main's regression. Sandbox workdir is still
+    # enforced by the shell backend's `root_dir`.
     return create_deep_agent(
         model=model,
         backend=backend,
+        system_prompt={"base": _LEGACY_BASE_AGENT_PROMPT},
     )
 
 

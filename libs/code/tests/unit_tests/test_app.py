@@ -5460,10 +5460,48 @@ class TestTraceCommand:
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
+        from deepagents_code.config import LangsmithShadowResult
+
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState()
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+                # Pin the shadow check so this branch is independent of whatever
+                # tracing vars the test runner happens to have exported.
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    return_value=LangsmithShadowResult(),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "/auth" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
+
+    async def test_trace_flags_key_shadowed_by_empty_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should name the empty override and how to fix it, not send to /auth."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            # Clear the sibling tracing vars so the real helper reaches the
+            # canonical-env shadow branch deterministically.
+            for var in ("LANGCHAIN_API_KEY", "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"):
+                monkeypatch.delenv(var, raising=False)
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
 
             with patch(
                 "deepagents_code.config.get_langsmith_project_name",
@@ -5474,28 +5512,32 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert "/auth" in rendered
-            assert "LANGSMITH_API_KEY" not in rendered
+            assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
+            assert "shadowing" in rendered
+            # The actionable remediation must be present...
+            assert "Unset DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
+            # ...and it must not send the user to /auth or mislabel an env key
+            # as a "stored" key.
+            assert "/auth" not in rendered
+            assert "stored key" not in rendered
 
-    async def test_trace_flags_key_shadowed_by_empty_override(self) -> None:
-        """Should name the empty override rather than send the user to /auth."""
+    async def test_trace_flags_unreadable_credential_store(self) -> None:
+        """A corrupt store surfaces a corruption hint, not the generic one."""
+        from deepagents_code.config import LangsmithShadowResult
+
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState()
 
             with (
-                patch.dict(
-                    "os.environ",
-                    {
-                        "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "",
-                        "LANGSMITH_API_KEY": "lsv2_test",
-                    },
-                    clear=False,
-                ),
                 patch(
                     "deepagents_code.config.get_langsmith_project_name",
                     return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    return_value=LangsmithShadowResult(store_unreadable=True),
                 ),
             ):
                 await app._handle_trace_command("/trace")
@@ -5503,9 +5545,38 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
-            assert "shadowing" in rendered
-            assert "/auth" not in rendered
+            assert "corrupt" in rendered
+            assert "/auth" in rendered
+
+    async def test_trace_survives_shadow_check_failure(self) -> None:
+        """An unexpected error in the shadow check falls back to the generic hint.
+
+        The check is a best-effort diagnostic; a raise from it (e.g. a lazy
+        import failure) must not crash `/trace` or drop the command echo.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    side_effect=RuntimeError("boom"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "/auth" in rendered
+            user_msgs = app.query(UserMessage)
+            assert any("/trace" in str(w._content) for w in user_msgs)
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.

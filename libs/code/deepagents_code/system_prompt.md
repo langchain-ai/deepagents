@@ -211,5 +211,3 @@ When you use the web_search tool:
 6. If the search doesn't find what you need, explain what you found and ask clarifying questions
 
 The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
-
-{todo_list_section}

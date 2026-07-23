@@ -66,6 +66,10 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.goal_state_notice import (
+    GOAL_CONTROL_MESSAGE_SOURCE,
+    goal_state_notice_info,
+)
 from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -96,6 +100,19 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
+
+
+def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
+    """Remove and validate the canonical notice from a state update."""
+    from langchain_core.messages import HumanMessage
+
+    messages = update.pop("messages")
+    assert isinstance(messages, list)
+    assert len(messages) == 1
+    notice = messages[0]
+    assert isinstance(notice, HumanMessage)
+    assert goal_state_notice_info(notice) is not None
+    return notice
 
 
 async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
@@ -6377,7 +6394,7 @@ class TestGoalCommand:
                         "- tests pass\n- no unrelated files",
                     ),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._handle_command("/goal add refresh tokens exactly")
                 for _ in range(20):
@@ -6393,7 +6410,12 @@ class TestGoalCommand:
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
             assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("add refresh tokens exactly")
+            # Work continues through a hidden control message; the objective is
+            # not replayed as a second user turn.
+            handle.assert_awaited_once_with("created")
+            user_messages = [w.raw_text for w in app.query(UserMessage)]
+            assert user_messages == ["/goal add refresh tokens exactly"]
+            assert "add refresh tokens exactly" not in user_messages
 
             await app._show_goal_state()
             await pilot.pause()
@@ -6445,7 +6467,7 @@ class TestGoalCommand:
                     "_persist_goal_rubric_state",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
                 patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
                 patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
@@ -6461,7 +6483,91 @@ class TestGoalCommand:
             assert app._pending_goal_review_widget is None
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
-            handle.assert_awaited_once_with("ship login")
+            handle.assert_awaited_once_with("created")
+
+    async def test_queued_goal_uses_hidden_fallback_when_persist_fails(self) -> None:
+        """An unsaved queued goal supplies its objective without a visible replay."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._queued_goal_application = _GoalApplication(
+                "ship login",
+                "- tests pass",
+                "create",
+            )
+            persist = AsyncMock(return_value=False)
+            submit = AsyncMock()
+            send = AsyncMock()
+
+            with (
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(app, "_handle_user_message", submit),
+                patch.object(app, "_send_to_agent", send),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task()
+
+            persist.assert_awaited_once()
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._queued_goal_application is None
+            submit.assert_not_awaited()
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            message = send.await_args.args[0]
+            kwargs = send.await_args.kwargs["message_kwargs"]
+            assert "ship login" in message
+            assert "get_goal" not in message
+            assert kwargs["additional_kwargs"]["lc_source"] == (
+                GOAL_CONTROL_MESSAGE_SOURCE
+            )
+            assert kwargs["additional_kwargs"]["goal_state_persisted"] is False
+
+    async def test_unsaved_goal_fallback_precedes_queued_user_message(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._queued_goal_application = _GoalApplication(
+                "ship login",
+                "- tests pass",
+                "create",
+            )
+            app._pending_messages.append(QueuedMessage("steer toward login", "normal"))
+            send = AsyncMock()
+            process = AsyncMock()
+
+            with (
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(app, "_send_to_agent", send),
+                patch.object(app, "_process_next_from_queue", process),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task()
+
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            assert "ship login" in send.await_args.args[0]
+            process.assert_not_awaited()
+            assert len(app._pending_messages) == 1
 
     async def test_successful_generation_keeps_proposal_when_clear_fails(
         self,
@@ -6503,7 +6609,7 @@ class TestGoalCommand:
                     "_persist_goal_rubric_state",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
                 patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
                 patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
@@ -6516,7 +6622,7 @@ class TestGoalCommand:
             assert app._active_goal == "ship login"
             assert app._active_rubric == "- tests pass"
             assert app._queued_goal_application is None
-            handle.assert_awaited_once_with("ship login")
+            handle.assert_awaited_once_with("created")
 
     async def test_failed_or_cancelled_yolo_generation_does_not_accept(self) -> None:
         """A terminal unsuccessful criteria turn must discard its partial draft."""
@@ -6721,7 +6827,7 @@ class TestGoalCommand:
                     "_write_live_approval_mode",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await pilot.press("r")
                 await pilot.pause()
@@ -6770,14 +6876,14 @@ class TestGoalCommand:
             assert app._session_state is not None
             app._session_state.auto_approve = True
 
-            def start_after_history(_objective: str) -> None:
+            def start_after_history(_transition: str) -> None:
                 assert (
                     app._message_store.get_message("history-before-restored-goal")
                     is history
                 )
 
             handle = AsyncMock(side_effect=start_after_history)
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -6789,7 +6895,7 @@ class TestGoalCommand:
             assert app._pending_goal_review_future is None
             assert app._goal_review_task is None
             assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("restore exact objective")
+            handle.assert_awaited_once_with("created")
 
     async def test_restored_proposal_with_active_request_is_not_auto_accepted(
         self,
@@ -6815,7 +6921,7 @@ class TestGoalCommand:
             app._session_state.auto_approve = True
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -7044,7 +7150,7 @@ class TestGoalCommand:
             app._pending_goal_request_id = "request-new"
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._remount_pending_goal_rubric_review(
                     expected_request_id="request-old"
                 )
@@ -7072,7 +7178,7 @@ class TestGoalCommand:
 
             assert app._active_goal == "new objective"
             assert app._active_rubric == "- new criteria"
-            handle.assert_awaited_once_with("new objective")
+            handle.assert_awaited_once_with("created")
 
     async def test_newer_inflight_request_supersedes_saved_yolo_proposal(
         self,
@@ -8152,7 +8258,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_run_goal_criteria_request", side_effect=generate),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._handle_command("/goal add audit logs")
                 for _ in range(10):
@@ -8283,7 +8389,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8300,14 +8406,22 @@ class TestGoalCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_goal_accept_persists_thread_metadata(self) -> None:
-        """Accepted goals should be checkpointed on the current thread."""
+        """State and its active notice are saved before work continues."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            events: list[str] = []
+            updater = SimpleNamespace(
+                aupdate_state=AsyncMock(
+                    side_effect=lambda *_args: events.append("persist")
+                )
+            )
+            continuation = AsyncMock(
+                side_effect=lambda *_args, **_kwargs: events.append("continue")
+            )
             app._agent = updater
             app._lc_thread_id = "thread-1"
             app._pending_goal_objective = "add refresh tokens"
@@ -8318,27 +8432,33 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", continuation),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
 
-            updater.aupdate_state.assert_awaited_once_with(
-                {"configurable": {"thread_id": "thread-1"}},
-                {
-                    "rubric": "- tests pass",
-                    "_sticky_rubric": "- tests pass",
-                    "_goal_objective": "add refresh tokens",
-                    "_goal_status": "active",
-                    "_goal_rubric": "- tests pass",
-                    "_goal_status_note": None,
-                    "_pending_goal_completion_note": None,
-                    "_pending_goal_objective": None,
-                    "_pending_goal_rubric": None,
-                    "_pending_goal_kind": None,
-                    "_pending_goal_request_id": None,
-                },
-            )
+            assert events == ["persist", "continue"]
+            continuation.assert_awaited_once_with("created")
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            config, raw_update = updater.aupdate_state.await_args.args
+            assert config == {"configurable": {"thread_id": "thread-1"}}
+            state_update = dict(raw_update)
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: active" in notice.content
+            assert state_update == {
+                "rubric": "- tests pass",
+                "_sticky_rubric": "- tests pass",
+                "_goal_objective": "add refresh tokens",
+                "_goal_status": "active",
+                "_goal_rubric": "- tests pass",
+                "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
+            }
 
     async def test_goal_accept_ensures_remote_thread_before_persisting(
         self,
@@ -8362,7 +8482,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", AsyncMock()),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8375,8 +8495,8 @@ class TestGoalCommand:
             assert update_args is not None
             assert update_args.kwargs["as_node"] == "model"
 
-    async def test_initial_goal_acceptance_submits_objective(self) -> None:
-        """Accepted startup goals should immediately start the rubric-backed task."""
+    async def test_initial_goal_acceptance_continues_from_saved_state(self) -> None:
+        """Accepted startup goals should continue through the hidden control turn."""
         app = DeepAgentsApp(agent=MagicMock(), initial_goal="add refresh tokens")
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8384,10 +8504,10 @@ class TestGoalCommand:
             app._pending_goal_rubric = "- tests pass"
             handle = AsyncMock()
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._accept_goal_rubric("- tests pass")
 
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
             assert app._initial_goal is None
 
     async def test_goal_review_accepts_revised_criteria(self) -> None:
@@ -8405,7 +8525,7 @@ class TestGoalCommand:
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_continue_goal_work", AsyncMock()),
             ):
                 await app._review_pending_goal_rubric()
                 await pilot.pause()
@@ -8547,7 +8667,7 @@ class TestGoalCommand:
                 pending_goal_rubric="- tests pass",
             )
 
-            with patch.object(app, "_handle_user_message", handle):
+            with patch.object(app, "_continue_goal_work", handle):
                 await app._load_thread_history(
                     thread_id="thread-1",
                     preloaded_payload=payload,
@@ -8573,7 +8693,7 @@ class TestGoalCommand:
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._pending_goal_review_widget is None
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_restore_uses_sticky_rubric_over_public_rubric(self) -> None:
         """Graph input `rubric` should not overwrite explicit sticky state."""
@@ -8680,7 +8800,9 @@ class TestGoalCommand:
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note is None
             assert updater.aupdate_state.await_args is not None
-            state_update = updater.aupdate_state.await_args.args[1]
+            state_update = dict(updater.aupdate_state.await_args.args[1])
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: complete" in notice.content
             assert state_update == {
                 "rubric": None,
                 "_sticky_rubric": "- tests pass",
@@ -9625,7 +9747,7 @@ class TestGoalCommand:
             assert app._active_rubric == "- existing rubric"
 
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
-        """A failed thread write should warn and still start accepted goal work."""
+        """A failed write warns and continues without replaying the user turn."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -9633,25 +9755,27 @@ class TestGoalCommand:
                 aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
             )
             app._lc_thread_id = "thread-1"
+            await app._mount_message(UserMessage("/goal add refresh tokens"))
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_request_id = "request-create"
             request = AsyncMock(
                 return_value=self._goal_review_future({"type": "accepted"})
             )
-            handle = AsyncMock()
+            submit = AsyncMock()
+            send = AsyncMock()
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_handle_user_message", submit),
+                patch.object(app, "_send_to_agent", send),
             ):
                 await app._review_pending_goal_rubric()
                 for _ in range(20):
                     await pilot.pause()
-                    if handle.await_count:
+                    if send.await_count:
                         break
 
-            # State still applies in-session, but the warning stays concise and
-            # does not render the accepted criteria as an error body.
             assert app._active_goal == "add refresh tokens"
             assert any(
                 "Goal accepted. It will stay active for this thread" in str(w._content)
@@ -9664,7 +9788,25 @@ class TestGoalCommand:
             assert not any(
                 "- tests pass" in str(w._content) for w in app.query(ErrorMessage)
             )
-            handle.assert_awaited_once_with("add refresh tokens")
+            assert [message.raw_text for message in app.query(UserMessage)] == [
+                "/goal add refresh tokens"
+            ]
+            submit.assert_not_awaited()
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            message = send.await_args.args[0]
+            kwargs = send.await_args.kwargs["message_kwargs"]
+            assert "add refresh tokens" in message
+            assert "get_goal" not in message
+            assert kwargs["additional_kwargs"]["lc_source"] == (
+                GOAL_CONTROL_MESSAGE_SOURCE
+            )
+            assert kwargs["additional_kwargs"]["goal_state_persisted"] is False
+            assert "request-create" in app._discarded_goal_proposal_request_ids
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_request_id = "request-create"
+            assert app._pending_goal_proposal() is None
 
     async def test_goal_amend_does_not_continue_when_persist_fails(self) -> None:
         """Synthetic continuation must not read an unchanged checkpoint."""
@@ -9954,12 +10096,8 @@ class TestRubricCommand:
             mock_execute.assert_awaited_once()
             assert mock_execute.await_args is not None
             user_input = mock_execute.await_args.kwargs["user_input"]
-            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
             assert user_input == "I added the provider credentials"
-            assert "previously marked blocked" in retry_context
-            assert "waiting on provider credentials" in retry_context
-            assert "I added the provider credentials" not in retry_context
-            assert 'update_goal(status="blocked", note=...)' in retry_context
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert app._goal_status == "active"
             assert app._goal_status_note is None
             assert app._status_bar.rubric_label == _rubric_status_label(
@@ -9992,25 +10130,30 @@ class TestRubricCommand:
                 await asyncio.wait_for(started.wait(), timeout=1)
 
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_awaited_once_with(
-                config,
-                {
-                    "rubric": "tests pass",
-                    "_sticky_rubric": "tests pass",
-                    "_goal_objective": "add refresh tokens",
-                    "_goal_status": "active",
-                    "_goal_rubric": "tests pass",
-                    "_goal_status_note": None,
-                    "_pending_goal_completion_note": None,
-                    "_pending_goal_objective": None,
-                    "_pending_goal_rubric": None,
-                    "_pending_goal_kind": None,
-                    "_pending_goal_request_id": None,
-                },
-            )
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            actual_config, raw_update = updater.aupdate_state.await_args.args
+            assert actual_config == config
+            state_update = dict(raw_update)
+            notice = _pop_goal_state_notice(state_update)
+            assert "Goal status: active" in notice.content
+            assert "waiting on provider credentials" in notice.content
+            assert state_update == {
+                "rubric": "tests pass",
+                "_sticky_rubric": "tests pass",
+                "_goal_objective": "add refresh tokens",
+                "_goal_status": "active",
+                "_goal_rubric": "tests pass",
+                "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
+                "_pending_goal_request_id": None,
+            }
 
-    async def test_active_goal_is_not_reset_and_sends_no_retry_context(self) -> None:
-        """A non-blocked goal turn must not flip state or inject retry context."""
+    async def test_active_goal_is_not_reset_or_reannounced(self) -> None:
+        """A non-blocked goal turn must not flip or reannounce its state."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -10034,7 +10177,7 @@ class TestRubricCommand:
 
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["user_input"] == "keep going"
-            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert not any(
                 str(w._content).startswith("Continuing active goal")
                 for w in app.query(AppMessage)
@@ -10090,20 +10233,20 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "blocked"
             app._goal_status_note = "waiting on provider credentials"
-            started = asyncio.Event()
-
-            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
-                started.set()
-                return SessionStats()
-
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
-                new=AsyncMock(side_effect=execute_stub),
-            ):
+                new_callable=AsyncMock,
+            ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
-                await asyncio.wait_for(started.wait(), timeout=1)
+                await pilot.pause()
 
+            mock_execute.assert_not_awaited()
             assert app._goal_status == "blocked"
+            assert app._active_user_message is None
+            assert any(
+                "message was not sent" in str(message._content)
+                for message in app.query(ErrorMessage)
+            )
             assert not any(
                 str(w._content).startswith(
                     ("Resuming previously blocked goal", "Continuing active goal")
@@ -10115,8 +10258,8 @@ class TestRubricCommand:
         """A skill send is the user acting on a blocked goal, so it resets it.
 
         `_invoke_skill` routes through `_send_to_agent`, the same path as a typed
-        reply, so invoking a skill while blocked flips the goal back to active
-        and attaches one-turn retry context.
+        reply, so invoking a skill while blocked persists active state and its
+        canonical notice before the turn starts.
         """
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -10139,17 +10282,9 @@ class TestRubricCommand:
                 await asyncio.wait_for(started.wait(), timeout=1)
 
             assert mock_execute.await_args is not None
-            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
-            assert retry_context is not None
-            assert "waiting on provider credentials" in retry_context
+            assert "blocked_goal_retry_context" not in mock_execute.await_args.kwargs
             assert app._goal_status == "active"
             assert app._goal_status_note is None
-
-    async def test_blocked_goal_retry_context_handles_missing_note(self) -> None:
-        """A blocked goal with no recorded note still yields coherent context."""
-        for note in (None, "", "   "):
-            context = DeepAgentsApp._blocked_goal_retry_context(note)
-            assert "no blocker note was recorded" in context
 
     async def test_blocked_goal_reset_rolls_back_when_persist_fails(self) -> None:
         """A failed persist must restore `blocked` so checkpoint and memory agree."""
@@ -10164,27 +10299,14 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "blocked"
             app._goal_status_note = "waiting on provider credentials"
-            started = asyncio.Event()
-
-            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
-                started.set()
-                return SessionStats()
-
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
-                new=AsyncMock(side_effect=execute_stub),
+                new_callable=AsyncMock,
             ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
-                await asyncio.wait_for(started.wait(), timeout=1)
+                await pilot.pause()
 
-            # The flip was rolled back, so no retry context is sent and the turn
-            # runs with the goal still blocked rather than on diverged state.
-            assert mock_execute.await_args is not None
-            assert (
-                mock_execute.await_args.kwargs["user_input"]
-                == "Credentials are configured now"
-            )
-            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            mock_execute.assert_not_awaited()
             assert app._goal_status == "blocked"
             assert app._goal_status_note == "waiting on provider credentials"
 
@@ -10314,7 +10436,14 @@ class TestRubricCommand:
                 "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_awaited_once_with(config, state_update)
+            updater.aupdate_state.assert_awaited_once()
+            assert updater.aupdate_state.await_args is not None
+            actual_config, raw_update = updater.aupdate_state.await_args.args
+            assert actual_config == config
+            actual_update = dict(raw_update)
+            notice = _pop_goal_state_notice(actual_update)
+            assert "Rubric active: no" in notice.content
+            assert actual_update == state_update
             assert app._active_rubric is None
             assert app._next_rubric is None
             assert app._last_consumed_next_rubric is None
@@ -10335,12 +10464,40 @@ class TestRubricCommand:
                 await app._sync_goal_rubric_state_from_thread()
 
             assert app._active_rubric == "sticky"
-            assert app._last_consumed_next_rubric is None
-            assert app._last_consumed_next_previous_rubric is None
+            assert app._last_consumed_next_rubric == "one shot"
+            assert app._last_consumed_next_previous_rubric == "sticky"
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
+
+    async def test_stale_one_shot_restore_blocks_until_persisted(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_rubric = "sticky"
+            app._last_consumed_next_rubric = "one shot"
+            app._last_consumed_next_previous_rubric = "sticky"
+            persist = AsyncMock(side_effect=[False, True])
+
+            with (
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    new_callable=AsyncMock,
+                ) as execute,
+            ):
+                await app._run_agent_task("first retry")
+                execute.assert_not_awaited()
+                assert app._last_consumed_next_rubric == "one shot"
+
+                await app._run_agent_task("second retry")
+
+            execute.assert_awaited_once()
+            assert app._last_consumed_next_rubric is None
+            assert app._last_consumed_next_previous_rubric is None
 
     async def test_rubric_next_persists_sticky_marker_before_turn(self) -> None:
         """The pre-turn write distinguishes one-shot graph input from sticky state."""
@@ -10385,9 +10542,23 @@ class TestRubricCommand:
                 "_pending_goal_request_id": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
-            updater.aupdate_state.assert_has_awaits(
-                [call(config, state_update), call(config, state_update)]
-            )
+            assert updater.aupdate_state.await_count == 2
+            first_config, first_raw_update = updater.aupdate_state.await_args_list[
+                0
+            ].args
+            assert first_config == config
+            first_update = dict(first_raw_update)
+            activation = _pop_goal_state_notice(first_update)
+            assert "Rubric active: yes" in activation.content
+            assert first_update == {**state_update, "rubric": "update docs"}
+            second_config, second_raw_update = updater.aupdate_state.await_args_list[
+                1
+            ].args
+            assert second_config == config
+            second_update = dict(second_raw_update)
+            restoration = _pop_goal_state_notice(second_update)
+            assert "Rubric active: no" in restoration.content
+            assert second_update == state_update
             assert app._active_rubric is None
             assert app._next_rubric is None
             assert app._status_bar is not None
@@ -19946,6 +20117,82 @@ class TestHasConversationMessages:
             app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            pytest.param(
+                {"role": "user", "content": "hi"},
+                True,
+                id="openai-user-dict",
+            ),
+            pytest.param(
+                {
+                    "type": "human",
+                    "content": "hidden",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                },
+                False,
+                id="remote-hidden-notice",
+            ),
+            pytest.param(
+                {
+                    "type": "human",
+                    "content": "hidden",
+                    "additional_kwargs": {"lc_source": "goal_control"},
+                },
+                False,
+                id="remote-hidden-continuation",
+            ),
+            pytest.param(
+                {
+                    "type": "human",
+                    "content": "connector input",
+                    "additional_kwargs": {"lc_source": "slack"},
+                },
+                True,
+                id="remote-connector-input",
+            ),
+        ],
+    )
+    async def test_openai_user_and_internal_dicts(
+        self,
+        message: dict[str, object],
+        expected: bool,
+    ) -> None:
+        """Only known internal sources are hidden from conversation detection."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [message]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is expected
+
+    async def test_returns_false_for_local_internal_human(self) -> None:
+        """A notice-only local thread is not a real conversation."""
+        from langchain_core.messages import HumanMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {
+                "messages": [
+                    HumanMessage(
+                        content="hidden",
+                        additional_kwargs={"lc_source": "goal_state"},
+                    )
+                ]
+            }
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
 
     async def test_returns_false_when_only_non_human_dicts(self) -> None:
         """Should not treat every raw dict as human; non-human dicts are False."""

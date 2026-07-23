@@ -94,7 +94,6 @@ def migrate_legacy_hooks(
                             command=_shell_command(adapter_argv, os_name=os.name),
                             argv=adapter_argv,
                             timeout=_ADAPTER_OUTER_TIMEOUT_SECONDS,
-                            inherit_environ=True,
                         )
                     ],
                 )

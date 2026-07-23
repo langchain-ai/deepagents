@@ -413,6 +413,7 @@ class TestReloadFromEnvironment:
             "BASH_ENV=/tmp/evil.sh\n"
             "BASHOPTS=expand_aliases\n"
             "CDPATH=/tmp\n"
+            "COMSPEC=C:\\repo\\cmd.exe\n"
             "ENV=/tmp/evil.sh\n"
             "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
@@ -420,6 +421,8 @@ class TestReloadFromEnvironment:
             "PATH=/tmp/evil\n"
             "NODE_OPTIONS=--require /tmp/evil.js\n"
             "SHELLOPTS=xtrace\n"
+            "SYSTEMROOT=C:\\repo\\windows\n"
+            "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
@@ -427,12 +430,15 @@ class TestReloadFromEnvironment:
             "BASH_ENV",
             "BASHOPTS",
             "CDPATH",
+            "COMSPEC",
             "ENV",
             "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
             "NODE_OPTIONS",
             "SHELLOPTS",
+            "SYSTEMROOT",
+            "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
             "OPENAI_API_KEY",
         ):
@@ -443,12 +449,15 @@ class TestReloadFromEnvironment:
         assert "BASH_ENV" not in os.environ
         assert "BASHOPTS" not in os.environ
         assert "CDPATH" not in os.environ
+        assert "COMSPEC" not in os.environ
         assert "ENV" not in os.environ
         assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
         assert "NODE_OPTIONS" not in os.environ
         assert "SHELLOPTS" not in os.environ
+        assert "SYSTEMROOT" not in os.environ
+        assert "WINDIR" not in os.environ
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
@@ -671,6 +680,7 @@ class TestReloadFromEnvironment:
             "BASH_ENV",
             "BASHOPTS",
             "CDPATH",
+            "COMSPEC",
             "ENV",
             "GLOBIGNORE",
             "SHELLOPTS",

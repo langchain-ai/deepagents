@@ -25,16 +25,16 @@ class CommandHandlerSpec(_ConfigModel):
     implemented.
 
     When `argv` is set, the runner launches via `create_subprocess_exec` and
-    ignores shell metacharacters in `command`. Migrated legacy observers set
-    `argv` plus `inherit_environ` so Windows paths stay intact and the child
-    sees the same ambient environment legacy dispatch used.
+    ignores shell metacharacters in `command`.
+
+    `argv` is a temporary legacy-migration compatibility field. Remove it with
+    `hooks.legacy` and `hooks.migration` after September 1, 2026.
     """
 
     type: Literal["command"]
     command: str
     argv: list[str] | None = None
     timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    inherit_environ: bool = Field(default=False, alias="inheritEnviron")
     status_message: str | None = Field(default=None, alias="statusMessage")
     async_: bool | None = Field(default=None, alias="async")
 

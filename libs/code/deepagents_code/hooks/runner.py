@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import json
 import ntpath
 import os
@@ -74,12 +75,7 @@ async def run_command_handler(
     elif not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
-    if env is not None:
-        launch_env = env
-    elif handler.inherit_environ:
-        launch_env = dict(os.environ)
-    else:
-        launch_env = sanitize_hook_environ()
+    launch_env = env if env is not None else sanitize_hook_environ()
 
     try:
         # Prefer argv + exec when present so Windows metacharacters in paths are
@@ -307,10 +303,25 @@ async def _terminate_windows_tree(process: Process) -> None:
 
 
 def _windows_taskkill_path() -> str | None:
-    system_root = os.environ.get("SYSTEMROOT")
-    if not system_root or not ntpath.isabs(system_root):
+    try:
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            return None
+        kernel32 = win_dll("kernel32", use_last_error=True)
+        get_system_directory = kernel32.GetSystemDirectoryW
+        get_system_directory.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+        get_system_directory.restype = ctypes.c_uint
+        size = 260
+        while True:
+            buffer = ctypes.create_unicode_buffer(size)
+            length = get_system_directory(buffer, size)
+            if length == 0:
+                return None
+            if length < size:
+                return ntpath.join(buffer.value, "taskkill.exe")
+            size = length + 1
+    except (AttributeError, OSError, TypeError, ValueError):
         return None
-    return ntpath.join(ntpath.normpath(system_root), "System32", "taskkill.exe")
 
 
 def _decode(value: bytes) -> str:

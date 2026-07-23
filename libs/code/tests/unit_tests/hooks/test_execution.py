@@ -35,6 +35,7 @@ from deepagents_code.hooks.tools import format_mcp_wire_name, to_wire_call
 from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
+    import ctypes
     from pathlib import Path
 
     from deepagents_code.hooks.snapshot import HookHandler
@@ -140,7 +141,7 @@ def test_sanitized_env_strips_secrets_from_injected_source() -> None:
     assert "mixed_case_secret" not in env
 
 
-async def test_runner_inherit_environ_preserves_secrets(
+async def test_runner_sanitizes_ambient_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,34 +155,12 @@ async def test_runner_inherit_environ_preserves_secrets(
         "'systemMessage': os.environ.get('OPENAI_API_KEY','missing')"
         "}))"
     )
-    snapshot = HooksSnapshot.from_config(
-        HooksConfig.model_validate(
-            {
-                "hooks": {
-                    "SessionStart": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": (
-                                        f"{sys.executable} -c {json.dumps(code)}"
-                                    ),
-                                    "inheritEnviron": True,
-                                    "timeout": 5,
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        )
-    )
-    handler = snapshot.handlers[HookEvent.SESSION_START][0]
+    handler = _handler(f"{sys.executable} -c {json.dumps(code)}", timeout=5)
 
     result = await run_command_handler(handler, b"{}", cwd=tmp_path)
 
     assert result.output is not None
-    assert result.output.system_message == "legacy-secret"
+    assert result.output.system_message == "missing"
 
 
 async def test_runner_argv_avoids_shell_metacharacters(tmp_path: Path) -> None:
@@ -254,12 +233,31 @@ def test_exit_and_plain_output_policies_match_registry() -> None:
     assert MAX_STOP_CONTINUATIONS == 8
 
 
+def test_windows_taskkill_path_uses_system_directory_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_system_directory = MagicMock()
+
+    def resolve(buffer: ctypes.Array[ctypes.c_wchar], _size: int) -> int:
+        buffer.value = r"C:\Windows\System32"
+        return len(buffer.value)
+
+    get_system_directory.side_effect = resolve
+    kernel32 = MagicMock(GetSystemDirectoryW=get_system_directory)
+    monkeypatch.setattr(
+        runner.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: kernel32,
+        raising=False,
+    )
+    monkeypatch.setenv("SYSTEMROOT", r"C:\attacker")
+
+    assert runner._windows_taskkill_path() == r"C:\Windows\System32\taskkill.exe"
+
+
 async def test_windows_tree_termination_uses_taskkill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SYSTEMROOT", "Windows")
-    assert runner._windows_taskkill_path() is None
-
     process = MagicMock()
     process.pid = 123
     process.returncode = None
@@ -267,7 +265,11 @@ async def test_windows_tree_termination_uses_taskkill(
     taskkill.wait = AsyncMock(return_value=0)
     create = AsyncMock(return_value=taskkill)
     monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
-    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
 
     await runner._terminate_windows_tree(process)
 
@@ -291,7 +293,11 @@ async def test_windows_tree_termination_falls_back_when_taskkill_fails(
     process.returncode = None
     create = AsyncMock(side_effect=OSError)
     monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
-    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
 
     await runner._terminate_windows_tree(process)
 
@@ -317,7 +323,11 @@ async def test_windows_tree_termination_bounds_taskkill(
     create = AsyncMock(return_value=taskkill)
     monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
     monkeypatch.setattr(runner, "_TERMINATE_WAIT_TIMEOUT", 0.01)
-    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
 
     await runner._terminate_windows_tree(process)
 

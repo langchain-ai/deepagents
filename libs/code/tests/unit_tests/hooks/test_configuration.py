@@ -170,7 +170,6 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
         for group in groups:
             handler = group.hooks[0]
             assert handler.timeout == pytest.approx(HOOK_SUBPROCESS_TIMEOUT + 1.0)
-            assert handler.inherit_environ is True
             assert handler.argv is not None
             assert handler.argv[1:3] == ["-m", "deepagents_code.hooks.migration"]
             assert "deepagents_code.hooks.migration" in handler.command

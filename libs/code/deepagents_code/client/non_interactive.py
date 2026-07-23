@@ -87,6 +87,8 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code.hooks.runtime import HooksRuntime
+
 logger = logging.getLogger(__name__)
 
 
@@ -360,7 +362,7 @@ class StreamState:
     hook_response: dict[str, Any] = field(default_factory=dict)
     """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
 
-    hooks_runtime: Any | None = None
+    hooks_runtime: HooksRuntime | None = None
     """Optional session-scoped HooksRuntime used to fulfill server hook interrupts."""
 
     interrupt_occurred: bool = False
@@ -957,19 +959,16 @@ async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
     """
     if not state.pending_hook_interrupts:
         return
-    from deepagents_code.hooks.client import fulfill_hook_interrupt
+    from deepagents_code.hooks.client import fulfill_pending_hook_interrupts
 
     if state.hooks_runtime is None:
         msg = "Received hook invocation interrupt without a HooksRuntime"
         raise RuntimeError(msg)
     pending = dict(state.pending_hook_interrupts)
     state.pending_hook_interrupts.clear()
-    for interrupt_id, payload in pending.items():
-        resume_value = await fulfill_hook_interrupt(state.hooks_runtime, payload)
-        if resume_value is None:
-            msg = f"Failed to parse hook interrupt {interrupt_id}"
-            raise RuntimeError(msg)
-        state.hook_response[interrupt_id] = resume_value
+    state.hook_response.update(
+        await fulfill_pending_hook_interrupts(state.hooks_runtime, pending)
+    )
 
 
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
@@ -1149,7 +1148,11 @@ async def _run_agent_loop(
     from deepagents_code.hooks.runtime import HooksRuntime
 
     try:
-        hooks_runtime = HooksRuntime.create(cwd=Path.cwd())
+        # Non-interactive mirrors Claude Code: project hooks are trusted.
+        hooks_runtime = HooksRuntime.create(
+            cwd=Path.cwd(),
+            workspace_trusted=True,
+        )
     except Exception:
         logger.exception("Failed to create HooksRuntime; server hooks disabled")
         hooks_runtime = None

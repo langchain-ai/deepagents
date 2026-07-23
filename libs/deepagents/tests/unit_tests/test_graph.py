@@ -660,7 +660,7 @@ class TestBaseAgentPromptDeprecation:
         assert len(deprecations) == 1
         assert deprecations[0].category is LangChainDeprecationWarning
         assert "BASE_AGENT_PROMPT" in str(deprecations[0].message)
-        assert "deepagents==1.0.0" in str(deprecations[0].message)
+        assert "deepagents==0.9.0" in str(deprecations[0].message)
         assert deprecations[0].filename == __file__
 
 

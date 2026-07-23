@@ -123,10 +123,10 @@ def __getattr__(name: str) -> str:
     if name == "BASE_AGENT_PROMPT":
         warn_deprecated(
             since="0.6.12",
-            removal="1.0.0",
+            removal="0.9.0",
             message=(
                 "`BASE_AGENT_PROMPT` is deprecated and will be removed in "
-                "`deepagents==1.0.0`. Deep Agents no longer provides an "
+                "`deepagents==0.9.0`. Deep Agents no longer provides an "
                 "authored base prompt."
             ),
             package="deepagents",

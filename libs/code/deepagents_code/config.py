@@ -3153,6 +3153,11 @@ def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
 
     option = get_option("goals.auto_accept_criteria")
     if option is None:
+        logger.warning(
+            "Manifest option 'goals.auto_accept_criteria' is missing; goal "
+            "criteria auto-accept is disabled and any saved preference is "
+            "ignored.",
+        )
         return False, "default"
     value, source = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value), source

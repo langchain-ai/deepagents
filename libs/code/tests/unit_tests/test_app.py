@@ -925,11 +925,25 @@ class TestStartupSequence:
 
         goal_auto_accept_prompt_marker_path().unlink(missing_ok=True)
 
+    @staticmethod
+    def _force_auto_mode(app: DeepAgentsApp) -> None:
+        """Put the app into Auto mode so the goal preference prompt applies.
+
+        Tests that mock `run_worker` never start session init, so create the
+        session state when it is absent rather than assuming it exists.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if app._session_state is None:
+            app._session_state = TextualSessionState()
+        app._approval_mode = ApprovalMode.AUTO
+        app._session_state.approval_mode = ApprovalMode.AUTO
+
     async def test_goal_create_prompts_for_auto_accept_preference(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """First create/amend should ask before drafting criteria."""
+        """First Auto-mode create/amend should ask before drafting criteria."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.model_config import DEFAULT_CONFIG_PATH
         from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
@@ -949,6 +963,7 @@ class TestStartupSequence:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._force_auto_mode(app)
             command_task = asyncio.create_task(
                 app._handle_goal_command("/goal ship passkeys"),
             )
@@ -974,7 +989,7 @@ class TestStartupSequence:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Explicit prefs should not interrupt goal drafting."""
+        """Explicit prefs should not interrupt goal drafting, even in Auto."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
 
         monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
@@ -992,6 +1007,7 @@ class TestStartupSequence:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            self._force_auto_mode(app)
             await app._handle_goal_command("/goal ship passkeys")
             await pilot.pause()
 
@@ -1106,7 +1122,7 @@ class TestStartupSequence:
         ("saved", "marked", "warning"),
         [
             (False, True, "Could not save the goal criteria preference"),
-            (True, False, "Could not save that the goal criteria preference was shown"),
+            (True, False, "could not record that the prompt was shown"),
             (False, False, "Could not save the goal criteria preference"),
         ],
     )
@@ -1135,6 +1151,140 @@ class TestStartupSequence:
         mark.assert_called_once_with()
         notify.assert_called_once()
         assert warning in notify.call_args.args[0]
+
+    @pytest.mark.parametrize("mode_name", ["manual", "yolo"])
+    async def test_goal_preference_prompt_skipped_outside_auto_mode(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-Auto modes never see the Auto-only preference prompt.
+
+        The choice has no effect in Manual (always reviews) or YOLO (always
+        applies), so it is left unanswered for Auto to ask about later.
+        """
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            mode = ApprovalMode(mode_name)
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
+            with patch.object(
+                app,
+                "_save_goal_auto_accept_preference",
+                new_callable=AsyncMock,
+            ) as save:
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            save.assert_not_awaited()
+
+        assert has_shown_goal_auto_accept_prompt() is False
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+    async def test_goal_preference_prompt_times_out_and_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A wedged Auto prompt is bounded and defaults to review.
+
+        The one-time marker is still written so the timed-out prompt cannot loop.
+        """
+        from deepagents_code import app as app_module
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        async def _never(_self: object, _screen: object) -> None:
+            await asyncio.sleep(10)
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 0.01)
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            with patch.object(DeepAgentsApp, "_push_screen_wait", _never):
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    async def test_goal_preference_prompt_mount_failure_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prompt that fails to mount defaults to review without looping."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            with patch.object(
+                DeepAgentsApp,
+                "_push_screen_wait",
+                MagicMock(side_effect=RuntimeError("boom")),
+            ):
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+
+    async def test_dismiss_orphaned_screen_removes_current_modal(self) -> None:
+        """The orphan-cleanup helper pops the modal it is given when current."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = LaunchGoalCriteriaPreferenceScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._dismiss_orphaned_screen(screen)
+            await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+    async def test_dismiss_orphaned_screen_ignores_unmounted_screen(self) -> None:
+        """A prompt that never mounted is left alone, popping nothing."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            current = app.screen
+            never_pushed = LaunchGoalCriteriaPreferenceScreen()
+
+            app._dismiss_orphaned_screen(never_pushed)
+            await pilot.pause()
+
+            assert app.screen is current
 
     async def test_launch_init_name_screen_focuses_on_mount(self) -> None:
         """The first launch modal should be active and typeable immediately."""

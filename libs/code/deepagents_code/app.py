@@ -8298,18 +8298,46 @@ class DeepAgentsApp(App):
             )
         elif not marked:
             self.notify(
-                "Could not save that the goal criteria preference was shown. "
-                "The prompt may appear again the next time you set a goal.",
+                "Saved the goal criteria preference, but could not record that "
+                "the prompt was shown. The saved setting still applies.",
                 severity="warning",
                 markup=False,
             )
 
+    def _dismiss_orphaned_screen(self, screen: ModalScreen[Any]) -> None:
+        """Dismiss a modal left on top after its watchdog await was cancelled.
+
+        `asyncio.wait_for` cancels the await but not the pushed screen, so a
+        timed-out prompt would otherwise linger over whatever runs next. Only
+        the still-current screen is dismissed: `dismiss()` pops whatever is on
+        top, so a prompt that never mounted (never pushed) must be left alone to
+        avoid popping an unrelated screen.
+
+        Args:
+            screen: The modal that was pushed before the await aborted.
+        """
+        with suppress(NoMatches, ScreenStackError):
+            if self.screen is screen:
+                screen.dismiss()
+
     async def _ensure_goal_auto_accept_preference(self) -> None:
-        """Ask once, on first create/amend, how Auto should handle criteria.
+        """Ask once, on the first Auto-mode goal, how to handle criteria.
+
+        Only prompts in Auto mode: the preference has no effect in Manual
+        (always reviews) or YOLO (always applies), so a Manual/YOLO user is
+        asked the first time they act on a goal after switching to Auto instead.
 
         Fail closed to review when the modal times out or fails to mount. Saving
-        still records the one-time marker so a wedged prompt cannot loop.
+        still records the one-time marker so a wedged prompt cannot loop, and the
+        orphaned modal is dismissed so it cannot linger over goal drafting.
         """
+        if self._session_state is None:
+            return
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = getattr(self._session_state, "approval_mode", None)
+        if mode is not ApprovalMode.AUTO:
+            return
         if not self._should_prompt_goal_auto_accept_preference():
             return
 
@@ -8317,15 +8345,17 @@ class DeepAgentsApp(App):
             LaunchGoalCriteriaPreferenceScreen,
         )
 
+        screen = LaunchGoalCriteriaPreferenceScreen()
         try:
             result = await asyncio.wait_for(
-                self._push_screen_wait(LaunchGoalCriteriaPreferenceScreen()),
+                self._push_screen_wait(screen),
                 timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(
                 "Goal criteria preference prompt timed out; keeping review default",
             )
+            self._dismiss_orphaned_screen(screen)
             await self._save_goal_auto_accept_preference(False)
             return
         except Exception:
@@ -8333,6 +8363,7 @@ class DeepAgentsApp(App):
                 "Failed to show goal criteria preference prompt; keeping review "
                 "default",
             )
+            self._dismiss_orphaned_screen(screen)
             await self._save_goal_auto_accept_preference(False)
             return
 

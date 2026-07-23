@@ -181,8 +181,9 @@ GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 
 Disabled by default so Auto continues to show the goal review prompt unless the
 user opts in. Manual always reviews criteria and YOLO always applies them.
-Set to a recognized truthy or falsy value; unrecognized values fall through to
-`[goals].auto_accept_criteria` in config.toml.
+Set to a recognized truthy or falsy value; unrecognized values are ignored and
+resolution falls through to `[goals].auto_accept_criteria` in config.toml, then
+the built-in default (disabled).
 """
 
 HIDE_CWD = "DEEPAGENTS_CODE_HIDE_CWD"

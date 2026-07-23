@@ -1,0 +1,27 @@
+libs/evals/tests/evals/test_langchain_middleware_todo.py
+  s_ce9d77c7d0ce0e::t_384f2ee9c18e78 7
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_ce9d77c7d0ce0e::t_384f2ee9c18e78 348-350,450-452
+examples/better-harness/README.md
+  s_ce9d77c7d0ce0e::t_384f2ee9c18e78 123
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_ce9d77c7d0ce0e::t_384f2ee9c18e78 629-630,677-678
+examples/better-harness/examples/deepagents_example.toml
+  s_ce9d77c7d0ce0e::t_8a762b52ed9fdd 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "469e620d75d4885545e1b39e31da433014d2957d",
+  "prompts": {},
+  "sessions": {
+    "s_ce9d77c7d0ce0e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8b79-e4d4-7651-bdc4-8306009951ae",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

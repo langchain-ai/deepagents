@@ -348,12 +348,14 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
     # DIAGNOSTIC (throwaway branch): restore the authored base system prompt
     # that the lean change emptied, to test whether it alone recovers
-    # autonomous/context scores vs main's regression. Sandbox workdir is still
-    # enforced by the shell backend's `root_dir`.
+    # autonomous/context scores vs main's regression. Passed as a plain string
+    # (main reverted SystemPromptConfig in #4969); main's base is empty, so this
+    # string becomes the whole system prompt. Sandbox workdir still enforced by
+    # the shell backend's `root_dir`.
     return create_deep_agent(
         model=model,
         backend=backend,
-        system_prompt={"base": _LEGACY_BASE_AGENT_PROMPT},
+        system_prompt=_LEGACY_BASE_AGENT_PROMPT,
     )
 
 

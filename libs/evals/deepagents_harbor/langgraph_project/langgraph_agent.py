@@ -344,7 +344,13 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # Harbor runs each task in its own isolated container rooted at the workdir,
+    # and tasks operate on the real sandbox paths, so path virtualization is
+    # unnecessary here (isolation is the container's job). Pin virtual_mode=False
+    # so the bare agent uses paths as-is rather than resolving against a virtual root.
+    backend = LocalShellBackend(
+        root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False
+    )
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
+from deepagents_code.hooks import migration
 from deepagents_code.hooks.capabilities import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     get_event_spec,
 )
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.loading import (
     canonical_hooks_bytes,
     compute_snapshot_id,
@@ -35,6 +40,10 @@ def test_registry_covers_all_hook_events() -> None:
         == DEFAULT_COMMAND_TIMEOUT_SECONDS
     )
     assert get_event_spec(HookEvent.PERMISSION_REQUEST).matcher_field == "tool_name"
+    assert get_event_spec(
+        HookEvent.USER_PROMPT_SUBMIT
+    ).default_timeout_seconds == pytest.approx(30.0)
+    assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
 
 
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
@@ -105,22 +114,76 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
     assert canonical_hooks_bytes(loaded.config).startswith(b'{"hooks":')
 
 
-def test_legacy_migration_only_maps_exact_session_end_semantics(
+def test_legacy_migration_maps_equivalent_lifecycle_events(
     tmp_path: Path,
 ) -> None:
     migrated = migrate_legacy_hooks(
         [
-            {"command": ["echo", "start"], "events": ["session.start"]},
-            {"command": ["echo", "compact"], "events": ["context.compact"]},
+            {
+                "command": ["echo", "prompt"],
+                "events": ["session.start", "session.start", "user.prompt"],
+            },
+            {
+                "command": ["echo", "compact"],
+                "events": ["context.offload", "context.compact"],
+            },
+            {"command": ["echo", "complete"], "events": ["task.complete"]},
             {"command": ["echo", "tool"], "events": ["tool.use"]},
             {"command": ["echo", "end"], "events": ["session.end"]},
+            {"command": ["echo", "input"], "events": ["input.required"]},
             {"command": ["echo", "perm"], "events": ["permission.request"]},
         ]
     )
 
-    assert set(migrated.hooks) == {HookEvent.SESSION_END}
+    assert set(migrated.hooks) == {
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.PRE_COMPACT,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+    }
+    # Distinct legacy event names stay as separate groups (no setdefault collapse);
+    # exact duplicate names are collapsed in first-seen order.
+    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 2
+    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 2
+    assert all(
+        group.matcher == "manual" for group in migrated.hooks[HookEvent.PRE_COMPACT]
+    )
+    assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
+        "agent_completed",
+        "agent_needs_input",
+    ]
+    prompt_legacy_events = [
+        group.hooks[0].argv[3]
+        for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
+        if group.hooks[0].argv is not None
+    ]
+    compact_legacy_events = [
+        group.hooks[0].argv[3]
+        for group in migrated.hooks[HookEvent.PRE_COMPACT]
+        if group.hooks[0].argv is not None
+    ]
+    assert prompt_legacy_events == ["session.start", "user.prompt"]
+    assert compact_legacy_events == ["context.offload", "context.compact"]
     assert HookEvent.SESSION_START not in migrated.hooks
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
+    for groups in migrated.hooks.values():
+        for group in groups:
+            handler = group.hooks[0]
+            assert handler.timeout == pytest.approx(HOOK_SUBPROCESS_TIMEOUT + 1.0)
+            assert handler.argv is not None
+            assert handler.argv[1:3] == ["-m", "deepagents_code.hooks.migration"]
+            assert "deepagents_code.hooks.migration" in handler.command
+            assert "/dev/null" not in handler.command
+
+    catch_all = migrate_legacy_hooks([{"command": ["echo", "all"]}])
+    assert set(catch_all.hooks) == {
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+        HookEvent.PRE_COMPACT,
+    }
+    assert HookEvent.PRE_TOOL_USE not in catch_all.hooks
+    assert HookEvent.PERMISSION_REQUEST not in catch_all.hooks
 
     user_dir = tmp_path / "user"
     user_dir.mkdir()
@@ -143,11 +206,101 @@ def test_legacy_migration_only_maps_exact_session_end_semantics(
     )
 
     assert HookEvent.SESSION_START not in loaded.config.hooks
+    assert HookEvent.USER_PROMPT_SUBMIT in loaded.config.hooks
     assert HookEvent.SESSION_END in loaded.config.hooks
     assert HookEvent.PRE_TOOL_USE not in loaded.config.hooks
     assert loaded.diagnostics[0].code == "legacy_deprecated"
     assert "September 1, 2026" in loaded.diagnostics[0].message
     assert any(item.code == "legacy_migrated" for item in loaded.diagnostics)
+
+
+def test_legacy_migration_prefers_argv_over_shell_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(migration.os, "name", "nt")
+    monkeypatch.setattr(
+        migration.sys,
+        "executable",
+        r"C:\Program Files\Python\python.exe",
+    )
+
+    migrated = migrate_legacy_hooks(
+        [
+            {
+                "command": [
+                    r"C:\Program Files\Hooks\a&b\observer.exe",
+                    "arg with space",
+                ]
+            }
+        ]
+    )
+    handlers = [
+        group.hooks[0] for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
+    ]
+    assert handlers
+    for handler in handlers:
+        assert handler.argv is not None
+        assert handler.argv[0] == r"C:\Program Files\Python\python.exe"
+        assert "&" not in "".join(handler.argv[1:3])
+        # Shell form remains available for diagnostics; exec path uses argv.
+        assert handler.command.startswith('"C:\\Program Files\\Python\\python.exe"')
+        assert "'" not in handler.command
+
+
+def test_legacy_adapter_failures_are_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b"{"), encoding="utf-8"),
+    )
+    assert migration._run_adapter(["session.start"]) == 1
+    assert migration._run_adapter(["session.start", "!!!not-b64!!!"]) == 1
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b"[]"), encoding="utf-8"),
+    )
+    encoded = migration.base64.urlsafe_b64encode(
+        b'["/nonexistent-legacy-hook"]'
+    ).decode()
+    assert migration._run_adapter(["session.start", encoded]) == 1
+
+
+def test_legacy_adapter_ignores_nested_hook_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "hook.py"
+    script.write_text("import sys; sys.exit(2)\n", encoding="utf-8")
+    encoded = migration.base64.urlsafe_b64encode(
+        json.dumps([sys.executable, str(script)]).encode()
+    ).decode()
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
+    )
+    assert migration._run_adapter(["session.start", encoded]) == 0
+
+
+def test_legacy_adapter_keeps_nested_hook_in_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = MagicMock()
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
+    )
+    encoded = migration.base64.urlsafe_b64encode(b'["legacy-hook"]').decode()
+
+    assert migration._run_adapter(["session.start", encoded]) == 0
+
+    run.assert_called_once()
+    assert "start_new_session" not in run.call_args.kwargs
 
 
 def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:

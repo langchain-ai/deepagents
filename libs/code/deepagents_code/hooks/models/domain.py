@@ -37,11 +37,13 @@ class HookEvent(StrEnum):
     """Supported hook lifecycle events."""
 
     SESSION_START = "SessionStart"
+    USER_PROMPT_SUBMIT = "UserPromptSubmit"
     SESSION_END = "SessionEnd"
     PERMISSION_REQUEST = "PermissionRequest"
     NOTIFICATION = "Notification"
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
+    PRE_COMPACT = "PreCompact"
     STOP = "Stop"
     SUBAGENT_START = "SubagentStart"
     SUBAGENT_STOP = "SubagentStop"
@@ -72,6 +74,13 @@ class SessionEndCause(StrEnum):
     PROMPT_INPUT_EXIT = "prompt_input_exit"
     BYPASS_PERMISSIONS_DISABLED = "bypass_permissions_disabled"
     OTHER = "other"
+
+
+class CompactTrigger(StrEnum):
+    """Reason context compaction was requested."""
+
+    MANUAL = "manual"
+    AUTO = "auto"
 
 
 EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
@@ -152,6 +161,13 @@ class SessionStartEvent(_DomainModel):
     model: str | None = None
 
 
+class UserPromptSubmitEvent(_DomainModel):
+    """Domain payload for `UserPromptSubmit`."""
+
+    event: Literal[HookEvent.USER_PROMPT_SUBMIT]
+    prompt: str
+
+
 class SessionEndEvent(_DomainModel):
     """Domain payload for `SessionEnd`."""
 
@@ -187,6 +203,14 @@ class PostToolUseEvent(_DomainModel):
     call: ToolCallData
     result: ToolMessage | Command[str]
     duration_ms: int | None = None
+
+
+class PreCompactEvent(_DomainModel):
+    """Domain payload for `PreCompact`."""
+
+    event: Literal[HookEvent.PRE_COMPACT]
+    trigger: CompactTrigger
+    custom_instructions: str = ""
 
 
 class StopEvent(_DomainModel):
@@ -228,11 +252,13 @@ class SubagentStopEvent(_DomainModel):
 
 HookDomainEvent: TypeAlias = Annotated[
     SessionStartEvent
+    | UserPromptSubmitEvent
     | SessionEndEvent
     | PermissionRequestEvent
     | NotificationEvent
     | PreToolUseEvent
     | PostToolUseEvent
+    | PreCompactEvent
     | StopEvent
     | SubagentStartEvent
     | SubagentStopEvent,
@@ -282,6 +308,14 @@ class SessionStartDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
+class UserPromptSubmitDecision(BaseHookDecision):
+    """Decision returned for `UserPromptSubmit`."""
+
+    event: Literal[HookEvent.USER_PROMPT_SUBMIT]
+    context: list[str] = Field(default_factory=list)
+    suppress_original_prompt: bool = False
+
+
 class SessionEndDecision(BaseHookDecision):
     """Decision returned for `SessionEnd`."""
 
@@ -317,6 +351,12 @@ class PostToolUseDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
+class PreCompactDecision(BaseHookDecision):
+    """Decision returned for `PreCompact`."""
+
+    event: Literal[HookEvent.PRE_COMPACT]
+
+
 class StopDecision(BaseHookDecision):
     """Decision returned for `Stop`."""
 
@@ -341,11 +381,13 @@ class SubagentStopDecision(BaseHookDecision):
 
 HookDecision: TypeAlias = Annotated[
     SessionStartDecision
+    | UserPromptSubmitDecision
     | SessionEndDecision
     | PermissionRequestDecision
     | NotificationDecision
     | PreToolUseDecision
     | PostToolUseDecision
+    | PreCompactDecision
     | StopDecision
     | SubagentStartDecision
     | SubagentStopDecision,

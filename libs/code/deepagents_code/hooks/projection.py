@@ -14,12 +14,14 @@ from deepagents_code.hooks.models.domain import (
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
     SessionStartEvent,
     StopEvent,
     SubagentStartEvent,
     SubagentStopEvent,
+    UserPromptSubmitEvent,
 )
 from deepagents_code.hooks.models.wire import (
     BackgroundTaskWire,
@@ -27,6 +29,7 @@ from deepagents_code.hooks.models.wire import (
     NotificationWireInput,
     PermissionRequestWireInput,
     PostToolUseWireInput,
+    PreCompactWireInput,
     PreToolUseWireInput,
     SessionCronWire,
     SessionEndWireInput,
@@ -34,6 +37,7 @@ from deepagents_code.hooks.models.wire import (
     StopWireInput,
     SubagentStartWireInput,
     SubagentStopWireInput,
+    UserPromptSubmitWireInput,
     WireNotificationType,
     WirePermissionMode,
 )
@@ -123,6 +127,20 @@ def _project_session_start(
     )
 
 
+@_project_event.register(UserPromptSubmitEvent)
+def _project_user_prompt_submit(
+    event: UserPromptSubmitEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return UserPromptSubmitWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.USER_PROMPT_SUBMIT,
+        prompt=event.prompt,
+    )
+
+
 @_project_event.register(SessionEndEvent)
 def _project_session_end(
     event: SessionEndEvent,
@@ -202,6 +220,21 @@ def _project_post_tool_use(
         tool_response=_tool_result(event.result),
         tool_use_id=event.call.id,
         duration_ms=event.duration_ms,
+    )
+
+
+@_project_event.register(PreCompactEvent)
+def _project_pre_compact(
+    event: PreCompactEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return PreCompactWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.PRE_COMPACT,
+        trigger=event.trigger,
+        custom_instructions=event.custom_instructions,
     )
 
 

@@ -16,6 +16,7 @@ from deepagents_code.hooks.models.domain import (
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
     SessionStartEvent,
@@ -48,6 +49,7 @@ class HookHandler:
     status_message: str | None
     matcher: Pattern[str] | frozenset[str] | None
     matcher_text: str | None
+    argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,7 @@ class HooksSnapshot:
                             status_message=spec.status_message,
                             matcher=matcher,
                             matcher_text=group.matcher,
+                            argv=tuple(spec.argv) if spec.argv is not None else None,
                         )
                     )
             expanded[event] = tuple(handlers)
@@ -231,6 +234,8 @@ def _match_target(
         event, SessionStartEvent | SessionEndEvent
     ):
         return event.cause.value
+    if matcher_field == "trigger" and isinstance(event, PreCompactEvent):
+        return event.trigger.value
     if matcher_field == "agent_name" and isinstance(
         event, SubagentStartEvent | SubagentStopEvent
     ):

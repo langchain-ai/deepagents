@@ -10,6 +10,10 @@ from deepagents_code.config_manifest import _is_secret_env
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+# Shared bound for legacy hook subprocesses and the migration adapter's nested
+# `subprocess.run`. Keep the legacy dispatcher and Hooks v2 migration aligned.
+HOOK_SUBPROCESS_TIMEOUT = 5.0
+
 
 def sanitize_hook_environ(
     source: Mapping[str, str] | None = None,

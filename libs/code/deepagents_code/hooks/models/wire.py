@@ -11,6 +11,7 @@ from uuid import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from deepagents_code.hooks.models.domain import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
+    CompactTrigger,
     EffortLevel,
     HookEvent,
     SessionEndCause,
@@ -221,6 +222,13 @@ class SessionStartWireInput(BaseHookWireInput):
     session_title: str | None = None
 
 
+class UserPromptSubmitWireInput(BaseHookWireInput):
+    """Wire input for `UserPromptSubmit`."""
+
+    hook_event_name: Literal[HookEvent.USER_PROMPT_SUBMIT]
+    prompt: str
+
+
 class SessionEndWireInput(BaseHookWireInput):
     """Wire input for `SessionEnd`.
 
@@ -279,6 +287,14 @@ class PostToolUseWireInput(BaseHookWireInput):
     duration_ms: int | None = None
 
 
+class PreCompactWireInput(BaseHookWireInput):
+    """Wire input for `PreCompact`."""
+
+    hook_event_name: Literal[HookEvent.PRE_COMPACT]
+    trigger: CompactTrigger
+    custom_instructions: str = ""
+
+
 class StopWireInput(BaseHookWireInput):
     """Wire input for `Stop`."""
 
@@ -312,11 +328,13 @@ class SubagentStopWireInput(BaseHookWireInput):
 
 HookWireInput: TypeAlias = Annotated[
     SessionStartWireInput
+    | UserPromptSubmitWireInput
     | SessionEndWireInput
     | PermissionRequestWireInput
     | NotificationWireInput
     | PreToolUseWireInput
     | PostToolUseWireInput
+    | PreCompactWireInput
     | StopWireInput
     | SubagentStartWireInput
     | SubagentStopWireInput,
@@ -333,6 +351,18 @@ class SessionStartSpecificOutput(_WireModel):
     session_title: str | None = Field(default=None, alias="sessionTitle")
     watch_paths: list[str] = Field(default_factory=list, alias="watchPaths")
     reload_skills: bool = Field(default=False, alias="reloadSkills")
+
+
+class UserPromptSubmitSpecificOutput(_WireModel):
+    """Event-specific output for `UserPromptSubmit`."""
+
+    hook_event_name: Literal["UserPromptSubmit"] = Field(alias="hookEventName")
+    additional_context: str | None = Field(default=None, alias="additionalContext")
+    session_title: str | None = Field(default=None, alias="sessionTitle")
+    suppress_original_prompt: bool = Field(
+        default=False,
+        alias="suppressOriginalPrompt",
+    )
 
 
 class PreToolUseSpecificOutput(_WireModel):
@@ -418,6 +448,7 @@ class SubagentStopSpecificOutput(_WireModel):
 
 HookSpecificOutput: TypeAlias = Annotated[
     SessionStartSpecificOutput
+    | UserPromptSubmitSpecificOutput
     | PreToolUseSpecificOutput
     | PermissionRequestSpecificOutput
     | PostToolUseSpecificOutput

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from deepagents_code.approval_mode import ApprovalMode
+from deepagents_code.hooks import runner
 from deepagents_code.hooks.capabilities import (
     ExitCodePolicy,
     PlainOutputPolicy,
@@ -33,6 +35,7 @@ from deepagents_code.hooks.tools import format_mcp_wire_name, to_wire_call
 from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
+    import ctypes
     from pathlib import Path
 
     from deepagents_code.hooks.snapshot import HookHandler
@@ -138,6 +141,64 @@ def test_sanitized_env_strips_secrets_from_injected_source() -> None:
     assert "mixed_case_secret" not in env
 
 
+async def test_runner_sanitizes_ambient_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import sys
+
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-secret")
+    code = (
+        "import json,os;"
+        "print(json.dumps({"
+        "'systemMessage': os.environ.get('OPENAI_API_KEY','missing')"
+        "}))"
+    )
+    handler = _handler(f"{sys.executable} -c {json.dumps(code)}", timeout=5)
+
+    result = await run_command_handler(handler, b"{}", cwd=tmp_path)
+
+    assert result.output is not None
+    assert result.output.system_message == "missing"
+
+
+async def test_runner_argv_avoids_shell_metacharacters(tmp_path: Path) -> None:
+    import sys
+
+    script = tmp_path / "ok.py"
+    script.write_text(
+        "import json; print(json.dumps({'systemMessage': 'argv'}))\n",
+        encoding="utf-8",
+    )
+    snapshot = HooksSnapshot.from_config(
+        HooksConfig.model_validate(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "unused & shell",
+                                    "argv": [sys.executable, str(script)],
+                                    "timeout": 5,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    handler = snapshot.handlers[HookEvent.SESSION_START][0]
+
+    result = await run_command_handler(handler, b"{}", cwd=tmp_path)
+
+    assert result.output is not None
+    assert result.output.system_message == "argv"
+
+
 def test_mcp_tool_mapping_requires_resolved_metadata() -> None:
     assert format_mcp_wire_name("github", "create_issue") == "mcp__github__create_issue"
     call = ToolCallData(
@@ -172,6 +233,108 @@ def test_exit_and_plain_output_policies_match_registry() -> None:
     assert MAX_STOP_CONTINUATIONS == 8
 
 
+def test_windows_taskkill_path_uses_system_directory_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_system_directory = MagicMock()
+
+    def resolve(buffer: ctypes.Array[ctypes.c_wchar], _size: int) -> int:
+        buffer.value = r"C:\Windows\System32"
+        return len(buffer.value)
+
+    get_system_directory.side_effect = resolve
+    kernel32 = MagicMock(GetSystemDirectoryW=get_system_directory)
+    monkeypatch.setattr(
+        runner.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: kernel32,
+        raising=False,
+    )
+    monkeypatch.setenv("SYSTEMROOT", r"C:\attacker")
+
+    assert runner._windows_taskkill_path() == r"C:\Windows\System32\taskkill.exe"
+
+
+async def test_windows_tree_termination_uses_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    process.pid = 123
+    process.returncode = None
+    taskkill = MagicMock()
+    taskkill.wait = AsyncMock(return_value=0)
+    create = AsyncMock(return_value=taskkill)
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
+
+    await runner._terminate_windows_tree(process)
+
+    create.assert_awaited_once_with(
+        r"C:\Windows\System32\taskkill.exe",
+        "/PID",
+        "123",
+        "/T",
+        "/F",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    process.kill.assert_not_called()
+
+
+async def test_windows_tree_termination_falls_back_when_taskkill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    process.pid = 123
+    process.returncode = None
+    create = AsyncMock(side_effect=OSError)
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
+
+    await runner._terminate_windows_tree(process)
+
+    process.kill.assert_called_once_with()
+
+
+async def test_windows_tree_termination_bounds_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    process.pid = 123
+    process.returncode = None
+    released = asyncio.Event()
+    taskkill = MagicMock()
+    taskkill.kill.side_effect = released.set
+
+    async def wait_for_taskkill() -> int:
+        if not taskkill.kill.called:
+            await released.wait()
+        return 1
+
+    taskkill.wait = AsyncMock(side_effect=wait_for_taskkill)
+    create = AsyncMock(return_value=taskkill)
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(runner, "_TERMINATE_WAIT_TIMEOUT", 0.01)
+    monkeypatch.setattr(
+        runner,
+        "_windows_taskkill_path",
+        lambda: r"C:\Windows\System32\taskkill.exe",
+    )
+
+    await runner._terminate_windows_tree(process)
+
+    taskkill.kill.assert_called_once_with()
+    process.kill.assert_called_once_with()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
 async def test_runner_kills_process_group_on_timeout(tmp_path: Path) -> None:
     script = tmp_path / "hook.sh"
@@ -194,35 +357,28 @@ async def test_runner_kills_process_group_on_timeout(tmp_path: Path) -> None:
     assert not side_effect.exists()
 
 
-@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
-async def test_runner_kills_process_group_on_cancellation(tmp_path: Path) -> None:
-    script = tmp_path / "cancel.sh"
-    ready = tmp_path / "ready"
-    side_effect = tmp_path / "survived"
-    script.write_text(
-        f"#!/bin/sh\ntouch {ready}\n(sleep 0.2; touch {side_effect}) &\nwait\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    task = asyncio.create_task(
-        run_command_handler(
-            _handler(str(script), timeout=30),
+async def test_runner_propagates_cancellation_after_termination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    process.returncode = None
+    launch = AsyncMock(return_value=process)
+    communicate = AsyncMock(side_effect=asyncio.CancelledError)
+    terminate = AsyncMock()
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_shell", launch)
+    monkeypatch.setattr(runner, "_communicate_bounded", communicate)
+    monkeypatch.setattr(runner, "_terminate", terminate)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_command_handler(
+            _handler("hook", timeout=30),
             b"{}",
             cwd=tmp_path,
             default_timeout=30,
         )
-    )
-    for _ in range(50):
-        if ready.exists():
-            break
-        await asyncio.sleep(0.01)
-    assert ready.exists()
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await asyncio.sleep(0.3)
-    assert not side_effect.exists()
+    terminate.assert_awaited_once_with(process)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")

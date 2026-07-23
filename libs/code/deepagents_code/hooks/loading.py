@@ -172,7 +172,9 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
 
 
 def _canonical_group(group: MatcherGroup) -> dict[str, object]:
-    raw = group.model_dump(mode="json", by_alias=True, exclude_none=True)
+    raw = group.model_dump(
+        mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
+    )
     handlers: list[dict[str, object]] = []
     hooks_raw = raw.get("hooks")
     if isinstance(hooks_raw, list):
@@ -226,8 +228,8 @@ def _read_hooks_document(
         ]
         migrated = migrate_legacy_hooks(legacy_entries)
         migration_message = (
-            f"Migrated semantically equivalent session.end hooks from {path}; "
-            "all other legacy events remain unmapped"
+            f"Migrated semantically equivalent legacy hooks from {path}; "
+            "unsupported legacy events remain unmapped"
             if migrated.hooks
             else (
                 f"Legacy hooks at {path} contained no events that are safe to "

@@ -948,6 +948,10 @@ async def execute_task_textual(
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
+            if turn_id is not None:
+                context["turn_id"] = turn_id
+            else:
+                context.pop("turn_id", None)
             if blocked_goal_retry_context is not None:
                 context["blocked_goal_retry_context"] = blocked_goal_retry_context
             else:

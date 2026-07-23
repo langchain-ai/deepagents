@@ -847,48 +847,23 @@ class TestOpenAIPromptCacheKey:
 
         assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
 
-    def test_custom_openai_endpoint_skips_prompt_cache_key(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.root_client = SimpleNamespace(base_url="https://proxy.example/v1")
-        request = _make_request(
-            model,
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-        assert captured[0].model_settings == {}
-
-    def test_regional_openai_endpoint_gets_prompt_cache_key(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.root_client = SimpleNamespace(base_url="https://eu.api.openai.com/v1")
-        request = _make_request(
-            model,
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
-
     @pytest.mark.parametrize(
         "base_url",
         [
-            "https://api.openai.com.example/v1",
-            "https://eu.api.openai.com.example/v1",
-            "https://fake-api.openai.com/v1",
+            "https://api.openai.com/v1",
+            "https://eu.api.openai.com/v1",
+            "https://gateway.smith.langchain.com/openai/v1",
+            "https://proxy.example/v1",
         ],
     )
-    def test_lookalike_openai_endpoint_skips_prompt_cache_key(
-        self, base_url: str
-    ) -> None:
+    def test_any_openai_endpoint_gets_prompt_cache_key(self, base_url: str) -> None:
+        """The key is attempted for every OpenAI-provider endpoint.
+
+        Official, regional, the LangSmith gateway, and arbitrary OpenAI-compatible
+        base URLs all report `ls_provider == "openai"`, so the additive
+        `prompt_cache_key` is injected regardless of host. Endpoints that reject
+        it opt out via `models.openai_prompt_cache_key`.
+        """
         model = _make_model("gpt-5.6")
         model.root_client = SimpleNamespace(base_url=base_url)
         request = _make_request(
@@ -901,8 +876,52 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_opt_out_skips_prompt_cache_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `models.openai_prompt_cache_key` opt-out suppresses injection."""
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            lambda: False,
+        )
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
         assert captured[0] is request
-        assert captured[0].model_settings == {}
+
+    def test_config_read_failure_defaults_to_injecting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed opt-out lookup falls back to injecting the key (fail-open)."""
+
+        def _boom() -> bool:
+            msg = "config exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            _boom,
+        )
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
 
     def test_empty_thread_id_skips_prompt_cache_key(self) -> None:
         request = _make_request(
@@ -1063,32 +1082,25 @@ class TestIsOpenAIModel:
         model.root_client = SimpleNamespace(base_url="https://api.openai.com/v1")
         assert _is_openai_model(model) is True
 
-    def test_returns_false_for_custom_openai_endpoint(self) -> None:
+    def test_returns_true_for_custom_openai_endpoint(self) -> None:
+        """A custom base URL still resolves the OpenAI provider, so it is eligible."""
         model = _make_model("gpt-5.6")
         model.root_client = SimpleNamespace(base_url="https://proxy.example/v1")
-        assert _is_openai_model(model) is False
-
-    def test_returns_false_without_endpoint_metadata(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = {"ls_provider": "openai"}
-        assert _is_openai_model(model) is False
-
-    def test_falls_back_to_openai_api_base_for_official(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.root_client = None
-        model.openai_api_base = "https://api.openai.com/v1"
         assert _is_openai_model(model) is True
 
-    def test_falls_back_to_openai_api_base_for_custom(self) -> None:
+    def test_returns_true_for_gateway_endpoint(self) -> None:
+        """The LangSmith gateway is an OpenAI-provider endpoint and is eligible."""
         model = _make_model("gpt-5.6")
-        model.root_client = None
-        model.openai_api_base = "https://proxy.example/v1"
-        assert _is_openai_model(model) is False
+        model.root_client = SimpleNamespace(
+            base_url="https://gateway.smith.langchain.com/openai/v1"
+        )
+        assert _is_openai_model(model) is True
 
-    def test_returns_false_for_malformed_base_url(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.root_client = SimpleNamespace(base_url="http://[::1")
-        assert _is_openai_model(model) is False
+    def test_returns_true_without_endpoint_metadata(self) -> None:
+        """Eligibility depends only on the provider, not a discoverable base URL."""
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = {"ls_provider": "openai"}
+        assert _is_openai_model(model) is True
 
     def test_returns_false_for_non_openai(self) -> None:
         model = _make_model("accounts/fireworks/models/kimi-k2p7-code")

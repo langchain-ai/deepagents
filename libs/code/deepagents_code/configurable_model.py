@@ -12,7 +12,6 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from deepagents._models import (  # noqa: PLC2701
     get_model_identifier,
@@ -104,45 +103,20 @@ def _is_fireworks_model(model: object) -> bool:
 
 
 def _is_openai_model(model: object) -> bool:
-    """Check whether a resolved model targets OpenAI's official API.
+    """Check whether a resolved model targets OpenAI's chat/responses API.
 
-    `ChatOpenAI` reports `'openai'` even when configured with a custom base URL,
-    so provider metadata alone cannot establish support for OpenAI-specific
-    request fields. Unknown endpoints are treated conservatively as
-    incompatible.
+    `prompt_cache_key` is an optional, additive OpenAI request field, so it is
+    attempted for every model whose LangSmith provider is `'openai'` regardless
+    of base URL. `ChatOpenAI` reports `'openai'` for the official API, the
+    LangSmith gateway, and other OpenAI-compatible endpoints alike; treating all
+    of them as eligible is intentional so the cache-key optimization is not
+    silently dropped behind a proxy. Endpoints that reject unknown request
+    fields can opt out via the `models.openai_prompt_cache_key` config option.
 
     Returns:
-        `True` if the model reports `'openai'` and uses `api.openai.com` or an
-            official regional subdomain.
+        `True` if the model reports `'openai'` as its provider.
     """
-    if _get_ls_provider(model) != "openai":
-        return False
-
-    # Prefer the SDK client's resolved base URL: a default `ChatOpenAI()` leaves
-    # `openai_api_base` unset, but its `root_client.base_url` still resolves to
-    # the official `api.openai.com` default. Fall back to the constructor field
-    # only when the client is unavailable.
-    client = getattr(model, "root_client", None)
-    base_url = getattr(client, "base_url", None)
-    if base_url is None:
-        base_url = getattr(model, "openai_api_base", None)
-    if base_url is None:
-        # The provider is 'openai' yet no endpoint is discoverable. A genuine
-        # `ChatOpenAI` always exposes one, so this points to an unexpected model
-        # shape (e.g. an attribute renamed by an upstream upgrade). Skip the
-        # optimization instead of guessing, and leave a trace so the silent
-        # regression is diagnosable.
-        logger.debug("OpenAI model exposes no base URL; skipping prompt_cache_key")
-        return False
-
-    try:
-        hostname = urlsplit(str(base_url)).hostname
-    except ValueError:
-        logger.debug("OpenAI base URL is unparseable; skipping prompt_cache_key")
-        return False
-    return hostname == "api.openai.com" or (
-        hostname is not None and hostname.endswith(".api.openai.com")
-    )
+    return _get_ls_provider(model) == "openai"
 
 
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
@@ -218,9 +192,11 @@ def _with_openai_prompt_cache_key(
     `model_settings` reaches the wire unchanged. `prompt_cache_key` is an
     optional, additive request field: it sharpens prefix-cache routing on model
     families that support it (GPT-5.6 and later) and is otherwise inert, so the
-    same key is sent to every OpenAI model without a version gate. This mirrors
-    the Fireworks path (`_with_fireworks_session_settings`), which sets
-    `prompt_cache_key` the same way and additionally sends an
+    same key is sent to every OpenAI-provider model — including custom base URLs
+    and the LangSmith gateway — without a version or endpoint gate. Callers gate
+    this behind the `models.openai_prompt_cache_key` opt-out before calling.
+    This mirrors the Fireworks path (`_with_fireworks_session_settings`), which
+    sets `prompt_cache_key` the same way and additionally sends an
     `x-session-affinity` header.
 
     A user-supplied `prompt_cache_key` is always preserved, whether it was
@@ -247,6 +223,26 @@ def _with_openai_prompt_cache_key(
     ):
         return None
     return {**model_settings, "prompt_cache_key": thread_id}
+
+
+def _openai_prompt_cache_key_enabled() -> bool:
+    """Return whether OpenAI `prompt_cache_key` injection is enabled.
+
+    Reads the `models.openai_prompt_cache_key` opt-out from env/`config.toml`
+    (default on). Any failure resolving config falls back to enabled so the
+    cost optimization stays on and a model call is never broken by a config read.
+    """
+    try:
+        from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+        return is_openai_prompt_cache_key_enabled()
+    except Exception:
+        # A config read must never break a model call; default to injecting.
+        logger.debug(
+            "Could not resolve models.openai_prompt_cache_key; defaulting to on",
+            exc_info=True,
+        )
+        return True
 
 
 def _get_context(request: ModelRequest) -> CLIContextSchema | None:
@@ -346,7 +342,7 @@ def _build_overrides(
         if _is_fireworks_model(effective_model):
             updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
             injected = "Fireworks session settings"
-        elif _is_openai_model(effective_model):
+        elif _is_openai_model(effective_model) and _openai_prompt_cache_key_enabled():
             updated_settings = _with_openai_prompt_cache_key(
                 effective_model, settings, ctx.thread_id
             )

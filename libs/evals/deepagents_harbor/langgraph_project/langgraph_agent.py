@@ -190,16 +190,16 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
-    # No `system_prompt`: left unset, `create_deep_agent` builds the prompt from
-    # the library's own `BASE_AGENT_PROMPT` — the value this benchmark varies
-    # across branches. A harness override is normalized to a prepended
-    # `{"prefix": ...}` that would sit ahead of that base on every arm, masking
-    # the difference and giving the no-system-prompt arm a prompt it should not
-    # have. The sandbox workdir is already enforced by the shell backend's
-    # `root_dir`.
+    # DIAGNOSTIC (throwaway branch): drop the base prompt to replicate main's
+    # lean/empty-base bare agent, isolating whether the empty base prompt — not
+    # the tool-description trims or a dataset change — drives the autonomous +
+    # context regression vs the canonical scorecard. Everything else on this ref
+    # (recalibrated context set, verbose tool descriptions, todo default) is
+    # unchanged. `{"base": None}` drops the built-in base per SystemPromptConfig.
     return create_deep_agent(
         model=model,
         backend=backend,
+        system_prompt={"base": None},
     )
 
 

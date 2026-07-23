@@ -7179,7 +7179,7 @@ class TestGoalCommand:
             assert app._active_goal == "add refresh tokens"
             assert app._active_rubric == "- regenerated criteria"
             assert not any(app.query(GoalReviewMenu))
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
     async def test_configured_auto_or_yolo_accepts_restored_proposal(
@@ -7313,7 +7313,7 @@ class TestGoalCommand:
                     "_write_live_approval_mode",
                     new=AsyncMock(return_value=True),
                 ),
-                patch.object(app, "_handle_user_message", handle),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await pilot.press("shift+tab")
                 for _ in range(20):
@@ -7331,7 +7331,7 @@ class TestGoalCommand:
             assert future.done()
             assert review_task.done()
             assert menu not in app.query(GoalReviewMenu)
-            handle.assert_awaited_once_with("add refresh tokens")
+            handle.assert_awaited_once_with("created")
 
     async def test_enabling_auto_honors_already_submitted_cancel(
         self,

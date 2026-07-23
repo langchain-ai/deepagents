@@ -384,11 +384,23 @@ def _fallback_structured_output_model_patterns() -> Sequence[str] | None:
     try:
         factory = import_module("langchain.agents.factory")
     except ImportError:
+        logger.debug(
+            "Could not import LangChain's fallback-model patterns for rubric grader diagnostics",
+            exc_info=True,
+        )
         return None
     patterns = getattr(factory, "FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT", None)
+    if patterns is None:
+        logger.debug("LangChain's fallback-model patterns are unavailable for rubric grader diagnostics")
+        return None
     if isinstance(patterns, str) or not isinstance(patterns, Sequence):
+        logger.debug(
+            "LangChain's fallback-model patterns have unsupported type %s",
+            type(patterns).__name__,
+        )
         return None
     if not all(isinstance(pattern, str) for pattern in patterns):
+        logger.debug("LangChain's fallback-model patterns contain non-string values")
         return None
     return patterns
 

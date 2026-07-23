@@ -357,16 +357,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `base_system_prompt`, and `SUFFIX` is the profile's optional
             `system_prompt_suffix`. Parts are separated by blank lines.
 
-            With `system_prompt=None` and no matching profile prompt, the
-            model receives an empty authored system prompt. Pass
-            `system_prompt=BASE_AGENT_PROMPT` explicitly to opt into the
-            built-in persona and task guidance.
+            With `system_prompt=None` and no profile `base_system_prompt` or
+            `system_prompt_suffix`, the model receives an empty authored system
+            prompt. Pass `system_prompt=BASE_AGENT_PROMPT` explicitly to opt
+            into the built-in persona and task guidance.
 
             Passing a `SystemMessage` preserves any `cache_control` markers
             on its existing content blocks — useful for explicit Anthropic
             prompt-cache breakpoints. When profile content is present, its
-            assembled `BASE` and `SUFFIX` are appended as an additional text content block
-            after the caller's blocks.
+            assembled `BASE` and `SUFFIX` are appended as an additional text
+            content block after the caller's blocks.
 
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.

@@ -536,12 +536,13 @@ class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
 
     def test_public_docstring_describes_prompt_assembly(self) -> None:
-        docstring = inspect.getdoc(create_deep_agent)
+        raw_docstring = inspect.getdoc(create_deep_agent)
 
-        assert docstring is not None
+        assert raw_docstring is not None
+        docstring = " ".join(raw_docstring.split())
         assert "`USER` -> `BASE` -> `SUFFIX`" in docstring
         assert "`BASE` is empty unless" in docstring
-        assert "With `system_prompt=None` and no matching profile prompt" in docstring
+        assert "With `system_prompt=None` and no profile `base_system_prompt` or" in docstring
         assert "`system_prompt=BASE_AGENT_PROMPT` explicitly" in docstring
         assert "appended as an additional text content block" in docstring
         assert "`cache_control` markers" in docstring

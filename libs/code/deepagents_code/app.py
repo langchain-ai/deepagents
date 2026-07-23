@@ -2186,8 +2186,8 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+        # Optional session-scoped Hooks v2 client runtime.
         self.hooks_runtime = None
-        """Optional session-scoped Hooks v2 client runtime."""
 
     @property
     def auto_approve(self) -> bool:
@@ -4222,7 +4222,12 @@ class DeepAgentsApp(App):
                 thread_id=self._lc_thread_id,
             )
             try:
-                state.hooks_runtime = HooksRuntime.create(cwd=Path(self._cwd))
+                # Interactive sessions keep project hooks off until a dedicated
+                # workspace-trust prompt lands (design-doc security follow-up).
+                state.hooks_runtime = HooksRuntime.create(
+                    cwd=Path(self._cwd),
+                    workspace_trusted=False,
+                )
             except Exception:
                 logger.exception("Failed to create HooksRuntime; server hooks disabled")
                 state.hooks_runtime = None

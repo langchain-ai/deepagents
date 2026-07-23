@@ -1011,11 +1011,13 @@ async def execute_task_textual(
             context["approval_mode_key"] = live_key
             session_state.approval_mode_key = live_key
 
+            from deepagents_code.hooks.client import fulfill_hook_interrupt
             from deepagents_code.hooks.context import apply_hooks_context
+            from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
             apply_hooks_context(
                 context,
-                getattr(session_state, "hooks_runtime", None),
+                session_state.hooks_runtime,
                 prompt_id=getattr(session_state, "turn_id", None),
             )
 
@@ -1148,24 +1150,14 @@ async def execute_task_textual(
                         if interrupts:
                             for interrupt_obj in interrupts:
                                 iv = interrupt_obj.value
-                                from deepagents_code.hooks.interrupt import (
-                                    is_hook_interrupt_payload,
-                                )
-
                                 if is_hook_interrupt_payload(iv):
-                                    hooks_runtime = getattr(
-                                        session_state, "hooks_runtime", None
-                                    )
+                                    hooks_runtime = session_state.hooks_runtime
                                     if hooks_runtime is None:
                                         msg = (
                                             "Received hook invocation interrupt "
                                             "without a HooksRuntime"
                                         )
                                         raise RuntimeError(msg)
-                                    from deepagents_code.hooks.client import (
-                                        fulfill_hook_interrupt,
-                                    )
-
                                     resume_value = await fulfill_hook_interrupt(
                                         hooks_runtime, iv
                                     )

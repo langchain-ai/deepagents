@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from deepagents_code.hooks.models.adapters import (
     HOOK_INVOCATION_RESPONSE_ADAPTER,
@@ -119,12 +119,3 @@ def is_hook_interrupt_payload(value: object) -> bool:
     return (
         isinstance(value, dict) and value.get("type") == HOOK_INVOCATION_INTERRUPT_TYPE
     )
-
-
-class HookInterruptMismatch(BaseModel):
-    """Diagnostic retained when a hook resume cannot be applied."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: Literal["hook_resume_mismatch"] = "hook_resume_mismatch"
-    message: str = Field(min_length=1)

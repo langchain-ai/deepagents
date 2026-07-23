@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypeVar, cast
 from uuid import UUID, uuid4
 
+from langchain.agents.middleware.human_in_the_loop import (
+    ActionRequest,
+    HITLRequest,
+    ReviewConfig,
+)
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -31,6 +37,7 @@ from deepagents_code.hooks.interrupt import (
 )
 from deepagents_code.hooks.models.domain import (
     AgentIdentity,
+    BaseHookDecision,
     HookContext,
     HookDecision,
     HookEvent,
@@ -77,6 +84,14 @@ class _SessionHookGate(TypedDict):
     events: frozenset[str]
 
 
+@dataclass(slots=True)
+class _PreToolOutcome:
+    """PreToolUse gate result for the tool-call wrapper."""
+
+    blocked: ToolMessage | None = None
+    context: tuple[str, ...] = field(default_factory=tuple)
+
+
 class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, ResponseT]):
     """Emit server-owned lifecycle events over the hook interrupt transport."""
 
@@ -108,7 +123,25 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         Returns:
             Tool result, possibly rewritten by hook decisions.
         """
-        return self._run_tool_call(request, handler, async_handler=False)
+        gate = _session_gate(request.runtime.context)
+        call = _tool_call_data(request)
+        context = _hook_context(
+            request.runtime.context, request.runtime.config, self._cwd
+        )
+        request = self._maybe_subagent_start(request, call, context, gate)
+        pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
+        if pre.blocked is not None:
+            return _append_message_text(pre.blocked, pre.context)
+        started = time.perf_counter()
+        result = handler(request)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        result = _append_message_text(result, pre.context)
+        result = self._maybe_post_tool_use(
+            call, context, gate, request.runtime.config, result, duration_ms
+        )
+        return self._maybe_subagent_stop(
+            call, context, gate, request.runtime.config, result
+        )
 
     async def awrap_tool_call(
         self,
@@ -120,7 +153,25 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         Returns:
             Tool result, possibly rewritten by hook decisions.
         """
-        return await self._run_tool_call_async(request, handler)
+        gate = _session_gate(request.runtime.context)
+        call = _tool_call_data(request)
+        context = _hook_context(
+            request.runtime.context, request.runtime.config, self._cwd
+        )
+        request = self._maybe_subagent_start(request, call, context, gate)
+        pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
+        if pre.blocked is not None:
+            return _append_message_text(pre.blocked, pre.context)
+        started = time.perf_counter()
+        result = await handler(request)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        result = _append_message_text(result, pre.context)
+        result = self._maybe_post_tool_use(
+            call, context, gate, request.runtime.config, result, duration_ms
+        )
+        return self._maybe_subagent_stop(
+            call, context, gate, request.runtime.config, result
+        )
 
     @hook_config(can_jump_to=["model"])
     def after_agent(
@@ -148,57 +199,6 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         """
         return self._after_agent(state, runtime)
 
-    def _run_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-        *,
-        async_handler: bool,
-    ) -> ToolMessage | Command[Any]:
-        del async_handler
-        gate = _session_gate(request.runtime.context)
-        call = _tool_call_data(request)
-        context = _hook_context(
-            request.runtime.context, request.runtime.config, self._cwd
-        )
-        request = self._maybe_subagent_start(request, call, context, gate)
-        denied = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
-        if denied is not None:
-            return denied
-        started = time.perf_counter()
-        result = handler(request)
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
-        )
-        return self._maybe_subagent_stop(
-            call, context, gate, request.runtime.config, result
-        )
-
-    async def _run_tool_call_async(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        gate = _session_gate(request.runtime.context)
-        call = _tool_call_data(request)
-        context = _hook_context(
-            request.runtime.context, request.runtime.config, self._cwd
-        )
-        request = self._maybe_subagent_start(request, call, context, gate)
-        denied = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
-        if denied is not None:
-            return denied
-        started = time.perf_counter()
-        result = await handler(request)
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
-        )
-        return self._maybe_subagent_stop(
-            call, context, gate, request.runtime.config, result
-        )
-
     def _maybe_subagent_start(
         self,
         request: ToolCallRequest,
@@ -218,9 +218,21 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             config=request.runtime.config,
             deadline=self._default_deadline,
         )
-        if not isinstance(decision, SubagentStartDecision):
-            msg = "Expected SubagentStartDecision, got {type(decision).__name__}"
-            raise TypeError(msg)
+        decision = _require_decision(decision, SubagentStartDecision)
+        if not decision.continue_processing:
+            # SubagentStart has no deny ToolMessage path; refuse spawn by
+            # clearing the description so the task tool fails closed upstream.
+            return _inject_subagent_start_context(
+                request,
+                SubagentStartDecision(
+                    event=HookEvent.SUBAGENT_START,
+                    context=[
+                        decision.stop_reason or "Blocked by SubagentStart hook",
+                        *decision.context,
+                    ],
+                    continue_processing=False,
+                ),
+            )
         return _inject_subagent_start_context(request, decision)
 
     def _maybe_pre_tool_use(
@@ -229,9 +241,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context: HookContext,
         gate: _SessionHookGate | None,
         config: Mapping[str, Any] | None,
-    ) -> ToolMessage | None:
+    ) -> _PreToolOutcome:
         if not _event_enabled(gate, HookEvent.PRE_TOOL_USE):
-            return None
+            return _PreToolOutcome()
         decision = _invoke_hook(
             context,
             PreToolUseEvent(event=HookEvent.PRE_TOOL_USE, call=call),
@@ -239,10 +251,29 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             config=config,
             deadline=self._default_deadline,
         )
-        if not isinstance(decision, PreToolUseDecision):
-            msg = "Expected PreToolUseDecision, got {type(decision).__name__}"
-            raise TypeError(msg)
-        return _denied_tool_message(call, decision.permission)
+        decision = _require_decision(decision, PreToolUseDecision)
+        context_parts = tuple(decision.context)
+        if not decision.continue_processing:
+            return _PreToolOutcome(
+                blocked=_denied_tool_message(
+                    call,
+                    PermissionEffect(
+                        behavior="deny",
+                        reason=decision.stop_reason or "Stopped by PreToolUse hook",
+                    ),
+                ),
+                context=context_parts,
+            )
+        behavior = decision.permission.behavior
+        if behavior == "deny":
+            return _PreToolOutcome(
+                blocked=_denied_tool_message(call, decision.permission),
+                context=context_parts,
+            )
+        if behavior == "ask":
+            blocked = _ask_permission_via_hitl(call, decision.permission)
+            return _PreToolOutcome(blocked=blocked, context=context_parts)
+        return _PreToolOutcome(context=context_parts)
 
     def _maybe_post_tool_use(
         self,
@@ -269,9 +300,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             config=config,
             deadline=self._default_deadline,
         )
-        if not isinstance(decision, PostToolUseDecision):
-            msg = "Expected PostToolUseDecision, got {type(decision).__name__}"
-            raise TypeError(msg)
+        decision = _require_decision(decision, PostToolUseDecision)
         return _apply_post_tool_use(result, decision)
 
     def _maybe_subagent_stop(
@@ -299,9 +328,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             config=config,
             deadline=self._default_deadline,
         )
-        if not isinstance(decision, SubagentStopDecision):
-            msg = "Expected SubagentStopDecision, got {type(decision).__name__}"
-            raise TypeError(msg)
+        decision = _require_decision(decision, SubagentStopDecision)
         return _apply_subagent_stop(result, decision)
 
     def _after_agent(
@@ -325,10 +352,11 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             config=None,
             deadline=self._default_deadline,
         )
-        if not isinstance(decision, StopDecision):
-            msg = "Expected StopDecision, got {type(decision).__name__}"
-            raise TypeError(msg)
-        if not decision.continue_loop:
+        decision = _require_decision(decision, StopDecision)
+        if not decision.continue_processing or not decision.continue_loop:
+            # Reset so a later independent turn does not inherit the count.
+            if continuation:
+                return {_STOP_STATE_KEY: 0}
             return None
         feedback = "\n".join(decision.feedback).strip() or (
             decision.stop_reason or "Continue working."
@@ -338,6 +366,19 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             "jump_to": "model",
             _STOP_STATE_KEY: continuation + 1,
         }
+
+
+_DecisionT = TypeVar("_DecisionT", bound=BaseHookDecision)
+
+
+def _require_decision(
+    decision: HookDecision,
+    expected: type[_DecisionT],
+) -> _DecisionT:
+    if not isinstance(decision, expected):
+        msg = f"Expected {expected.__name__}, got {type(decision).__name__}"
+        raise TypeError(msg)
+    return decision
 
 
 def _session_gate(runtime_context: object) -> _SessionHookGate | None:
@@ -415,6 +456,14 @@ def _hook_context(
 
 
 def _context_mapping(runtime_context: object) -> dict[str, Any]:
+    """Project LangGraph run context (dataclass or mapping) into a plain dict.
+
+    In-process graphs coerce `context=` into `CLIContextSchema`; RemoteGraph
+    delivers a plain mapping. Both shapes are accepted here.
+
+    Returns:
+        A shallow string-keyed dict of the hook-relevant context fields.
+    """
     if runtime_context is None:
         return {}
     if isinstance(runtime_context, Mapping):
@@ -486,14 +535,8 @@ def _mcp_server_from_tool(tool: object | None) -> str | None:
 def _denied_tool_message(
     call: ToolCallData,
     permission: PermissionEffect,
-) -> ToolMessage | None:
-    if permission.behavior not in {"deny", "ask"}:
-        return None
-    reason = permission.reason or (
-        "Blocked by PreToolUse hook"
-        if permission.behavior == "deny"
-        else "PreToolUse hook requested approval (ask is not applied yet)"
-    )
+) -> ToolMessage:
+    reason = permission.reason or "Blocked by PreToolUse hook"
     wire_name = to_wire_tool_name(call.name, mcp_server=call.mcp_server)
     return ToolMessage(
         content=f"{wire_name} blocked by hook: {reason}",
@@ -501,6 +544,74 @@ def _denied_tool_message(
         tool_call_id=call.id,
         status="error",
     )
+
+
+def _ask_permission_via_hitl(
+    call: ToolCallData,
+    permission: PermissionEffect,
+) -> ToolMessage | None:
+    """Escalate PreToolUse `ask` through the existing HITL interrupt channel.
+
+    Returns:
+        A deny ToolMessage when the user rejects, otherwise `None` to proceed.
+    """
+    description = permission.reason or "PreToolUse hook requested approval"
+    response = interrupt(
+        HITLRequest(
+            action_requests=[
+                ActionRequest(
+                    name=call.name,
+                    args=dict(call.args),
+                    description=description,
+                )
+            ],
+            review_configs=[
+                ReviewConfig(
+                    action_name=call.name,
+                    allowed_decisions=["approve", "reject"],
+                )
+            ],
+        )
+    )
+    decisions: Sequence[Any]
+    if isinstance(response, Mapping):
+        raw = response.get("decisions", ())
+        decisions = raw if isinstance(raw, Sequence) else ()
+    else:
+        decisions = ()
+    if not decisions:
+        return _denied_tool_message(
+            call,
+            PermissionEffect(
+                behavior="deny",
+                reason="PreToolUse ask was not answered",
+            ),
+        )
+    first = decisions[0]
+    decision_type = first.get("type") if isinstance(first, Mapping) else None
+    if decision_type != "approve":
+        reject_message = None
+        if isinstance(first, Mapping):
+            raw_message = first.get("message")
+            if isinstance(raw_message, str) and raw_message:
+                reject_message = raw_message
+        return _denied_tool_message(
+            call,
+            PermissionEffect(
+                behavior="deny",
+                reason=reject_message or description,
+            ),
+        )
+    return None
+
+
+def _append_message_text(
+    result: ToolMessage | Command[Any],
+    parts: Sequence[str],
+) -> ToolMessage | Command[Any]:
+    if not parts or not isinstance(result, ToolMessage):
+        return result
+    return _merge_tool_message_content(result, "\n".join(parts))
 
 
 def _apply_post_tool_use(
@@ -512,15 +623,13 @@ def _apply_post_tool_use(
         extras.append("\n".join(decision.feedback))
     if decision.context:
         extras.append("\n".join(decision.context))
+    if decision.stop_reason and not decision.continue_processing:
+        extras.append(decision.stop_reason)
     if not extras:
         return result
-    suffix = "\n\n".join(part for part in extras if part)
-    content = result.content
-    if isinstance(content, str):
-        merged = f"{content}\n\n{suffix}" if content else suffix
-    else:
-        merged = f"{content!s}\n\n{suffix}"
-    return result.model_copy(update={"content": merged})
+    return _merge_tool_message_content(
+        result, "\n\n".join(part for part in extras if part)
+    )
 
 
 def _apply_subagent_stop(
@@ -529,11 +638,20 @@ def _apply_subagent_stop(
 ) -> ToolMessage | Command[Any]:
     if not decision.context or not isinstance(result, ToolMessage):
         return result
-    suffix = "\n".join(decision.context)
+    return _merge_tool_message_content(result, "\n".join(decision.context))
+
+
+def _merge_tool_message_content(result: ToolMessage, suffix: str) -> ToolMessage:
+    if not suffix:
+        return result
     content = result.content
-    merged = (
-        f"{content}\n\n{suffix}" if isinstance(content, str) and content else suffix
-    )
+    if isinstance(content, str):
+        merged = f"{content}\n\n{suffix}" if content else suffix
+    # Preserve structured content blocks; append a text block.
+    elif isinstance(content, list):
+        merged = [*content, {"type": "text", "text": suffix}]
+    else:
+        merged = f"{content!s}\n\n{suffix}"
     return result.model_copy(update={"content": merged})
 
 

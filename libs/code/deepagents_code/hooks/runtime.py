@@ -41,7 +41,8 @@ class HooksRuntime:
     """Client-owned session runtime around an immutable Hooks snapshot.
 
     Owns configuration snapshot identity, transcript materialization, and the
-    `HookEngine`. Lifecycle call sites are intentionally not wired here.
+    `HookEngine`. Server-owned lifecycle events reach this runtime through the
+    interrupt fulfill path in `hooks.client`.
     """
 
     snapshot: HooksSnapshot

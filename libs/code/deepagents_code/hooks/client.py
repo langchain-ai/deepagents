@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.interrupt import (
@@ -11,8 +13,13 @@ from deepagents_code.hooks.interrupt import (
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from deepagents_code.hooks.models.domain import HookDecision
     from deepagents_code.hooks.models.transport import HookInvocationRequest
     from deepagents_code.hooks.runtime import HooksRuntime
+
+logger = logging.getLogger(__name__)
 
 
 async def fulfill_hook_invocation(
@@ -39,6 +46,7 @@ async def fulfill_hook_invocation(
         raise ValueError(msg)
 
     decision = await runtime.invoke(request.invocation)
+    _apply_client_side_effects(decision)
     response = HookInvocationResponse(
         protocol_version=1,
         invocation_id=request.invocation_id,
@@ -65,3 +73,43 @@ async def fulfill_hook_interrupt(
     if request is None:
         return None
     return await fulfill_hook_invocation(runtime, request)
+
+
+async def fulfill_pending_hook_interrupts(
+    runtime: HooksRuntime,
+    pending: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    """Fulfill pending hook interrupts into a resume map keyed by interrupt id.
+
+    Args:
+        runtime: Session-scoped client Hooks runtime.
+        pending: Mapping of LangGraph interrupt id to raw interrupt payload.
+
+    Returns:
+        Resume values ready for `Command(resume=...)`.
+
+    Raises:
+        RuntimeError: If a payload is not a valid hook interrupt.
+    """
+    resumes: dict[str, dict[str, object]] = {}
+    for interrupt_id, payload in pending.items():
+        resume_value = await fulfill_hook_interrupt(runtime, payload)
+        if resume_value is None:
+            msg = f"Failed to parse hook interrupt {interrupt_id}"
+            raise RuntimeError(msg)
+        resumes[interrupt_id] = resume_value
+    return resumes
+
+
+def _apply_client_side_effects(decision: HookDecision) -> None:
+    """Surface user notices and emit validated terminal sequences.
+
+    `systemMessage` must never become model context; notices are logged for the
+    operator. Terminal sequences were allowlisted in the reducer.
+    """
+    for notice in decision.user_notices:
+        logger.warning("Hook user notice: %s", notice)
+    for sequence in decision.terminal_sequences:
+        sys.stdout.write(sequence)
+    if decision.terminal_sequences:
+        sys.stdout.flush()

@@ -225,21 +225,31 @@ def _with_openai_prompt_cache_key(
     return {**model_settings, "prompt_cache_key": thread_id}
 
 
-def _openai_prompt_cache_key_enabled() -> bool:
-    """Return whether OpenAI `prompt_cache_key` injection is enabled.
+def _resolve_openai_prompt_cache_key_enabled() -> bool:
+    """Resolve the `models.openai_prompt_cache_key` opt-out (default on).
 
-    Reads the `models.openai_prompt_cache_key` opt-out from env/`config.toml`
-    (default on). Any failure resolving config falls back to enabled so the
-    cost optimization stays on and a model call is never broken by a config read.
+    Called once when `ConfigurableModelMiddleware` is constructed — off the
+    guarded server loop — so the `config.toml` read never blocks a model call.
+
+    On an unexpected failure this defaults to enabled: breaking agent
+    construction over a config hiccup is worse than an unwanted cache key, and
+    the ordinary failure modes (a missing or corrupt `config.toml`) are already
+    absorbed by `load_config_toml`. The trade-off is that a user who opted out
+    can still get injection if resolution hard-fails here, so the fallback logs
+    at `warning` (not `debug`) to leave a breadcrumb.
+
+    Returns:
+        `True` when injection is enabled (the default), `False` when the opt-out
+            is set.
     """
     try:
         from deepagents_code.config import is_openai_prompt_cache_key_enabled
 
         return is_openai_prompt_cache_key_enabled()
     except Exception:
-        # A config read must never break a model call; default to injecting.
-        logger.debug(
-            "Could not resolve models.openai_prompt_cache_key; defaulting to on",
+        logger.warning(
+            "Could not resolve models.openai_prompt_cache_key; defaulting to ON "
+            "(an opt-out you set may not take effect)",
             exc_info=True,
         )
         return True
@@ -300,7 +310,11 @@ def _model_spec_from_result(
 
 
 def _build_overrides(
-    request: ModelRequest, ctx: CLIContextSchema, model_result: ModelResult | None
+    request: ModelRequest,
+    ctx: CLIContextSchema,
+    model_result: ModelResult | None,
+    *,
+    openai_prompt_cache_key: bool,
 ) -> ModelRequest:
     """Build the overridden request from a (possibly resolved) model result.
 
@@ -316,6 +330,8 @@ def _build_overrides(
         ctx: Runtime CLI context carrying the requested overrides.
         model_result: The resolved model result from `create_model`, or `None`
             when no model swap was requested.
+        openai_prompt_cache_key: Whether OpenAI `prompt_cache_key` injection is
+            enabled (the resolved `models.openai_prompt_cache_key` opt-out).
 
     Returns:
         The original request when no overrides apply, otherwise a new request
@@ -340,13 +356,24 @@ def _build_overrides(
     if ctx.thread_id:
         settings = overrides.get("model_settings", request.model_settings)
         if _is_fireworks_model(effective_model):
+            # Fireworks has no opt-out gate: it is a fixed hosted endpoint, not
+            # an arbitrary proxy, so unknown-field rejection is not a concern the
+            # way it is for the broadened OpenAI-provider path below.
             updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
             injected = "Fireworks session settings"
-        elif _is_openai_model(effective_model) and _openai_prompt_cache_key_enabled():
-            updated_settings = _with_openai_prompt_cache_key(
-                effective_model, settings, ctx.thread_id
-            )
-            injected = "OpenAI prompt_cache_key"
+        elif _is_openai_model(effective_model):
+            if openai_prompt_cache_key:
+                updated_settings = _with_openai_prompt_cache_key(
+                    effective_model, settings, ctx.thread_id
+                )
+                injected = "OpenAI prompt_cache_key"
+            else:
+                # Opt-out fired: leave the request untouched but log it so a user
+                # verifying `models.openai_prompt_cache_key=false` sees a positive
+                # signal rather than having to infer it from an absent log line.
+                updated_settings = None
+                injected = ""
+                logger.debug("Skipped OpenAI prompt_cache_key (opt-out)")
         else:
             updated_settings = None
             injected = ""
@@ -407,7 +434,9 @@ def _build_overrides(
     return request.override(**overrides)
 
 
-def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
+def _apply_overrides(
+    request: ModelRequest, *, openai_prompt_cache_key: bool
+) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
     Reads `'model'` and `'model_params'` from `runtime.context` and, when
@@ -418,6 +447,8 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
 
     Args:
         request: The incoming model request from the middleware chain.
+        openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
+            opt-out, threaded through to `_build_overrides`.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -453,7 +484,9 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result)
+    updated = _build_overrides(
+        request, ctx, model_result, openai_prompt_cache_key=openai_prompt_cache_key
+    )
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -463,8 +496,15 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
     )
 
 
-async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest:
+async def _apply_overrides_async(
+    request: ModelRequest, *, openai_prompt_cache_key: bool
+) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
+
+    Args:
+        request: The incoming model request from the middleware chain.
+        openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
+            opt-out, threaded through to `_build_overrides`.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -504,7 +544,9 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result)
+    updated = _build_overrides(
+        request, ctx, model_result, openai_prompt_cache_key=openai_prompt_cache_key
+    )
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -547,15 +589,31 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     `AnthropicPromptCachingMiddleware`) runs.
     """
 
-    def __init__(self, *, persist_model_state: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        persist_model_state: bool = True,
+        openai_prompt_cache_key: bool | None = None,
+    ) -> None:
         """Initialize the middleware.
 
         Args:
             persist_model_state: Whether completed calls should write private
                 resume metadata. Subagent instances disable this because they do
                 not own the parent thread's resume state.
+            openai_prompt_cache_key: Whether to inject a per-thread OpenAI
+                `prompt_cache_key`. Left as `None` (the default) it is resolved
+                once here from `models.openai_prompt_cache_key`; construction
+                happens off the guarded server loop, so the config read never
+                blocks a model call. Pass an explicit bool to bypass the config
+                read (mainly for tests).
         """
         self._persist_model_state = persist_model_state
+        self._openai_prompt_cache_key = (
+            _resolve_openai_prompt_cache_key_enabled()
+            if openai_prompt_cache_key is None
+            else openai_prompt_cache_key
+        )
 
     def wrap_model_call(
         self,
@@ -568,7 +626,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = _apply_overrides(request)
+        resolved = _apply_overrides(
+            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+        )
         response = handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
@@ -586,7 +646,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = await _apply_overrides_async(request)
+        resolved = await _apply_overrides_async(
+            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+        )
         response = await handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:

@@ -92,7 +92,11 @@ def _make_model_result(
 
 _PATCH_CREATE = "deepagents_code.config.create_model"
 
-_mw = ConfigurableModelMiddleware()
+# The shared instance pins the OpenAI cache-key flag explicitly so it does not
+# read config at import time — that keeps it hermetic regardless of a
+# developer's env/config.toml. Tests that exercise flag *resolution* construct
+# their own instances after patching the config lookup.
+_mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 
 class TestCheckpointPersistence:
@@ -765,6 +769,24 @@ class TestFireworksSessionSettings:
         assert model_settings == {"extra_headers": {"Authorization": "Bearer token"}}
         assert captured[0].model_settings["extra_headers"] is not original_headers
 
+    def test_openai_opt_out_does_not_affect_fireworks(self) -> None:
+        """The OpenAI opt-out gates only the OpenAI branch, not Fireworks."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"x-session-affinity": "thread-123"},
+        }
+
 
 class TestOpenAIPromptCacheKey:
     """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
@@ -878,30 +900,96 @@ class TestOpenAIPromptCacheKey:
 
         assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
 
-    def test_opt_out_skips_prompt_cache_key(
+    def test_default_config_injects_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The `models.openai_prompt_cache_key` opt-out suppresses injection."""
-        monkeypatch.setattr(
-            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
-            lambda: False,
-        )
+        """With no override, construction resolves the opt-out to on (default).
+
+        Exercises the real `models.openai_prompt_cache_key` resolution through
+        `__init__` (env cleared by conftest, `config.toml` stubbed empty),
+        pinning that the default is on end-to-end rather than only asserting the
+        config helper in isolation.
+        """
+        from deepagents_code import config_manifest
+
+        monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+        middleware = ConfigurableModelMiddleware()
         request = _make_request(
             _make_model("gpt-5.6"),
             context=CLIContext(thread_id="thread-123"),
         )
         captured: list[ModelRequest] = []
 
-        _mw.wrap_model_call(
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_opt_out_skips_prompt_cache_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `models.openai_prompt_cache_key` opt-out suppresses injection.
+
+        The opt-out is resolved once at construction, so patch the config lookup
+        before building the middleware.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            lambda: False,
+        )
+        middleware = ConfigurableModelMiddleware()
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
         assert captured[0] is request
 
+    def test_explicit_opt_out_param_skips(self) -> None:
+        """An explicit `openai_prompt_cache_key=False` bypasses config and skips."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_opt_out_preserves_user_supplied_key(self) -> None:
+        """Disabling injection still forwards a user-supplied key untouched."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"prompt_cache_key": "custom-cache"},
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "custom-cache"}
+
     def test_config_read_failure_defaults_to_injecting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failed opt-out lookup falls back to injecting the key (fail-open)."""
+        """A failed opt-out lookup falls back to injecting the key (fail-open).
+
+        The resolver's fail-open runs at construction, so the raising config
+        lookup must be patched before the middleware is built.
+        """
 
         def _boom() -> bool:
             msg = "config exploded"
@@ -911,13 +999,14 @@ class TestOpenAIPromptCacheKey:
             "deepagents_code.config.is_openai_prompt_cache_key_enabled",
             _boom,
         )
+        middleware = ConfigurableModelMiddleware()
         request = _make_request(
             _make_model("gpt-5.6"),
             context=CLIContext(thread_id="thread-123"),
         )
         captured: list[ModelRequest] = []
 
-        _mw.wrap_model_call(
+        middleware.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 

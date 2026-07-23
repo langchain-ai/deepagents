@@ -173,6 +173,32 @@ def test_is_openai_prompt_cache_key_enabled_reads_toml(monkeypatch) -> None:
     assert is_openai_prompt_cache_key_enabled() is False
 
 
+def test_is_openai_prompt_cache_key_enabled_empty_env_opts_out(monkeypatch) -> None:
+    """An explicitly empty env value opts out (via `empty_env_is_false`)."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "")
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
+    monkeypatch,
+) -> None:
+    """An unrecognized env token is ignored, so config.toml decides."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "banana")
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"openai_prompt_cache_key": False}},
+    )
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")

@@ -16,9 +16,9 @@
 #    - Repository: Issues (write)
 #    - Organization: Members (read)
 # 2. Install the app on your organization and this repository
-# 3. Add these repository secrets:
-#    - ORG_MEMBERSHIP_APP_CLIENT_ID: Your app's Client ID
-#    - ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
+# 3. Add the repository credential:
+#    - Variable ORG_MEMBERSHIP_APP_CLIENT_ID: Your app's Client ID
+#    - Secret ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
 #
 # The GitHub App token is required to check private organization membership
 # and to propagate label events to downstream workflows.
@@ -58,7 +58,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
       - name: Verify App token

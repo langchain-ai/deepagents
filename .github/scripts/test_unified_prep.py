@@ -200,6 +200,39 @@ def test_main_rejects_empty_requested_category(tmp_path, monkeypatch):
         up.main([])
 
 
+def test_main_include_tasks_narrows_categories(tmp_path, monkeypatch):
+    # An explicit task selection drops categories that hold none of the requested
+    # tasks instead of failing the empty-category guard against the original
+    # selection. Requesting a single context task from the default category set
+    # must run only that task, not abort on the untouched autonomous/conversation
+    # categories.
+    import json as _j
+
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(
+        _j.dumps(
+            {
+                "autonomous": ["auto-1"],
+                "conversation": ["conv-1"],
+                "context": ["cb-cloud-5", "cb-cloud-26"],
+            }
+        )
+    )
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks))
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-5")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    assert up.main([]) == 0
+
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    assert _j.loads(lines["categories"]) == ["context"]
+    leaf_categories = {leaf["category"] for leaf in _j.loads(lines["expected_leaves"])}
+    assert leaf_categories == {"context"}
+
+
 def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus, openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
@@ -349,6 +382,53 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "model_slugs" not in lines
     assert "model_0_matrix" not in lines
     assert "openai_matrix" not in lines
+
+
+def test_main_filters_lite_profile_to_exact_tasks(tmp_path, monkeypatch):
+    import json as _j
+
+    import lite_tasks
+
+    # Derive the selection from the live frontier (in a non-sorted order) so the
+    # test survives context-frontier recalibrations while still proving the filter
+    # restricts to the requested tasks and preserves request order.
+    context_tasks = lite_tasks.LITE_TASKS["context"]
+    selection = [context_tasks[2], context_tasks[0], context_tasks[5]]
+
+    monkeypatch.setattr(up, "_resolve_branch_sha", lambda branch: "a" * 40)
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare")
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", ",".join(selection))
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    assert up.main([]) == 0
+
+    matrix = _j.loads(
+        next(
+            line for line in out.read_text().splitlines() if line.startswith("eval_matrix=")
+        ).split("=", 1)[1]
+    )["include"]
+    assert {entry["branch"] for entry in matrix} == {"main", "feature"}
+    for entry in matrix:
+        flat = _j.loads(entry["flat_matrix"])["include"]
+        assert [item["include_tasks"] for item in flat] == selection
+
+
+def test_main_rejects_unknown_included_task(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-does-not-exist")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+
+    with pytest.raises(SystemExit, match="UNIFIED_INCLUDE_TASKS"):
+        up.main([])
 
 
 def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):

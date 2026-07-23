@@ -98,6 +98,7 @@ from deepagents_code.local_context import (
 )
 from deepagents_code.offload import (
     _FALLBACK_ARTIFACTS_ROOT,
+    CONVERSATION_HISTORY_DIRNAME,
     _artifacts_root,
     _offload_fallback_root,
 )
@@ -1166,14 +1167,24 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
 def _reserved_agent_dir_names() -> frozenset[str]:
     """Return non-agent directory names reserved by the app under `~/.deepagents/`.
 
-    `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`) and must
-    never appear in the agent picker. The name is derived from `BIN_DIR` so it
-    stays a single source of truth rather than being hardcoded here. The result
-    is cached since the reserved set is constant for the process.
+    These directories are created by the app for its own use and must never
+    appear in the agent picker:
+
+    - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
+    - `plugins/` holds installed plugin state (`plugins.store`).
+    - `conversation_history/` holds offloaded per-thread archives (`offload`).
+
+    Each name is derived from its owning module so it stays a single source of
+    truth rather than being hardcoded here. The result is cached since the
+    reserved set is constant for the process.
     """
     from deepagents_code.managed_tools import BIN_DIR
+    from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
+    from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
 
-    return frozenset({BIN_DIR.name})
+    return frozenset(
+        {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
+    )
 
 
 def _is_agent_dir_entry(entry: Path) -> bool:
@@ -1182,7 +1193,7 @@ def _is_agent_dir_entry(entry: Path) -> bool:
     Filters out symlinks (so dangling links don't masquerade as agents),
     dot-prefixed names — `.state/` (app internal state) plus any other
     hidden directory the user may have placed there — and reserved names
-    the app owns (e.g. `bin/`, the managed-binary install dir).
+    the app owns (`bin/`, `plugins/`, and `conversation_history/`).
 
     `OSError` from `is_dir`/`is_symlink` propagates so callers can log
     with the failing entry's name as context.
@@ -1198,8 +1209,9 @@ def get_available_agent_names() -> list[str]:
     Scans the user's `.deepagents` directory and returns each real
     subdirectory found there. Symlinks excluded so a dangling link does not
     masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
-    reserved app-owned directories (e.g., `bin/`, the managed-binary install
-    dir) are skipped so internal state never appears as an agent.
+    reserved app-owned directories (`bin/`, `plugins/`, and
+    `conversation_history/`) are skipped so internal state never appears as an
+    agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -2834,12 +2846,16 @@ def create_cli_agent(
         artifacts_storage = _artifacts_root()
         artifacts_root = artifacts_storage.root
         conversation_history_backend = FilesystemBackend(
-            root_dir=_offload_fallback_root() / "conversation_history",
+            root_dir=_offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME,
             virtual_mode=True,
         )
-        fallback_history_root = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/"
+        fallback_history_root = (
+            f"{_FALLBACK_ARTIFACTS_ROOT}/{CONVERSATION_HISTORY_DIRNAME}/"
+        )
         artifact_routes: dict[str, BackendProtocol] = {
-            f"{artifacts_root}/conversation_history/": conversation_history_backend,
+            f"{artifacts_root}/{CONVERSATION_HISTORY_DIRNAME}/": (
+                conversation_history_backend
+            ),
             fallback_history_root: conversation_history_backend,
         }
         if artifacts_storage.large_results_dir is not None:

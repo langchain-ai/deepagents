@@ -3104,39 +3104,47 @@ def langsmith_key_shadowed_by_empty_override() -> str | None:
     a common footgun is exporting `DEEPAGENTS_CODE_LANGSMITH_API_KEY=` (empty):
     per `resolve_env_var`'s precedence a present-but-empty prefixed variable
     shadows both the canonical env key and a `/auth`-stored key, so tracing
-    silently stays off even though a key is stored. Detecting this lets callers
-    point at the offending variable instead of sending the user to `/auth`.
+    silently stays off even though a key is available. Detecting this lets
+    callers point at the offending variable instead of sending the user to
+    `/auth`.
+
+    Each prefixed override is checked against the specific key it suppresses, so
+    the returned name is one that, once unset, actually lets a key resolve: its
+    canonical variant carries a value, or -- for `LANGSMITH_API_KEY`, the var
+    `/auth` bridges its stored key onto -- a stored key exists. An empty
+    override that shadows nothing is ignored, since the generic "not configured"
+    hint is correct there. When several overrides qualify, the first in
+    `_TRACING_API_KEY_ENV_VARS` order is returned.
 
     Returns:
-        The prefixed env var name shadowing the key, or `None` when no empty
-        override is suppressing an otherwise-available LangSmith key.
+        The prefixed env var name whose empty value is suppressing an available
+        LangSmith key, or `None` when no such override exists.
     """
     from deepagents_code import auth_store
     from deepagents_code.model_config import LANGSMITH_SERVICE, resolved_env_var_name
 
-    empty_overrides = [
-        resolved
-        for name in _TRACING_API_KEY_ENV_VARS
-        if (resolved := resolved_env_var_name(name)) != name
-        and not os.environ.get(resolved)
-    ]
-    if not empty_overrides:
-        return None
-
-    # Only claim a shadow when a key is actually being suppressed: a canonical
-    # env key or a `/auth`-stored LangSmith key. Otherwise the empty override is
-    # shadowing nothing and the generic "not configured" hint is correct.
-    shadowed = any(
-        (os.environ.get(name) or "").strip() for name in _TRACING_API_KEY_ENV_VARS
-    )
-    if not shadowed:
-        try:
-            shadowed = bool(auth_store.get_stored_key(LANGSMITH_SERVICE))
-        except RuntimeError:
-            shadowed = False
-    if not shadowed:
-        return None
-    return empty_overrides[0]
+    for name in _TRACING_API_KEY_ENV_VARS:
+        resolved = resolved_env_var_name(name)
+        if resolved == name or os.environ.get(resolved):
+            # No prefixed override for this key, or the override carries a value:
+            # either way it is not an empty override suppressing this key.
+            continue
+        if (os.environ.get(name) or "").strip():
+            # The empty override is hiding a value on the canonical variable.
+            return resolved
+        if name == "LANGSMITH_API_KEY":
+            # `/auth` bridges its stored key onto `LANGSMITH_API_KEY`, so an
+            # empty override for it also suppresses a stored key.
+            try:
+                if auth_store.get_stored_key(LANGSMITH_SERVICE):
+                    return resolved
+            except RuntimeError:
+                logger.warning(
+                    "Could not read the stored LangSmith credential while "
+                    "checking for an empty-override shadow; the credential file "
+                    "may be corrupt. Re-add the key via /auth."
+                )
+    return None
 
 
 def is_langsmith_redaction_enabled() -> bool:

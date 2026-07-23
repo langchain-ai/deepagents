@@ -2031,16 +2031,100 @@ class TestLangsmithKeyShadowedByEmptyOverride:
         )
 
     def test_returns_none_when_override_carries_a_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-empty prefixed override resolves normally, so no shadow."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
+        for var in ("LANGSMITH_API_KEY", "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        assert langsmith_key_shadowed_by_empty_override() is None
+
+    def test_detects_shadowed_langchain_canonical_env_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The legacy `LANGCHAIN_API_KEY` override path is reported too."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        for var in ("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "LANGSMITH_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        assert (
+            langsmith_key_shadowed_by_empty_override()
+            == "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
+
+    def test_reports_the_override_that_actually_shadows_the_key(
         self,
         fake_state_dir: Path,  # noqa: ARG002
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A non-empty prefixed override resolves normally, so no shadow."""
-        from deepagents_code import auth_store
+        """With both overrides empty, name the one hiding the only real key.
 
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
-        auth_store.set_stored_key("langsmith", "lsv2_stored")
+        The `LANGSMITH` override is empty but shadows nothing (no canonical
+        value, no stored key); only `LANGCHAIN_API_KEY` carries a key, so
+        unsetting the `LANGCHAIN` override -- not the `LANGSMITH` one -- is what
+        restores tracing. The hint must name the `LANGCHAIN` override.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        assert (
+            langsmith_key_shadowed_by_empty_override()
+            == "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
+
+    def test_prefers_langsmith_when_both_overrides_shadow_a_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both overrides genuinely shadow a key, `LANGSMITH` wins."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        assert (
+            langsmith_key_shadowed_by_empty_override()
+            == "DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_ignores_empty_override_that_shadows_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty override is not reported when a key resolves anyway.
+
+        `LANGSMITH_API_KEY` resolves fine; the empty `LANGCHAIN` override hides
+        no key (no canonical `LANGCHAIN_API_KEY`). Tracing may still be off for
+        an unrelated reason (e.g. a missing tracing flag), but this override is
+        not the cause, so the generic hint -- not a false shadow claim -- is
+        correct.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        for var in ("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
         assert langsmith_key_shadowed_by_empty_override() is None
+
+    def test_returns_none_when_stored_key_unreadable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A corrupt credential store degrades to no-shadow and logs a warning."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        for var in (
+            "LANGSMITH_API_KEY",
+            "LANGCHAIN_API_KEY",
+            "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        with (
+            patch(
+                "deepagents_code.auth_store.get_stored_key",
+                side_effect=RuntimeError("corrupt"),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert langsmith_key_shadowed_by_empty_override() is None
+        assert any("empty-override shadow" in r.getMessage() for r in caplog.records)
 
 
 class TestLangsmithSecretRedaction:

@@ -294,6 +294,15 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
 """
 
+RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
+"""Override the main agent's LangGraph `recursion_limit` (graph step budget).
+
+Parsed as an integer by the config manifest. Values below the LangGraph floor
+(`25`) or above the manifest ceiling are ignored with a logged warning, falling
+back to `config.toml` then the default. See `[runtime].recursion_limit` and the
+`--recursion-limit` CLI flag.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.

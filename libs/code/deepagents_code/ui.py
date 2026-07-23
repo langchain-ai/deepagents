@@ -212,6 +212,10 @@ def show_help() -> None:
         "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
     )
     console.print(
+        "  --recursion-limit N        Override the agent's graph recursion_limit"
+        " (default 2000)"
+    )
+    console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
         " (needs -n/stdin)"
     )

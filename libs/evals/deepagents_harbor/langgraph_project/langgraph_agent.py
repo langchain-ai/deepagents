@@ -345,13 +345,9 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
-    # No `system_prompt`: left unset, `create_deep_agent` builds the prompt from
-    # the library's own `BASE_AGENT_PROMPT` — the value this benchmark varies
-    # across branches. A harness override is normalized to a prepended
-    # `{"prefix": ...}` that would sit ahead of that base on every arm, masking
-    # the difference and giving the no-system-prompt arm a prompt it should not
-    # have. The sandbox workdir is already enforced by the shell backend's
-    # `root_dir`.
+    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
+    # prompt-free default. The sandbox workdir is already enforced by the shell
+    # backend's `root_dir`.
     return create_deep_agent(
         model=model,
         backend=backend,
@@ -451,11 +447,9 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     model = _build_model(configurable)
     client = MultiServerMCPClient(_mcp_connections(configurable))
     tools = await client.get_tools()
-    # No `system_prompt`: the agent uses the overlaid branch's own
-    # BASE_AGENT_PROMPT (the value this benchmark varies) and learns the
-    # tau3-runtime conversation protocol from the MCP tools' server-advertised
-    # descriptions, keeping the conversation category a fair, base-prompt-only
-    # comparison parallel to the bare path.
+    # No `system_prompt`: the tau3-runtime conversation protocol comes from the
+    # MCP tools' server-advertised descriptions, without adding an authored base
+    # prompt.
     return create_deep_agent(
         model=model,
         tools=tools,

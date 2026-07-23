@@ -33,25 +33,33 @@ function makeGithub({
 } = {}) {
   const calls = {
     createLabel: [],
+    addLabels: [],
     createComment: [],
     updateComment: [],
     close: [],
     queries: [],
     get: [],
   };
-  let labelPresent = labelExists;
+  // When labels are presumed present, unknown names still succeed so tests do
+  // not have to seed every label the workflow may ensure.
+  const presentLabels = new Set(labelExists ? ['do-not-close', 'pending-deletion'] : []);
 
   const github = {
     rest: {
       issues: {
-        getLabel: async () => {
-          if (!labelPresent) throw httpError('missing label', 404);
-          return { data: { name: 'do-not-close' } };
+        getLabel: async ({ name }) => {
+          if (!labelExists && !presentLabels.has(name)) {
+            throw httpError('missing label', 404);
+          }
+          return { data: { name } };
         },
         createLabel: async params => {
           calls.createLabel.push(params);
           if (createLabelError) throw createLabelError;
-          labelPresent = true;
+          presentLabels.add(params.name);
+        },
+        addLabels: async params => {
+          calls.addLabels.push(params);
         },
         listComments: async ({ issue_number }) => ({
           data: (comments.get(issue_number) ?? []).map(comment => ({
@@ -137,6 +145,11 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   assert.equal(calls.createComment.length, 1);
   assert.equal(calls.createComment[0].issue_number, 101);
   assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.equal(calls.addLabels.length, 2);
+  assert.deepEqual(
+    calls.addLabels.map(call => [call.issue_number, call.labels]),
+    [[101, ['pending-deletion']], [102, ['pending-deletion']]],
+  );
   assert.equal(calls.updateComment.length, 1);
   assert.equal(calls.updateComment[0].comment_id, 77);
   assert.match(calls.updateComment[0].body, /open for at least 30 days/);
@@ -158,6 +171,12 @@ test('warns an old PR that was never warned instead of closing it', async () => 
   assert.equal(calls.createComment[0].issue_number, 201);
   assert.match(calls.createComment[0].body, /open for at least 14 days/);
   assert.match(calls.createComment[0].body, /warning is at least 16 days old/);
+  assert.deepEqual(calls.addLabels, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 201,
+    labels: ['pending-deletion'],
+  }]);
   assert.deepEqual(calls.close, []);
 });
 
@@ -198,6 +217,7 @@ test('does not duplicate warning comments on daily runs', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 301, created_at: '2026-04-23T00:00:00Z' }],
     comments,
+    live: new Map([[301, { labels: ['pending-deletion'] }]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
@@ -205,7 +225,29 @@ test('does not duplicate warning comments on daily runs', async () => {
   assert.equal(summary.skipped, 1);
   assert.equal(calls.createComment.length, 0);
   assert.equal(calls.updateComment.length, 0);
+  assert.equal(calls.addLabels.length, 0);
   assert.deepEqual(calls.close, []);
+});
+
+test('backfills pending-deletion on already-warned PRs', async () => {
+  const comments = new Map([
+    [305, [{ id: 91, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 305, created_at: '2026-04-23T00:00:00Z' }],
+    comments,
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(calls.createComment.length, 0);
+  assert.deepEqual(calls.addLabels, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 305,
+    labels: ['pending-deletion'],
+  }]);
 });
 
 test('ignores marker comments posted by PR participants when warning', async () => {
@@ -412,13 +454,19 @@ test('fails the run when every processed PR errors, even transiently', async () 
   assert.match(core.failed, /#721: outage/);
 });
 
-test('creates the bypass label when it does not exist', async () => {
+test('creates the bypass and pending-deletion labels when they do not exist', async () => {
   const { github, calls } = makeGithub({ items: [], labelExists: false });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(calls.createLabel.length, 1);
-  assert.equal(calls.createLabel[0].name, 'do-not-close');
+  assert.equal(calls.createLabel.length, 2);
+  assert.deepEqual(
+    calls.createLabel.map(call => [call.name, call.color]),
+    [
+      ['do-not-close', '0e8a16'],
+      ['pending-deletion', 'fbca04'],
+    ],
+  );
   assert.equal(summary.checked, 0);
 });
 
@@ -429,19 +477,19 @@ test('confirms the label exists after a create-label 422 race', async () => {
     createLabelError: httpError('already exists', 422),
   });
   // Simulate a concurrent run that created the label between our getLabel (404)
-  // and createLabel (422): the confirming getLabel now succeeds.
-  let confirmed = false;
-  github.rest.issues.getLabel = async () => {
-    if (!confirmed) {
-      confirmed = true;
+  // and createLabel (422): the confirming getLabel now succeeds per name.
+  const seen = new Set();
+  github.rest.issues.getLabel = async ({ name }) => {
+    if (!seen.has(name)) {
+      seen.add(name);
       throw httpError('missing label', 404);
     }
-    return { data: { name: 'do-not-close' } };
+    return { data: { name } };
   };
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(calls.createLabel.length, 1);
+  assert.equal(calls.createLabel.length, 2);
   assert.equal(summary.checked, 0);
 });
 

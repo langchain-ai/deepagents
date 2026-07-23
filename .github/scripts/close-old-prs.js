@@ -1,6 +1,7 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const DEFAULT_BYPASS_LABEL = 'do-not-close';
+const DEFAULT_PENDING_DELETION_LABEL = 'pending-deletion';
 const DEFAULT_WARNING_DAYS = 14;
 const DEFAULT_CLOSE_DAYS = 30;
 const DEFAULT_MAX_ITEMS = 1000;
@@ -45,7 +46,7 @@ function labelNames(labels) {
   return labels.map(label => typeof label === 'string' ? label : label.name);
 }
 
-async function ensureLabel({ github, owner, repo, name }) {
+async function ensureLabel({ github, owner, repo, name, color, description }) {
   try {
     await github.rest.issues.getLabel({ owner, repo, name });
   } catch (error) {
@@ -55,8 +56,8 @@ async function ensureLabel({ github, owner, repo, name }) {
         owner,
         repo,
         name,
-        color: '0e8a16',
-        description: 'Bypass automatic closure of old PRs',
+        color,
+        description,
       });
     } catch (createError) {
       if (createError.status !== 422) throw createError;
@@ -73,6 +74,17 @@ async function ensureLabel({ github, owner, repo, name }) {
       }
     }
   }
+}
+
+async function ensureIssueLabel({ github, owner, repo, issueNumber, name, existingLabels }) {
+  if (existingLabels.includes(name)) return;
+  await github.rest.issues.addLabels({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    labels: [name],
+  });
+  existingLabels.push(name);
 }
 
 async function findMarkerComment({ github, owner, repo, issueNumber }) {
@@ -165,6 +177,7 @@ async function processPr({
   item,
   now,
   bypassLabel,
+  pendingDeletionLabel,
   warningDays,
   closeDays,
 }) {
@@ -221,9 +234,29 @@ async function processPr({
       issue_number: number,
       body: warningBody({ warningDays, closeDays, bypassLabel }),
     });
+    // Apply at warning time so the PR is filterable until close or bypass.
+    await ensureIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
     core.info(`Warned PR #${number} after ${age} day(s)`);
     return 'warned';
   }
+
+  // Backfill the pending label for PRs warned before this label existed, or
+  // when a prior run posted the comment but failed before labeling.
+  await ensureIssueLabel({
+    github,
+    owner,
+    repo,
+    issueNumber: number,
+    name: pendingDeletionLabel,
+    existingLabels: live.labels,
+  });
 
   const noticeDays = closeDays - warningDays;
   const warningAge = ageInDays(existing.created_at, now);
@@ -259,8 +292,11 @@ async function run({ github, context, core, options = {} }) {
   const { owner, repo } = context.repo;
   // `||` (not `??`) so an empty string falls back to the default: an
   // empty-named label can never be applied, which would silently disable the
-  // bypass mechanism.
+  // bypass or pending-deletion mechanisms.
   const bypassLabel = options.bypassLabel || process.env.BYPASS_LABEL || DEFAULT_BYPASS_LABEL;
+  const pendingDeletionLabel = options.pendingDeletionLabel
+    || process.env.PENDING_DELETION_LABEL
+    || DEFAULT_PENDING_DELETION_LABEL;
   const warningDays = parsePositiveInt(
     options.warningDays ?? process.env.WARNING_DAYS,
     DEFAULT_WARNING_DAYS,
@@ -282,7 +318,22 @@ async function run({ github, context, core, options = {} }) {
     throw new Error(`warningDays (${warningDays}) must be less than closeDays (${closeDays})`);
   }
 
-  await ensureLabel({ github, owner, repo, name: bypassLabel });
+  await ensureLabel({
+    github,
+    owner,
+    repo,
+    name: bypassLabel,
+    color: '0e8a16',
+    description: 'Bypass automatic closure of old PRs',
+  });
+  await ensureLabel({
+    github,
+    owner,
+    repo,
+    name: pendingDeletionLabel,
+    color: 'fbca04',
+    description: 'PR is past the auto-close warning threshold and will be closed unless exempted',
+  });
   const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });
   core.info(`Found ${prs.length} open PR(s)`);
 
@@ -298,6 +349,7 @@ async function run({ github, context, core, options = {} }) {
         item,
         now,
         bypassLabel,
+        pendingDeletionLabel,
         warningDays,
         closeDays,
       });

@@ -6,6 +6,7 @@ import io
 import json
 import sys
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -240,6 +241,24 @@ def test_legacy_migration_prefers_argv_over_shell_on_windows(
         assert "'" not in handler.command
 
 
+def test_legacy_migration_deduplicates_identical_event_names() -> None:
+    migrated = migrate_legacy_hooks(
+        [
+            {
+                "command": ["echo", "prompt"],
+                "events": ["session.start", "session.start", "user.prompt"],
+            }
+        ]
+    )
+
+    legacy_events = [
+        group.hooks[0].argv[3]
+        for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
+        if group.hooks[0].argv is not None
+    ]
+    assert legacy_events == ["session.start", "user.prompt"]
+
+
 def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:
     migrated = migrate_legacy_hooks([{"command": ["echo", "all"]}])
 
@@ -303,6 +322,24 @@ def test_legacy_adapter_ignores_nested_hook_exit_code(
         io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
     )
     assert migration._run_adapter(["session.start", encoded]) == 0
+
+
+def test_legacy_adapter_keeps_nested_hook_in_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = MagicMock()
+    monkeypatch.setattr(migration.subprocess, "run", run)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
+    )
+    encoded = migration.base64.urlsafe_b64encode(b'["legacy-hook"]').decode()
+
+    assert migration._run_adapter(["session.start", encoded]) == 0
+
+    run.assert_called_once()
+    assert "start_new_session" not in run.call_args.kwargs
 
 
 def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:

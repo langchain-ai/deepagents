@@ -75,7 +75,9 @@ def migrate_legacy_hooks(
         if events is None or events == []:
             event_names = list(_LEGACY_EVENT_MAP)
         elif isinstance(events, list):
-            event_names = [name for name in events if isinstance(name, str)]
+            event_names = list(
+                dict.fromkeys(name for name in events if isinstance(name, str))
+            )
         else:
             continue
         for event_name in event_names:
@@ -183,7 +185,6 @@ def _run_adapter(args: Sequence[str]) -> int:
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=LEGACY_COMMAND_TIMEOUT_SECONDS,
-            start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         return 1

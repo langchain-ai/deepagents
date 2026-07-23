@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import ntpath
 import os
 import signal
 from contextlib import suppress
@@ -249,7 +250,7 @@ async def _read_bounded(
 
 
 async def _terminate(process: Process) -> None:
-    """Kill the hook process group, then reap the direct child."""
+    """Kill the hook process tree, then reap the direct child."""
     if os.name == "posix" and process.pid is not None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -258,11 +259,58 @@ async def _terminate(process: Process) -> None:
         except OSError:
             with suppress(OSError):
                 process.kill()
+    elif os.name == "nt":
+        await _terminate_windows_tree(process)
     elif process.returncode is None:
         with suppress(OSError):
             process.kill()
     with suppress(OSError, TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+
+
+async def _terminate_windows_tree(process: Process) -> None:
+    if process.pid is None:
+        return
+    taskkill_path = _windows_taskkill_path()
+    taskkill = None
+    if taskkill_path is not None:
+        with suppress(OSError):
+            taskkill = await asyncio.create_subprocess_exec(
+                taskkill_path,
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+    if taskkill is not None:
+        try:
+            returncode = await asyncio.wait_for(
+                taskkill.wait(),
+                timeout=_TERMINATE_WAIT_TIMEOUT,
+            )
+        except TimeoutError:
+            with suppress(OSError):
+                taskkill.kill()
+            with suppress(OSError, TimeoutError):
+                await asyncio.wait_for(
+                    taskkill.wait(),
+                    timeout=_TERMINATE_WAIT_TIMEOUT,
+                )
+        else:
+            if returncode == 0:
+                return
+    if process.returncode is None:
+        with suppress(OSError):
+            process.kill()
+
+
+def _windows_taskkill_path() -> str | None:
+    system_root = os.environ.get("SYSTEMROOT")
+    if not system_root or not ntpath.isabs(system_root):
+        return None
+    return ntpath.join(ntpath.normpath(system_root), "System32", "taskkill.exe")
 
 
 def _decode(value: bytes) -> str:

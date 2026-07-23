@@ -14,7 +14,6 @@ from deepagents_code.hooks.models.domain import (  # ruff:ignore[typing-only-fir
 class _ConfigModel(BaseModel):
     # Ignore unknown keys so newer external handler fields do not fail config load.
     # Known-but-unsupported fields such as `async` are modeled explicitly and rejected.
-    # populate_by_name lets Python call sites use snake_case while JSON keeps aliases.
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 

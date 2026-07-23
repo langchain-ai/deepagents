@@ -16,7 +16,7 @@ import sys
 from binascii import Error as BinasciiError
 from typing import TYPE_CHECKING
 
-from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT_SECONDS
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.models.config import (
     CommandHandlerSpec,
     HooksConfig,
@@ -36,10 +36,9 @@ _LEGACY_EVENT_MAP: dict[str, tuple[HookEvent, str | None]] = {
     "context.compact": (HookEvent.PRE_COMPACT, "manual"),
     "input.required": (HookEvent.NOTIFICATION, "agent_needs_input"),
 }
-LEGACY_COMMAND_TIMEOUT_SECONDS = HOOK_SUBPROCESS_TIMEOUT_SECONDS
 # Outer runner grace so the nested adapter timeout can fire first on Windows,
 # where killing the adapter process may not reap its descendants.
-_ADAPTER_OUTER_TIMEOUT_SECONDS = LEGACY_COMMAND_TIMEOUT_SECONDS + 1.0
+_ADAPTER_OUTER_TIMEOUT_SECONDS = HOOK_SUBPROCESS_TIMEOUT + 1.0
 _ADAPTER_MODULE = "deepagents_code.hooks.migration"
 _ADAPTER_ARGUMENT_COUNT = 2
 _THREAD_ID_EVENTS = frozenset({"session.start", "task.complete", "session.end"})
@@ -110,28 +109,6 @@ def _adapter_argv(argv: list[str], legacy_event: str) -> list[str]:
     return [sys.executable, "-m", _ADAPTER_MODULE, legacy_event, encoded_argv]
 
 
-def _observer_command(
-    argv: list[str],
-    legacy_event: str,
-    *,
-    os_name: str | None = None,
-) -> str:
-    """Preserve legacy side-effect-only output and exit semantics.
-
-    Args:
-        argv: Legacy command and arguments.
-        legacy_event: Dotted event name expected by the legacy command.
-        os_name: Operating system name used for shell quoting.
-
-    Returns:
-        A shell command that invokes the cross-platform legacy adapter.
-    """
-    return _shell_command(
-        _adapter_argv(argv, legacy_event),
-        os_name=os.name if os_name is None else os_name,
-    )
-
-
 def _shell_command(argv: Sequence[str], *, os_name: str) -> str:
     if os_name == "nt":
         return subprocess.list2cmdline(argv)
@@ -184,7 +161,7 @@ def _run_adapter(args: Sequence[str]) -> int:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
-            timeout=LEGACY_COMMAND_TIMEOUT_SECONDS,
+            timeout=HOOK_SUBPROCESS_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         return 1

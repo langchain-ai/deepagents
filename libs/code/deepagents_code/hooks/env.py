@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 # Shared bound for legacy hook subprocesses and the migration adapter's nested
 # `subprocess.run`. Keep the legacy dispatcher and Hooks v2 migration aligned.
-HOOK_SUBPROCESS_TIMEOUT_SECONDS = 5.0
+HOOK_SUBPROCESS_TIMEOUT = 5.0
 
 
 def sanitize_hook_environ(

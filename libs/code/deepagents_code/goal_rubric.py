@@ -34,6 +34,7 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_NAMES as _REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
+from deepagents_code.goal_state_notice import is_conversation_control_message
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
@@ -1084,6 +1085,8 @@ def _conversation_context(messages: Sequence[BaseMessage]) -> str:
     remaining = _CONVERSATION_CONTEXT_TOTAL_TEXT_LIMIT
     projected_reversed: list[BaseMessage] = []
     for message in reversed(messages):
+        if is_conversation_control_message(message):
+            continue
         if len(projected_reversed) >= _CONVERSATION_CONTEXT_MESSAGE_LIMIT:
             break
         if not isinstance(message, (HumanMessage, AIMessage)):

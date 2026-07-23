@@ -32,10 +32,6 @@ The sections below describe target configuration, not live provisioning status. 
 | `ORG_MEMBERSHIP_APP_CLIENT_ID` | Actions variable | Identifies the GitHub App used by repository automation. |
 | `ORG_MEMBERSHIP_APP_PRIVATE_KEY` | Secret | Authenticates the GitHub App so workflows can mint short-lived installation tokens. |
 
-`ORG_MEMBERSHIP_APP_ID` is not used. Do not recreate it.
-
-OpenWiki credentials may exist at broader scope during migration, but their target scope is the `openwiki` environment. Before deleting broader copies, provision the environment credentials, audit organization-level fallback, and complete a successful manual run from `main`.
-
 ### `openwiki`
 
 This environment is selected by `.github/workflows/openwiki-update.yml`.
@@ -45,7 +41,7 @@ This environment is selected by `.github/workflows/openwiki-update.yml`.
 | `LANGSMITH_API_KEY` | Ingest OpenWiki traces into the `openwiki` project. | `runs:create` |
 | `LS_GATEWAY_OPENAI_API_KEY` | Invoke the configured model through the workflow's current LangSmith Gateway endpoint. | `gateway:invoke`, `workspaces:read` |
 
-Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main` and validate a manual run before removing broader-scope fallback credentials.
+Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main`.
 
 ### `evals`
 
@@ -89,33 +85,9 @@ The sandbox permissions are temporary on this key. See [Harbor sandbox credentia
 
 ### `integration-tests`
 
-This environment is used by `.github/workflows/integration_tests.yml`. The workflow conditionally injects each credential according to the selected matrix package.
+This environment is intentionally uncredentialed. `.github/workflows/integration_tests.yml` retains package-scoped `secrets.*` references, but absent environment credentials resolve to empty strings. Do not treat the workflow as active live-provider coverage in this state.
 
-| Secret | Packages that receive it | Purpose |
-| --- | --- | --- |
-| `ANTHROPIC_API_KEY` | `libs/deepagents`, `libs/partners/quickjs` | Live Anthropic model coverage. |
-| `OPENAI_API_KEY` | `libs/deepagents` | OpenAI subagent coverage. |
-| `LANGSMITH_API_KEY` | `libs/deepagents`, `libs/code` | LangSmith sandbox and Context Hub coverage. |
-| `DAYTONA_API_KEY` | `libs/partners/daytona`, `libs/code` | Daytona sandbox coverage. |
-| `MODAL_TOKEN_ID` | `libs/partners/modal`, `libs/code` | Modal sandbox coverage. |
-| `MODAL_TOKEN_SECRET` | `libs/partners/modal`, `libs/code` | Modal sandbox coverage. |
-| `RUNLOOP_API_KEY` | `libs/partners/runloop`, `libs/code` | Runloop sandbox coverage. |
-
-`libs/partners/quickjs` and `libs/code` are override-only targets in the current workflow; they are not in its dropdown or default matrix. Unknown custom package overrides receive no provider credentials. Although an override can name `libs/partners/vercel`, that target is unsupported: the workflow does not inject `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, or `VERCEL_PROJECT_ID`. Add and scope its complete access-token contract, or deliberately adopt Vercel OIDC, before running that override. The `libs/code` AgentCore integration remains skipped because this workflow does not provision AWS credentials, so this table does not represent full provider coverage for `libs/code`.
-
-The integration-test LangSmith service key needs:
-
-```text
-sandboxes:create
-sandboxes:read
-sandboxes:delete
-prompts:read
-prompts:create
-prompts:update
-prompts:delete
-```
-
-The prompt permissions support temporary Context Hub agent repositories created and deleted by the Deep Agents integration suite. The workflow does not intentionally enable tracing and does not require dataset or experiment permissions.
+Before restoring credentials, decide which packages the workflow should support and fix its stale matrix: `libs/cli` has no integration tests and exits with pytest status 5, while `libs/code` owns the migrated coding-agent suite but is available only through the free-text override. Then use non-human service or provider-project credentials, scope each one to its package, and add exact contract tests for the resulting bindings.
 
 ### `release-dcode`
 

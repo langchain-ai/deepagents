@@ -1060,19 +1060,6 @@ jobs:
             RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
           fi
 
-          # Annotate releases cut from a non-default branch (a vX.Y version line
-          # or an alpha/* throwaway branch) with the originating branch and the
-          # immutable release commit. Skipped for normal default-branch releases,
-          # where the branch carries no signal. The branch is rendered as plain
-          # text and the link targets the commit SHA, never tree/<branch>: alpha
-          # branches are deleted after release, so a branch link would 404, and
-          # the commit is the exact code that shipped even when release-sha points
-          # somewhere other than the branch tip.
-          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
-            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
-          fi
-
           # Append contributor shoutouts
           SEPARATOR_ADDED=false
           if [ -n "$CONTRIBUTOR_LIST" ]; then
@@ -1097,6 +1084,20 @@ jobs:
               SEPARATOR_ADDED=true
             fi
             RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
+          fi
+
+          # Annotate releases cut from a non-default branch (a vX.Y version line
+          # or an alpha/* throwaway branch) with the originating branch and the
+          # immutable release commit. Placed after attribution so provenance sits
+          # with the ship metadata. Skipped for normal default-branch releases,
+          # where the branch carries no signal. The branch is rendered as plain
+          # text and the link targets the commit SHA, never tree/<branch>: alpha
+          # branches are deleted after release, so a branch link would 404, and
+          # the commit is the exact code that shipped even when release-sha points
+          # somewhere other than the branch tip.
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
           fi
 
           # Output release body using heredoc for proper multiline handling

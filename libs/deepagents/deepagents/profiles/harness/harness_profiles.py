@@ -629,8 +629,8 @@ class HarnessProfile:
     Entries may be a middleware *class* (matched by exact type, not subclass —
     consistent with `extra_middleware` slot merging) or a *string* matching
     `AgentMiddleware.name` exactly. `.name` defaults to the class's
-    `__name__` but is overridable, so `{TodoListMiddleware}` (class form) and
-    `{"TodoListMiddleware"}` (name form) behave identically for stock
+    `__name__` but is overridable, so `{FilesystemMiddleware}` (class form) and
+    `{"FilesystemMiddleware"}` (name form) behave identically for stock
     middleware.
 
     Prefer class form when the class is importable: typos surface at import

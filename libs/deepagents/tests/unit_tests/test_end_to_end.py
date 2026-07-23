@@ -132,11 +132,11 @@ class TestDeepAgentEndToEnd:
             messages=iter(
                 [
                     AIMessage(
-                        content="I'll use the sample_tool to process your request.",
+                        content="I'll list the files to process your request.",
                         tool_calls=[
                             {
-                                "name": "write_todos",
-                                "args": {"todos": []},
+                                "name": "ls",
+                                "args": {},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }

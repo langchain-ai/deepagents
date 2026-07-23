@@ -18,7 +18,7 @@ ONBOARDING_MARKER_FILENAME = "onboarding_complete"
 """Marker filename under `~/.deepagents/.state` after onboarding has completed."""
 
 GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME = "goal_auto_accept_criteria_prompted_v1"
-"""Marker written after the first-run goal criteria preference is answered."""
+"""Marker written after the first goal-criteria preference prompt is answered."""
 
 ONBOARDING_NAME_MEMORY_START = "<!-- deepagents:onboarding-name:start -->"
 """Start marker for the managed onboarding name memory block."""

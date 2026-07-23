@@ -399,6 +399,13 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect app-managed state and config away from the developer's data."""
     state_dir = tmp_path / ".state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    # Keep ordinary create/amend goal tests free of the one-time preference
+    # modal. Dedicated coverage deletes this marker when it needs the prompt.
+    (state_dir / "goal_auto_accept_criteria_prompted_v1").write_text(
+        "1\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_CONFIG_PATH",

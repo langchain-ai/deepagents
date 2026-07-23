@@ -918,20 +918,40 @@ class TestStartupSequence:
         assert order == ["init", "initial"]
         assert app._launch_init_requested is False
 
-    async def test_launch_init_prompts_for_goal_preference_first(
+    @staticmethod
+    def _clear_goal_auto_accept_prompt_marker() -> None:
+        """Undo the shared fixture marker so preference-prompt coverage can run."""
+        from deepagents_code.onboarding import goal_auto_accept_prompt_marker_path
+
+        goal_auto_accept_prompt_marker_path().unlink(missing_ok=True)
+
+    async def test_goal_create_prompts_for_auto_accept_preference(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Fresh onboarding should ask the Auto goal policy before other setup."""
+        """First create/amend should ask before drafting criteria."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
 
         monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
-        app = DeepAgentsApp(launch_init=True)
-        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
-        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
-        app._save_launch_goal_auto_accept_preference = AsyncMock()  # ty: ignore
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app._cancel_goal_proposal_worker = MagicMock()  # ty: ignore
+        app._cancel_pending_goal_review = AsyncMock()  # ty: ignore
+        app._clear_pending_goal_rubric = MagicMock()  # ty: ignore
+        app._persist_goal_rubric_state = AsyncMock()  # ty: ignore
+        app._goal_state_mutation_boundary = MagicMock(  # ty: ignore
+            return_value=contextlib.nullcontext(),
+        )
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
 
         async with app.run_test() as pilot:
+            await pilot.pause()
+            command_task = asyncio.create_task(
+                app._handle_goal_command("/goal ship passkeys"),
+            )
             await pilot.pause()
 
             assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
@@ -940,10 +960,63 @@ class TestStartupSequence:
             assert options.highlighted == 0
 
             await pilot.press("escape")
+            await asyncio.wait_for(command_task, timeout=2)
+            await pilot.pause()
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+        assert app._goal_proposal_worker is not None
+
+    async def test_goal_create_skips_preference_prompt_when_decided(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit prefs should not interrupt goal drafting."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app._cancel_goal_proposal_worker = MagicMock()  # ty: ignore
+        app._cancel_pending_goal_review = AsyncMock()  # ty: ignore
+        app._clear_pending_goal_rubric = MagicMock()  # ty: ignore
+        app._persist_goal_rubric_state = AsyncMock()  # ty: ignore
+        app._goal_state_mutation_boundary = MagicMock(  # ty: ignore
+            return_value=contextlib.nullcontext(),
+        )
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_goal_command("/goal ship passkeys")
+            await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+        assert app._goal_proposal_worker is not None
+
+    async def test_launch_init_does_not_prompt_for_goal_preference(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Onboarding should not ask about goals before the user uses them."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
             await pilot.pause()
 
             assert isinstance(app.screen, LaunchNameScreen)
-            app._save_launch_goal_auto_accept_preference.assert_awaited_once_with(False)  # ty: ignore
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
 
             launch_task = app._launch_init_task
             assert launch_task is not None
@@ -954,11 +1027,16 @@ class TestStartupSequence:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Missing settings and markers should identify a genuinely new user."""
+        """Missing settings and markers should identify an unanswered preference."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.onboarding import mark_onboarding_complete
 
         monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
 
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+        assert mark_onboarding_complete() is True
         assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
 
         monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "invalid")
@@ -969,7 +1047,6 @@ class TestStartupSequence:
         "decision",
         [
             "prompt-marker",
-            "onboarding-marker",
             "env-true",
             "env-false",
             "toml-true",
@@ -981,19 +1058,15 @@ class TestStartupSequence:
         decision: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Any explicit preference or prior onboarding decision should suppress it."""
+        """Any explicit preference or prior prompt answer should suppress it."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-        from deepagents_code.onboarding import (
-            mark_goal_auto_accept_prompt_shown,
-            mark_onboarding_complete,
-        )
+        from deepagents_code.onboarding import mark_goal_auto_accept_prompt_shown
 
         monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
         if decision == "prompt-marker":
             assert mark_goal_auto_accept_prompt_shown() is True
-        elif decision == "onboarding-marker":
-            assert mark_onboarding_complete() is True
         elif decision.startswith("env-"):
             monkeypatch.setenv(
                 GOAL_AUTO_ACCEPT_CRITERIA,
@@ -1012,15 +1085,16 @@ class TestStartupSequence:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A saved first-run choice should persist and suppress future prompts."""
+        """A saved choice should persist and suppress future prompts."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.model_config import DEFAULT_CONFIG_PATH
         from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
 
         monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
         app = DeepAgentsApp(agent=MagicMock())
 
-        await app._save_launch_goal_auto_accept_preference(True)
+        await app._save_goal_auto_accept_preference(True)
 
         assert "auto_accept_criteria = true" in DEFAULT_CONFIG_PATH.read_text(
             encoding="utf-8"
@@ -1055,7 +1129,7 @@ class TestStartupSequence:
             ) as mark,
             patch.object(app, "notify") as notify,
         ):
-            await app._save_launch_goal_auto_accept_preference(True)
+            await app._save_goal_auto_accept_preference(True)
 
         save.assert_called_once_with(True)
         mark.assert_called_once_with()

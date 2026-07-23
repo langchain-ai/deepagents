@@ -59,7 +59,7 @@ def _normalize_name(value: str) -> str:
 
 
 class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
-    """First-run choice for how Auto mode handles generated goal criteria."""
+    """One-time choice for how Auto mode handles generated goal criteria."""
 
     AUTO_FOCUS = "#launch-goal-criteria-options"
 
@@ -193,7 +193,7 @@ class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
             self._finish(False)
 
     def action_review(self) -> None:
-        """Use the fail-closed review preference and continue onboarding."""
+        """Use the fail-closed review preference and continue."""
         self._finish(False)
 
     def action_cancel(self) -> None:

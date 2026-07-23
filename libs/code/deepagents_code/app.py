@@ -3880,58 +3880,14 @@ class DeepAgentsApp(App):
                 if not dependency_result.done():
                     dependency_result.set_result((False, None))
 
-            if self._should_prompt_goal_auto_accept_preference():
-                from deepagents_code.tui.widgets.launch_init import (
-                    LaunchGoalCriteriaPreferenceScreen,
-                    LaunchNameScreen,
-                )
-
-                loop = asyncio.get_running_loop()
-                name_result: asyncio.Future[str | None] = loop.create_future()
-
-                def handle_name(result: str | None) -> None:
-                    if not name_result.done():
-                        name_result.set_result(result)
-
-                def skip_name() -> None:
-                    handle_name(None)
-
-                name_screen = LaunchNameScreen(
-                    continue_screen=dependency_screen,
-                    on_continue=handle_name,
-                    on_continue_failed=skip_dependency_prompt,
-                    on_skip=skip_name,
-                )
-                preference_result: asyncio.Future[bool] = loop.create_future()
-
-                def handle_preference(result: bool | None) -> None:
-                    if not preference_result.done():
-                        preference_result.set_result(result is True)
-
-                def skip_name_prompt(_preference: bool) -> None:
-                    if not name_result.done():
-                        name_result.set_result(None)
-
-                preference_screen = LaunchGoalCriteriaPreferenceScreen(
-                    continue_screen=name_screen,
-                    on_continue=handle_preference,
-                    on_continue_failed=skip_name_prompt,
-                )
-                self.push_screen(preference_screen, handle_preference)
-                self._ensure_launch_init_task(
-                    goal_preference_result=preference_result,
-                    name_result=name_result,
-                    dependency_result=dependency_result,
-                )
-            else:
-                name_result = self._push_launch_name_result_future(
-                    continue_screen=dependency_screen,
-                    on_continue_failed=skip_dependency_prompt,
-                )
-                self._ensure_launch_init_task(
-                    name_result=name_result,
-                    dependency_result=dependency_result,
-                )
+            name_result = self._push_launch_name_result_future(
+                continue_screen=dependency_screen,
+                on_continue_failed=skip_dependency_prompt,
+            )
+            self._ensure_launch_init_task(
+                name_result=name_result,
+                dependency_result=dependency_result,
+            )
 
         # Pre-import `html.entities` on the main thread before the worker
         # starts. Python 3.14 replaced the global import lock with per-module
@@ -8312,20 +8268,22 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _should_prompt_goal_auto_accept_preference() -> bool:
-        """Return whether fresh onboarding should ask for the Auto goal policy."""
-        from deepagents_code.config import resolve_goal_auto_accept_criteria
-        from deepagents_code.onboarding import (
-            has_completed_onboarding,
-            has_shown_goal_auto_accept_prompt,
-        )
+        """Return whether the first goal action should ask for the Auto policy.
 
-        if has_completed_onboarding() or has_shown_goal_auto_accept_prompt():
+        The prompt is deferred until the user creates or amends a goal so setup
+        is not taxed for an unused preference. Existing explicit env/TOML values
+        and the one-time marker suppress it.
+        """
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        if has_shown_goal_auto_accept_prompt():
             return False
         _, source = resolve_goal_auto_accept_criteria()
         return source == "default"
 
-    async def _save_launch_goal_auto_accept_preference(self, enabled: bool) -> None:
-        """Persist the first-run Auto goal policy and its one-time prompt marker."""
+    async def _save_goal_auto_accept_preference(self, enabled: bool) -> None:
+        """Persist the Auto goal policy and its one-time prompt marker."""
         from deepagents_code.model_config import save_goal_auto_accept_criteria
         from deepagents_code.onboarding import mark_goal_auto_accept_prompt_shown
 
@@ -8341,10 +8299,44 @@ class DeepAgentsApp(App):
         elif not marked:
             self.notify(
                 "Could not save that the goal criteria preference was shown. "
-                "The prompt may appear again next launch.",
+                "The prompt may appear again the next time you set a goal.",
                 severity="warning",
                 markup=False,
             )
+
+    async def _ensure_goal_auto_accept_preference(self) -> None:
+        """Ask once, on first create/amend, how Auto should handle criteria.
+
+        Fail closed to review when the modal times out or fails to mount. Saving
+        still records the one-time marker so a wedged prompt cannot loop.
+        """
+        if not self._should_prompt_goal_auto_accept_preference():
+            return
+
+        from deepagents_code.tui.widgets.launch_init import (
+            LaunchGoalCriteriaPreferenceScreen,
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                self._push_screen_wait(LaunchGoalCriteriaPreferenceScreen()),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Goal criteria preference prompt timed out; keeping review default",
+            )
+            await self._save_goal_auto_accept_preference(False)
+            return
+        except Exception:
+            logger.exception(
+                "Failed to show goal criteria preference prompt; keeping review "
+                "default",
+            )
+            await self._save_goal_auto_accept_preference(False)
+            return
+
+        await self._save_goal_auto_accept_preference(result is True)
 
     def _push_launch_name_result_future(
         self,
@@ -8398,14 +8390,12 @@ class DeepAgentsApp(App):
     def _ensure_launch_init_task(
         self,
         *,
-        goal_preference_result: Awaitable[bool] | None = None,
         name_result: Awaitable[str | None] | None = None,
         dependency_result: Awaitable[tuple[bool, tuple[str, str] | None]] | None = None,
     ) -> asyncio.Task[None]:
         """Start the onboarding task if needed.
 
         Args:
-            goal_preference_result: Optional pre-pushed first-run goal preference.
             name_result: Optional pre-pushed name-screen result. Used during
                 app mount so the modal is present before the first frame.
             dependency_result: Optional pre-wired dependency/model result. Used
@@ -8419,12 +8409,11 @@ class DeepAgentsApp(App):
         if task is not None and not task.done():
             return task
 
-        if name_result is None and goal_preference_result is None:
+        if name_result is None:
             task = asyncio.create_task(self._run_launch_init_sequence())
         else:
             task = asyncio.create_task(
                 self._run_launch_init_sequence(
-                    goal_preference_result=goal_preference_result,
                     name_result=name_result,
                     dependency_result=dependency_result,
                 ),
@@ -8442,7 +8431,6 @@ class DeepAgentsApp(App):
     async def _run_launch_init_sequence(
         self,
         *,
-        goal_preference_result: Awaitable[bool] | None = None,
         name_result: Awaitable[str | None] | None = None,
         dependency_result: Awaitable[tuple[bool, tuple[str, str] | None]] | None = None,
     ) -> None:
@@ -8453,10 +8441,6 @@ class DeepAgentsApp(App):
         name_memory_task: asyncio.Task[None] | None = None
         self._launch_init_running = True
         try:
-            if goal_preference_result is not None:
-                preference = await goal_preference_result
-                await self._save_launch_goal_auto_accept_preference(preference)
-
             if name_result is None:
                 from deepagents_code.tui.widgets.launch_init import LaunchNameScreen
 
@@ -10797,6 +10781,7 @@ class DeepAgentsApp(App):
             if not grader_arg:
                 await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
                 return
+            await self._ensure_goal_auto_accept_preference()
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-amend cleanup")
             async with self._goal_state_mutation_boundary():
@@ -10847,6 +10832,7 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
+        await self._ensure_goal_auto_accept_preference()
         self._cancel_goal_proposal_worker()
         await self._cancel_pending_goal_review(context="goal replacement cleanup")
         async with self._goal_state_mutation_boundary():

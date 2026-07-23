@@ -51,6 +51,11 @@ from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
+from deepagents.middleware._internal_messages import (
+    is_goal_internal_message,
+    message_source,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -134,6 +139,8 @@ follows most reliably), but it carries:
 This follows the same convention as `SummarizationMiddleware`, which tags
 its synthetic summary messages with `lc_source="summarization"`.
 """
+
+_INTERRUPTION_MESSAGE_PREFIX = "[SYSTEM] Task interrupted by user."
 
 
 GRADER_SYSTEM_PROMPT = """You are a grader. You evaluate whether the work in `<transcript>` satisfies every criterion in `<rubric>`.
@@ -911,32 +918,33 @@ def _sanitize_for_payload(content: str) -> str:
     return _PAYLOAD_CLOSER_RE.sub(r"<\\/\1", content)
 
 
+def _is_internal_human_message(message: AnyMessage) -> bool:
+    """Return whether a human message is known application control context."""
+    if is_goal_internal_message(message):
+        return True
+    if not isinstance(message, HumanMessage):
+        return False
+    if message_source(message) == RUBRIC_GRADER_MESSAGE_SOURCE:
+        return True
+    content = message.content
+    return isinstance(content, str) and content.startswith(_INTERRUPTION_MESSAGE_PREFIX)
+
+
 def _build_grader_transcript(messages: list[AnyMessage]) -> str:
     """Build a bounded, role-labeled transcript for the grader.
 
-    The first `HumanMessage` (the original user prompt) is always retained
-    so the grader can see the request. The rest of the transcript is taken
-    from the tail up to `_MAX_TRANSCRIPT_MESSAGES`. Each message is
-    truncated to `_MAX_TRANSCRIPT_CHARS_PER_MESSAGE`.
-
-    `HumanMessage`s the middleware injected itself (`lc_source ==
-    RUBRIC_GRADER_MESSAGE_SOURCE`) are skipped when identifying the
-    original prompt -- otherwise, after the first revision loop the
-    grader would see its own prior feedback as the user's request.
+    The original user prompt is retained across truncation. Known application
+    control messages are removed before selecting that prompt and the recent tail.
     """
-    if not messages:
+    visible_messages = [message for message in messages if not _is_internal_human_message(message)]
+    if not visible_messages:
         return "(empty transcript)"
 
-    first_human: AnyMessage | None = None
-    for msg in messages:
-        if not isinstance(msg, HumanMessage):
-            continue
-        if msg.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE:
-            continue
-        first_human = msg
-        break
-
-    tail = messages[-_MAX_TRANSCRIPT_MESSAGES:]
+    first_human = next(
+        (message for message in visible_messages if isinstance(message, HumanMessage)),
+        None,
+    )
+    tail = visible_messages[-_MAX_TRANSCRIPT_MESSAGES:]
     selected: list[AnyMessage] = []
     if first_human is not None and first_human not in tail:
         selected.append(first_human)

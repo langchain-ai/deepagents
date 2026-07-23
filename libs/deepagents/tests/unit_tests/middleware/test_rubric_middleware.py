@@ -1009,6 +1009,54 @@ class TestGraderResponseValidation:
 
 
 class TestTranscriptSkipsSelfInjected:
+    @pytest.mark.parametrize("source", ["goal_state", "goal_control"])
+    def test_goal_internal_messages_are_removed(self, source: str) -> None:
+        messages = [
+            HumanMessage(content="REAL_USER_REQUEST"),
+            HumanMessage(
+                content="INTERNAL_GOAL_MESSAGE",
+                additional_kwargs={"lc_source": source},
+            ),
+            AIMessage(content="completed work"),
+        ]
+
+        text = _build_grader_transcript(messages)
+
+        assert "REAL_USER_REQUEST" in text
+        assert "completed work" in text
+        assert "INTERNAL_GOAL_MESSAGE" not in text
+
+    def test_unknown_source_remains_visible(self) -> None:
+        message = HumanMessage(
+            content="REAL_USER_REQUEST",
+            additional_kwargs={"lc_source": "slack"},
+        )
+
+        assert "REAL_USER_REQUEST" in _build_grader_transcript([message])
+
+    def test_summary_remains_visible(self) -> None:
+        message = HumanMessage(
+            content="CONVERSATION_SUMMARY",
+            additional_kwargs={"lc_source": "summarization"},
+        )
+
+        assert "CONVERSATION_SUMMARY" in _build_grader_transcript([message])
+
+    def test_user_system_prefix_remains_visible(self) -> None:
+        message = HumanMessage(content="[SYSTEM] explain this literal user input")
+
+        assert "explain this literal user input" in _build_grader_transcript([message])
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[SYSTEM] Goal set by the user. Continue.",
+            "[SYSTEM] Task interrupted by user. Continue.",
+        ],
+    )
+    def test_known_legacy_control_message_is_removed(self, content: str) -> None:
+        assert _build_grader_transcript([HumanMessage(content=content)]) == ("(empty transcript)")
+
     def test_grader_feedback_is_not_treated_as_original_prompt(self) -> None:
         """A grader-injected `HumanMessage` must not stand in for the user prompt.
 

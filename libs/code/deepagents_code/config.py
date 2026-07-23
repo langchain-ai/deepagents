@@ -3138,6 +3138,31 @@ def is_memory_auto_save_enabled() -> bool:
     return bool(value)
 
 
+def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
+    """Resolve whether Auto mode applies generated goal criteria without review.
+
+    Returns:
+        The effective preference and its config source. The preference fails closed
+        to disabled if the manifest entry is unavailable.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("goals.auto_accept_criteria")
+    if option is None:
+        logger.warning(
+            "Manifest option 'goals.auto_accept_criteria' is missing; goal "
+            "criteria auto-accept is disabled and any saved preference is "
+            "ignored.",
+        )
+        return False, "default"
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value), source
+
+
 def configure_langsmith_secret_redaction() -> bool:
     """Install the LangSmith SDK secret anonymizer for active agent tracing.
 

@@ -9375,13 +9375,26 @@ class DeepAgentsApp(App):
             )
             return
         if not project_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing.",
-                ),
+            from deepagents_code.config import (
+                langsmith_key_shadowed_by_empty_override,
             )
+
+            shadowing_var = await asyncio.to_thread(
+                langsmith_key_shadowed_by_empty_override
+            )
+            await self._mount_message(UserMessage(command))
+            if shadowing_var:
+                message = (
+                    f"A LangSmith key is configured, but {shadowing_var} is set "
+                    "to an empty value and is shadowing it, so tracing is off. "
+                    f"Unset {shadowing_var} to use the stored key."
+                )
+            else:
+                message = (
+                    "LangSmith tracing is not configured. "
+                    "Run `/auth` and select LangSmith to enable tracing."
+                )
+            await self._mount_message(AppMessage(message))
             return
         try:
             project_url = await asyncio.to_thread(

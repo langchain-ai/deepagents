@@ -3097,6 +3097,48 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+def langsmith_key_shadowed_by_empty_override() -> str | None:
+    """Return an empty prefixed override that is suppressing a LangSmith key.
+
+    `/trace` shows a generic "not configured" hint whenever no key resolves, but
+    a common footgun is exporting `DEEPAGENTS_CODE_LANGSMITH_API_KEY=` (empty):
+    per `resolve_env_var`'s precedence a present-but-empty prefixed variable
+    shadows both the canonical env key and a `/auth`-stored key, so tracing
+    silently stays off even though a key is stored. Detecting this lets callers
+    point at the offending variable instead of sending the user to `/auth`.
+
+    Returns:
+        The prefixed env var name shadowing the key, or `None` when no empty
+        override is suppressing an otherwise-available LangSmith key.
+    """
+    from deepagents_code import auth_store
+    from deepagents_code.model_config import LANGSMITH_SERVICE, resolved_env_var_name
+
+    empty_overrides = [
+        resolved
+        for name in _TRACING_API_KEY_ENV_VARS
+        if (resolved := resolved_env_var_name(name)) != name
+        and not os.environ.get(resolved)
+    ]
+    if not empty_overrides:
+        return None
+
+    # Only claim a shadow when a key is actually being suppressed: a canonical
+    # env key or a `/auth`-stored LangSmith key. Otherwise the empty override is
+    # shadowing nothing and the generic "not configured" hint is correct.
+    shadowed = any(
+        (os.environ.get(name) or "").strip() for name in _TRACING_API_KEY_ENV_VARS
+    )
+    if not shadowed:
+        try:
+            shadowed = bool(auth_store.get_stored_key(LANGSMITH_SERVICE))
+        except RuntimeError:
+            shadowed = False
+    if not shadowed:
+        return None
+    return empty_overrides[0]
+
+
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
     from deepagents_code.config_manifest import (

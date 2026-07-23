@@ -47,6 +47,7 @@ from deepagents_code.config import (
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
+    langsmith_key_shadowed_by_empty_override,
     newline_shortcut,
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
@@ -1966,6 +1967,80 @@ class TestGetLangsmithProjectName:
                 == manifest_value
                 == LANGSMITH_PROJECT_DEFAULT
             )
+
+
+class TestLangsmithKeyShadowedByEmptyOverride:
+    """Tests for langsmith_key_shadowed_by_empty_override()."""
+
+    @pytest.fixture
+    def fake_state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Redirect the credential store into a temp directory."""
+        state = tmp_path / ".state"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state)
+        return state
+
+    def test_returns_none_without_empty_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No empty prefixed override means nothing is being shadowed."""
+        for var in (
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() is None
+
+    def test_returns_none_when_override_shadows_nothing(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override with no underlying key is not a shadow."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        for var in ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        assert langsmith_key_shadowed_by_empty_override() is None
+
+    def test_detects_shadowed_canonical_env_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty override shadowing a canonical env key is reported."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        assert (
+            langsmith_key_shadowed_by_empty_override()
+            == "DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_detects_shadowed_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override shadowing a `/auth`-stored key is reported."""
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        for var in ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        assert (
+            langsmith_key_shadowed_by_empty_override()
+            == "DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_returns_none_when_override_carries_a_value(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-empty prefixed override resolves normally, so no shadow."""
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
+        auth_store.set_stored_key("langsmith", "lsv2_stored")
+        assert langsmith_key_shadowed_by_empty_override() is None
 
 
 class TestLangsmithSecretRedaction:

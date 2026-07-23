@@ -5477,6 +5477,36 @@ class TestTraceCommand:
             assert "/auth" in rendered
             assert "LANGSMITH_API_KEY" not in rendered
 
+    async def test_trace_flags_key_shadowed_by_empty_override(self) -> None:
+        """Should name the empty override rather than send the user to /auth."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "",
+                        "LANGSMITH_API_KEY": "lsv2_test",
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
+            assert "shadowing" in rendered
+            assert "/auth" not in rendered
+
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.
 

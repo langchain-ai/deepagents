@@ -30,7 +30,7 @@ jobs:
         env:
           OPENWIKI_PROVIDER: openai
           OPENAI_API_KEY: ${{ secrets.LS_GATEWAY_OPENAI_API_KEY }}
-          OPENAI_BASE_URL: https://gateway.smith.langchain.com/openai/v1
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENWIKI_MODEL_ID: gpt-5.6-terra
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGCHAIN_PROJECT: openwiki

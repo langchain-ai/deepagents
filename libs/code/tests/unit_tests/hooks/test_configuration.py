@@ -16,12 +16,12 @@ from deepagents_code.hooks.capabilities import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     get_event_spec,
 )
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.loading import (
     canonical_hooks_bytes,
     compute_snapshot_id,
     load_hooks_config,
 )
-from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import HookEvent

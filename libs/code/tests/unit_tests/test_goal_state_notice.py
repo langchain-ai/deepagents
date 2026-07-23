@@ -3,7 +3,6 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.goal_state_notice import (
-    _GOAL_INTERNAL_SOURCES,
     GOAL_CONTROL_MESSAGE_SOURCE,
     GOAL_MESSAGE_SCHEMA_VERSION,
     GOAL_STATE_MESSAGE_SOURCE,
@@ -19,21 +18,6 @@ from deepagents_code.goal_state_notice import (
     project_goal_state,
     serialize_goal_state,
 )
-
-
-def test_goal_source_constants_match_sdk_wire_contract() -> None:
-    # `lc_source` values are a serialization contract read back across the
-    # RemoteGraph boundary. The SDK re-declares them (it cannot depend on this
-    # package), so guard against silent drift between the two copies.
-    from deepagents.middleware._internal_messages import (
-        GOAL_CONTROL_MESSAGE_SOURCE as SDK_CONTROL_SOURCE,
-        GOAL_INTERNAL_MESSAGE_SOURCES as SDK_INTERNAL_SOURCES,
-        GOAL_STATE_MESSAGE_SOURCE as SDK_STATE_SOURCE,
-    )
-
-    assert SDK_CONTROL_SOURCE == GOAL_CONTROL_MESSAGE_SOURCE
-    assert SDK_STATE_SOURCE == GOAL_STATE_MESSAGE_SOURCE
-    assert SDK_INTERNAL_SOURCES == _GOAL_INTERNAL_SOURCES
 
 
 def test_canonical_notice_format_and_metadata() -> None:

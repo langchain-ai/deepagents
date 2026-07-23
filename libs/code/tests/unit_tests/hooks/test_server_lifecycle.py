@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepagents_code._cli_context import CLIContext
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
 from deepagents_code.hooks.context import apply_hooks_context
@@ -42,6 +42,9 @@ from deepagents_code.hooks.server_middleware import (
     _session_gate,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
+
+if TYPE_CHECKING:
+    from deepagents_code._cli_context import CLIContext
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:

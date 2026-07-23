@@ -11,7 +11,7 @@
 #    - Repository: Issues (write)
 #    - Organization: Members (read)
 # 2. Install the app on your organization and this repository
-# 3. Add the repository credential:
+# 3. Add the repository credentials:
 #    - Variable ORG_MEMBERSHIP_APP_CLIENT_ID: Your app's Client ID
 #    - Secret ORG_MEMBERSHIP_APP_PRIVATE_KEY: Your app's private key
 #

@@ -1342,6 +1342,8 @@ jobs:
       - name: Run integration tests
         if: false # Disabled: integration tests are not run during releases
         env:
+          # The Code sandbox files are ignored below and its remaining integration
+          # tests use a fake model, so Code receives no provider credentials here.
           ANTHROPIC_API_KEY: ${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
           DAYTONA_API_KEY: ${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}

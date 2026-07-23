@@ -1657,7 +1657,10 @@ class TestServerCleanupLifecycle:
 
     async def test_server_proc_stopped_after_app_exits(self) -> None:
         """run_textual_app must call server_proc.stop() in the finally block."""
-        server_proc = SimpleNamespace(stop=MagicMock())
+        server_proc = SimpleNamespace(
+            stop=MagicMock(),
+            emit_preserved_log_notice=MagicMock(),
+        )
 
         with patch.object(
             DeepAgentsApp,
@@ -1667,10 +1670,14 @@ class TestServerCleanupLifecycle:
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        server_proc.emit_preserved_log_notice.assert_called_once_with()
 
     async def test_server_proc_stopped_even_on_crash(self) -> None:
         """server_proc.stop() must fire even when run_async raises."""
-        server_proc = SimpleNamespace(stop=MagicMock())
+        server_proc = SimpleNamespace(
+            stop=MagicMock(),
+            emit_preserved_log_notice=MagicMock(),
+        )
 
         with (
             patch.object(
@@ -1684,10 +1691,14 @@ class TestServerCleanupLifecycle:
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        server_proc.emit_preserved_log_notice.assert_called_once_with()
 
     async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
         """server_proc set by the background worker must still be cleaned up."""
-        server_proc = SimpleNamespace(stop=MagicMock())
+        server_proc = SimpleNamespace(
+            stop=MagicMock(),
+            emit_preserved_log_notice=MagicMock(),
+        )
 
         async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
             # Simulate the background worker having set _server_proc
@@ -1704,6 +1715,7 @@ class TestServerCleanupLifecycle:
             )
 
         server_proc.stop.assert_called_once_with()
+        server_proc.emit_preserved_log_notice.assert_called_once_with()
 
 
 class TestCheckOptionalTools:

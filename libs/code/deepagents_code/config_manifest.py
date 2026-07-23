@@ -58,6 +58,30 @@ INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
+RECURSION_LIMIT_DEFAULT = 2000
+"""Default LangGraph `recursion_limit` for the main agent.
+
+Single source of truth shared by the `runtime.recursion_limit` option, the
+`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
+above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
+in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
+"""
+
+RECURSION_LIMIT_FLOOR = 25
+"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+
+A value below this would break otherwise-valid runs, so a resolved value under
+the floor is rejected and falls through to the next layer / default.
+"""
+
+RECURSION_LIMIT_CEILING = 100_000
+"""Largest accepted `recursion_limit`.
+
+Bounds the graph step budget so a mistyped or hostile override cannot request
+effectively unbounded traversal. A resolved value above the ceiling is rejected
+and falls through to the next layer / default.
+"""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -700,6 +724,72 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_recursion_limit(value: object) -> bool:
+    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and RECURSION_LIMIT_FLOOR <= value <= RECURSION_LIMIT_CEILING
+    )
+
+
+def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
+    """Resolve the effective main-agent `recursion_limit`.
+
+    Resolves `runtime.recursion_limit` through the standard env → `config.toml`
+    → default precedence. An out-of-range value (below `RECURSION_LIMIT_FLOOR`
+    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning and
+    the next lower-precedence layer is tried, so a bad higher-precedence
+    override cannot mask a valid TOML setting (or the default).
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved recursion limit, guaranteed within
+            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("runtime.recursion_limit")
+    if option is None:
+        return RECURSION_LIMIT_DEFAULT
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_recursion_limit(value):
+        return value
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default. Hide the rejected env var (if any) and re-resolve
+    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_recursion_limit(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+            RECURSION_LIMIT_DEFAULT,
+        )
+    return RECURSION_LIMIT_DEFAULT
+
+
 # --- Option definitions -----------------------------------------------------
 
 # Search credentials that are not provider API keys live outside
@@ -1314,6 +1404,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         invert_toml_bool=True,
     ),
     # --- Runtime --------------------------------------------------------
+    ConfigOption(
+        key="runtime.recursion_limit",
+        group="Runtime",
+        summary="Main agent LangGraph recursion_limit (graph step budget).",
+        kind=OptionKind.INT,
+        default=RECURSION_LIMIT_DEFAULT,
+        env_var=_env_vars.RECURSION_LIMIT,
+        toml_keys=("runtime", "recursion_limit"),
+        cli_flag="--recursion-limit",
+    ),
     ConfigOption(
         key="runtime.offline",
         group="Runtime",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, NotRequired
+from typing import TYPE_CHECKING, Any, NotRequired, cast
 
 import httpx
 from deepagents.middleware.rubric import (
@@ -17,11 +17,14 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphBubbleUp
 
+from deepagents_code.goal_state_notice import is_conversation_control_message
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
     from deepagents.middleware.rubric import RubricEvaluation
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
@@ -75,6 +78,26 @@ def _is_transient_grader_transport_error(exc: BaseException) -> bool:
         ):
             return True
     return False
+
+
+def _without_internal_control_messages(state: RubricState) -> RubricState:
+    """Remove dcode control turns before the SDK builds grader evidence.
+
+    Returns:
+        Original state when unchanged, otherwise a shallow copy with filtered
+        messages.
+    """
+    messages = state.get("messages", [])
+    if not isinstance(messages, list):
+        return state
+    filtered: list[AnyMessage] = [
+        message for message in messages if not is_conversation_control_message(message)
+    ]
+    if len(filtered) == len(messages):
+        return state
+    updated = dict(state)
+    updated["messages"] = filtered
+    return cast("RubricState", updated)
 
 
 class RubricGraderState(AgentState[GraderResponse]):
@@ -234,7 +257,8 @@ class ReliableRubricMiddleware(RubricMiddleware):
             The nested grader's input state.
         """
         grading_run_id = state.get("_current_grading_run_id") or "untracked"
-        payload = self._build_grader_payload(state, iteration)
+        grader_state = _without_internal_control_messages(state)
+        payload = self._build_grader_payload(grader_state, iteration)
         return {
             "messages": [HumanMessage(content=payload)],
             "rubric_grading_operation_id": f"{grading_run_id}:{iteration}",

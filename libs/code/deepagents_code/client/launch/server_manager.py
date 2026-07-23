@@ -310,6 +310,7 @@ async def start_server_and_get_agent(
     allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -344,6 +345,8 @@ async def start_server_and_get_agent(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -394,6 +397,7 @@ async def start_server_and_get_agent(
         allow_fs_tools=allow_fs_tools,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
+        recursion_limit=recursion_limit,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
@@ -468,6 +472,7 @@ async def server_session(
     allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -505,6 +510,8 @@ async def server_session(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -540,6 +547,7 @@ async def server_session(
             allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

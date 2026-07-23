@@ -112,16 +112,20 @@ def test_transcript_redaction_covers_tokens_and_urls() -> None:
     bare_token = "sk-" + ("x" * 24)
     bearer = "Bearer " + ("y" * 24)
     url = "https://user:password@example.com/path?access_token=opaque#fragment"
-    redacted = redact_transcript_value(f"{bare_token} {bearer} {url}")
+    webhook_secret = "T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+    webhook = f"https://hooks.slack.com/services/{webhook_secret}"
+    redacted = redact_transcript_value(f"{bare_token} {bearer} {url} {webhook}")
 
     assert isinstance(redacted, str)
     assert bare_token not in redacted
     assert bearer not in redacted
     assert "user:password" not in redacted
+    assert webhook_secret not in redacted
     assert "opaque" not in redacted
     assert "fragment" not in redacted
     assert redacted.count("[redacted]") >= 2
     assert "%5Bredacted%5D" in redacted
+    assert "https://hooks.slack.com/[redacted]" in redacted
 
 
 def test_transcript_repairs_corrupt_existing_file_permissions(tmp_path: Path) -> None:
@@ -177,6 +181,17 @@ def test_transcript_revision_is_deterministic_and_thread_safe(tmp_path: Path) ->
     assert [record["sequence"] for record in records] == list(range(40))
     assert len({record["message_id"] for record in records}) == 40
     assert handle.revision == concurrent.revision("thread")
+
+
+def test_runtime_stores_transcripts_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config_dir = tmp_path / "config"
+    workspace.mkdir()
+
+    runtime = HooksRuntime.create(cwd=workspace, config_dir=config_dir)
+
+    assert runtime.transcripts.root == (config_dir / "transcripts").resolve()
+    assert not (workspace / ".deepagents").exists()
 
 
 async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:

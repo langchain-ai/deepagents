@@ -77,15 +77,34 @@ class TranscriptRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = TRANSCRIPT_SCHEMA_VERSION
+    """Transcript schema version used to interpret this record."""
+
     sequence: int
+    """Zero-based position of this record within its transcript."""
+
     record_id: str
+    """Message identifier, or a deterministic role-and-sequence fallback."""
+
     timestamp: str | None = None
+    """Source message timestamp when one is available."""
+
     thread_id: str
+    """Conversation thread that owns this record."""
+
     agent_id: str | None = None
+    """Subagent scope for an agent transcript, otherwise `None`."""
+
     role: Literal["user", "assistant", "tool", "system"]
+    """Normalized conversation role for the projected message."""
+
     message_id: str | None = None
+    """Original LangChain message identifier when one is available."""
+
     content: JsonValue
+    """Redacted JSON-compatible message content."""
+
     name: str | None = None
+    """Tool or message name when one is available."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,10 +367,11 @@ def _redact_url(value: str) -> str:
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
     netloc = f"{hostname}:{port}" if port is not None else hostname
+    path = "/[redacted]" if parsed.path else ""
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
     query = urlencode([(key, "[redacted]") for key, _value in query_items])
     fragment = "[redacted]" if parsed.fragment else ""
-    return urlunsplit((parsed.scheme, netloc, parsed.path, query, fragment))
+    return urlunsplit((parsed.scheme, netloc, path, query, fragment))
 
 
 def _write_transcript(

@@ -87,6 +87,23 @@ async function ensureIssueLabel({ github, owner, repo, issueNumber, name, existi
   existingLabels.push(name);
 }
 
+async function removeIssueLabel({ github, owner, repo, issueNumber, name, existingLabels }) {
+  if (!existingLabels.includes(name)) return;
+  try {
+    await github.rest.issues.removeLabel({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      name,
+    });
+  } catch (error) {
+    // Already gone (manual removal or a concurrent run) is fine.
+    if (error.status !== 404) throw error;
+  }
+  const index = existingLabels.indexOf(name);
+  if (index !== -1) existingLabels.splice(index, 1);
+}
+
 async function findMarkerComment({ github, owner, repo, issueNumber }) {
   const comments = await github.paginate(
     github.rest.issues.listComments,
@@ -205,15 +222,41 @@ async function processPr({
     throw error;
   }
 
+  // Drop pending-deletion once the PR is no longer a close candidate so label
+  // filters do not keep dead/exempt entries.
   if (live.state !== 'open') {
+    await removeIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
     core.info(`PR #${number} is no longer open; skipping`);
     return 'skipped';
   }
   if (live.draft) {
+    await removeIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
     core.info(`PR #${number} is a draft; skipping`);
     return 'skipped';
   }
   if (live.labels.includes(bypassLabel)) {
+    await removeIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
     core.info(`PR #${number} has ${bypassLabel}; skipping`);
     return 'skipped';
   }
@@ -234,7 +277,7 @@ async function processPr({
       issue_number: number,
       body: warningBody({ warningDays, closeDays, bypassLabel }),
     });
-    // Apply at warning time so the PR is filterable until close or bypass.
+    // Apply at warning time so the PR is filterable until close, draft, or bypass.
     await ensureIssueLabel({
       github,
       owner,
@@ -246,17 +289,6 @@ async function processPr({
     core.info(`Warned PR #${number} after ${age} day(s)`);
     return 'warned';
   }
-
-  // Backfill the pending label for PRs warned before this label existed, or
-  // when a prior run posted the comment but failed before labeling.
-  await ensureIssueLabel({
-    github,
-    owner,
-    repo,
-    issueNumber: number,
-    name: pendingDeletionLabel,
-    existingLabels: live.labels,
-  });
 
   const noticeDays = closeDays - warningDays;
   const warningAge = ageInDays(existing.created_at, now);
@@ -278,14 +310,100 @@ async function processPr({
       pull_number: number,
       state: 'closed',
     });
+    await removeIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
     core.info(`Closed PR #${number} after ${age} day(s)`);
     return 'closed';
   }
+
+  // Backfill the pending label for PRs warned before this label existed, or
+  // when a prior run posted the comment but failed before labeling.
+  await ensureIssueLabel({
+    github,
+    owner,
+    repo,
+    issueNumber: number,
+    name: pendingDeletionLabel,
+    existingLabels: live.labels,
+  });
 
   core.info(
     `PR #${number} is ${age} day(s) old and was warned ${warningAge} day(s) ago; no action`,
   );
   return 'skipped';
+}
+
+// The primary open-PR search omits drafts (`draft:false`) and closed PRs, so a
+// separate label query is needed to clear pending-deletion after those
+// transitions (or after a manual close).
+async function sweepStalePendingDeletionLabels({
+  github,
+  core,
+  owner,
+  repo,
+  pendingDeletionLabel,
+  bypassLabel,
+  maxItems,
+}) {
+  const query = `repo:${owner}/${repo} is:pr label:"${pendingDeletionLabel}"`;
+  let cleared = 0;
+  let seen = 0;
+  try {
+    for await (const response of github.paginate.iterator(
+      github.rest.search.issuesAndPullRequests,
+      { q: query, per_page: 100 },
+    )) {
+      for (const item of response.data) {
+        seen += 1;
+        if (seen > maxItems) {
+          core.warning(
+            `Reached maxItems cap (${maxItems}) while sweeping ` +
+            `${pendingDeletionLabel}; some labeled PRs were not checked.`,
+          );
+          return cleared;
+        }
+
+        let live;
+        try {
+          live = await getLivePr({ github, owner, repo, number: item.number });
+        } catch (error) {
+          if (error.status === 404) continue;
+          throw error;
+        }
+
+        const stale = live.state !== 'open'
+          || live.draft
+          || live.labels.includes(bypassLabel);
+        if (!stale) continue;
+
+        await removeIssueLabel({
+          github,
+          owner,
+          repo,
+          issueNumber: item.number,
+          name: pendingDeletionLabel,
+          existingLabels: live.labels,
+        });
+        cleared += 1;
+        core.info(
+          `Cleared ${pendingDeletionLabel} from PR #${item.number} ` +
+          `(no longer a close candidate)`,
+        );
+      }
+    }
+  } catch (error) {
+    core.warning(
+      `pending-deletion sweep failed after clearing ${cleared} label(s) ` +
+      `(HTTP ${error.status ?? 'unknown'}): ${error.message}`,
+    );
+  }
+  return cleared;
 }
 
 async function run({ github, context, core, options = {} }) {
@@ -337,7 +455,7 @@ async function run({ github, context, core, options = {} }) {
   const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });
   core.info(`Found ${prs.length} open PR(s)`);
 
-  const summary = { checked: 0, warned: 0, closed: 0, skipped: 0, incomplete, truncated, errors: [] };
+  const summary = { checked: 0, warned: 0, closed: 0, skipped: 0, staleCleared: 0, incomplete, truncated, errors: [] };
   for (const item of prs) {
     summary.checked += 1;
     try {
@@ -365,9 +483,22 @@ async function run({ github, context, core, options = {} }) {
     }
   }
 
+  const staleCleared = await sweepStalePendingDeletionLabels({
+    github,
+    core,
+    owner,
+    repo,
+    pendingDeletionLabel,
+    bypassLabel,
+    maxItems,
+  });
+  summary.staleCleared = staleCleared;
+
   core.info(
     `Checked ${summary.checked}; warned ${summary.warned}; ` +
-    `closed ${summary.closed}; skipped ${summary.skipped}; errors ${summary.errors.length}`,
+    `closed ${summary.closed}; skipped ${summary.skipped}; ` +
+    `cleared stale ${pendingDeletionLabel} ${summary.staleCleared}; ` +
+    `errors ${summary.errors.length}`,
   );
 
   // Continue processing after an individual API failure, but fail the run when

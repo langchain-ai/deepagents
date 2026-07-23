@@ -22,6 +22,7 @@ function makeCore() {
 
 function makeGithub({
   items = [],
+  labeledItems = [],
   comments = new Map(),
   live = new Map(),
   labelExists = true,
@@ -34,6 +35,7 @@ function makeGithub({
   const calls = {
     createLabel: [],
     addLabels: [],
+    removeLabel: [],
     createComment: [],
     updateComment: [],
     close: [],
@@ -60,6 +62,9 @@ function makeGithub({
         },
         addLabels: async params => {
           calls.addLabels.push(params);
+        },
+        removeLabel: async params => {
+          calls.removeLabel.push(params);
         },
         listComments: async ({ issue_number }) => ({
           data: (comments.get(issue_number) ?? []).map(comment => ({
@@ -94,20 +99,23 @@ function makeGithub({
 
   github.paginate.iterator = async function* iterator(_method, params) {
     calls.queries.push(params);
+    // Primary open-PR scan vs pending-deletion sweep use different queries.
+    const labeledQuery = typeof params.q === 'string' && params.q.includes('label:"');
+    const source = labeledQuery ? labeledItems : items;
     const pages = [];
-    for (let index = 0; index < items.length; index += 100) {
-      pages.push(items.slice(index, index + 100));
+    for (let index = 0; index < source.length; index += 100) {
+      pages.push(source.slice(index, index + 100));
     }
     if (pages.length === 0) pages.push([]);
 
     for (const [index, page] of pages.entries()) {
-      if (maxPagesBeforeError !== null && index >= maxPagesBeforeError) {
+      if (!labeledQuery && maxPagesBeforeError !== null && index >= maxPagesBeforeError) {
         throw iteratorError;
       }
-      page.incomplete_results = incompleteResults;
+      page.incomplete_results = !labeledQuery && incompleteResults;
       yield { data: page };
     }
-    if (iteratorError && maxPagesBeforeError === null) throw iteratorError;
+    if (!labeledQuery && iteratorError && maxPagesBeforeError === null) throw iteratorError;
   };
 
   return { github, calls };
@@ -122,6 +130,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
     [102, [{ id: 77, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
   const live = new Map([
+    [102, { labels: ['pending-deletion'] }],
     [103, { labels: ['do-not-close'] }],
     [104, { draft: true }],
   ]);
@@ -140,20 +149,25 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   const summary = await run({ github, context, core, options: { now } });
 
   assert.deepEqual(summary, {
-    checked: 4, warned: 1, closed: 1, skipped: 2, incomplete: false, truncated: false, errors: [],
+    checked: 4, warned: 1, closed: 1, skipped: 2, staleCleared: 0, incomplete: false, truncated: false, errors: [],
   });
   assert.equal(calls.createComment.length, 1);
   assert.equal(calls.createComment[0].issue_number, 101);
   assert.match(calls.createComment[0].body, /open for at least 14 days/);
-  assert.equal(calls.addLabels.length, 2);
   assert.deepEqual(
     calls.addLabels.map(call => [call.issue_number, call.labels]),
-    [[101, ['pending-deletion']], [102, ['pending-deletion']]],
+    [[101, ['pending-deletion']]],
   );
   assert.equal(calls.updateComment.length, 1);
   assert.equal(calls.updateComment[0].comment_id, 77);
   assert.match(calls.updateComment[0].body, /open for at least 30 days/);
   assert.deepEqual(calls.close, [102]);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 102,
+    name: 'pending-deletion',
+  }]);
   assert.equal(core.failed, null);
 });
 
@@ -452,6 +466,68 @@ test('fails the run when every processed PR errors, even transiently', async () 
   assert.ok(summary.errors.every(error => error.transient));
   assert.match(core.failed, /#720: outage/);
   assert.match(core.failed, /#721: outage/);
+});
+
+test('removes pending-deletion when a PR gains do-not-close', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 321, created_at: '2026-04-23T00:00:00Z' }],
+    live: new Map([[321, { labels: ['pending-deletion', 'do-not-close'] }]]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 321,
+    name: 'pending-deletion',
+  }]);
+  assert.equal(calls.addLabels.length, 0);
+  assert.deepEqual(calls.close, []);
+});
+
+test('removes pending-deletion when a PR becomes a draft', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 322, created_at: '2026-04-23T00:00:00Z' }],
+    live: new Map([[322, { draft: true, labels: ['pending-deletion'] }]]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 322,
+    name: 'pending-deletion',
+  }]);
+});
+
+test('sweep clears pending-deletion on closed or draft PRs missed by open search', async () => {
+  const { github, calls } = makeGithub({
+    items: [],
+    labeledItems: [
+      { number: 330, created_at: '2026-04-01T00:00:00Z' },
+      { number: 331, created_at: '2026-04-01T00:00:00Z' },
+      { number: 332, created_at: '2026-04-01T00:00:00Z' },
+    ],
+    live: new Map([
+      [330, { state: 'closed', labels: ['pending-deletion'] }],
+      [331, { draft: true, labels: ['pending-deletion'] }],
+      [332, { labels: ['pending-deletion'] }],
+    ]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.staleCleared, 2);
+  assert.deepEqual(
+    calls.removeLabel.map(call => call.issue_number).sort((a, b) => a - b),
+    [330, 331],
+  );
+  // Still-open non-exempt PRs keep the label.
+  assert.ok(!calls.removeLabel.some(call => call.issue_number === 332));
 });
 
 test('creates the bypass and pending-deletion labels when they do not exist', async () => {

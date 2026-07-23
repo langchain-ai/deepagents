@@ -175,6 +175,22 @@ class HooksSnapshot:
         )
         return HookMatch(handlers=matched)
 
+    def configured_events(self) -> frozenset[HookEvent]:
+        """Return events that have at least one compiled handler."""
+        return frozenset(
+            event for event, handlers in self.handlers.items() if handlers
+        )
+
+    def configured_server_events(self) -> frozenset[HookEvent]:
+        """Return server-owned events that have at least one compiled handler."""
+        from deepagents_code.hooks.capabilities import HookOwner
+
+        return frozenset(
+            event
+            for event in self.configured_events()
+            if get_event_spec(event).owner is HookOwner.SERVER
+        )
+
 
 def _compile_matcher(
     value: str | None,

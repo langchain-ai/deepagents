@@ -91,6 +91,16 @@ class HooksRuntime:
         """Canonical configuration hash for this session."""
         return self.snapshot.snapshot_id
 
+    def configured_server_events(self) -> tuple[str, ...]:
+        """Stable event names the server should emit for this session.
+
+        Returns:
+            Sorted HookEvent values that have configured server-owned handlers.
+        """
+        return tuple(
+            sorted(event.value for event in self.snapshot.configured_server_events())
+        )
+
     def append_messages(
         self,
         thread_id: str,

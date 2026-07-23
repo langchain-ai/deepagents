@@ -2785,6 +2785,14 @@ def create_cli_agent(
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
 
+    # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
+    # Gated at runtime by `hooks_server_events` on the per-run context so idle
+    # sessions without configured handlers pay no interrupt round-trip.
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd))
+
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(

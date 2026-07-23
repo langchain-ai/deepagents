@@ -2186,6 +2186,8 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+        self.hooks_runtime = None
+        """Optional session-scoped Hooks v2 client runtime."""
 
     @property
     def auto_approve(self) -> bool:
@@ -4211,10 +4213,20 @@ class DeepAgentsApp(App):
         """Create session state in a thread (imports deepagents_code.sessions)."""
 
         def _create() -> TextualSessionState:
-            return TextualSessionState(
+            from pathlib import Path
+
+            from deepagents_code.hooks.runtime import HooksRuntime
+
+            state = TextualSessionState(
                 approval_mode=self._approval_mode,
                 thread_id=self._lc_thread_id,
             )
+            try:
+                state.hooks_runtime = HooksRuntime.create(cwd=Path(self._cwd))
+            except Exception:
+                logger.exception("Failed to create HooksRuntime; server hooks disabled")
+                state.hooks_runtime = None
+            return state
 
         try:
             session_state = await asyncio.to_thread(_create)

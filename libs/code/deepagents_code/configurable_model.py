@@ -184,20 +184,10 @@ def _with_openai_prompt_cache_key(
 ) -> dict[str, Any] | None:
     """Return model settings with an OpenAI `prompt_cache_key` added if needed.
 
-    Setting `prompt_cache_key` lets OpenAI route a conversation to a stable
-    prompt-cache prefix across turns, giving more reliable cache hits than the
-    automatic (keyless) matching; it is optional, and requests still cache
-    without it. It is a supported top-level `ChatOpenAI` invocation setting
-    forwarded to the OpenAI request payload, so passing it through
-    `model_settings` reaches the wire unchanged. `prompt_cache_key` is an
-    optional, additive request field: it sharpens prefix-cache routing on model
-    families that support it (GPT-5.6 and later) and is otherwise inert, so the
-    same key is sent to every OpenAI-provider model — including custom base URLs
-    and the LangSmith gateway — without a version or endpoint gate. Callers gate
-    this behind the `models.openai_prompt_cache_key` opt-out before calling.
-    This mirrors the Fireworks path (`_with_fireworks_session_settings`), which
-    sets `prompt_cache_key` the same way and additionally sends an
-    `x-session-affinity` header.
+    Adds `thread_id` as a top-level `prompt_cache_key` when the model and the
+    current invocation settings do not already carry one. Callers decide
+    eligibility (provider check + `models.openai_prompt_cache_key` opt-out)
+    before invoking this helper.
 
     A user-supplied `prompt_cache_key` is always preserved, whether it was
     configured on the model (`model_kwargs`) or supplied for this invocation

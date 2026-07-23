@@ -767,6 +767,38 @@ class TestAutoUpdateArg:
         assert args.auto_update is False
 
 
+class TestRecursionLimitArg:
+    """Tests for the --recursion-limit override flag."""
+
+    def test_parses_positive_int(self) -> None:
+        """--recursion-limit sets a positive integer."""
+        with patch.object(sys, "argv", ["deepagents", "--recursion-limit", "3000"]):
+            args = parse_args()
+        assert args.recursion_limit == 3000
+
+    def test_defaults_to_none(self) -> None:
+        """Without the flag, recursion_limit is None (resolve at build time)."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.recursion_limit is None
+
+    def test_rejects_zero(self) -> None:
+        """--recursion-limit 0 is rejected by argparse (must be >= 1)."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--recursion-limit", "0"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_rejects_negative(self) -> None:
+        """A negative recursion limit is rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--recursion-limit", "-5"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+
 class TestHelpScreenDrift:
     """Ensure show_help() stays in sync with argparse flag definitions.
 

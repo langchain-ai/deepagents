@@ -1365,6 +1365,7 @@ async def run_non_interactive(
     rubric: str | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -1439,6 +1440,8 @@ async def run_non_interactive(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Grader iterations per rubric attempt; `None`
             uses the middleware default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
@@ -1651,6 +1654,7 @@ async def run_non_interactive(
             allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

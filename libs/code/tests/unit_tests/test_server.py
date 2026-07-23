@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deepagents_code.client.launch import server as server_module
 from deepagents_code.client.launch.server import (
     ServerProcess,
     _find_free_port,
@@ -23,10 +24,12 @@ from deepagents_code.client.launch.server import (
     _server_process_group,
     _terminate_server_process,
     _wait_for_process_group_exit,
+    emit_preserved_log_notices,
     wait_for_server_healthy,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -1305,10 +1308,18 @@ class TestPreservedLogNotice:
 
     `stop()` can run while Textual still owns the alternate screen (the
     coordinated teardown stops the server before `super().exit()` restores the
-    terminal), so a stderr print inside teardown is discarded. `stop()` records
-    the preserved path and `emit_preserved_log_notice()` prints it later, once
-    the terminal is restored. Regression: PR #4831.
+    terminal), so a stderr print inside teardown is discarded. `stop()` queues
+    the preserved path onto a process-global list and
+    `emit_preserved_log_notices()` prints every queued path later, once the
+    terminal is restored. Regression: PR #4831.
     """
+
+    @pytest.fixture(autouse=True)
+    def _clear_pending_logs(self) -> Iterator[None]:
+        """Isolate the process-global queue from other tests in both directions."""
+        server_module._PENDING_PRESERVED_LOGS.clear()
+        yield
+        server_module._PENDING_PRESERVED_LOGS.clear()
 
     @staticmethod
     def _make_stopped_server(log_path: Path) -> ServerProcess:
@@ -1325,7 +1336,7 @@ class TestPreservedLogNotice:
         server._log_file = log_file
         return server
 
-    def test_stop_records_path_without_printing_when_debug_on(
+    def test_stop_queues_path_without_printing_when_debug_on(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1338,32 +1349,67 @@ class TestPreservedLogNotice:
 
         server.stop()
 
-        assert server._preserved_log_path == log_path
+        assert list(server_module._PENDING_PRESERVED_LOGS) == [log_path]
         assert log_path.exists()
         assert server._log_file is None
         assert "Server log preserved at:" not in capsys.readouterr().err
 
-    def test_emit_prints_recorded_path_once(
+    def test_emit_prints_queued_path_once(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """`emit_preserved_log_notice()` prints the path once, then clears it."""
+        """`emit_preserved_log_notices()` prints the path once, then drains it."""
         monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
         log_path = tmp_path / "server.log"
         server = self._make_stopped_server(log_path)
         server.stop()
 
-        server.emit_preserved_log_notice()
+        emit_preserved_log_notices()
 
         first = capsys.readouterr().err
         assert f"Server log preserved at: {log_path}" in first
-        assert server._preserved_log_path is None
+        assert server_module._PENDING_PRESERVED_LOGS == []
 
         # A second call is a no-op: nothing is printed and no error is raised.
-        server.emit_preserved_log_notice()
+        emit_preserved_log_notices()
         assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_emit_prints_every_queued_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Restarts queue multiple paths; the drain announces each of them.
+
+        A single restart reuses one `ServerProcess`, so successive `stop()`s
+        must not clobber earlier preserved paths (PR #4999 review): every log
+        stays announceable until the post-terminal drain.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        first_log = tmp_path / "server-1.log"
+        second_log = tmp_path / "server-2.log"
+        server = self._make_stopped_server(first_log)
+
+        server.stop()
+        # Simulate the restart wiring a fresh process + log onto the same server.
+        second_log.write_text("booting", encoding="utf-8")
+        log_file = MagicMock()
+        log_file.name = str(second_log)
+        process = MagicMock()
+        process.poll.return_value = 0
+        server._process = process
+        server._log_file = log_file
+        server._stopped = False
+        server.stop()
+
+        emit_preserved_log_notices()
+
+        err = capsys.readouterr().err
+        assert f"Server log preserved at: {first_log}" in err
+        assert f"Server log preserved at: {second_log}" in err
 
     def test_no_notice_when_debug_off(
         self,
@@ -1371,17 +1417,17 @@ class TestPreservedLogNotice:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """With debug off, the log is unlinked and no path is recorded."""
+        """With debug off, the log is unlinked and no path is queued."""
         monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
         log_path = tmp_path / "server.log"
         server = self._make_stopped_server(log_path)
 
         server.stop()
 
-        assert server._preserved_log_path is None
+        assert server_module._PENDING_PRESERVED_LOGS == []
         assert not log_path.exists()
 
-        server.emit_preserved_log_notice()
+        emit_preserved_log_notices()
         assert "Server log preserved at:" not in capsys.readouterr().err
 
     def test_stop_then_emit_surfaces_path(
@@ -1402,7 +1448,7 @@ class TestPreservedLogNotice:
 
         server.stop()
         assert "Server log preserved at:" not in capsys.readouterr().err
-        server.emit_preserved_log_notice()
+        emit_preserved_log_notices()
 
         assert f"Server log preserved at: {log_path}" in capsys.readouterr().err
 

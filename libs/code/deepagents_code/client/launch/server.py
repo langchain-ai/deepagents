@@ -534,6 +534,47 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Preserved server-log notices
+# ---------------------------------------------------------------------------
+
+# Debug-preserved server-log paths awaiting announcement. Recorded by
+# `_stop_process_locked` and drained by `emit_preserved_log_notices` once the
+# terminal is restored (a notice printed while Textual still owns the alternate
+# screen is discarded on exit).
+#
+# Process-global rather than per-`ServerProcess` on purpose: preserved logs
+# accumulate both across `/restart` (which reuses one instance) and across
+# throwaway instances that never become the app's tracked process — a server
+# whose startup fails, or the previous server replaced by a cwd switch. A
+# per-instance slot would strand every path but the tracked instance's last
+# one; a single queue lets the terminal teardown announce them all.
+_PENDING_PRESERVED_LOGS: list[Path] = []
+# Guards the queue independently of any instance's `_state_lock`, since
+# `_stop_process_locked` can append from a fallback worker thread.
+_PENDING_PRESERVED_LOGS_LOCK = threading.Lock()
+
+
+def emit_preserved_log_notices() -> None:
+    """Print every pending debug-preserved server-log path to stderr, once each.
+
+    Deferred out of `_stop_process_locked` so the interactive TUI can surface
+    the paths after Textual restores the terminal. Call this only from terminal
+    stop sites that run after the terminal is restored or with no TUI active
+    (`run_textual_app` finally, `server_session` finally, `ServerProcess`
+    `__aexit__`) — never from the hidden in-session teardown or `/restart`,
+    whose prints would be swallowed by the alternate screen.
+
+    Draining is atomic, so the interactive path's overlapping `stop()` calls
+    (and any other double teardown) still announce each path exactly once.
+    """
+    with _PENDING_PRESERVED_LOGS_LOCK:
+        paths = list(_PENDING_PRESERVED_LOGS)
+        _PENDING_PRESERVED_LOGS.clear()
+    for path in paths:
+        print(f"Server log preserved at: {path}", file=sys.stderr)  # noqa: T201
+
+
+# ---------------------------------------------------------------------------
 # ServerProcess
 # ---------------------------------------------------------------------------
 
@@ -583,11 +624,6 @@ class ServerProcess:
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
-        # Path of a debug-preserved server log, recorded by
-        # `_stop_process_locked` and surfaced by `emit_preserved_log_notice`
-        # after the terminal is restored (a notice printed while the TUI still
-        # owns the alternate screen is discarded on exit).
-        self._preserved_log_path: Path | None = None
         self._env_overrides: dict[str, str] = {}
         self._persistent_env_overrides: dict[str, str] = {}
         # Async lifecycle calls must be serialized by task, not by OS thread:
@@ -916,29 +952,18 @@ class ServerProcess:
             from deepagents_code._env_vars import DEBUG, is_env_truthy
 
             if is_env_truthy(DEBUG):
-                # Record the path rather than printing here: teardown can run
+                # Queue the path rather than printing here: teardown can run
                 # while Textual still owns the terminal, so the notice is
-                # emitted later via `emit_preserved_log_notice`.
-                self._preserved_log_path = log_path
+                # emitted later via `emit_preserved_log_notices`. Appending
+                # (not overwriting) keeps every restart's log announceable.
+                with _PENDING_PRESERVED_LOGS_LOCK:
+                    _PENDING_PRESERVED_LOGS.append(log_path)
             else:
                 try:
                     log_path.unlink()
                 except OSError:
                     logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
-
-    def emit_preserved_log_notice(self) -> None:
-        """Print the preserved server-log path to stderr, once.
-
-        Deferred out of `_stop_process_locked` so the interactive TUI can
-        surface it after Textual restores the terminal; a notice printed while
-        the app still owns the alternate screen is discarded on exit.
-        """
-        path = self._preserved_log_path
-        if path is None:
-            return
-        self._preserved_log_path = None
-        print(f"Server log preserved at: {path}", file=sys.stderr)  # noqa: T201
 
     def stop(self) -> None:
         """Stop the server process and clean up all resources.
@@ -1076,4 +1101,4 @@ class ServerProcess:
     async def __aexit__(self, *args: object) -> None:
         """Async context manager exit."""
         self.stop()
-        self.emit_preserved_log_notice()
+        emit_preserved_log_notices()

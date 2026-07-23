@@ -22295,12 +22295,17 @@ async def run_textual_app(
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).
+        from deepagents_code.client.launch.server import emit_preserved_log_notices
+
         if app._server_proc is not None:
             app._server_proc.stop()
-            # Surface any debug-preserved server-log path now that Textual has
-            # torn down the alternate screen; the in-session teardown stop()
-            # only recorded it (a stderr print then would be discarded on exit).
-            app._server_proc.emit_preserved_log_notice()
+        # Surface any debug-preserved server-log paths now that Textual has torn
+        # down the alternate screen; in-session teardown, `/restart`, and a
+        # server whose startup failed only queued them (a stderr print then
+        # would be discarded on exit). Unconditional — not gated on
+        # `_server_proc` — because a failed startup queues a path without ever
+        # producing a tracked process to hang the notice on.
+        emit_preserved_log_notices()
 
     return AppResult(
         return_code=app.return_code or 0,

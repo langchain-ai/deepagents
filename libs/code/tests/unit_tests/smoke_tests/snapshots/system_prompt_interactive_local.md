@@ -380,6 +380,8 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
   -> Read `<built_in_skills_dir>/remember/SKILL.md` for full instructions
 - **skill-creator**: Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like "create a skill", "new skill", "make a skill", "skill for X", "how do I create a skill", or "help me build a skill". (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/skill-creator/SKILL.md` for full instructions
+- **slack-delegation-outcome**: Verify the outcome of a task delegated to another agent over Slack before using its result. Use whenever you send a request to another agent (e.g. the GTM Agent) with slack_slack_send_message and then read the reply thread with slack_slack_read_thread, or otherwise await a reply from a delegated agent over Slack. Trigger when a thread read may contain only your own outbound message, when polling a thread for a reply, or before presenting transcript contents, Salesforce/CRM status, or investor/funding facts that depended on a delegated lookup. (License: MIT, Compatibility: designed for deepagents-code)
+  -> Read `<built_in_skills_dir>/slack-delegation-outcome/SKILL.md` for full instructions
 
 **How to Use Skills (Progressive Disclosure):**
 

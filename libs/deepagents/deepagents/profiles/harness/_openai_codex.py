@@ -6,9 +6,9 @@ runtime defaults with how Codex was trained to operate — autonomous
 senior engineer demeanor, bias to action, parallel tool use, and TODO
 hygiene.
 
-The suffix is appended to whatever `base_system_prompt` is ultimately
-assembled for the agent, so it layers cleanly on top of user- or
-SDK-provided base prompts without fighting them.
+The suffix is appended last to each assembled prompt, so it layers cleanly
+on top of caller and profile content for the main agent and each subagent's
+own authored base prompt.
 
 Per-model keys (not the `"openai"` prefix) keep the default behavior of
 non-Codex OpenAI models unchanged.

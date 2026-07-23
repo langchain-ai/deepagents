@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
 from deepagents_code.hooks.loading import compute_snapshot_id
 from deepagents_code.hooks.models.domain import (
     HookDiagnostic,
@@ -174,6 +174,18 @@ class HooksSnapshot:
             if _handler_matches(handler, matcher_field, target)
         )
         return HookMatch(handlers=matched)
+
+    def configured_events(self) -> frozenset[HookEvent]:
+        """Return events that have at least one compiled handler."""
+        return frozenset(event for event, handlers in self.handlers.items() if handlers)
+
+    def configured_server_events(self) -> frozenset[HookEvent]:
+        """Return server-owned events that have at least one compiled handler."""
+        return frozenset(
+            event
+            for event in self.configured_events()
+            if get_event_spec(event).owner is HookOwner.SERVER
+        )
 
 
 def _compile_matcher(

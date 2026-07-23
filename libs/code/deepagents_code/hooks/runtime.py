@@ -42,7 +42,8 @@ class HooksRuntime:
     """Client-owned session runtime around an immutable Hooks snapshot.
 
     Owns configuration snapshot identity, transcript materialization, and the
-    `HookEngine`. Lifecycle call sites are intentionally not wired here.
+    `HookEngine`. Server-owned lifecycle events reach this runtime through the
+    interrupt fulfill path in `hooks.client`.
     """
 
     snapshot: HooksSnapshot
@@ -91,6 +92,16 @@ class HooksRuntime:
     def snapshot_id(self) -> str:
         """Canonical configuration hash for this session."""
         return self.snapshot.snapshot_id
+
+    def configured_server_events(self) -> tuple[str, ...]:
+        """Stable event names the server should emit for this session.
+
+        Returns:
+            Sorted HookEvent values that have configured server-owned handlers.
+        """
+        return tuple(
+            sorted(event.value for event in self.snapshot.configured_server_events())
+        )
 
     def append_messages(
         self,

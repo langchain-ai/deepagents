@@ -2424,6 +2424,12 @@ def create_cli_agent(
             middleware.append(_GlmTerminalStallRecovery())
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
+        # ToolUse only fire on the parent graph.
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        middleware.append(ServerHooksMiddleware(cwd=hooks_cwd))
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2707,6 +2713,14 @@ def create_cli_agent(
     # Add shell allow-list middleware when interrupt_shell_only is active.
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+
+    # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
+    # Gated at runtime by `hooks_server_events` on the per-run context so idle
+    # sessions without configured handlers pay no interrupt round-trip.
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd))
 
     # Get or use custom system prompt
     if system_prompt is None:

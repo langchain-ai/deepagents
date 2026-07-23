@@ -940,6 +940,7 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+            pending_hook_resumes: dict[str, dict[str, Any]] = {}
 
             if context is None:
                 context = CLIContext()
@@ -1005,6 +1006,16 @@ async def execute_task_textual(
                 adapter._update_status("Approval mode fell back to Manual")
             context["approval_mode_key"] = live_key
             session_state.approval_mode_key = live_key
+
+            from deepagents_code.hooks.client import fulfill_hook_interrupt
+            from deepagents_code.hooks.context import apply_hooks_context
+            from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+
+            apply_hooks_context(
+                context,
+                session_state.hooks_runtime,
+                prompt_id=getattr(session_state, "turn_id", None),
+            )
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1135,6 +1146,25 @@ async def execute_task_textual(
                         if interrupts:
                             for interrupt_obj in interrupts:
                                 iv = interrupt_obj.value
+                                if is_hook_interrupt_payload(iv):
+                                    hooks_runtime = session_state.hooks_runtime
+                                    if hooks_runtime is None:
+                                        msg = (
+                                            "Received hook invocation interrupt "
+                                            "without a HooksRuntime"
+                                        )
+                                        raise RuntimeError(msg)
+                                    resume_value = await fulfill_hook_interrupt(
+                                        hooks_runtime, iv
+                                    )
+                                    if resume_value is None:
+                                        msg = "Failed to parse hook interrupt"
+                                        raise RuntimeError(msg)
+                                    pending_hook_resumes[interrupt_obj.id] = (
+                                        resume_value
+                                    )
+                                    interrupt_occurred = True
+                                    continue
                                 if (
                                     isinstance(iv, dict)
                                     and iv.get("type") == "ask_user"
@@ -1694,7 +1724,7 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
                 ask_user_cancelled = False
-                resume_payload: dict[str, Any] = {}
+                resume_payload: dict[str, Any] = dict(pending_hook_resumes)
 
                 # Tools mounted above start their spinner immediately, but a
                 # tool blocked on HITL approval or `ask_user` input is not

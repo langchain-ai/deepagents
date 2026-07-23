@@ -87,6 +87,8 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code.hooks.runtime import HooksRuntime
+
 logger = logging.getLogger(__name__)
 
 
@@ -354,6 +356,15 @@ class StreamState:
     Used to resume the agent after HITL processing.
     """
 
+    pending_hook_interrupts: dict[str, object] = field(default_factory=dict)
+    """Raw Hooks v2 invocation interrupt payloads awaiting client fulfillment."""
+
+    hook_response: dict[str, Any] = field(default_factory=dict)
+    """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
+
+    hooks_runtime: HooksRuntime | None = None
+    """Optional session-scoped HooksRuntime used to fulfill server hook interrupts."""
+
     interrupt_occurred: bool = False
     """Flag indicating whether any HITL interrupt was received during the
     current stream pass."""
@@ -419,9 +430,15 @@ def _process_interrupts(
         state: Stream state to update with new pending interrupts.
         console: Rich console for user-visible warnings.
     """
+    from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+
     interrupts = data["__interrupt__"]
     if interrupts:
         for interrupt_obj in interrupts:
+            if is_hook_interrupt_payload(interrupt_obj.value):
+                state.pending_hook_interrupts[interrupt_obj.id] = interrupt_obj.value
+                state.interrupt_occurred = True
+                continue
             try:
                 validated_request = _HITL_REQUEST_ADAPTER.validate_python(
                     interrupt_obj.value
@@ -933,6 +950,27 @@ def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]
     return warnings
 
 
+async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
+    """Execute pending server-owned hook interrupts on the client runtime.
+
+    Raises:
+        RuntimeError: If a hook interrupt arrives without a session runtime, or
+            if a payload cannot be parsed.
+    """
+    if not state.pending_hook_interrupts:
+        return
+    from deepagents_code.hooks.client import fulfill_pending_hook_interrupts
+
+    if state.hooks_runtime is None:
+        msg = "Received hook invocation interrupt without a HooksRuntime"
+        raise RuntimeError(msg)
+    pending = dict(state.pending_hook_interrupts)
+    state.pending_hook_interrupts.clear()
+    state.hook_response.update(
+        await fulfill_pending_hook_interrupts(state.hooks_runtime, pending)
+    )
+
+
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
     """Iterate over pending HITL interrupts and build approval/rejection responses.
 
@@ -1103,6 +1141,24 @@ async def _run_agent_loop(
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
     context = CLIContext(thread_id=context_thread_id)
+
+    from pathlib import Path
+
+    from deepagents_code.hooks.context import apply_hooks_context
+    from deepagents_code.hooks.runtime import HooksRuntime
+
+    try:
+        # Non-interactive mirrors Claude Code: project hooks are trusted.
+        hooks_runtime = HooksRuntime.create(
+            cwd=Path.cwd(),
+            workspace_trusted=True,
+        )
+    except Exception:
+        logger.exception("Failed to create HooksRuntime; server hooks disabled")
+        hooks_runtime = None
+    apply_hooks_context(context, hooks_runtime)
+    state.hooks_runtime = hooks_runtime
+
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
     start_time = time.monotonic()
@@ -1137,8 +1193,11 @@ async def _run_agent_loop(
             turns += 1
             state.interrupt_occurred = False
             state.hitl_response.clear()
+            state.hook_response.clear()
+            await _fulfill_pending_hook_interrupts(state)
             _process_hitl_interrupts(state, console)
-            stream_input = Command(resume=state.hitl_response)
+            resume_payload = {**state.hook_response, **state.hitl_response}
+            stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
             )

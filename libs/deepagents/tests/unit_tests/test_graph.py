@@ -644,6 +644,26 @@ class TestSystemPromptAssembly:
         assert prompt == ""
 
 
+class TestBaseAgentPromptDeprecation:
+    """Tests for the deprecated legacy base prompt accessor."""
+
+    def test_graph_base_agent_prompt_emits_deprecation_warning(self) -> None:
+        """Legacy graph-level access returns the prompt and signals its removal."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from deepagents.graph import BASE_AGENT_PROMPT  # noqa: PLC0415  # verifies the legacy import contract
+
+            prompt = BASE_AGENT_PROMPT
+
+        assert prompt.startswith("You are a deep agent")
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert "BASE_AGENT_PROMPT" in str(deprecations[0].message)
+        assert "deepagents==1.0.0" in str(deprecations[0].message)
+        assert deprecations[0].filename == __file__
+
+
 _ABSENT = object()
 
 

@@ -67,7 +67,7 @@ For an exceptional release that must skip curation, add the `release: dangerousl
 
 #### One-time repository setup
 
-The draft and apply jobs reuse the repository's GitHub App credentials to mint short-lived installation tokens. Keep `ORG_MEMBERSHIP_APP_CLIENT_ID` and `ORG_MEMBERSHIP_APP_PRIVATE_KEY` as repository secrets, and ensure the installed App grants read/write access to contents, issues, and pull requests. `ORG_MEMBERSHIP_APP_ID` is not used by this workflow.
+The draft and apply jobs reuse the repository's GitHub App credentials to mint short-lived installation tokens. Keep `ORG_MEMBERSHIP_APP_CLIENT_ID` as a repository variable and `ORG_MEMBERSHIP_APP_PRIVATE_KEY` as a repository secret, and ensure the installed App grants read/write access to contents, issues, and pull requests. `ORG_MEMBERSHIP_APP_ID` is not used by this workflow.
 
 Configure these repository-level Actions variables, which are also needed by jobs that do not use the release environment:
 

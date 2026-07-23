@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
-    TodoListMiddleware,
 )
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.tools import (
@@ -149,37 +148,6 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
-class _NoTodoListMiddleware(AgentMiddleware):
-    """No-op stand-in that drops the SDK's `TodoListMiddleware` by name.
-
-    `create_deep_agent` always injects `TodoListMiddleware` and exposes no
-    per-call parameter to disable it (only a globally registered
-    `HarnessProfile.excluded_middleware` can strip it, which dcode does not use
-    here). Its `_apply_custom_middleware` merge replaces a default middleware in
-    place when a caller-supplied middleware shares its `.name`, so threading
-    this tool-less stand-in into the agent and subagent middleware lists removes
-    the real middleware — and its `write_todos` tool — without touching the SDK.
-
-    Deriving `name` from `TodoListMiddleware.__name__` makes a *rename* or
-    removal of the SDK class fail loudly (`ImportError`) at the top-of-module
-    import. It does not, on its own, guard a `.name` *override* on an unrenamed
-    class: the merge keys on the instance `.name`, not `__name__`, so such an
-    override would slip past the import and silently turn this into a no-op.
-    That case is caught two ways — `_todo_list_middleware_override` re-checks the
-    match at build time and raises, and `test_agent.py` guards it in CI. Gated
-    behind `DEEPAGENTS_CODE_EXPERIMENTAL`; see `_todo_list_middleware_override`.
-    """
-
-    name: str = TodoListMiddleware.__name__
-    tools: Sequence[BaseTool] = ()
-    """No tools — replacing the real `TodoListMiddleware` drops its `write_todos`.
-
-    Declared explicitly (mirroring the base's `transformers = ()` default) so a
-    bare instance is self-contained rather than relying on the SDK's
-    `getattr(mw, "tools", [])` fallback.
-    """
-
-
 def _get_harness_tool_descriptions(
     model: str | BaseChatModel,
 ) -> dict[str, str]:
@@ -267,41 +235,6 @@ def _inject_fs_tools_into_subagents(
                 ),
             ],
         )
-
-
-def _todo_list_middleware_override() -> list[AgentMiddleware]:
-    """Return the middleware needed to strip `TodoListMiddleware`, if enabled.
-
-    Returns a single-element list with `_NoTodoListMiddleware` when the
-    experimental flag is set, else an empty list. Callers splice the result
-    into the middleware list they pass to `create_deep_agent` so the SDK's
-    name-based merge drops the real `TodoListMiddleware`.
-
-    Raises:
-        RuntimeError: If the stand-in's `.name` no longer matches the SDK
-            middleware's instance `.name`. The merge replaces by name, so a
-            mismatch would silently *append* the tool-less stand-in instead of
-            replacing the real middleware, leaving `write_todos` bound. Failing
-            fast here converts that silent no-op into a loud, actionable error
-            (only ever runs when the flag is on).
-    """
-    if not is_env_truthy(EXPERIMENTAL):
-        return []
-    stand_in = _NoTodoListMiddleware()
-    sdk_name = TodoListMiddleware().name
-    if stand_in.name != sdk_name:
-        msg = (
-            f"{EXPERIMENTAL} is set but the TodoListMiddleware override would be "
-            f"a silent no-op: stand-in name {stand_in.name!r} no longer matches "
-            f"the SDK middleware's instance name {sdk_name!r}. The SDK likely "
-            f"overrode TodoListMiddleware.name; update _NoTodoListMiddleware."
-        )
-        raise RuntimeError(msg)
-    logger.info(
-        "%s set: dropping TodoListMiddleware / write_todos from this stack",
-        EXPERIMENTAL,
-    )
-    return [stand_in]
 
 
 def _rubric_grader_read_file_prefix(backend: CompositeBackend) -> str:
@@ -960,7 +893,7 @@ def _resolve_ptc_option(
     """Resolve the configured PTC allowlist to a concrete list of tool names.
 
     Names are *not* validated against `tools`. The Deep Agents SDK injects the
-    filesystem, `task`, `write_todos`, and `execute` tools via middleware in
+    filesystem, `task`, and `execute` tools via middleware in
     `create_deep_agent` — *after* this point — so they are absent from `tools`
     here, and the SDK exposes no importable list of them. `CodeInterpreterMiddleware`
     matches the resolved names against the live runtime registry and silently
@@ -1482,8 +1415,7 @@ def get_system_prompt(
 
     Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path, execution mode, and todo-list guidance for
-    interactive vs headless).
+    skills path, and execution mode for interactive vs headless).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -1511,9 +1443,6 @@ def get_system_prompt(
     """
     prompt_dir = Path(__file__).parent
     template = (prompt_dir / "system_prompt.md").read_text()
-    todo_list_section = ""
-    if not is_env_truthy(EXPERIMENTAL):
-        todo_list_section = (prompt_dir / "todo_list_prompt.md").read_text().rstrip()
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 
@@ -1528,15 +1457,6 @@ def get_system_prompt(
         ambiguity_guidance = (
             "- If the request is ambiguous, ask questions before acting.\n"
             "- If asked how to approach something, explain first, then act."
-        )
-        todo_guidance = (
-            "6. When first creating a todo list for a task, ALWAYS ask the user if "
-            "the plan looks good before starting work\n"
-            '   - Create the todos, then ask: "Does this plan '
-            'look good?" or similar\n'
-            "   - Wait for the user's response before marking the first todo as "
-            "in_progress\n"
-            "7. Update todo status promptly as you complete each item"
         )
     else:
         mode_description = (
@@ -1559,15 +1479,6 @@ def get_system_prompt(
             "`npm init`, `apt-get install -y` not `apt-get install`, "
             "`yes |` or `--no-input`/`--non-interactive` flags where "
             "available. Never run commands that block waiting for stdin."
-        )
-        todo_guidance = (
-            "6. There is no human operator in this mode — do NOT ask the user to "
-            "approve your plan or wait for a reply.\n"
-            "   After you create todos for a multi-step task, mark the first item "
-            "`in_progress` immediately and start work.\n"
-            "   If the plan needs adjustment, revise the todo list yourself; do "
-            "not block on human confirmation.\n"
-            "7. Update todo status promptly as you complete each item"
         )
 
     model_identity_section = build_model_identity_section(
@@ -1626,8 +1537,6 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
-        .replace("{todo_list_section}", todo_list_section)
-        .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
@@ -2492,9 +2401,6 @@ def create_cli_agent(
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
         middleware: list[AgentMiddleware[Any, Any]] = []
-        # Experimental: mirror the main agent and drop TodoListMiddleware /
-        # write_todos from subagent stacks too. No-op unless the flag is set.
-        middleware.extend(_todo_list_middleware_override())
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
@@ -2572,9 +2478,6 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
-        # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
-        *_todo_list_middleware_override(),
     ]
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
@@ -2600,10 +2503,13 @@ def create_cli_agent(
     agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
     # Add ask_user middleware (must be early so its tool is available)
+    trusted_ask_user_tool: BaseTool | None = None
     if enable_ask_user:
         from deepagents_code.ask_user import AskUserMiddleware
 
-        agent_middleware.append(AskUserMiddleware())
+        ask_user_middleware = AskUserMiddleware()
+        agent_middleware.append(ask_user_middleware)
+        trusted_ask_user_tool = ask_user_middleware.tools[0]
 
     # Add memory middleware
     if enable_memory:
@@ -2801,13 +2707,12 @@ def create_cli_agent(
         )
 
     interrupt_on: dict[str, bool | InterruptOnConfig] | None
+    auto_mode_config: tuple[Path, list[str]] | None = None
     if resolved_interrupt_on is None:
         interrupt_on = {}
     else:
         interrupt_on = resolved_interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
         if auto_mode_enabled:
-            from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
             configured_allow_list = shell_allow_list or settings.shell_allow_list
             narrow_allow_list = (
                 configured_allow_list if isinstance(configured_allow_list, list) else []
@@ -2818,13 +2723,7 @@ def create_cli_agent(
                 and project_context.project_root is not None
                 else effective_cwd or Path.cwd()
             )
-            agent_middleware.append(
-                AutoModeHITLMiddleware(
-                    resolved_interrupt_on,
-                    worktree_root=trusted_root,
-                    shell_allow_list=narrow_allow_list,
-                )
-            )
+            auto_mode_config = (Path(trusted_root), narrow_allow_list)
 
     # Set up composite backend with routing.
     if sandbox is None:
@@ -2864,6 +2763,21 @@ def create_cli_agent(
         composite_backend = CompositeBackend(
             default=backend,
             routes={},
+        )
+
+    compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
+    if auto_mode_config is not None and resolved_interrupt_on is not None:
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        trusted_root, narrow_allow_list = auto_mode_config
+        agent_middleware.append(
+            AutoModeHITLMiddleware(
+                resolved_interrupt_on,
+                worktree_root=trusted_root,
+                shell_allow_list=narrow_allow_list,
+                trusted_ask_user_tool=trusted_ask_user_tool,
+                trusted_compaction_tool=compaction_middleware.tools[0],
+            )
         )
 
     if fs_tools is not None:
@@ -2936,7 +2850,7 @@ def create_cli_agent(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
-    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
+    agent_middleware.append(compaction_middleware)
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

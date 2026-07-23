@@ -944,6 +944,10 @@ async def execute_task_textual(
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
+            if turn_id is not None:
+                context["turn_id"] = turn_id
+            else:
+                context.pop("turn_id", None)
             raw_mode = getattr(session_state, "approval_mode", None)
             if raw_mode is None:
                 raw_mode = (

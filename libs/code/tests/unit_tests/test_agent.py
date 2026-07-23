@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
@@ -1552,66 +1551,23 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive TUI" in prompt
 
-    def test_interactive_todo_section_asks_user_before_starting(self) -> None:
-        """Interactive mode should require plan approval before first in_progress."""
-        mock_settings = Mock()
-        mock_settings.model_name = None
+    def test_prompt_omits_todo_guidance(self) -> None:
+        """Todos are opt-in in the SDK, so dcode's prompt must not reference them.
 
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent", interactive=True)
-
-        assert "Wait for the user's response before marking the first todo" in prompt
-
-    def test_non_interactive_todo_section_does_not_wait_for_user(self) -> None:
-        """Headless mode must not contradict 'no human' guidance in todo rules."""
-        mock_settings = Mock()
-        mock_settings.model_name = None
-
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent", interactive=False)
-
-        wait_for_user = "Wait for the user's response before marking the first todo"
-        assert wait_for_user not in prompt
-        assert "do NOT ask the user to approve your plan" in prompt
-        assert "mark the first item `in_progress` immediately" in prompt
-
-    def test_experimental_prompt_omits_todo_section(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Experimental mode must not reference its removed todo tool."""
-        monkeypatch.setenv(EXPERIMENTAL, "1")
-        mock_settings = Mock()
-        mock_settings.model_name = None
-
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent")
-
-        assert "Todo List Management" not in prompt
-        assert "write_todos" not in prompt
-        # `{todo_guidance}` lives only inside the gated section, so dropping the
-        # section must not leave the placeholder unresolved.
-        assert "{todo_list_section}" not in prompt
-        assert "{todo_guidance}" not in prompt
-
-    def test_default_prompt_resolves_todo_placeholders(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Default mode keeps the todo section with no unresolved placeholders.
-
-        Guards the `.replace` ordering in `get_system_prompt`: `{todo_guidance}`
-        is nested inside the todo section, so the section must be substituted
-        before the guidance placeholder is filled.
+        Covers both modes and guards against leftover placeholders once the
+        `{todo_list_section}`/`{todo_guidance}` wiring is gone.
         """
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
         mock_settings = Mock()
         mock_settings.model_name = None
 
-        with patch("deepagents_code.agent.settings", mock_settings):
-            prompt = get_system_prompt("test-agent")
+        for interactive in (True, False):
+            with patch("deepagents_code.agent.settings", mock_settings):
+                prompt = get_system_prompt("test-agent", interactive=interactive)
 
-        assert "Todo List Management" in prompt
-        assert "{todo_list_section}" not in prompt
-        assert "{todo_guidance}" not in prompt
+            assert "Todo List Management" not in prompt
+            assert "write_todos" not in prompt
+            assert "{todo_list_section}" not in prompt
+            assert "{todo_guidance}" not in prompt
 
 
 class TestGetSystemPromptCwdOSError:
@@ -4445,14 +4401,13 @@ class TestCreateCliAgentFsToolsWiring:
         ]
 
 
-class TestExperimentalTodoMiddlewareWiring:
-    """`DEEPAGENTS_CODE_EXPERIMENTAL` drops TodoListMiddleware from every stack.
+class TestAutoModeSubagentHITLWiring:
+    """Auto-mode async HITL reaches every dcode subagent stack.
 
-    `collect_built_in_tools` (see `test_tool_catalog.py`) only inspects the main
-    agent's bound tools, so the subagent splice needs its own coverage: these
-    tests capture the `create_deep_agent` kwargs and assert the stand-in reaches
-    the main agent, custom subagents, and the general-purpose subagent that
-    dcode auto-adds.
+    These tests capture the `create_deep_agent` kwargs and assert that, in Auto
+    mode (gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`), the async approval
+    middleware reaches both custom subagents and the general-purpose subagent
+    that dcode auto-adds.
     """
 
     @staticmethod
@@ -4535,71 +4490,6 @@ class TestExperimentalTodoMiddlewareWiring:
 
         _, kwargs = mock_create.call_args
         return kwargs
-
-    @staticmethod
-    def _has_todo_standin(middleware: list[Any]) -> bool:
-        return any(
-            getattr(mw, "name", None) == TodoListMiddleware.__name__
-            for mw in middleware
-        )
-
-    def test_standin_name_matches_sdk_middleware(self) -> None:
-        """The stand-in must impersonate the real middleware's `.name`.
-
-        The name-based merge keys on the instance `.name`, so this guards a
-        hypothetical SDK `.name` override that `__name__`-derivation would miss.
-        """
-        from deepagents_code.agent import _NoTodoListMiddleware
-
-        assert _NoTodoListMiddleware().name == TodoListMiddleware().name
-
-    def test_dropped_from_main_and_subagents_when_experimental(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(EXPERIMENTAL, "1")
-        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
-
-        assert self._has_todo_standin(kwargs["middleware"])
-
-        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
-        assert {"researcher", "general-purpose"} <= set(subagents_by_name)
-        for name, spec in subagents_by_name.items():
-            assert self._has_todo_standin(spec.get("middleware", [])), (
-                f"Expected TodoListMiddleware stand-in on subagent {name!r}"
-            )
-
-    def test_dropped_from_explicit_model_subagent_when_experimental(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The splice must survive the `has_explicit_model` branch.
-
-        `_subagent_cli_middleware` extends the stand-in in *before* the
-        `if not has_explicit_model:` model-middleware check, so a subagent with
-        an explicit `model:` in frontmatter must still receive it. The other
-        wiring cases only exercise the `model: None` branch, so without this a
-        regression that moved the splice inside that `if` would pass unnoticed.
-        """
-        monkeypatch.setenv(EXPERIMENTAL, "1")
-        kwargs = self._capture_create_deep_agent_kwargs(
-            tmp_path, subagent_model="fake-model"
-        )
-
-        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
-        researcher = subagents_by_name["researcher"]
-        # Guards the premise: an explicit model must reach the spec, else the
-        # subagent would take the `model: None` path and the test proves nothing.
-        assert researcher.get("model"), "explicit subagent model was not forwarded"
-        assert self._has_todo_standin(researcher.get("middleware", []))
-
-    def test_absent_from_all_stacks_by_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
-        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
-
-        assert not self._has_todo_standin(kwargs["middleware"])
-        for spec in kwargs["subagents"]:
-            assert not self._has_todo_standin(spec.get("middleware", []))
 
     async def test_async_hitl_covers_declarative_and_general_subagents_in_auto(
         self,

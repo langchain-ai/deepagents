@@ -443,6 +443,8 @@ async def start_server_and_get_agent(
                 logger.exception(
                     "Error stopping server during startup cleanup",
                 )
+            finally:
+                server.emit_preserved_log_notice()
 
 
 # ------------------------------------------------------------------
@@ -564,3 +566,4 @@ async def server_session(
                 logger.warning("MCP session cleanup failed", exc_info=True)
         if server_proc is not None:
             server_proc.stop()
+            server_proc.emit_preserved_log_notice()

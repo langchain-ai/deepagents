@@ -583,6 +583,11 @@ class ServerProcess:
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
+        # Path of a debug-preserved server log, recorded by
+        # `_stop_process_locked` and surfaced by `emit_preserved_log_notice`
+        # after the terminal is restored (a notice printed while the TUI still
+        # owns the alternate screen is discarded on exit).
+        self._preserved_log_path: Path | None = None
         self._env_overrides: dict[str, str] = {}
         self._persistent_env_overrides: dict[str, str] = {}
         # Async lifecycle calls must be serialized by task, not by OS thread:
@@ -911,16 +916,29 @@ class ServerProcess:
             from deepagents_code._env_vars import DEBUG, is_env_truthy
 
             if is_env_truthy(DEBUG):
-                print(  # noqa: T201
-                    f"Server log preserved at: {log_path}",
-                    file=sys.stderr,
-                )
+                # Record the path rather than printing here: teardown can run
+                # while Textual still owns the terminal, so the notice is
+                # emitted later via `emit_preserved_log_notice`.
+                self._preserved_log_path = log_path
             else:
                 try:
                     log_path.unlink()
                 except OSError:
                     logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
+
+    def emit_preserved_log_notice(self) -> None:
+        """Print the preserved server-log path to stderr, once.
+
+        Deferred out of `_stop_process_locked` so the interactive TUI can
+        surface it after Textual restores the terminal; a notice printed while
+        the app still owns the alternate screen is discarded on exit.
+        """
+        path = self._preserved_log_path
+        if path is None:
+            return
+        self._preserved_log_path = None
+        print(f"Server log preserved at: {path}", file=sys.stderr)  # noqa: T201
 
     def stop(self) -> None:
         """Stop the server process and clean up all resources.
@@ -1058,3 +1076,4 @@ class ServerProcess:
     async def __aexit__(self, *args: object) -> None:
         """Async context manager exit."""
         self.stop()
+        self.emit_preserved_log_notice()

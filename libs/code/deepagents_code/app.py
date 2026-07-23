@@ -22298,6 +22298,10 @@ async def run_textual_app(
         # server_kwargs path (where the background worker sets _server_proc).
         if app._server_proc is not None:
             app._server_proc.stop()
+            # Surface any debug-preserved server-log path now that Textual has
+            # torn down the alternate screen; the in-session teardown stop()
+            # only recorded it (a stderr print then would be discarded on exit).
+            app._server_proc.emit_preserved_log_notice()
 
     return AppResult(
         return_code=app.return_code or 0,

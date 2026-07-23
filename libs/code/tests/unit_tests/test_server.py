@@ -1300,6 +1300,113 @@ class TestServerProcessStopIdempotency:
         assert server._stopped is False
 
 
+class TestPreservedLogNotice:
+    """The `Server log preserved at:` notice must survive TUI teardown.
+
+    `stop()` can run while Textual still owns the alternate screen (the
+    coordinated teardown stops the server before `super().exit()` restores the
+    terminal), so a stderr print inside teardown is discarded. `stop()` records
+    the preserved path and `emit_preserved_log_notice()` prints it later, once
+    the terminal is restored. Regression: PR #4831.
+    """
+
+    @staticmethod
+    def _make_stopped_server(log_path: Path) -> ServerProcess:
+        """Build a server wired to an already-exited process and real log file."""
+        log_path.write_text("booting", encoding="utf-8")
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        process = MagicMock()
+        process.poll.return_value = 0  # already exited: skip termination
+
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+        return server
+
+    def test_stop_records_path_without_printing_when_debug_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With debug on, `stop()` preserves the log and defers the notice."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+
+        assert server._preserved_log_path == log_path
+        assert log_path.exists()
+        assert server._log_file is None
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_emit_prints_recorded_path_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`emit_preserved_log_notice()` prints the path once, then clears it."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+        server.stop()
+
+        server.emit_preserved_log_notice()
+
+        first = capsys.readouterr().err
+        assert f"Server log preserved at: {log_path}" in first
+        assert server._preserved_log_path is None
+
+        # A second call is a no-op: nothing is printed and no error is raised.
+        server.emit_preserved_log_notice()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_no_notice_when_debug_off(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With debug off, the log is unlinked and no path is recorded."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+
+        assert server._preserved_log_path is None
+        assert not log_path.exists()
+
+        server.emit_preserved_log_notice()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_stop_then_emit_surfaces_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The terminal stop-then-emit sequence surfaces the preserved path.
+
+        Guards the #4831 ordering: stopping the server (during teardown, when a
+        print would be swallowed) then emitting after the terminal is restored
+        yields exactly one visible line.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+        server.emit_preserved_log_notice()
+
+        assert f"Server log preserved at: {log_path}" in capsys.readouterr().err
+
+
 class TestServerSessionIsolation:
     """Tests that `start()` detaches the server from dcode's terminal."""
 

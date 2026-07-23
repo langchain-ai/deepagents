@@ -609,17 +609,39 @@ class TestSystemPromptAssembly:
         )
         assert prompt == "User instructions.\n\nCustom base.\n\nExtra."
 
-    def test_system_message_with_profile_base(self) -> None:
-        msg = SystemMessage(content="User content.")
+    def test_system_message_preserves_caller_blocks_and_appends_profile_prompt(self) -> None:
+        caller_block = {
+            "type": "text",
+            "text": "User content.",
+            "cache_control": {"type": "ephemeral"},
+        }
+        msg = SystemMessage(content=[caller_block])
         result = self._build_and_capture_system_prompt(
             "custprov",
-            HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(
+                base_system_prompt="Custom base.",
+                system_prompt_suffix="Extra.",
+            ),
             system_prompt=msg,
         )
+
         assert isinstance(result, SystemMessage)
-        # Last content block should contain the custom base.
-        last_block = result.content_blocks[-1]
-        assert "Custom base." in last_block["text"]
+        assert result.content_blocks == [
+            caller_block,
+            {"type": "text", "text": "\n\nCustom base.\n\nExtra."},
+        ]
+        assert msg.content_blocks == [caller_block]
+
+    def test_system_message_without_profile_prompt_is_passed_through(self) -> None:
+        msg = SystemMessage(content="User content.")
+
+        result = self._build_and_capture_system_prompt(
+            "defprov",
+            HarnessProfile(),
+            system_prompt=msg,
+        )
+
+        assert result is msg
 
     def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
         prompt = self._build_and_capture_system_prompt(

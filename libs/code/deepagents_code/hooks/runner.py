@@ -6,11 +6,15 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from deepagents_code.hooks.capabilities import DEFAULT_COMMAND_TIMEOUT_SECONDS
+from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_OUTPUT_ADAPTER
 from deepagents_code.hooks.models.domain import HookDiagnostic
 from deepagents_code.hooks.models.wire import HookWireOutput
@@ -21,10 +25,10 @@ if TYPE_CHECKING:
 
     from deepagents_code.hooks.snapshot import HookHandler
 
-DEFAULT_HOOK_TIMEOUT = 10.0
 MAX_HOOK_OUTPUT_BYTES = 100_000
 _READ_CHUNK_BYTES = 8192
 _BLOCKING_EXIT_CODE = 2
+_TERMINATE_WAIT_TIMEOUT = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,7 @@ class HandlerResult:
     handler_id: str
     output: HookWireOutput | None = None
     diagnostics: tuple[HookDiagnostic, ...] = ()
+    plain_output: str | None = None
 
 
 async def run_command_handler(
@@ -41,8 +46,9 @@ async def run_command_handler(
     payload: bytes,
     *,
     cwd: Path,
-    default_timeout: float = DEFAULT_HOOK_TIMEOUT,
+    default_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_HOOK_OUTPUT_BYTES,
+    env: dict[str, str] | None = None,
 ) -> HandlerResult:
     """Run one hook command with bounded time and captured output.
 
@@ -52,6 +58,8 @@ async def run_command_handler(
         cwd: Working directory inherited from the invocation.
         default_timeout: Timeout used when the handler has no override.
         max_output_bytes: Maximum retained bytes for each output stream.
+        env: Optional environment override. Defaults to a sanitized copy of the
+            process environment.
 
     Returns:
         Validated protocol output and structured diagnostics.
@@ -68,7 +76,7 @@ async def run_command_handler(
         process = await asyncio.create_subprocess_shell(
             handler.command,
             cwd=cwd,
-            env=os.environ.copy(),
+            env=env if env is not None else sanitize_hook_environ(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -117,6 +125,9 @@ async def run_command_handler(
 
     if process.returncode == _BLOCKING_EXIT_CODE:
         reason = _decode(stderr).strip() or "Hook blocked the operation"
+        # Exit 2 ignores stdout JSON. Event-specific interpretation of the
+        # synthetic decision:"block" is owned by the capability registry via
+        # the reducer.
         return HandlerResult(
             handler_id=handler.id,
             output=HookWireOutput(decision="block", reason=reason),
@@ -134,13 +145,15 @@ async def run_command_handler(
     if not stdout.strip():
         return HandlerResult(handler_id=handler.id, diagnostics=tuple(diagnostics))
 
+    plain = _decode(stdout).strip()
     try:
         decoded = json.loads(stdout)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        diagnostics.append(
-            _diagnostic(handler.id, "malformed_json", "Hook output is not valid JSON")
+        return HandlerResult(
+            handler_id=handler.id,
+            plain_output=plain,
+            diagnostics=tuple(diagnostics),
         )
-        return HandlerResult(handler_id=handler.id, diagnostics=tuple(diagnostics))
     try:
         output = HOOK_WIRE_OUTPUT_ADAPTER.validate_python(decoded)
     except ValidationError as exc:
@@ -214,9 +227,20 @@ async def _read_bounded(
 
 
 async def _terminate(process: Process) -> None:
-    if process.returncode is None:
-        process.kill()
-    await process.wait()
+    """Kill the hook process group, then reap the direct child."""
+    if os.name == "posix" and process.pid is not None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            with suppress(OSError):
+                process.kill()
+    elif process.returncode is None:
+        with suppress(OSError):
+            process.kill()
+    with suppress(OSError, TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
 
 
 def _decode(value: bytes) -> str:

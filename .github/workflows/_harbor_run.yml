@@ -991,6 +991,9 @@ jobs:
     # the validation -> harbor skipped) or the run was cancelled; otherwise it
     # aggregates whatever shards uploaded, even if some shards failed.
     if: ${{ always() && needs.harbor.result != 'skipped' && needs.harbor.result != 'cancelled' }}
+    # Post-run analysis must not turn already-paid eval results into a failed
+    # workflow. Individual steps still record their original failure outcomes.
+    continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1080,10 +1083,12 @@ jobs:
           echo "slug=$agent_safe" >> "$GITHUB_OUTPUT"
 
       - name: "⬇️ Download shard results"
+        id: download-shards
+        continue-on-error: true
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
-        # download failure (auth / network / rate-limit). Only the former aggregates
-        # an empty set; anything else fails the step, so a transient failure is never
-        # mistaken for a complete, zero-result run. Transient errors are retried.
+        # download failure (auth / network / rate-limit). Both eventually aggregate
+        # an incomplete set, but operational failures retain the exact error in a
+        # marker consumed by aggregate_shards.py. Transient errors are retried first.
         env:
           SHARD_PATTERN: shard-${{ steps.branch-slug.outputs.slug }}-${{ steps.agent-slug.outputs.slug }}-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
@@ -1103,8 +1108,10 @@ jobs:
             echo "Shard download attempt ${attempt} failed:"; cat dl.log
             rm -rf "$attempt_dir"
             if [ "$attempt" -ge 3 ]; then
-              echo "::error::Shard download failed after ${attempt} attempts (not an empty-artifact case)."
-              exit 1
+              echo "::warning::Shard download failed after ${attempt} attempts; writing an incomplete diagnostic leaf."
+              mkdir -p _shards
+              mv dl.log _shards/artifact-download-error.log
+              break
             fi
             attempt=$((attempt + 1)); sleep $((attempt * 5))
           done
@@ -1112,6 +1119,9 @@ jobs:
           ls -1 _shards || true
 
       - name: "📊 Compute pass@k / avg@k"
+        id: aggregate-shards
+        if: ${{ always() }}
+        continue-on-error: true
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
         # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
         # category, and expected_shards come from this leg's aggregate_matrix
@@ -1163,6 +1173,9 @@ jobs:
             --out-dir _shards
 
       - name: "📤 Upload combined results"
+        id: upload-combined
+        if: ${{ always() && hashFiles('_shards/summary.json') != '' }}
+        continue-on-error: true
         # One zip per category: the merged shard harbor data plus summary.json
         # and per_task.jsonl. The single-dataset path (flat_matrix unset) keeps
         # the plain unqualified name; a flat multi-category run qualifies it by
@@ -1176,6 +1189,28 @@ jobs:
           name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}
           path: _shards
           if-no-files-found: warn
+
+      - name: "⚠️ Summarize analysis step failures"
+        if: ${{ always() }}
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-shards.outcome }}
+          AGGREGATE_OUTCOME: ${{ steps.aggregate-shards.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload-combined.outcome }}
+        run: |
+          warnings=()
+          [ "$DOWNLOAD_OUTCOME" = "failure" ] && warnings+=("shard artifact download step failed unexpectedly")
+          [ "$AGGREGATE_OUTCOME" = "failure" ] && warnings+=("leaf aggregation step failed unexpectedly")
+          [ "$UPLOAD_OUTCOME" = "failure" ] && warnings+=("combined leaf upload step failed unexpectedly")
+          if [ "${#warnings[@]}" -gt 0 ]; then
+            {
+              echo ""
+              echo "## Analysis warnings"
+              echo ""
+              for warning in "${warnings[@]}"; do
+                echo "- ${warning}; inspect this job's logs for the exact error."
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: "🧹 Delete per-shard artifacts"
         # The combined zip supersedes the intermediates, leaving one artifact per

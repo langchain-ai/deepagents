@@ -326,7 +326,10 @@ jobs:
     # writes there use the one `evals` LANGSMITH_API_KEY (which must carry both
     # write and runs:read) rather than a stray repo/org key.
     environment: evals
+    # Declaring any permission zeroes the rest, so list both: contents:read for
+    # actions/checkout, actions:read for `gh run download` of the leaf artifacts.
     permissions:
+      contents: read
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}

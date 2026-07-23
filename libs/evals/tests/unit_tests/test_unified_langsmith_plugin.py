@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
 from deepagents_harbor.unified_langsmith_plugin import UnifiedComparisonLangSmithPlugin
+
+if TYPE_CHECKING:
+    from harbor.job import Job
 
 
 class _Resp:
@@ -15,33 +19,48 @@ class _Resp:
         self.status_code = status_code
 
 
-def _fake_job() -> SimpleNamespace:
-    return SimpleNamespace(
-        id="abcdef1234567890",
-        config=SimpleNamespace(job_name="jobname"),
-        job_dir="/tmp/job",
+def _fake_job() -> Job:
+    # A structural stand-in for harbor's Job (only .id / .config.job_name are read).
+    return cast(
+        "Job",
+        SimpleNamespace(
+            id="abcdef1234567890",
+            config=SimpleNamespace(job_name="jobname"),
+            job_dir="/tmp/job",
+        ),
     )
 
 
-def _plugin(**kwargs: object) -> UnifiedComparisonLangSmithPlugin:
-    kwargs.setdefault("experiment_name", "exp-name")
-    kwargs.setdefault("api_key", "test-key")
-    kwargs.setdefault("sync_dataset", False)
-    return UnifiedComparisonLangSmithPlugin(**kwargs)
+def _plugin(
+    *,
+    experiment_name: str | None = "exp-name",
+    source_branch: str | None = None,
+    model: str | None = None,
+    category: str | None = None,
+) -> UnifiedComparisonLangSmithPlugin:
+    return UnifiedComparisonLangSmithPlugin(
+        experiment_name=experiment_name,
+        api_key="test-key",
+        sync_dataset=False,
+        source_branch=source_branch,
+        model=model,
+        category=category,
+    )
 
 
 def test_setup_creates_session_with_exact_unsuffixed_name(monkeypatch) -> None:
     plugin = _plugin(source_branch="main", model="openai:gpt-5.6-terra", category="context")
-    calls: list[tuple[str, str, dict]] = []
+    calls: list[tuple[str, str, object]] = []
 
-    def fake_request(method, path, *, json=None, **_kwargs: object):
+    def fake_request(method: str, path: str, *, json: object = None, **_kwargs: object) -> _Resp:
         calls.append((method, path, json))
         return _Resp(201)
 
     monkeypatch.setattr(plugin, "_request", fake_request)
     plugin._setup(_fake_job())
 
-    method, path, payload = calls[0]
+    method, path, raw_payload = calls[0]
+    payload = cast("dict[str, object]", raw_payload)
     assert (method, path) == ("POST", "/sessions")
     # The whole point: the session name is the exact experiment name, NOT
     # suffixed with the harbor job id.
@@ -49,7 +68,8 @@ def test_setup_creates_session_with_exact_unsuffixed_name(monkeypatch) -> None:
     expected_id = str(uuid5(NAMESPACE_URL, "deepagents-unified:exp-name"))
     assert payload["id"] == expected_id
     assert plugin._experiment_id == expected_id
-    md = payload["extra"]["metadata"]
+    extra = cast("dict[str, object]", payload["extra"])
+    md = cast("dict[str, object]", extra["metadata"])
     assert md["source_branch"] == "main"
     assert md["model"] == "openai:gpt-5.6-terra"
     assert md["category"] == "context"

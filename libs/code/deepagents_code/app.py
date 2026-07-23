@@ -10659,19 +10659,25 @@ class DeepAgentsApp(App):
         """
         return len(arg.split()) <= 1
 
-    async def _dispatch_grader_model(self, command: str, arg: str) -> None:
+    async def _dispatch_grader_model(
+        self,
+        command: str,
+        arg: str,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
         """Route a grader-model argument to the shared setter or picker.
 
         Shared by `/rubric model` and the `/goal model` alias so both entry
-        points stay in lockstep.
+        points stay in lockstep. `source` only affects user-facing copy.
         """
         await self._mount_message(UserMessage(command))
         if not arg:
-            await self._show_rubric_model_selector()
+            await self._show_rubric_model_selector(source=source)
         elif arg.lower() == "clear":
-            await self._set_rubric_model(None)
+            await self._set_rubric_model(None, source=source)
         else:
-            await self._set_rubric_model(arg)
+            await self._set_rubric_model(arg, source=source)
 
     async def _dispatch_grader_max_iterations(
         self, command: str, arg: str, *, usage_prefix: str
@@ -10684,8 +10690,19 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
         if not arg:
+            target = (
+                "goal acceptance criteria"
+                if usage_prefix == "/goal"
+                else "rubric criteria"
+            )
             await self._mount_message(
-                AppMessage(f"Usage: {usage_prefix} max-iterations <N|clear>")
+                AppMessage(
+                    f"Usage: {usage_prefix} max-iterations <N|clear>\n\n"
+                    f"Sets how many grader iterations are allowed when checking "
+                    f"{target}. Use `{usage_prefix} max-iterations clear` to "
+                    f"restore the SDK default "
+                    f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})."
+                )
             )
             return
         value, error = _parse_rubric_max_iterations(arg)
@@ -10738,7 +10755,7 @@ class DeepAgentsApp(App):
         grader_sub = grader_sub.lower()
         grader_arg = grader_arg.strip()
         if grader_sub == "model" and self._is_grader_alias_arg(grader_arg):
-            await self._dispatch_grader_model(command, grader_arg)
+            await self._dispatch_grader_model(command, grader_arg, source="goal")
             return
         if grader_sub in {"max-iterations", "max_iterations"} and (
             self._is_grader_alias_arg(grader_arg)
@@ -10748,7 +10765,14 @@ class DeepAgentsApp(App):
             )
             return
 
-        if not remainder or subcommand in {"show", "status"}:
+        if not remainder:
+            await self._mount_message(UserMessage(command))
+            await self._show_goal_state(
+                empty_message="No goal set.\n\n" + self._goal_usage_text()
+            )
+            return
+
+        if subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
             await self._show_goal_state()
             return
@@ -10762,9 +10786,6 @@ class DeepAgentsApp(App):
         # money` still creates a goal.
         if grader_sub == "amend":
             await self._mount_message(UserMessage(command))
-            if not grader_arg:
-                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
-                return
             if not self._active_goal or self._goal_status == "complete":
                 await self._mount_message(
                     AppMessage(
@@ -10772,6 +10793,9 @@ class DeepAgentsApp(App):
                         "create one."
                     )
                 )
+                return
+            if not grader_arg:
+                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
                 return
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-amend cleanup")
@@ -10796,6 +10820,15 @@ class DeepAgentsApp(App):
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            if not (
+                self._active_goal
+                or self._pending_goal_objective
+                or self._pending_goal_rubric
+            ):
+                await self._mount_message(
+                    AppMessage("No goal set. Use `/goal <objective>` to set one.")
+                )
+                return
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-clear cleanup")
             async with self._goal_state_mutation_boundary():
@@ -10843,8 +10876,17 @@ class DeepAgentsApp(App):
             "Follow-up prompts continue working toward that goal."
         )
 
-    async def _show_goal_state(self) -> None:
-        """Render active or pending goal state."""
+    async def _show_goal_state(
+        self,
+        *,
+        empty_message: str | None = None,
+    ) -> None:
+        """Render active or pending goal state.
+
+        Args:
+            empty_message: Optional override for the no-goal message. Bare
+                `/goal` passes full usage tips; `/goal show` keeps a short nudge.
+        """
         lines: list[str] = []
         if self._active_goal:
             status = self._goal_status or "active"
@@ -10887,9 +10929,8 @@ class DeepAgentsApp(App):
                 )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
-        await self._mount_message(
-            AppMessage("No goal set.\n\n" + self._goal_usage_text())
-        )
+        message = empty_message or ("No goal set. Use `/goal <objective>` to set one.")
+        await self._mount_message(AppMessage(message))
 
     async def _run_goal_criteria_request(
         self,
@@ -11844,8 +11885,12 @@ class DeepAgentsApp(App):
             f"Rubric set from {path}.", persisted=persisted
         )
 
-    async def _show_rubric_model_selector(self) -> None:
-        """Open the model selector for choosing a rubric grader model."""
+    async def _show_rubric_model_selector(
+        self,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
+        """Open the model selector for choosing a grader model."""
         from deepagents_code.config import settings
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
@@ -11860,6 +11905,11 @@ class DeepAgentsApp(App):
 
         def handle_result(result: tuple[str, str] | None) -> None:
             if result is None:
+                self.run_worker(
+                    self._mount_message(AppMessage("Model not changed.")),
+                    exclusive=False,
+                    group="rubric-model",
+                )
                 if self._chat_input:
                     self._chat_input.focus_input()
                 return
@@ -11869,21 +11919,30 @@ class DeepAgentsApp(App):
             async def apply_selection() -> None:
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
-                await self._set_rubric_model(model_spec)
+                await self._set_rubric_model(model_spec, source=source)
 
             self.run_worker(apply_selection(), exclusive=False, group="rubric-model")
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        if source == "goal":
+            title = "Choose grader model for goal"
+            description = (
+                "Pick the model used to grade goal acceptance criteria. Clear it "
+                "with `/goal model clear` to reuse the startup chat model."
+            )
+        else:
+            title = "Choose grader model for rubric"
+            description = (
+                "Pick the model used to grade rubric criteria. Clear it with "
+                "`/rubric model clear` to reuse the startup chat model."
+            )
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
             cli_profile_override=self._profile_override,
-            title="Choose grader model for rubric",
-            description=(
-                "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the startup chat model."
-            ),
+            title=title,
+            description=description,
         )
         self.push_screen(screen, handle_result)
 
@@ -11918,7 +11977,10 @@ class DeepAgentsApp(App):
             message = (
                 f"Rubric max iterations already set to {value}."
                 if value is not None
-                else "Rubric max iterations already use the SDK default."
+                else (
+                    "Rubric max iterations already use the SDK default "
+                    f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})."
+                )
             )
             await self._mount_message(AppMessage(message))
             return
@@ -11968,7 +12030,12 @@ class DeepAgentsApp(App):
                 AppMessage(f"Rubric max iterations set to {value}."),
             )
 
-    async def _set_rubric_model(self, model_spec: str | None) -> None:
+    async def _set_rubric_model(
+        self,
+        model_spec: str | None,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
         """Set the grader model used by `RubricMiddleware`."""
         from functools import partial
 
@@ -11976,20 +12043,22 @@ class DeepAgentsApp(App):
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
+        label = "Goal grader" if source == "goal" else "Rubric grader"
+
         if self._agent_running or self._shell_running or self._connecting:
             self._defer_action(
                 DeferredAction(
                     kind="rubric_model_switch",
-                    execute=partial(self._set_rubric_model, model_spec),
+                    execute=partial(self._set_rubric_model, model_spec, source=source),
                 ),
             )
-            self.notify("Rubric grader model will switch after current work finishes.")
+            self.notify(f"{label} model will switch after current work finishes.")
             return
 
         if self._server_kwargs is None and self._server_proc is None:
             await self._mount_message(
                 ErrorMessage(
-                    "Rubric grader model switching is unavailable in this session "
+                    f"{label} model switching is unavailable in this session "
                     "because it does not own a restartable server."
                 )
             )
@@ -12001,6 +12070,14 @@ class DeepAgentsApp(App):
             parsed = ModelSpec.try_parse(model_spec)
             provider = parsed.provider if parsed else detect_provider(model_spec)
             model_name = parsed.model if parsed else model_spec
+            display = (
+                model_spec if parsed or not provider else f"{provider}:{model_name}"
+            )
+            if display == self._rubric_model:
+                await self._mount_message(
+                    AppMessage(f"{label} model already set to {display}.")
+                )
+                return
             auth_status = get_provider_auth_status(provider) if provider else None
             if auth_status is not None and auth_status.blocks_start:
                 await self._mount_message(
@@ -12011,9 +12088,6 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
             try:
                 await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -12021,11 +12095,20 @@ class DeepAgentsApp(App):
                     profile_overrides=self._profile_override,
                 )
             except Exception as exc:
-                logger.exception("Failed to resolve rubric grader model %s", display)
+                logger.exception(
+                    "Failed to resolve %s model %s",
+                    label.lower(),
+                    display,
+                )
                 await self._mount_message(
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
+        elif self._rubric_model is None:
+            await self._mount_message(
+                AppMessage(f"{label} model already uses the startup chat model.")
+            )
+            return
 
         previous = self._rubric_model
         self._rubric_model = display
@@ -12039,8 +12122,12 @@ class DeepAgentsApp(App):
                 **{env_key: env_value},
             )
             restarted = await self._respawn_server(
-                log_message="Server restart failed while changing rubric model",
-                mcp_failure_log="MCP metadata preload after rubric model change failed",
+                log_message=(
+                    f"Server restart failed while changing {label.lower()} model"
+                ),
+                mcp_failure_log=(
+                    f"MCP metadata preload after {label.lower()} model change failed"
+                ),
                 mcp_failure_toast=(
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
@@ -12060,12 +12147,10 @@ class DeepAgentsApp(App):
             self._server_proc.persist_env(**{env_key: env_value})
 
         if display:
-            await self._mount_message(
-                AppMessage(f"Rubric grader model set to {display}.")
-            )
+            await self._mount_message(AppMessage(f"{label} model set to {display}."))
         else:
             await self._mount_message(
-                AppMessage("Rubric grader model cleared; using startup chat model."),
+                AppMessage(f"{label} model cleared; using startup chat model."),
             )
 
     async def _handle_command(self, command: str) -> None:

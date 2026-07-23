@@ -44,7 +44,10 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, OptionList, Static
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -7752,8 +7755,26 @@ class TestGoalCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "No active goal to amend" in rendered
-            assert "/goal <objective>" in rendered
+            assert (
+                "No active goal to amend. Use `/goal <objective>` to create one."
+                in rendered
+            )
+
+    async def test_goal_amend_bare_without_active_goal_shows_guidance(self) -> None:
+        """Bare `/goal amend` without a goal should not dump amend usage."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/goal amend")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "No active goal to amend. Use `/goal <objective>` to create one."
+                in rendered
+            )
+            assert "Usage: /goal amend" not in rendered
 
     async def test_paused_goal_suppresses_rubric_for_next_turn(self) -> None:
         """Paused goals should remain saved without invoking rubric grading."""
@@ -8183,23 +8204,6 @@ class TestGoalCommand:
             panel = app.query_one("#goal-status-panel", GoalStatusPanel)
             assert "ship login safely and accessibly" in str(panel.content)
 
-    def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
-        """Goal help should explain drafting and that a goal persists once set."""
-        usage = DeepAgentsApp._goal_usage_text()
-
-        assert "Use /goal when you have a plain-language objective" in usage
-        assert "draft a checklist for it" in usage
-        assert "the goal stays active for this thread" in usage
-        assert "when you want dcode to propose" not in usage
-
-    def test_goal_usage_text_mentions_grader_settings(self) -> None:
-        """Goal help should surface the grader settings without alias wording."""
-        usage = DeepAgentsApp._goal_usage_text()
-
-        assert "/goal model [provider:model|clear]" in usage
-        assert "/goal max-iterations <N|clear>" in usage
-        assert "aliases for /rubric model" not in usage
-
     async def test_goal_model_alias_dispatches_to_rubric_setter(self) -> None:
         """`/goal model <spec>` should route to the shared grader-model setter."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -8211,7 +8215,7 @@ class TestGoalCommand:
                 await app._handle_command("/goal model openai:gpt-5.1")
                 await pilot.pause()
 
-            setter.assert_awaited_once_with("openai:gpt-5.1")
+            setter.assert_awaited_once_with("openai:gpt-5.1", source="goal")
 
     async def test_goal_model_alias_bare_opens_selector(self) -> None:
         """Bare `/goal model` should open the shared grader-model picker."""
@@ -8224,7 +8228,7 @@ class TestGoalCommand:
                 await app._handle_command("/goal model")
                 await pilot.pause()
 
-            selector.assert_awaited_once()
+            selector.assert_awaited_once_with(source="goal")
 
     async def test_goal_model_alias_clears_grader_model(self) -> None:
         """`/goal model clear` should clear the shared grader model."""
@@ -8237,7 +8241,89 @@ class TestGoalCommand:
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
 
-            setter.assert_awaited_once_with(None)
+            setter.assert_awaited_once_with(None, source="goal")
+
+    async def test_goal_model_selector_uses_goal_copy(self) -> None:
+        """`/goal model` selector should brand itself for goals, not rubrics."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "push_screen") as push_screen:
+                await app._show_rubric_model_selector(source="goal")
+                await pilot.pause()
+
+            screen = push_screen.call_args.args[0]
+            assert screen._title == "Choose grader model for goal"
+            assert "/goal model clear" in screen._description
+            assert "rubric" not in screen._title.lower()
+            assert "/rubric" not in screen._description
+
+    async def test_goal_model_selector_cancel_reports_unchanged(self) -> None:
+        """Escaping the goal grader picker should leave a short chat note."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            captured: dict[str, Callable[[tuple[str, str] | None], None]] = {}
+
+            def capture_push(
+                _screen: object,
+                callback: Callable[[tuple[str, str] | None], None],
+            ) -> None:
+                captured["callback"] = callback
+
+            with patch.object(app, "push_screen", side_effect=capture_push):
+                await app._show_rubric_model_selector(source="goal")
+                await pilot.pause()
+
+            captured["callback"](None)
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Model not changed." in rendered
+
+    async def test_goal_model_clear_already_default_short_circuits(self) -> None:
+        """`/goal model clear` should no-op when already on the startup chat model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = None
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+            ) as respawn:
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal grader model already uses the startup chat model." in rendered
+
+    async def test_goal_model_clear_uses_goal_copy(self) -> None:
+        """A successful `/goal model clear` should use goal-branded confirmation."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = "openai:gpt-5.1"
+            app._server_kwargs = {"rubric_model": "openai:gpt-5.1"}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal grader model cleared; using startup chat model." in rendered
+            assert "Rubric grader model" not in rendered
 
     async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
         """`/goal max-iterations <n>` should route to the shared cap setter."""
@@ -8361,8 +8447,25 @@ class TestGoalCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Commands:" not in rendered
 
+    def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
+        """Goal help should explain drafting and that a goal persists once set."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "Use /goal when you have a plain-language objective" in usage
+        assert "draft a checklist for it" in usage
+        assert "the goal stays active for this thread" in usage
+        assert "when you want dcode to propose" not in usage
+
+    def test_goal_usage_text_mentions_grader_settings(self) -> None:
+        """Goal help should surface the grader settings without alias wording."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "/goal model [provider:model|clear]" in usage
+        assert "/goal max-iterations <N|clear>" in usage
+        assert "aliases for /rubric model" not in usage
+
     async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
-        """Bare `/goal max-iterations` shows goal-branded usage without setting."""
+        """Bare `/goal max-iterations` explains the grader iteration cap."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8375,6 +8478,9 @@ class TestGoalCommand:
             setter.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /goal max-iterations <N|clear>" in rendered
+            assert "grader iterations" in rendered
+            assert "goal acceptance criteria" in rendered
+            assert "SDK default" in rendered
 
     async def test_goal_max_iterations_alias_clears_cap(self) -> None:
         """`/goal max-iterations clear` should route to the setter with `None`."""
@@ -10078,6 +10184,19 @@ class TestGoalCommand:
                 str(w._content) == "Goal cleared." for w in app.query(AppMessage)
             )
 
+    async def test_goal_clear_without_goal_short_circuits(self) -> None:
+        """`/goal clear` with nothing set should not claim the goal was cleared."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/goal clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No goal set. Use `/goal <objective>` to set one." in rendered
+            assert "Goal cleared." not in rendered
+
     @pytest.mark.parametrize(
         "verb", ["show", "status", "accept", "edit", "clear", "pause", "resume"]
     )
@@ -10225,17 +10344,32 @@ class TestGoalCommand:
             )
 
     async def test_goal_show_with_no_goal_reports_empty(self) -> None:
-        """`/goal show` with nothing set should report no goal plus usage."""
+        """`/goal show` with nothing set should say how to set one, not dump usage."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._handle_command("/goal show")
             await pilot.pause()
 
-            assert any(
-                str(w._content).startswith("No goal set.")
-                for w in app.query(AppMessage)
-            )
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No goal set. Use `/goal <objective>` to set one." in rendered
+            assert "Usage:" not in rendered
+            assert "/goal pause" not in rendered
+
+    async def test_bare_goal_without_goal_shows_usage_tips(self) -> None:
+        """Bare `/goal` should still dump the command help."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/goal")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert rendered.startswith("No goal set.")
+            assert "Usage:" in rendered
+            assert "/goal <objective>" in rendered
+            assert "/goal max-iterations <N|clear>" in rendered
+            assert "draft a checklist for it" in rendered
 
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
@@ -11184,7 +11318,10 @@ class TestRubricCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "already use the SDK default" in rendered
+            assert (
+                "already use the SDK default "
+                f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})." in rendered
+            )
 
     async def test_rubric_max_iterations_command_clears_owned_server(self) -> None:
         """`/rubric max-iterations clear` resets the cap to the SDK default."""

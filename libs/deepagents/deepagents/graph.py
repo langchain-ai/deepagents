@@ -348,20 +348,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             To drop a built-in tool, register a
             [`HarnessProfile`][deepagents.HarnessProfile] with
             `excluded_tools`.
-        system_prompt: Custom system instructions placed at the front of
-            the system prompt sent to the model.
+        system_prompt: Caller-authored system instructions (`USER`) placed
+            first in the system prompt sent to the model.
 
-            Whatever you pass here always sits before the SDK's default
-            deep-agent prompt and any model-tuning suffix from a
-            registered `HarnessProfile`. With `system_prompt=None`, the
-            SDK default is used on its own (plus the profile suffix
-            when one applies). Sections are joined by a blank line.
+            The final authored prompt is assembled as `USER` -> `BASE` -> `SUFFIX`.
+            `BASE` is empty unless the active
+            [`HarnessProfile`][deepagents.HarnessProfile] defines
+            `base_system_prompt`, and `SUFFIX` is the profile's optional
+            `system_prompt_suffix`. Parts are separated by blank lines.
 
-            Passing a `SystemMessage` instead of a string preserves any
-            `cache_control` markers on the message's content blocks —
-            useful for placing explicit Anthropic prompt-cache
-            breakpoints. The same ordering applies (caller's blocks
-            first, SDK content appended as an additional text block).
+            With `system_prompt=None` and no matching profile prompt, the
+            model receives an empty authored system prompt. Pass
+            `system_prompt=BASE_AGENT_PROMPT` explicitly to opt into the
+            built-in persona and task guidance.
+
+            Passing a `SystemMessage` preserves any `cache_control` markers
+            on its existing content blocks — useful for explicit Anthropic
+            prompt-cache breakpoints. When profile content is present, its
+            assembled `BASE` and `SUFFIX` are appended as an additional text content block
+            after the caller's blocks.
 
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import pytest
 from langchain_core.messages import ToolMessage
 
+from deepagents_code._cli_context import CLIContext
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
 from deepagents_code.hooks.context import apply_hooks_context
@@ -112,7 +112,7 @@ def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
-    context: dict[str, Any] = {}
+    context: CLIContext = {}
     apply_hooks_context(context, runtime, prompt_id="prompt-1")
 
     assert context["hooks_snapshot_id"] == runtime.snapshot_id

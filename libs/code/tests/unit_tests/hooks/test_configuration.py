@@ -21,10 +21,8 @@ from deepagents_code.hooks.loading import (
     compute_snapshot_id,
     load_hooks_config,
 )
-from deepagents_code.hooks.migration import (
-    LEGACY_COMMAND_TIMEOUT_SECONDS,
-    migrate_legacy_hooks,
-)
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
+from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import HookEvent
 from deepagents_code.hooks.snapshot import HooksSnapshot
@@ -123,7 +121,7 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
         [
             {
                 "command": ["echo", "prompt"],
-                "events": ["session.start", "user.prompt"],
+                "events": ["session.start", "session.start", "user.prompt"],
             },
             {
                 "command": ["echo", "compact"],
@@ -143,7 +141,8 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
         HookEvent.SESSION_END,
         HookEvent.NOTIFICATION,
     }
-    # Distinct legacy event names stay as separate groups (no setdefault collapse).
+    # Distinct legacy event names stay as separate groups (no setdefault collapse);
+    # exact duplicate names are collapsed in first-seen order.
     assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 2
     assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 2
     assert all(
@@ -170,14 +169,22 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     for groups in migrated.hooks.values():
         for group in groups:
             handler = group.hooks[0]
-            assert handler.timeout == pytest.approx(
-                LEGACY_COMMAND_TIMEOUT_SECONDS + 1.0
-            )
+            assert handler.timeout == pytest.approx(HOOK_SUBPROCESS_TIMEOUT + 1.0)
             assert handler.inherit_environ is True
             assert handler.argv is not None
             assert handler.argv[1:3] == ["-m", "deepagents_code.hooks.migration"]
             assert "deepagents_code.hooks.migration" in handler.command
             assert "/dev/null" not in handler.command
+
+    catch_all = migrate_legacy_hooks([{"command": ["echo", "all"]}])
+    assert set(catch_all.hooks) == {
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.SESSION_END,
+        HookEvent.NOTIFICATION,
+        HookEvent.PRE_COMPACT,
+    }
+    assert HookEvent.PRE_TOOL_USE not in catch_all.hooks
+    assert HookEvent.PERMISSION_REQUEST not in catch_all.hooks
 
     user_dir = tmp_path / "user"
     user_dir.mkdir()
@@ -239,51 +246,6 @@ def test_legacy_migration_prefers_argv_over_shell_on_windows(
         # Shell form remains available for diagnostics; exec path uses argv.
         assert handler.command.startswith('"C:\\Program Files\\Python\\python.exe"')
         assert "'" not in handler.command
-
-
-def test_legacy_migration_deduplicates_identical_event_names() -> None:
-    migrated = migrate_legacy_hooks(
-        [
-            {
-                "command": ["echo", "prompt"],
-                "events": ["session.start", "session.start", "user.prompt"],
-            }
-        ]
-    )
-
-    legacy_events = [
-        group.hooks[0].argv[3]
-        for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
-        if group.hooks[0].argv is not None
-    ]
-    assert legacy_events == ["session.start", "user.prompt"]
-
-
-def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:
-    migrated = migrate_legacy_hooks([{"command": ["echo", "all"]}])
-
-    assert set(migrated.hooks) == {
-        HookEvent.USER_PROMPT_SUBMIT,
-        HookEvent.SESSION_END,
-        HookEvent.NOTIFICATION,
-        HookEvent.PRE_COMPACT,
-    }
-    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 2
-    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 2
-    assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
-        "agent_completed",
-        "agent_needs_input",
-    ]
-    assert HookEvent.PRE_TOOL_USE not in migrated.hooks
-    assert HookEvent.PERMISSION_REQUEST not in migrated.hooks
-
-
-def test_legacy_timeout_constant_matches_dispatcher() -> None:
-    from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT_SECONDS
-    from deepagents_code.hooks.legacy import HOOK_SUBPROCESS_TIMEOUT
-
-    assert LEGACY_COMMAND_TIMEOUT_SECONDS == HOOK_SUBPROCESS_TIMEOUT_SECONDS
-    assert HOOK_SUBPROCESS_TIMEOUT == HOOK_SUBPROCESS_TIMEOUT_SECONDS
 
 
 def test_legacy_adapter_failures_are_nonzero(

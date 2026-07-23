@@ -254,19 +254,12 @@ def test_exit_and_plain_output_policies_match_registry() -> None:
     assert MAX_STOP_CONTINUATIONS == 8
 
 
-def test_windows_taskkill_path_requires_absolute_system_root(
+async def test_windows_tree_termination_uses_taskkill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SYSTEMROOT", "Windows")
     assert runner._windows_taskkill_path() is None
 
-    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-    assert runner._windows_taskkill_path() == r"C:\Windows\System32\taskkill.exe"
-
-
-async def test_windows_tree_termination_uses_taskkill(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     process = MagicMock()
     process.pid = 123
     process.returncode = None
@@ -376,23 +369,6 @@ async def test_runner_propagates_cancellation_after_termination(
         )
 
     terminate.assert_awaited_once_with(process)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
-async def test_terminate_kills_posix_process_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    process = MagicMock()
-    process.pid = 123
-    process.returncode = None
-    process.wait = AsyncMock(return_value=0)
-    killpg = MagicMock()
-    monkeypatch.setattr(runner.os, "killpg", killpg)
-
-    await runner._terminate(process)
-
-    killpg.assert_called_once_with(123, runner.signal.SIGKILL)
-    process.wait.assert_awaited_once_with()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")

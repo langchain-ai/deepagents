@@ -1,0 +1,19 @@
+libs/deepagents/deepagents/graph.py
+  s_427b8b2e2ce745::t_82e1a3079cba26 914
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2196e203bc3e33f96074278d36c30655515a5b1e",
+  "prompts": {},
+  "sessions": {
+    "s_427b8b2e2ce745": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f9a7dd1-d2c2-4f68-a70e-6ee16c83d1bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "open-swe[bot] <open-swe@users.noreply.github.com>"
+    }
+  }
+}

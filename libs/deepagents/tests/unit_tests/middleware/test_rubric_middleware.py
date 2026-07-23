@@ -530,13 +530,22 @@ class TestGraderPlumbing:
             ("custom-model", None, "ToolStrategy"),
         ],
     )
-    def test_grader_metadata_matches_langchain_model_strategy(
+    def test_grader_metadata_uses_langchain_fallback_models(
         self,
         monkeypatch: pytest.MonkeyPatch,
         model_name: str,
         profile: dict[str, bool] | None,
         expected_strategy: str,
     ) -> None:
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.import_module",
+            lambda _name: SimpleNamespace(
+                FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT=[
+                    r"gpt-4\.1",
+                    r"claude-sonnet-4-6",
+                ]
+            ),
+        )
         mw = RubricMiddleware(model=f"provider:{model_name}")
         monkeypatch.setattr(
             mw,
@@ -545,6 +554,90 @@ class TestGraderPlumbing:
         )
 
         assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == expected_strategy
+
+    def test_grader_metadata_strategy_is_unknown_without_langchain_fallback_models(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.import_module",
+            lambda _name: SimpleNamespace(),
+        )
+        mw = RubricMiddleware(model="openai:gpt-4.1")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(model_name="gpt-4.1", profile=None),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "unknown"
+
+    def test_grader_metadata_strategy_is_unknown_without_langchain_factory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def unavailable_factory(_name: str) -> None:
+            raise ImportError
+
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.import_module",
+            unavailable_factory,
+        )
+        mw = RubricMiddleware(model="openai:gpt-4.1")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(model_name="gpt-4.1", profile=None),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "unknown"
+
+    @pytest.mark.parametrize(
+        "patterns",
+        [
+            "gpt-4.1",
+            [123],
+        ],
+    )
+    def test_grader_metadata_strategy_is_unknown_for_invalid_fallback_models(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patterns: object,
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.import_module",
+            lambda _name: SimpleNamespace(
+                FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT=patterns,
+            ),
+        )
+        mw = RubricMiddleware(model="openai:gpt-4.1")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(model_name="gpt-4.1", profile=None),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "unknown"
+
+    def test_grader_metadata_uses_model_profile_without_fallback_models(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.import_module",
+            lambda _name: SimpleNamespace(),
+        )
+        mw = RubricMiddleware(model="provider:profiled-model")
+        monkeypatch.setattr(
+            mw,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="profiled-model",
+                profile={"structured_output": True},
+            ),
+        )
+
+        assert mw._grader_trace_metadata()["rubric_grader_effective_strategy"] == "ProviderStrategy"
 
     def test_grade_records_model_strategy_and_preserves_inherited_metadata(
         self,

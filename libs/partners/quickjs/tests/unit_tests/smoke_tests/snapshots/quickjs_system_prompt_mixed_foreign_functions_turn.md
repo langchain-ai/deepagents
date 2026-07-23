@@ -1,7 +1,3 @@
-
-
-
-
 ### Interpreter
 
 An `eval` tool is available. It runs JavaScript in a persistent REPL.

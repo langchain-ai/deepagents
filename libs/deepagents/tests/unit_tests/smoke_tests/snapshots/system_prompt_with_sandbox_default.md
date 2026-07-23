@@ -1,7 +1,3 @@
-
-
-
-
 ## Shell paths vs. virtual paths
 
 The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.

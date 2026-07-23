@@ -56,9 +56,11 @@ from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.offload import (
     _FALLBACK_ARTIFACTS_ROOT,
+    CONVERSATION_HISTORY_DIRNAME,
     _ArtifactsStorage,
     _filesystem_tool_path,
 )
+from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
 from deepagents_code.project_utils import ProjectContext
 
 
@@ -4650,9 +4652,27 @@ class TestGetAvailableAgentNames:
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
-    def test_reserved_agent_dir_names_includes_bin_dir(self) -> None:
-        """The reserved-name set is sourced from `BIN_DIR.name` (single source)."""
-        assert _reserved_agent_dir_names() == frozenset({BIN_DIR.name})
+    def test_ignores_reserved_app_dirs(self, tmp_path: Path) -> None:
+        """App-owned `plugins/` and `conversation_history/` are not agents.
+
+        These directories are created by the app under `~/.deepagents/` for
+        plugin state and offloaded conversation archives, so they must never
+        surface in the `/agent` picker alongside real agents.
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        for reserved in _reserved_agent_dir_names():
+            (agents_dir / reserved).mkdir()
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
+        """The reserved-name set is sourced from each owning module."""
+        assert _reserved_agent_dir_names() == frozenset(
+            {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
+        )
 
     def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
         """PermissionError on iterdir → logged + empty list, not raised."""

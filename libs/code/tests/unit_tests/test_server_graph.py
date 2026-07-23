@@ -282,6 +282,7 @@ class TestServerGraph:
             enable_interpreter=False,
             rubric_model=None,
             rubric_max_iterations=None,
+            recursion_limit=None,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,

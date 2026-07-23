@@ -73,7 +73,7 @@ class DeepAgentState(AgentState):
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
 
-BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+_LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
 ## Core Behavior
 
@@ -116,35 +116,25 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Authored base prompt (persona + task guidance), available for opt-in.
 
-Not injected by default. `create_deep_agent` passes an empty string as the
-base, so a deep agent ships with no authored base prompt. Callers who want
-this built-in persona and task guidance back pass it explicitly, e.g.
-`create_deep_agent(system_prompt=BASE_AGENT_PROMPT)`, or set it as a
-`HarnessProfile.base_system_prompt`.
 
-The final system prompt sent to the model is composed from up to three
-named parts:
-
-- `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
-    `SystemMessage`); when unset, no `USER` segment is included.
-- `BASE` — empty by default; replaced by `HarnessProfile.base_system_prompt`
-    when set on a matching profile.
-- `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
-    matching profile, appended last; when unset, no `SUFFIX` segment is
-    included.
-
-The order is always `USER` -> `BASE` -> `SUFFIX`, joined by blank lines
-(`\\n\\n`). When `USER` is a `SystemMessage`, the right-hand assembly is
-appended as an additional text content block onto the message's existing
-`content_blocks` list, preserving any `cache_control` markers the caller
-set.
-
-See `create_deep_agent`'s `system_prompt` parameter or
-[Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
-for the full assembly order.
-"""
+def __getattr__(name: str) -> str:
+    """Provide deprecated compatibility access to legacy module attributes."""
+    if name == "BASE_AGENT_PROMPT":
+        warn_deprecated(
+            since="0.7.0",
+            removal="0.9.0",
+            message=(
+                "`BASE_AGENT_PROMPT` was deprecated in `deepagents==0.7.0` and "
+                "will be removed in `deepagents==0.9.0`. Deep Agents no longer "
+                "provides an "
+                "authored base prompt."
+            ),
+            package="deepagents",
+        )
+        return _LEGACY_BASE_AGENT_PROMPT
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 def _build_default_model() -> ChatAnthropic:

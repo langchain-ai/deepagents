@@ -949,6 +949,7 @@ def _summarize_criteria_result(result: object) -> str:
         truncated repr for non-dict results.
     """
     if isinstance(result, dict):
+        keys = sorted(str(key) for key in result)
         messages = result.get("messages")
         if isinstance(messages, list) and messages:
             last = messages[-1]
@@ -962,8 +963,8 @@ def _summarize_criteria_result(result: object) -> str:
                 text = text.strip()
                 if len(text) > _CRITERIA_RESULT_LOG_LIMIT:
                     text = text[:_CRITERIA_RESULT_LOG_LIMIT] + "..."
-                return f"keys={sorted(result)} last_message_text={text!r}"
-        return f"keys={sorted(result)}"
+                return f"keys={keys} last_message_text={text!r}"
+        return f"keys={keys}"
     summary = repr(result)
     if len(summary) > _CRITERIA_RESULT_LOG_LIMIT:
         summary = summary[:_CRITERIA_RESULT_LOG_LIMIT] + "..."

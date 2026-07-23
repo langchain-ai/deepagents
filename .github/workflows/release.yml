@@ -1342,28 +1342,20 @@ jobs:
       - name: Run integration tests
         if: false # Disabled: integration tests are not run during releases
         env:
-          # deepagents SDK: subagent middleware tests
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # deepagents SDK: LangSmith sandbox tests
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          # langchain-daytona, CLI test_sandbox_operations.py
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          # langchain-modal
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          # langchain-runloop
-          RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
-          # langchain-vercel-sandbox
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
+          DAYTONA_API_KEY: ${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}
+          MODAL_TOKEN_ID: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}
+          MODAL_TOKEN_SECRET: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
+          OPENAI_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
+          RUNLOOP_API_KEY: ${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
+          VERCEL_TOKEN: ${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
 
-        # We skip test_sandbox_factory.py and test_sandbox_operations.py in CLI
-        # releases — overlap with partner-level SandboxIntegrationTests.
-        # TODO: upstream unique batch/binary tests to langchain-tests, then
-        # remove files.
+        # The deepagents-code sandbox coverage overlaps with the partner-level
+        # SandboxIntegrationTests, so keep those files out of release checks.
         run: |
           if [ -f Makefile ] && grep -q "integration_test" Makefile; then
-            if [ "${{ needs.setup.outputs.package }}" = "deepagents-cli" ]; then
+            if [ "${{ needs.setup.outputs.package }}" = "deepagents-code" ]; then
               export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/integration_tests/test_sandbox_factory.py --ignore=tests/integration_tests/test_sandbox_operations.py"
             fi
             make integration_test

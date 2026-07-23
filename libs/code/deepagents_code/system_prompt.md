@@ -52,6 +52,14 @@ CRITICAL: Match what the user asked for EXACTLY.
 - If steps are repeatedly failing, make note of what's going wrong and share an updated plan with the user.
 - Use tools and dependencies specified by the user or already present in the codebase. Don't substitute without asking.
 
+**Disk-full / out-of-space failures:**
+
+When any tool result (from `edit_file`, `write_file`, `execute`, or any other tool) contains `No space left on device` or `[Errno 28]`, treat it as an unrecoverable environment blocker — do NOT keep retrying the same write.
+
+1. Attempt exactly one bounded cleanup of disposable artifacts (build outputs, `node_modules` caches, temp dirs, large test artifacts), then re-check free space (e.g. `df -h .`).
+2. If space is still unavailable, stop and emit a final user-facing message explaining that the sandbox disk is full and what to do next (free space or restart with a larger quota). Never end the turn with empty output.
+3. On long, multi-round spec-implementation sessions, proactively clean up transient artifacts between rounds so the disk does not silently fill.
+
 ## Clarifying Requests
 
 - Do not ask for details the user already supplied.

@@ -186,6 +186,10 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if source_sha is not None and not isinstance(source_sha, str):
         msg = "source_sha must be a string or null"
         raise _LeafSummaryError(msg)
+    langsmith_experiment = summary.get("langsmith_experiment")
+    if langsmith_experiment is not None and not isinstance(langsmith_experiment, str):
+        msg = "langsmith_experiment must be a string or null"
+        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -210,6 +214,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "tasks": tasks,
         "passed": passed,
         "incomplete": incomplete,
+        "langsmith_experiment": langsmith_experiment or None,
         "issues": raw_issues,
     }
 
@@ -219,11 +224,131 @@ def _mean(vals: list[float | None]) -> float | None:
     return sum(present) / len(present) if present else None
 
 
+_TOTALS_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
+_STATUS_RANK = {"complete": 0, "partial": 1, "unavailable": 2}
+
+
+def _sum_optional(values: list[object]) -> float | int | None:
+    """Sum numeric values, ignoring None; return None when none are present."""
+    present = [
+        v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    return sum(present) if present else None
+
+
+def _merge_totals(blocks: list[dict[str, object]]) -> dict[str, object]:
+    """Sum a list of {prompt,completion,total tokens, cost_usd} totals blocks."""
+    return {
+        field: _sum_optional([block.get(field) for block in blocks])
+        for field in _TOTALS_FIELDS
+    }
+
+
+def _empty_usage() -> dict[str, object]:
+    """Usage block for a row with no LangSmith experiment to query."""
+    empty = dict.fromkeys(_TOTALS_FIELDS, None)
+    return {
+        "status": "unavailable",
+        "experiments": [],
+        "coverage": {
+            "expected_rollouts": None,
+            "observed_rollouts": 0,
+            "token_rollouts": 0,
+            "priced_rollouts": 0,
+            "completed_rollouts": 0,
+            "errored_rollouts": 0,
+        },
+        "totals": dict(empty),
+        "completed_totals": dict(empty),
+    }
+
+
+def _overall_usage(
+    experiment_names: list[str], experiments: dict[str, object]
+) -> dict[str, object]:
+    """Roll a row's per-experiment usage up across its unique experiments.
+
+    Category is part of the experiment name, so summing distinct names rolls a
+    row's categories together without double-counting the shards that share one
+    experiment.
+    """
+    unique = sorted({name for name in experiment_names if name})
+    blocks = [
+        cast(dict[str, object], experiments[name])
+        for name in unique
+        if isinstance(experiments.get(name), dict)
+    ]
+    if not blocks:
+        usage = _empty_usage()
+        usage["experiments"] = unique
+        return usage
+
+    coverages = [cast(dict[str, object], b["coverage"]) for b in blocks]
+    expected_values = [c.get("expected_rollouts") for c in coverages]
+    # Only report an expected denominator when every experiment declared one;
+    # a partial denominator would misrepresent the completed/expected ratio.
+    expected = (
+        _sum_optional(expected_values)
+        if all(v is not None for v in expected_values)
+        else None
+    )
+    coverage = {
+        "expected_rollouts": expected,
+        **{
+            field: int(_sum_optional([c.get(field) for c in coverages]) or 0)
+            for field in (
+                "observed_rollouts",
+                "token_rollouts",
+                "priced_rollouts",
+                "completed_rollouts",
+                "errored_rollouts",
+            )
+        },
+    }
+    status = max(
+        (cast(str, b.get("status", "unavailable")) for b in blocks),
+        key=lambda s: _STATUS_RANK.get(s, 2),
+    )
+    return {
+        "status": status,
+        "experiments": unique,
+        "coverage": coverage,
+        "totals": _merge_totals(
+            [cast(dict[str, object], b["totals"]) for b in blocks]
+        ),
+        "completed_totals": _merge_totals(
+            [cast(dict[str, object], b["completed_totals"]) for b in blocks]
+        ),
+    }
+
+
+def _load_usage(path: Path) -> dict[str, object]:
+    """Load the collector output, returning its {experiment: usage} mapping.
+
+    Raises SystemExit with a message on malformed input, matching the other
+    ``_load_*`` helpers so ``main`` can downgrade it to a best-effort warning.
+    """
+    msg = f"{path} must be a JSON object with schema_version 1 and an experiments map"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"{msg}: {exc}") from exc
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema_version") != 1
+        or not isinstance(raw.get("experiments"), dict)
+    ):
+        raise SystemExit(msg)
+    return cast(dict[str, object], raw["experiments"])
+
+
 def combine(
     leaves: list[dict],
     expected_leaves: list[LeafKey | dict[str, str]] | None = None,
     expected_categories: list[str] | None = None,
     issues: list[dict[str, object]] | None = None,
+    *,
+    experiments: dict[str, object] | None = None,
 ) -> dict:
     issues_out = list(issues or [])
     for leaf in leaves:
@@ -333,24 +458,33 @@ def combine(
             if total_tasks
             else None
         )
-        rows_out.append(
-            {
-                "model": model,
-                "branch": branch,
-                "source_sha": source_sha_by_row.get(row, ""),
-                "config": config,
-                "categories": cats,
-                "macro": macro,
-                "micro": {"pass_at_k": micro_pass, "avg_at_k": micro_avg},
-                "missing_categories": missing,
-                "incomplete": (
-                    not row_leaves
-                    or bool(missing)
-                    or any(leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored)
-                ),
-            }
-        )
-    return {"rows": rows_out, "categories": categories, "issues": issues_out}
+        row_out = {
+            "model": model,
+            "branch": branch,
+            "source_sha": source_sha_by_row.get(row, ""),
+            "config": config,
+            "categories": cats,
+            "macro": macro,
+            "micro": {"pass_at_k": micro_pass, "avg_at_k": micro_avg},
+            "missing_categories": missing,
+            "incomplete": (
+                not row_leaves
+                or bool(missing)
+                or any(leaf["incomplete"] or leaf["tasks"] == 0 for leaf in scored)
+            ),
+        }
+        if experiments is not None:
+            row_out["usage"] = _overall_usage(
+                [leaf.get("langsmith_experiment") for leaf in row_leaves],
+                experiments,
+            )
+        rows_out.append(row_out)
+    return {
+        "rows": rows_out,
+        "categories": categories,
+        "issues": issues_out,
+        "usage_available": experiments is not None,
+    }
 
 
 def _fmt(v: float | None) -> str:
@@ -427,6 +561,82 @@ def render_markdown(combined: dict, k: int) -> str:
     return md
 
 
+def _esc_cell(value: object) -> str:
+    """Escape a value for a markdown table cell (pipes/newlines break rows)."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+    )
+
+
+def _fmt_tokens(value: object) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "—"
+    return f"{int(value):,}"
+
+
+def _fmt_cost(value: object) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "—"
+    return f"{float(value):.6f}"
+
+
+def _completed_cell(coverage: dict[str, object]) -> str:
+    completed = coverage.get("completed_rollouts") or 0
+    errored = coverage.get("errored_rollouts") or 0
+    expected = coverage.get("expected_rollouts")
+    denom = expected if isinstance(expected, int) else "?"
+    return f"{completed}/{denom} ({errored} err)"
+
+
+def render_usage_markdown(combined: dict) -> str:
+    """Render the per-leaf token/cost table (completed-only totals + true spend).
+
+    Rows are ordered like the leaderboard (best macro pass@k first) so the two
+    tables line up. Missing usage renders as em dashes rather than zeros.
+    """
+    header = [
+        "Model / branch / config",
+        "Completed",
+        "Input tokens",
+        "Output tokens",
+        "Total cost (USD)",
+        "Cost all (USD)",
+        "Status",
+    ]
+    ranked = sorted(
+        combined["rows"],
+        key=lambda r: (
+            r["macro"]["pass_at_k"] is None,
+            -(r["macro"]["pass_at_k"] or 0.0),
+        ),
+    )
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join(["---"] * len(header)) + "|",
+    ]
+    for r in ranked:
+        usage = cast(dict[str, object], r.get("usage") or _empty_usage())
+        coverage = cast(dict[str, object], usage["coverage"])
+        completed = cast(dict[str, object], usage["completed_totals"])
+        totals = cast(dict[str, object], usage["totals"])
+        cells = [
+            _esc_cell(f"{r['model']} / {r['branch']} / {r['config']}"),
+            _esc_cell(_completed_cell(coverage)),
+            _fmt_tokens(completed.get("prompt_tokens")),
+            _fmt_tokens(completed.get("completion_tokens")),
+            _fmt_cost(completed.get("cost_usd")),
+            _fmt_cost(totals.get("cost_usd")),
+            _esc_cell(usage.get("status", "unavailable")),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def radar_results(combined: dict) -> list[dict]:
     out = []
     for r in combined["rows"]:
@@ -457,6 +667,9 @@ def write_outputs(
         with open(step_summary_path, "a") as f:
             f.write("## Unified evals — cross-model comparison\n\n")
             f.write(md)
+            if combined.get("usage_available"):
+                f.write("\n## Token usage and cost\n\n")
+                f.write(render_usage_markdown(combined))
     # A machine-visible signal so a partially-covered ranking isn't taken at face value.
     for r in combined["rows"]:
         if r["incomplete"]:
@@ -580,6 +793,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("--rollouts", type=int, required=True)
     parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument(
+        "--usage-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional collect_langsmith_usage.py output. When given, a "
+            "'Token usage and cost' table is added per (model, branch, config)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.rollouts < 1:
         parser.error("--rollouts must be >= 1")
@@ -611,11 +833,22 @@ def main(argv: list[str] | None = None) -> int:
         issues.append(
             analysis_issue("unified_aggregation", "invalid_expected_categories", msg)
         )
+    experiments: dict[str, object] | None = None
+    if args.usage_json is not None:
+        try:
+            experiments = _load_usage(args.usage_json)
+        except SystemExit as exc:
+            msg = str(exc)
+            print(f"::warning::{msg}")
+            issues.append(
+                analysis_issue("unified_aggregation", "invalid_usage_json", msg)
+            )
     combined = combine(
         leaves,
         cast(list[LeafKey | dict[str, str]] | None, expected_leaves),
         expected_categories,
         issues,
+        experiments=experiments,
     )
     try:
         write_outputs(

@@ -211,9 +211,11 @@ def test_combine_needs_prep_and_eval() -> None:
     needs = _indented_block(combine_job, "    needs:")
     assert "- prep" in needs
     assert "- eval" in needs
-    # marker line ("needs:") plus exactly the two job names, no leftover
+    # Also gates on the usage job so the cost artifact is ready to consume.
+    assert "- usage" in needs
+    # marker line ("needs:") plus exactly the three job names, no leftover
     # provider jobs.
-    assert len([line for line in needs.splitlines() if line.strip()]) == 3
+    assert len([line for line in needs.splitlines() if line.strip()]) == 4
 
 
 def test_combine_receives_expected_leaves() -> None:
@@ -850,3 +852,57 @@ def test_evals_ci_filter_includes_unified_workflows() -> None:
     ]
     for path in expected_paths:
         assert evals_filter.count(f"              - '{path}'") == 1
+
+
+# ---------------------------------------------------------------------------
+# LangSmith usage collection (token/cost)
+# ---------------------------------------------------------------------------
+
+
+def test_usage_job_holds_langsmith_key_and_runs_collector() -> None:
+    """The usage job owns the API key and runs the collector over the leaves."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    usage = _indented_block(workflow, "  usage:")
+    assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in usage
+    assert "collect_langsmith_usage.py _leaves" in usage
+    assert "--out _usage/langsmith_usage.json" in usage
+    assert "name: unified-langsmith-usage" in usage
+
+
+def test_usage_job_needs_prep_and_eval() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    usage = _indented_block(workflow, "  usage:")
+    needs = _indented_block(usage, "    needs:")
+    assert "- prep" in needs
+    assert "- eval" in needs
+
+
+def test_combine_needs_usage() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(workflow, "  combine:")
+    needs = _indented_block(combine, "    needs:")
+    assert "- usage" in needs
+
+
+def test_combine_never_receives_langsmith_key() -> None:
+    """Secret isolation: the publishing job must not see the API key."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(workflow, "  combine:")
+    assert "LANGSMITH_API_KEY" not in combine
+
+
+def test_combine_passes_usage_json_when_present() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine = _indented_block(workflow, "  combine:")
+    assert "unified-langsmith-usage" in combine
+    assert "usage_args=(--usage-json _usage_langsmith_usage.json)" in combine
+
+
+def test_harbor_writes_langsmith_experiment_marker() -> None:
+    reusable = HARBOR_WORKFLOW.read_text()
+    marker_step = _indented_block(
+        reusable, '      - name: "🏷️ Record LangSmith experiment marker"'
+    )
+    assert "langsmith-experiment.json" in marker_step
+    assert '"schema_version": 1' in marker_step
+    assert "HARBOR_LANGSMITH_EXPERIMENT" in marker_step

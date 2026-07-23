@@ -310,11 +310,94 @@ jobs:
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
 
+  usage:
+    name: "💰 Collect LangSmith usage"
+    needs:
+      - prep
+      - eval
+    if: ${{ always() }}
+    # Token/cost data lives only in LangSmith, so this is the one job granted the
+    # API key. It is deliberately separate from combine (which publishes with
+    # write access): the key never reaches a job that can push to the repo.
+    # Best-effort — a usage failure must not fail the experiment workflow.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-usage
+          working-directory: libs/evals
+
+      - name: "🗂️ Prepare UV cache directory"
+        run: |
+          mkdir -p "$UV_CACHE_DIR"
+
+      - name: "⬇️ Download leaf summaries"
+        id: download-leaves
+        continue-on-error: true
+        run: |
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No harbor-* artifacts matched; usage analysis has nothing to query."
+              break
+            fi
+            echo "Leaf download attempt ${attempt} failed:"
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::warning::Leaf download failed after ${attempt} attempts; usage analysis skipped."
+              mkdir -p _leaves
+              break
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+
+      - name: "💰 Query rollout usage"
+        id: query-usage
+        continue-on-error: true
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          mkdir -p _leaves _usage
+          uv run --project libs/evals python \
+            .github/scripts/collect_langsmith_usage.py _leaves \
+            --out _usage/langsmith_usage.json
+
+      - name: "📤 Upload LangSmith usage"
+        if: ${{ always() && hashFiles('_usage/langsmith_usage.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-langsmith-usage
+          path: _usage/langsmith_usage.json
+          if-no-files-found: error
+
   combine:
     name: "📊 Combine cross-model results"
     needs:
       - prep
       - eval
+      - usage
     if: ${{ always() }}
     # Aggregation and reporting happen after the paid eval work. Preserve their
     # diagnostics without letting analysis failures fail the experiment workflow.
@@ -378,6 +461,20 @@ jobs:
             sleep $((attempt * 5))
           done
 
+      - name: "⬇️ Download LangSmith usage"
+        id: download-usage
+        continue-on-error: true
+        # Best-effort: the usage job holds the API key, not this one. A missing
+        # or failed usage artifact just drops the cost columns; the leaderboard
+        # still renders.
+        run: |
+          if gh run download "$RUN_ID" --repo "$REPO" --pattern 'unified-langsmith-usage' --dir _usage_dl >usage_dl.log 2>&1; then
+            find _usage_dl -name langsmith_usage.json -exec cp {} _usage_langsmith_usage.json \; 2>/dev/null || true
+          else
+            echo "::warning::No unified-langsmith-usage artifact; cost columns omitted."
+            cat usage_dl.log || true
+          fi
+
       - name: "📊 Combine"
         id: combine-results
         if: ${{ always() }}
@@ -389,7 +486,11 @@ jobs:
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
           mkdir -p _leaves
-          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+          usage_args=()
+          if [ -f _usage_langsmith_usage.json ]; then
+            usage_args=(--usage-json _usage_langsmith_usage.json)
+          fi
+          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined "${usage_args[@]}"
 
       - name: "📊 Generate radar chart"
         id: radar-chart

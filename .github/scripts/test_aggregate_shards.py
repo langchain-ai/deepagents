@@ -457,6 +457,73 @@ def test_writes_github_step_summary(tmp_path: Path):
     assert "| avg@1 |" in rendered
 
 
+def _write_marker(root: Path, experiment: str) -> None:
+    (root / agg.LANGSMITH_MARKER).write_text(
+        json.dumps({"schema_version": 1, "experiment": experiment})
+    )
+
+
+def test_langsmith_experiment_from_arg(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    out = tmp_path / "out"
+    agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--out-dir",
+            str(out),
+            "--langsmith-experiment",
+            "exp-from-arg",
+        ]
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["langsmith_experiment"] == "exp-from-arg"
+
+
+def test_langsmith_experiment_from_marker(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_marker(tmp_path, "exp-from-marker")
+    out = tmp_path / "out"
+    agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out)])
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["langsmith_experiment"] == "exp-from-marker"
+
+
+def test_langsmith_experiment_arg_overrides_marker(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_marker(tmp_path, "exp-from-marker")
+    out = tmp_path / "out"
+    agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--out-dir",
+            str(out),
+            "--langsmith-experiment",
+            "exp-from-arg",
+        ]
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["langsmith_experiment"] == "exp-from-arg"
+
+
+def test_langsmith_experiment_absent_is_none(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    out = tmp_path / "out"
+    agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out)])
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["langsmith_experiment"] is None
+
+
+def test_read_langsmith_experiment_ignores_malformed(tmp_path: Path):
+    (tmp_path / agg.LANGSMITH_MARKER).write_text("{ not valid json")
+    assert agg.read_langsmith_experiment(tmp_path) is None
+    (tmp_path / agg.LANGSMITH_MARKER).write_text(json.dumps({"experiment": ""}))
+    assert agg.read_langsmith_experiment(tmp_path) is None
+
+
 if __name__ == "__main__":
     import inspect
     import tempfile

@@ -863,6 +863,30 @@ jobs:
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
             --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
 
+      - name: "🏷️ Record LangSmith experiment marker"
+        if: always()
+        env:
+          HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
+        # The usage collector (the unified `usage` job) reads this marker to learn
+        # which LangSmith project holds this leaf's rollout traces; the harbor env
+        # is out of scope by then. It rides along in the shard artifact upload.
+        run: |
+          if [ -z "${HARBOR_LANGSMITH_EXPERIMENT:-}" ]; then
+            echo "No LangSmith experiment set; skipping marker."
+            exit 0
+          fi
+          mkdir -p harbor-jobs/terminal-bench
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          marker = {"schema_version": 1, "experiment": os.environ["HARBOR_LANGSMITH_EXPERIMENT"]}
+          Path("harbor-jobs/terminal-bench/langsmith-experiment.json").write_text(
+              json.dumps(marker, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
       - name: "🔍 Find latest Harbor job"
         id: latest-job
         # An empty shard skipped the Harbor run, so there is no job dir to find.

@@ -83,6 +83,7 @@ class ToolCallData(_DomainModel):
     id: str
     name: str
     args: JsonObject
+    mcp_server: str | None = None
 
 
 class AgentIdentity(_DomainModel):

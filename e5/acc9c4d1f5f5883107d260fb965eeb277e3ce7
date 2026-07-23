@@ -1,0 +1,21 @@
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_ce9d77c7d0ce0e::t_c02a8d041cae7e 663
+libs/deepagents/deepagents/graph.py
+  s_ce9d77c7d0ce0e::t_6f61a704ac864c 125,128-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "e5acc9c4d1f5f5883107d260fb965eeb277e3ce7",
+  "prompts": {},
+  "sessions": {
+    "s_ce9d77c7d0ce0e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8b79-e4d4-7651-bdc4-8306009951ae",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

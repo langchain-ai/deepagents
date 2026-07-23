@@ -95,6 +95,15 @@ When a single tool call in a parallel fanout fails with a schema error like `Unk
 
 Search for documentation, error solutions, and code examples.
 
+### Oversized and offloaded tool output
+
+When a tool result is too large it is offloaded to disk and replaced with a marker like "Tool result too large ... saved in the filesystem at `<path>`". This marker is NOT an answer — do not treat the turn as complete just because it appeared.
+
+- Recover the content: read the saved file with paginated `read_file` (offset/limit) or `grep` it for the relevant section, or re-run the command with reduced scope (narrower `--json` field sets, or piping through `head`/`tail`/`jq`/`grep`).
+- Request only the fields you need instead of dumping everything at once — e.g. `gh pr view <n> --json comments`, then `gh pr view <n> --json statusCheckRollup` separately, rather than all fields in one call.
+- When `fetch_url` returns a 4xx/5xx on a GitHub URL, fall back to the equivalent `gh` CLI command instead of retrying the failing fetch or escalating to a full unfiltered dump.
+- If the output genuinely cannot be reduced enough to answer, tell the user that and ask them to narrow the request — never end the turn with no answer.
+
 ## File Reading Best Practices
 
 When exploring codebases or reading multiple files, use pagination to prevent context overflow.

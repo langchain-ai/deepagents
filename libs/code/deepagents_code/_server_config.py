@@ -340,6 +340,15 @@ class ServerConfig:
     rubric_max_iterations: int | None = None
     """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
 
+    recursion_limit: int | None = None
+    """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
+
+    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
+    `[runtime].recursion_limit` / the default at agent-build time"
+    (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
+    over those layers. Must be a positive integer when set.
+    """
+
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
     host. `'none'` is normalized to `None` in `__post_init__`."""
@@ -376,10 +385,11 @@ class ServerConfig:
         """Normalize fields and validate invariants.
 
         Raises:
-            TypeError: If `rubric_max_iterations` is a boolean.
+            TypeError: If `rubric_max_iterations` or `recursion_limit` is a
+                boolean.
             ValueError: If `shell_allow_list` is an empty list,
                 `allow_fs_tools` is an empty list or omits `"read_file"`, or
-                `rubric_max_iterations` is non-positive.
+                `rubric_max_iterations` / `recursion_limit` is non-positive.
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
@@ -405,6 +415,12 @@ class ServerConfig:
             raise TypeError(msg)
         if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
             msg = "rubric_max_iterations must be None or a positive integer"
+            raise ValueError(msg)
+        if isinstance(self.recursion_limit, bool):
+            msg = "recursion_limit must be None or a positive integer"
+            raise TypeError(msg)
+        if self.recursion_limit is not None and self.recursion_limit <= 0:
+            msg = "recursion_limit must be None or a positive integer"
             raise ValueError(msg)
 
     # ------------------------------------------------------------------
@@ -466,6 +482,9 @@ class ServerConfig:
                 if self.rubric_max_iterations is not None
                 else None
             ),
+            "RECURSION_LIMIT": (
+                str(self.recursion_limit) if self.recursion_limit is not None else None
+            ),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
@@ -518,6 +537,7 @@ class ServerConfig:
             allow_fs_tools=_read_env_allow_fs_tools(),
             rubric_model=_read_env_str("RUBRIC_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
+            recursion_limit=_read_env_int("RECURSION_LIMIT", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
@@ -557,6 +577,7 @@ class ServerConfig:
         allow_fs_tools: list[FsToolName] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
+        recursion_limit: int | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -597,6 +618,8 @@ class ServerConfig:
             rubric_model: Grader model spec; `None` reuses the main model.
             rubric_max_iterations: Explicit grader iterations per rubric attempt;
                 `None` uses the SDK default.
+            recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+                from env / `config.toml` / default at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -628,6 +651,7 @@ class ServerConfig:
             allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_snapshot_name=sandbox_snapshot_name,

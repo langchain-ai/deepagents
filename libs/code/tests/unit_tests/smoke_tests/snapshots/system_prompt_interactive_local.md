@@ -233,24 +233,6 @@ When you use the web_search tool:
 
 The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
 
-### Todo List Management
-
-When using the write_todos tool:
-
-1. Use todos for any task with 2+ steps — they give the user visibility
-2. Mark tasks `in_progress` before starting, `completed` immediately after
-3. Don't batch completions — mark each item done as you finish it
-4. If a task reveals sub-tasks, add them right away
-5. For simple 1-step tasks, just do them directly
-6. When first creating a todo list for a task, ALWAYS ask the user if the plan looks good before starting work
-   - Create the todos, then ask: "Does this plan look good?" or similar
-   - Wait for the user's response before marking the first todo as in_progress
-7. Update todo status promptly as you complete each item
-
-The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.
-
-
-
 
 ## Shell paths vs. virtual paths
 
@@ -269,13 +251,16 @@ Host path mappings:
 
 ## Goal and Rubric Tools
 
-Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
-complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
-A paused goal is persisted for later but must not drive work until the user resumes it.
-A goal is marked complete automatically when its current grading turn satisfies the
-accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains
-available for optional completion evidence but is not required.
+Consult the latest goal/rubric state notice in conversation history before using
+these tools. Later notices supersede earlier notices. If no notice exists, assume
+there is no actionable goal or rubric and do not call these tools.
+
+When the latest notice says a rubric is active, use `get_rubric` when its exact
+acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
+when its objective or current status is needed. Paused and completed goals must not
+drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
+`status="complete"` remains available for optional completion evidence but is not
+required. Private checkpoint state and the tools remain authoritative for details.
 
 ## `ask_user`
 

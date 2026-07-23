@@ -8,6 +8,7 @@ and that secret-flagged options are never rendered by value.
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
@@ -1930,6 +1931,100 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
         "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
         "model selector can surface install-required recommended models"
     )
+
+
+# --- Recursion limit -------------------------------------------------------
+
+
+def test_recursion_limit_option_metadata() -> None:
+    """The recursion-limit option exposes the env/TOML/CLI override surface."""
+    opt = get_option("runtime.recursion_limit")
+    assert opt is not None
+    assert opt.kind is OptionKind.INT
+    assert opt.env_var == _env_vars.RECURSION_LIMIT
+    assert opt.toml_keys == ("runtime", "recursion_limit")
+    assert opt.cli_flag == "--recursion-limit"
+    assert "runtime.recursion_limit" in option_keys()
+
+
+def test_resolve_recursion_limit_default() -> None:
+    """With no override, the resolver returns the manifest default."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_DEFAULT,
+        resolve_recursion_limit,
+    )
+
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+
+
+def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
+    """A valid env var overrides both TOML and the default."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 3000
+    )
+
+
+def test_resolve_recursion_limit_toml_when_env_unset(monkeypatch) -> None:
+    """`config.toml` is used when no env var is set."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "10", "999999999", "notanint"])
+def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> None:
+    """Non-positive, sub-floor, above-ceiling, or malformed values fall back."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_DEFAULT,
+        resolve_recursion_limit,
+    )
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+
+
+def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+def test_resolve_recursion_limit_invalid_env_leaves_env_intact(monkeypatch) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+    assert os.environ[_env_vars.RECURSION_LIMIT] == "10"
+
+
+def test_resolve_recursion_limit_accepts_floor_and_ceiling(monkeypatch) -> None:
+    """The inclusive floor and ceiling are accepted verbatim."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_CEILING,
+        RECURSION_LIMIT_FLOOR,
+        resolve_recursion_limit,
+    )
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, str(RECURSION_LIMIT_FLOOR))
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_FLOOR
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, str(RECURSION_LIMIT_CEILING))
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_CEILING
 
 
 def test_delegate_static_defaults_are_parseable() -> None:

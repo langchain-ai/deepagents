@@ -83,10 +83,12 @@ from deepagents_code.unicode_security import (
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
     from pathlib import Path
+    from uuid import UUID
 
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.hooks.client_lifecycle import ClientHookService
     from deepagents_code.hooks.runtime import HooksRuntime
 
@@ -95,10 +97,6 @@ logger = logging.getLogger(__name__)
 
 class HITLIterationLimitError(RuntimeError):
     """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
-
-
-class ClientHookStopError(RuntimeError):
-    """Raised when a client-owned hook stops headless processing."""
 
 
 def _raise_hitl_iteration_limit(message: str) -> NoReturn:
@@ -1018,7 +1016,10 @@ async def _process_hitl_interrupts(
     state.pending_interrupts.clear()
 
     from deepagents_code.approval_mode import ApprovalMode
-    from deepagents_code.hooks.client_lifecycle import ClientHookContext
+    from deepagents_code.hooks.client_lifecycle import (
+        ClientHookContext,
+        ClientHookStopError,
+    )
     from deepagents_code.hooks.models.domain import (
         DcodeNotificationKind,
         ToolCallData,
@@ -1082,6 +1083,8 @@ async def _process_hitl_interrupts(
                     DcodeNotificationKind.PERMISSION_REQUIRED,
                     "Permission required",
                 )
+            except ClientHookStopError:
+                raise
             except Exception:
                 logger.warning("Notification hook invocation failed", exc_info=True)
         resolved: list[dict[str, str]] = []
@@ -1189,6 +1192,9 @@ async def _run_agent_loop(
     max_turns: int | None = None,
     rubric: str | None = None,
     show_rubric_iterations: bool = False,
+    hooks_runtime: HooksRuntime | None = None,
+    approval_mode: ApprovalMode | None = None,
+    prompt_id: UUID | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -1221,6 +1227,9 @@ async def _run_agent_loop(
             `None` leaves it unset (no grading).
         show_rubric_iterations: Whether rubric lifecycle messages should include
             iteration numbers.
+        hooks_runtime: Preloaded session runtime, when available.
+        approval_mode: Effective client approval policy. Defaults to manual.
+        prompt_id: Stable identifier for the headless turn.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -1250,9 +1259,11 @@ async def _run_agent_loop(
 
     from pathlib import Path
 
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.hooks.client_lifecycle import (
         ClientHookContext,
         ClientHookService,
+        ClientHookStopError,
     )
     from deepagents_code.hooks.context import apply_hooks_context
     from deepagents_code.hooks.models.domain import (
@@ -1263,16 +1274,24 @@ async def _run_agent_loop(
     )
     from deepagents_code.hooks.runtime import HooksRuntime
 
-    try:
-        # Non-interactive mirrors Claude Code: project hooks are trusted.
-        hooks_runtime = HooksRuntime.create(
-            cwd=Path.cwd(),
-            workspace_trusted=True,
-        )
-    except Exception:
-        logger.exception("Failed to create HooksRuntime; server hooks disabled")
-        hooks_runtime = None
-    apply_hooks_context(context, hooks_runtime)
+    resolved_approval_mode = approval_mode or ApprovalMode.MANUAL
+    if hooks_runtime is None:
+        try:
+            # Non-interactive mirrors Claude Code: project hooks are trusted.
+            hooks_runtime = HooksRuntime.create(
+                cwd=Path.cwd(),
+                workspace_trusted=True,
+            )
+        except Exception:
+            logger.exception("Failed to create HooksRuntime; server hooks disabled")
+            hooks_runtime = None
+    apply_hooks_context(
+        context,
+        hooks_runtime,
+        prompt_id=str(prompt_id) if prompt_id is not None else None,
+    )
+    context["approval_mode"] = resolved_approval_mode.value
+    context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
     state.hooks_runtime = hooks_runtime
     state.client_hooks = (
         ClientHookService(
@@ -1285,7 +1304,8 @@ async def _run_agent_loop(
 
     client_context = ClientHookContext.create(
         thread_id=thread_id,
-        approval_mode="manual",
+        approval_mode=resolved_approval_mode,
+        prompt_id=prompt_id,
     )
     if state.client_hooks is not None:
         try:
@@ -1482,12 +1502,15 @@ async def _run_agent_loop(
         print_usage_table(state.stats, wall_time, console)
 
     if state.client_hooks is not None:
+        notification_stop: ClientHookStopError | None = None
         try:
             await state.client_hooks.notification(
                 client_context,
                 DcodeNotificationKind.AGENT_COMPLETED,
                 "Agent completed",
             )
+        except ClientHookStopError as exc:
+            notification_stop = exc
         except Exception:
             logger.warning("Notification hook invocation failed", exc_info=True)
         if not state.client_hooks.has_handlers(HookEvent.NOTIFICATION):
@@ -1501,6 +1524,8 @@ async def _run_agent_loop(
             logger.warning("SessionEnd hook invocation failed", exc_info=True)
         if not state.client_hooks.has_handlers(HookEvent.SESSION_END):
             await dispatch_hook("session.end", {"thread_id": thread_id})
+        if notification_stop is not None:
+            raise notification_stop
     else:
         await dispatch_hook("task.complete", {"thread_id": thread_id})
         await dispatch_hook("session.end", {"thread_id": thread_id})
@@ -1886,6 +1911,24 @@ async def run_non_interactive(
             logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
+        from pathlib import Path
+
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.models.domain import HookEvent
+        from deepagents_code.hooks.runtime import HooksRuntime
+
+        try:
+            hooks_runtime = HooksRuntime.create(
+                cwd=Path.cwd(),
+                workspace_trusted=True,
+            )
+        except Exception:
+            logger.exception("Failed to create HooksRuntime; hooks disabled")
+            hooks_runtime = None
+        has_permission_hooks = bool(
+            hooks_runtime is not None
+            and HookEvent.PERMISSION_REQUEST in hooks_runtime.configured_events()
+        )
         enable_shell = bool(settings.shell_allow_list)
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
@@ -1893,8 +1936,16 @@ async def run_non_interactive(
         # Currently, non-shell tools have no HITL handler in non-interactive
         # mode, so interrupting on them just fragments LangSmith traces
         # without adding value. Gate only shell execution via middleware.
-        use_auto_approve = not enable_shell or shell_is_unrestricted
-        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        requested_auto_approve = not enable_shell or shell_is_unrestricted
+        use_auto_approve = requested_auto_approve and not has_permission_hooks
+        use_interrupt_shell_only = (
+            enable_shell and not shell_is_unrestricted and not has_permission_hooks
+        )
+        approval_mode = (
+            ApprovalMode.YOLO
+            if requested_auto_approve
+            else ApprovalMode.MANUAL
+        )
         # Extract the concrete allow-list to forward to the server subprocess.
         # settings.shell_allow_list is already validated at this point.
         restrictive_allow_list: list[str] | None = (
@@ -1911,11 +1962,12 @@ async def run_non_interactive(
 
         from deepagents_code.config import build_stream_config
 
+        turn_id = uuid4()
         config: RunnableConfig = build_stream_config(
             thread_id,
             assistant_id,
             sandbox_type=sandbox_type,
-            turn_id=str(uuid4()),
+            turn_id=str(turn_id),
             turn_number=1,
             auto_approve=use_auto_approve,
         )
@@ -1980,6 +2032,9 @@ async def run_non_interactive(
                 max_turns=max_turns,
                 rubric=rubric,
                 show_rubric_iterations=rubric_max_iterations is not None,
+                hooks_runtime=hooks_runtime,
+                approval_mode=approval_mode,
+                prompt_id=turn_id,
             )
 
     except KeyboardInterrupt:

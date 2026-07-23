@@ -14,7 +14,11 @@ from deepagents_code.client.non_interactive import (
     StreamState,
     _process_hitl_interrupts,
 )
-from deepagents_code.hooks.client_lifecycle import ClientHookContext, ClientHookService
+from deepagents_code.hooks.client_lifecycle import (
+    ClientHookContext,
+    ClientHookService,
+    ClientHookStopError,
+)
 from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
     HookDecision,
@@ -184,6 +188,29 @@ async def test_session_end_discards_pending_context(tmp_path: Path) -> None:
         HookEvent.SESSION_START,
         HookEvent.SESSION_END,
     ]
+
+
+async def test_notification_stop_interrupts_client_processing(tmp_path: Path) -> None:
+    runtime = _Runtime(
+        cwd=tmp_path,
+        decisions=deque(
+            [
+                NotificationDecision(
+                    event=HookEvent.NOTIFICATION,
+                    continue_processing=False,
+                    stop_reason="stop now",
+                )
+            ]
+        ),
+    )
+    service = ClientHookService(runtime)
+
+    with pytest.raises(ClientHookStopError, match="stop now"):
+        await service.notification(
+            _context(),
+            DcodeNotificationKind.AGENT_COMPLETED,
+            "done",
+        )
 
 
 @pytest.mark.parametrize(

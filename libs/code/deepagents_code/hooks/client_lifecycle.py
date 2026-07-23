@@ -49,6 +49,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ClientHookStopError(RuntimeError):
+    """Raised when a client-owned hook stops lifecycle processing."""
+
+
 @dataclass(frozen=True, slots=True)
 class ClientHookContext:
     """Client state required to create a domain hook invocation."""
@@ -222,6 +226,7 @@ class ClientHookService:
             Aggregated notification decision.
 
         Raises:
+            ClientHookStopError: If a handler stops lifecycle processing.
             TypeError: If the runtime returns a mismatched decision type.
         """
         if not self.has_handlers(HookEvent.NOTIFICATION):
@@ -240,6 +245,9 @@ class ClientHookService:
         if not isinstance(decision, NotificationDecision):
             msg = f"Expected NotificationDecision, got {type(decision).__name__}"
             raise TypeError(msg)
+        if not decision.continue_processing:
+            reason = decision.stop_reason or "Notification stopped by hook"
+            raise ClientHookStopError(reason)
         return decision
 
     def take_session_context(self, thread_id: str) -> tuple[str, ...]:

@@ -3482,6 +3482,8 @@ class DeepAgentsApp(App):
         Lazily constructed by the session-init worker so we don't block
         startup on it.
         """
+        self._session_state_ready = asyncio.Event()
+        self._session_init_started = False
 
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
@@ -4139,6 +4141,7 @@ class DeepAgentsApp(App):
             group="startup-skill-discovery",
         )
 
+        self._session_init_started = True
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
         # Server startup (model creation + server process)
@@ -4218,6 +4221,7 @@ class DeepAgentsApp(App):
 
     async def _init_session_state(self) -> None:
         """Create session state in a thread (imports deepagents_code.sessions)."""
+        self._session_init_started = True
 
         def _create() -> TextualSessionState:
             from pathlib import Path
@@ -4249,6 +4253,7 @@ class DeepAgentsApp(App):
                 severity="error",
                 timeout=10,
             )
+            self._session_state_ready.set()
             return
         # A user can change the approval mode while session construction runs
         # in the worker thread. Re-read the app-owned selection on the event
@@ -4262,7 +4267,34 @@ class DeepAgentsApp(App):
                 notice=lambda message: self.notify(message, markup=False),
             )
         self._session_state = session_state
+        self._session_state_ready.set()
         await self._auto_accept_pending_goal_rubric()
+
+    async def _refresh_client_hooks_runtime(self) -> None:
+        from pathlib import Path
+
+        from deepagents_code.hooks.client_lifecycle import ClientHookService
+        from deepagents_code.hooks.runtime import HooksRuntime
+
+        state = self._session_state
+        if state is None:
+            return
+        try:
+            runtime = await asyncio.to_thread(
+                HooksRuntime.create,
+                cwd=Path(self._cwd),
+                workspace_trusted=False,
+            )
+        except Exception:
+            logger.exception("Failed to refresh HooksRuntime; hooks disabled")
+            state.hooks_runtime = None
+            state.client_hooks = None
+            return
+        state.hooks_runtime = runtime
+        state.client_hooks = ClientHookService(
+            runtime,
+            notice=lambda message: self.notify(message, markup=False),
+        )
 
     def _client_hook_context(
         self, *, thread_id: str | None = None
@@ -8009,6 +8041,9 @@ class DeepAgentsApp(App):
         if launch_init_task is not None and not launch_init_task.done():
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
+
+        if self._session_state is None and self._session_init_started:
+            await self._session_state_ready.wait()
 
         self._initial_session_started = True
         self._startup_sequence_running = True
@@ -12021,7 +12056,9 @@ class DeepAgentsApp(App):
                         thread_id=previous_thread_id,
                         suffix=resume_hint,
                     )
-                await self._run_session_start_hook(SessionStartCause.CLEAR)
+                await self._refresh_client_hooks_runtime()
+                if not await self._run_session_start_hook(SessionStartCause.CLEAR):
+                    return
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -12991,7 +13028,8 @@ class DeepAgentsApp(App):
             )
             from deepagents_code.hooks.models.domain import SessionStartCause
 
-            await self._run_session_start_hook(SessionStartCause.COMPACT)
+            if not await self._run_session_start_hook(SessionStartCause.COMPACT):
+                return
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -17844,7 +17882,9 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
             from deepagents_code.hooks.models.domain import SessionStartCause
 
-            await self._run_session_start_hook(SessionStartCause.CLEAR)
+            await self._refresh_client_hooks_runtime()
+            if not await self._run_session_start_hook(SessionStartCause.CLEAR):
+                return
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
             # SKILL.md files.
@@ -21520,6 +21560,15 @@ class DeepAgentsApp(App):
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
                 await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
             else:
+                from deepagents_code.hooks.models.domain import (
+                    SessionEndCause,
+                    SessionStartCause,
+                )
+
+                await self._run_session_end_hook(SessionEndCause.RESUME)
+                await self._refresh_client_hooks_runtime()
+                if not await self._run_session_start_hook(SessionStartCause.RESUME):
+                    return
                 await self._mount_message(
                     AppMessage(f"Switched to thread directory: {self._cwd}"),
                 )
@@ -21547,10 +21596,21 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         prefetched_payload: _ThreadHistoryPayload | None = None
+        outgoing_ended = False
         try:
             self._update_status(f"Loading thread: {thread_id}")
             await self._set_spinner("Loading thread")
             prefetched_payload = await self._fetch_thread_history_data(thread_id)
+            from deepagents_code.hooks.models.domain import (
+                SessionEndCause,
+                SessionStartCause,
+            )
+
+            await self._run_session_end_hook(
+                SessionEndCause.RESUME,
+                thread_id=prev_session_thread,
+            )
+            outgoing_ended = True
 
             # Clear conversation (similar to /clear, without creating a new thread)
             await self._set_spinner(None)
@@ -21584,16 +21644,6 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
-            from deepagents_code.hooks.models.domain import (
-                SessionEndCause,
-                SessionStartCause,
-            )
-
-            await self._run_session_end_hook(
-                SessionEndCause.RESUME,
-                thread_id=prev_session_thread,
-            )
-            await self._run_session_start_hook(SessionStartCause.RESUME)
 
             # The switch succeeded: record the thread we just left so a
             # subsequent bare `/threads -r` steps back to it rather than
@@ -21601,6 +21651,9 @@ class DeepAgentsApp(App):
             # thread". Set only after the last statement that can raise, so a
             # failed switch (handled below) never leaves a stale pointer.
             self._session_state.previous_thread_id = prev_session_thread
+            await self._refresh_client_hooks_runtime()
+            if not await self._run_session_start_hook(SessionStartCause.RESUME):
+                return
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
@@ -21637,6 +21690,9 @@ class DeepAgentsApp(App):
                     "switch to %s"
                 )
                 logger.warning(msg, thread_id, exc_info=True)
+            if outgoing_ended:
+                await self._refresh_client_hooks_runtime()
+                await self._run_session_start_hook(SessionStartCause.RESUME)
             error_message = f"Failed to switch to thread {thread_id}: {exc}."
             if rollback_restore_failed:
                 error_message += " Previous thread history could not be restored."

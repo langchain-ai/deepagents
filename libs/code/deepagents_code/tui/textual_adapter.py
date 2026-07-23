@@ -140,6 +140,8 @@ async def _notify_client_hook(
     *,
     title: str | None = None,
 ) -> None:
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
     service = getattr(session_state, "client_hooks", None)
     if service is None:
         return
@@ -150,6 +152,8 @@ async def _notify_client_hook(
             message,
             title=title,
         )
+    except ClientHookStopError:
+        raise
     except Exception:
         logger.warning("Notification hook invocation failed", exc_info=True)
 
@@ -890,6 +894,7 @@ async def execute_task_textual(
             wall-clock time).
 
     Raises:
+        ClientHookStopError: If a compact lifecycle hook stops processing.
         ValidationError: If HITL request validation fails (re-raised).
         RuntimeError: If Manual cannot be persisted before graph execution.
     """
@@ -1876,12 +1881,13 @@ async def execute_task_textual(
                 if adapter._set_spinner and not adapter._current_tool_messages:
                     await adapter._set_spinner("Thinking")
             if summarization_observed:
+                from deepagents_code.hooks.client_lifecycle import ClientHookStopError
                 from deepagents_code.hooks.models.domain import SessionStartCause
 
                 service = getattr(session_state, "client_hooks", None)
                 if service is not None:
                     try:
-                        await service.session_start(
+                        decision = await service.session_start(
                             _client_hook_context(session_state),
                             SessionStartCause.COMPACT,
                         )
@@ -1890,6 +1896,13 @@ async def execute_task_textual(
                             "Compact SessionStart hook invocation failed",
                             exc_info=True,
                         )
+                    else:
+                        if not decision.continue_processing:
+                            reason = (
+                                decision.stop_reason
+                                or "Compact session start stopped by hook"
+                            )
+                            raise ClientHookStopError(reason)
                 summarization_observed = False
 
             # Flush any remaining text from all namespaces
@@ -2160,6 +2173,10 @@ async def execute_task_textual(
                     if (
                         getattr(session_state, "approval_mode", None)
                         is ApprovalMode.YOLO
+                        and not _has_client_hook_handlers(
+                            session_state,
+                            HookEvent.PERMISSION_REQUEST,
+                        )
                     ):
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
@@ -2252,6 +2269,30 @@ async def execute_task_textual(
                                     tool_msg.set_running()
                                     adapter._sync_tool_widget(tool_msg)
                             resume_payload[interrupt_id] = {"decisions": decisions}
+                            continue
+
+                        if (
+                            getattr(session_state, "approval_mode", None)
+                            is ApprovalMode.YOLO
+                        ):
+                            reviewed = [
+                                ApproveDecision(type="approve")
+                                for _ in action_requests
+                            ]
+                            decisions = _merge_permission_outcomes(
+                                hook_outcomes,
+                                reviewed,
+                            )
+                            resume_payload[interrupt_id] = {"decisions": decisions}
+                            for tool_msg in _interrupt_tool_rows(
+                                namespace,
+                                action_requests,
+                                adapter._current_tool_messages,
+                            ):
+                                if id(tool_msg) in resolved_row_ids:
+                                    continue
+                                tool_msg.set_running()
+                                adapter._sync_tool_widget(tool_msg)
                             continue
 
                         review_namespace = (

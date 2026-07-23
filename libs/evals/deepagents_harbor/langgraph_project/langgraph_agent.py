@@ -344,7 +344,11 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # DIAGNOSTIC (throwaway): pin virtual_mode=False to match canonical (1d1db9c).
+    # Main flipped the LocalShellBackend default to True; the adapter never set it,
+    # so main silently virtualizes sandbox paths where canonical used them as-is.
+    # Testing whether that flip drives the context-retrieval regression.
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False)
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.

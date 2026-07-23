@@ -18,6 +18,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import TranscriptStore
+from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -65,7 +66,8 @@ class HooksRuntime:
             workspace_trusted: Whether project-scoped hooks may be loaded.
             config_dir: Alternate user config directory for tests.
             transcript_root: Alternate transcript store root. Defaults to
-                `{cwd}/.deepagents/transcripts`.
+                `~/.deepagents/transcripts`, or `{config_dir}/transcripts` when
+                an alternate user configuration directory is provided.
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -80,9 +82,8 @@ class HooksRuntime:
             diagnostics=loaded.diagnostics,
             snapshot_id=loaded.snapshot_id,
         )
-        store = TranscriptStore(
-            transcript_root or (cwd / ".deepagents" / "transcripts")
-        )
+        user_config_dir = config_dir or DEFAULT_CONFIG_DIR
+        store = TranscriptStore(transcript_root or user_config_dir / "transcripts")
         engine = HookEngine(snapshot)
         return cls(snapshot=snapshot, transcripts=store, engine=engine, cwd=cwd)
 

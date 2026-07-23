@@ -2498,6 +2498,7 @@ async def _run_acp_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2516,6 +2517,8 @@ async def _run_acp_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env/`config.toml`/default at agent-build time.
 
     Returns:
         Exit code for ACP mode.
@@ -2612,6 +2615,7 @@ async def _run_acp_cli_async(
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
             fs_tools=allow_fs_tools,
+            recursion_limit=recursion_limit,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -3703,6 +3707,7 @@ def cli_main() -> None:
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
+                    recursion_limit=getattr(args, "recursion_limit", None),
                 )
             )
             sys.exit(exit_code)

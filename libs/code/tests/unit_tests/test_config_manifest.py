@@ -8,6 +8,7 @@ and that secret-flagged options are never rendered by value.
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
@@ -1930,6 +1931,28 @@ def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> No
 
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
     assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+
+
+def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+def test_resolve_recursion_limit_invalid_env_leaves_env_intact(monkeypatch) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+    assert os.environ[_env_vars.RECURSION_LIMIT] == "10"
 
 
 def test_resolve_recursion_limit_accepts_floor_and_ceiling(monkeypatch) -> None:

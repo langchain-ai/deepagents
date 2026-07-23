@@ -724,14 +724,23 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_recursion_limit(value: object) -> bool:
+    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and RECURSION_LIMIT_FLOOR <= value <= RECURSION_LIMIT_CEILING
+    )
+
+
 def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard env → `config.toml`
     → default precedence. An out-of-range value (below `RECURSION_LIMIT_FLOOR`
-    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning so a
-    misconfiguration falls back to the default rather than breaking runs or
-    requesting unbounded traversal.
+    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning and
+    the next lower-precedence layer is tried, so a bad higher-precedence
+    override cannot mask a valid TOML setting (or the default).
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
@@ -744,13 +753,31 @@ def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
     option = get_option("runtime.recursion_limit")
     if option is None:
         return RECURSION_LIMIT_DEFAULT
+
     value, source = resolve_scalar(option, toml_data=data)
-    if (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and RECURSION_LIMIT_FLOOR <= value <= RECURSION_LIMIT_CEILING
-    ):
+    if _is_valid_recursion_limit(value):
         return value
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default. Hide the rejected env var (if any) and re-resolve
+    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_recursion_limit(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
     if source != "default":
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",

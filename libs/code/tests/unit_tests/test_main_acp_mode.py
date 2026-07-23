@@ -287,6 +287,49 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
     assert exc_info.value.code == 0
     mock_create_agent.assert_called_once()
     assert mock_create_agent.call_args.kwargs["fs_tools"] is None
+    assert mock_create_agent.call_args.kwargs["recursion_limit"] is None
+
+
+def test_acp_mode_forwards_recursion_limit() -> None:
+    """`--acp --recursion-limit` forwards the explicit limit to `create_cli_agent`."""
+    args = _make_acp_args(recursion_limit=3000)
+    model_result = SimpleNamespace(
+        model=object(),
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
+        apply_to_settings=MagicMock(),
+    )
+    run_agent = AsyncMock(return_value=None)
+    resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp", "--recursion-limit", "3000"]),
+        patch(
+            "deepagents_code.main.check_cli_dependencies",
+            side_effect=AssertionError("check_cli_dependencies should be skipped"),
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_code.model_config.save_recent_model", return_value=True),
+        patch("deepagents_code.config.create_model", return_value=model_result),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
+        patch("deepagents_code.tools.fetch_url", new=object()),
+        patch("deepagents_code.tools.get_current_thread_id", new=object()),
+        patch("deepagents_code.tools.web_search", new=object()),
+        patch(
+            "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
+        ) as mock_create_agent,
+        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch("acp.run_agent", run_agent),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    mock_create_agent.assert_called_once()
+    assert mock_create_agent.call_args.kwargs["recursion_limit"] == 3000
 
 
 def test_mcp_preload_includes_plugin_configs() -> None:

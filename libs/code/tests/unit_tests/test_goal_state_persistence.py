@@ -190,10 +190,10 @@ async def test_compaction_cutoff_repins_once() -> None:
 
 
 @pytest.mark.parametrize("parallel_calls", [False, True])
-async def test_notice_waits_for_complete_tool_result_batch(
+async def test_notice_defers_for_incomplete_tool_result_batch(
     parallel_calls: bool,
 ) -> None:
-    """No human notice is inserted inside a single or parallel tool batch."""
+    """Let recovery middleware repair a tool batch before inserting a notice."""
     updater = SimpleNamespace(aupdate_state=AsyncMock())
     app = DeepAgentsApp(agent=MagicMock())
     app._agent = updater
@@ -212,7 +212,7 @@ async def test_notice_waits_for_complete_tool_result_batch(
         "_get_thread_state_values",
         AsyncMock(return_value=checkpoint),
     ):
-        assert not await app._ensure_goal_state_notice()
+        assert await app._ensure_goal_state_notice()
     updater.aupdate_state.assert_not_awaited()
 
     complete = [assistant, ToolMessage(content="done", tool_call_id="call-1")]
@@ -226,6 +226,41 @@ async def test_notice_waits_for_complete_tool_result_batch(
     ):
         assert await app._ensure_goal_state_notice()
     updater.aupdate_state.assert_awaited_once()
+
+
+async def test_dangling_tool_call_does_not_abort_agent_run() -> None:
+    """The graph must run so its middleware can repair an interrupted call."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._agent = updater
+        app._lc_thread_id = "thread-1"
+        app._active_goal = "ship it"
+        app._goal_status = "active"
+        app._active_rubric = "tests pass"
+        assistant = AIMessage(
+            content="",
+            tool_calls=[{"name": "one", "args": {}, "id": "call-1"}],
+        )
+        checkpoint = {**_active_state(), "messages": [assistant]}
+
+        with (
+            patch.object(
+                app,
+                "_get_thread_state_values",
+                AsyncMock(return_value=checkpoint),
+            ),
+            patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+            patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as execute,
+        ):
+            await app._run_agent_task("resume")
+
+    execute.assert_awaited_once()
+    updater.aupdate_state.assert_not_awaited()
 
 
 async def test_remote_state_and_notice_share_one_update() -> None:

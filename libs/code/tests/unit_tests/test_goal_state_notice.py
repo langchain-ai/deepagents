@@ -3,6 +3,7 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.goal_state_notice import (
+    _GOAL_INTERNAL_SOURCES,
     GOAL_CONTROL_MESSAGE_SOURCE,
     GOAL_MESSAGE_SCHEMA_VERSION,
     GOAL_STATE_MESSAGE_SOURCE,
@@ -15,8 +16,24 @@ from deepagents_code.goal_state_notice import (
     is_internal_message,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
+    project_goal_state,
     serialize_goal_state,
 )
+
+
+def test_goal_source_constants_match_sdk_wire_contract() -> None:
+    # `lc_source` values are a serialization contract read back across the
+    # RemoteGraph boundary. The SDK re-declares them (it cannot depend on this
+    # package), so guard against silent drift between the two copies.
+    from deepagents.middleware._internal_messages import (
+        GOAL_CONTROL_MESSAGE_SOURCE as SDK_CONTROL_SOURCE,
+        GOAL_INTERNAL_MESSAGE_SOURCES as SDK_INTERNAL_SOURCES,
+        GOAL_STATE_MESSAGE_SOURCE as SDK_STATE_SOURCE,
+    )
+
+    assert SDK_CONTROL_SOURCE == GOAL_CONTROL_MESSAGE_SOURCE
+    assert SDK_STATE_SOURCE == GOAL_STATE_MESSAGE_SOURCE
+    assert SDK_INTERNAL_SOURCES == _GOAL_INTERNAL_SOURCES
 
 
 def test_canonical_notice_format_and_metadata() -> None:
@@ -137,6 +154,12 @@ def test_active_paused_active_appends_distinct_events() -> None:
         notices[0].additional_kwargs["state_fingerprint"]
         == notices[2].additional_kwargs["state_fingerprint"]
     )
+    # The changed (paused) middle state must fingerprint differently from active,
+    # otherwise the supersede logic could not tell the states apart.
+    assert (
+        notices[1].additional_kwargs["state_fingerprint"]
+        != notices[0].additional_kwargs["state_fingerprint"]
+    )
     latest = latest_goal_state_notice(notices)
     assert latest is not None
     assert latest[0] == 2
@@ -202,3 +225,104 @@ def test_internal_message_predicates_are_scope_specific() -> None:
         HumanMessage(content="[SYSTEM] literal user text")
     )
     assert not is_internal_message(AIMessage(content="[SYSTEM] assistant output"))
+
+
+def test_projection_status_defaults_and_actionability() -> None:
+    # An objective with no/unknown status defaults to active and actionable.
+    assert project_goal_state({"_goal_objective": "ship it"})["goal_status"] == "active"
+    unknown = project_goal_state(
+        {"_goal_objective": "ship it", "_goal_status": "bogus"}
+    )
+    assert unknown["goal_status"] == "active"
+    assert unknown["goal_actionable"] is True
+    # No objective means no status and nothing actionable.
+    empty = project_goal_state({})
+    assert empty["goal_status"] is None
+    assert empty["goal_actionable"] is False
+    # Paused/complete goals are retained but not actionable.
+    for status in ("paused", "complete"):
+        projected = project_goal_state(
+            {"_goal_objective": "ship it", "_goal_status": status}
+        )
+        assert projected["goal_status"] == status
+        assert projected["goal_actionable"] is False
+
+
+def test_projection_rubric_source_is_goal_for_actionable_goal_rubric() -> None:
+    projected = project_goal_state(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+        }
+    )
+    assert projected["rubric_criteria"] == "tests pass"
+    assert projected["rubric_source"] == "goal"
+
+
+def test_projection_paused_goal_rubric_is_not_used() -> None:
+    # A goal rubric only applies while the goal is actionable; a paused goal
+    # must fall through to the sticky rubric (or nothing) instead.
+    projected = project_goal_state(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "paused",
+            "_goal_rubric": "tests pass",
+        }
+    )
+    assert projected["rubric_criteria"] is None
+    assert projected["rubric_source"] is None
+
+
+def test_projection_rubric_source_is_sticky_when_distinct_from_goal() -> None:
+    projected = project_goal_state({"_sticky_rubric": "lint clean"})
+    assert projected["rubric_criteria"] == "lint clean"
+    assert projected["rubric_source"] == "sticky"
+
+
+def test_projection_sticky_equal_to_goal_rubric_is_not_a_separate_source() -> None:
+    # When the sticky rubric merely echoes the goal rubric, it must not be
+    # reported as an independent sticky source.
+    projected = project_goal_state(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+            "_sticky_rubric": "tests pass",
+        }
+    )
+    assert projected["rubric_source"] == "goal"
+
+
+def test_projection_invocation_rubric_precedence() -> None:
+    # A distinct invocation rubric wins and is labeled "invocation".
+    distinct = project_goal_state(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+            "rubric": "reviewers approve",
+        }
+    )
+    assert distinct["rubric_criteria"] == "reviewers approve"
+    assert distinct["rubric_source"] == "invocation"
+    # An invocation rubric matching the actionable goal rubric is credited to
+    # the goal, not the invocation.
+    matches_goal = project_goal_state(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+            "rubric": "tests pass",
+        }
+    )
+    assert matches_goal["rubric_source"] == "goal"
+    # An invocation rubric matching a distinct sticky rubric is credited to the
+    # sticky source.
+    matches_sticky = project_goal_state(
+        {
+            "_sticky_rubric": "lint clean",
+            "rubric": "lint clean",
+        }
+    )
+    assert matches_sticky["rubric_source"] == "sticky"

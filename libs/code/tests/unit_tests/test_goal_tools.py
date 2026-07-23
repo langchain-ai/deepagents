@@ -13,6 +13,7 @@ from langgraph.types import Command
 
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
+    build_goal_state_notice,
     goal_state_notice_info,
 )
 from deepagents_code.goal_tools import (
@@ -424,6 +425,61 @@ def test_before_model_appends_blocked_notice_after_parallel_tool_results() -> No
     assert isinstance(combined[-2], ToolMessage)
     assert isinstance(combined[-1], HumanMessage)
     assert "Goal status: blocked" in combined[-1].content
+
+
+def test_notice_update_is_none_when_current_notice_already_present() -> None:
+    # Idempotence at the layer where a double-append would occur: once
+    # `before_model` has persisted the current notice, a second boundary must
+    # not append another copy.
+    goal_state = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_goal_rubric": "tests pass",
+    }
+    notice = build_goal_state_notice(goal_state)
+    state = cast(
+        "AgentState[Any]",
+        {**goal_state, "messages": [HumanMessage(content="go"), notice]},
+    )
+
+    assert GoalToolsMiddleware._notice_update(state) is None
+
+
+def test_notice_update_is_none_for_empty_state() -> None:
+    state = cast(
+        "AgentState[Any]",
+        {"messages": [HumanMessage(content="just chatting")]},
+    )
+
+    assert GoalToolsMiddleware._notice_update(state) is None
+
+
+async def test_abefore_model_matches_before_model() -> None:
+    # The async boundary must produce the same notice update as the sync one;
+    # tests elsewhere only exercise `_notice_update` directly, so drive the
+    # overrides themselves here.
+    goal_state = {
+        "rubric": "include a marker",
+        "messages": [HumanMessage(content="answer the question")],
+    }
+    sync_state = cast("AgentState[Any]", dict(goal_state))
+    async_state = cast("AgentState[Any]", dict(goal_state))
+    middleware = GoalToolsMiddleware()
+    runtime = cast("Any", SimpleNamespace(context={}))
+
+    sync_update = middleware.before_model(sync_state, runtime)
+    async_update = await middleware.abefore_model(async_state, runtime)
+
+    assert sync_update is not None
+    assert async_update is not None
+    sync_notice = sync_update["messages"][0]
+    async_notice = async_update["messages"][0]
+    assert "Rubric active: yes" in sync_notice.content
+    assert async_notice.content == sync_notice.content
+    assert (
+        async_notice.additional_kwargs["state_fingerprint"]
+        == sync_notice.additional_kwargs["state_fingerprint"]
+    )
 
 
 def test_wrap_model_call_restores_notice_after_compaction() -> None:

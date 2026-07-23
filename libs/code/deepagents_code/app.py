@@ -1928,10 +1928,49 @@ class _GoalApplicationResult:
 
 @dataclass(frozen=True, slots=True)
 class _BlockedGoalResetResult:
-    """Blocked-goal reset outcome used to gate the following user turn."""
+    """Blocked-goal reset outcome used to gate the following user turn.
 
-    blocker_note: str | None
+    Build instances through `proceed`, `reset`, or `failed` so only valid
+    field combinations are constructed. `did_reset` — not a `blocker_note`
+    sentinel — is the authoritative signal that a blocked goal was flipped
+    back to active this turn; `blocker_note` may legitimately be an empty
+    string when the blocked goal carried no recorded note.
+    """
+
     ready: bool
+    """Whether the user turn may proceed."""
+    did_reset: bool
+    """Whether a blocked goal was actually flipped back to active this turn."""
+    blocker_note: str | None
+    """Prior blocker note when `did_reset` is `True`, else `None`. The note may
+    be an empty string when the reset goal had no recorded note."""
+
+    @classmethod
+    def proceed(cls) -> _BlockedGoalResetResult:
+        """Build the "no blocked goal to reset; proceed" outcome.
+
+        Returns:
+            A ready result with no reset performed.
+        """
+        return cls(ready=True, did_reset=False, blocker_note=None)
+
+    @classmethod
+    def failed(cls) -> _BlockedGoalResetResult:
+        """Build the "persist failed and was rolled back; stop" outcome.
+
+        Returns:
+            A not-ready result with no reset performed.
+        """
+        return cls(ready=False, did_reset=False, blocker_note=None)
+
+    @classmethod
+    def reset(cls, note: str) -> _BlockedGoalResetResult:
+        """Build the "blocked goal reset; proceed" outcome carrying its note.
+
+        Returns:
+            A ready result recording that a blocked goal was reset.
+        """
+        return cls(ready=True, did_reset=True, blocker_note=note)
 
 
 def _new_thread_id() -> str:
@@ -9774,7 +9813,9 @@ class DeepAgentsApp(App):
         """Backfill or re-pin the authoritative notice before a model call.
 
         Returns:
-            Whether the current state already has, or received, a safe notice.
+            Whether it is safe to proceed with the model call. A notice may be
+                deferred when graph middleware must first repair dangling tool
+                calls.
         """
         if not self._agent or not self._lc_thread_id:
             return True
@@ -9805,9 +9846,10 @@ class DeepAgentsApp(App):
             )
             if _unanswered_tool_call_ids(effective):
                 logger.info(
-                    "Deferring goal-state notice until all tool results are present"
+                    "Deferring goal-state notice so graph middleware can repair "
+                    "dangling tool calls"
                 )
-                return False
+                return True
             notice = build_goal_state_notice(desired_state)
             await self._aupdate_thread_state({"messages": [notice]})
         except Exception:
@@ -11478,11 +11520,12 @@ class DeepAgentsApp(App):
         """Persist a blocked-to-active transition before allowing a user turn.
 
         Returns:
-            Reset outcome containing the prior blocker note and whether the turn
-            may proceed.
+            Reset outcome whose `ready` gates the turn and whose `did_reset`
+            reports whether a blocked goal was actually reset (carrying its
+            prior note).
         """
         if not self._active_goal or self._goal_status != "blocked":
-            return _BlockedGoalResetResult(None, True)
+            return _BlockedGoalResetResult.proceed()
         note = self._goal_status_note or ""
         self._goal_status = "active"
         self._goal_status_note = None
@@ -11495,8 +11538,8 @@ class DeepAgentsApp(App):
             self._goal_status = "blocked"
             self._goal_status_note = note or None
             self._sync_status_rubric()
-            return _BlockedGoalResetResult(None, False)
-        return _BlockedGoalResetResult(note, True)
+            return _BlockedGoalResetResult.failed()
+        return _BlockedGoalResetResult.reset(note)
 
     @staticmethod
     def _rubric_command_remainder(command: str) -> str:
@@ -13450,8 +13493,12 @@ class DeepAgentsApp(App):
                         "not sent. Retry after the thread state is available."
                     )
                 )
+                # Drain any messages queued behind this turn so they are not
+                # stranded; mirrors the queue handling in `_agent_finished`.
+                if self._pending_messages and not self._agent_running:
+                    await self._process_next_from_queue()
                 return
-            resuming_blocked = reset.blocker_note is not None
+            resuming_blocked = reset.did_reset
 
             if resuming_blocked and self._active_goal:
                 await self._mount_message(
@@ -13937,10 +13984,13 @@ class DeepAgentsApp(App):
         task_succeeded = False
         try:
             if not goal_notice_ready:
+                # A goal/rubric state write failed (not a deferral — deferrals
+                # now let the turn run so recovery middleware can repair it), so
+                # the turn cannot start on state the agent can trust.
                 await self._mount_message(
                     ErrorMessage(
-                        "Goal/rubric state could not be prepared for this turn. "
-                        "Retry after the thread state is available."
+                        "Goal/rubric state could not be saved, so this message was "
+                        "not sent. Retry after the thread state is available."
                     )
                 )
                 return

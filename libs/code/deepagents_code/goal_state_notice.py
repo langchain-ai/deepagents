@@ -107,6 +107,9 @@ def is_human_message(message: object) -> bool:
     kind = _field(message, "type")
     if isinstance(kind, str) and kind.lower() in {"human", "humanmessage", "user"}:
         return True
+    # Last-resort class-name check: an in-process `HumanMessage` may expose its
+    # role through neither `role` nor `type` (e.g. a bare instance built in a
+    # test or before serialization), where the structural checks above miss it.
     return type(message).__name__ == "HumanMessage"
 
 
@@ -255,6 +258,9 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     """
     objective = _clean_text(state, "_goal_objective")
     raw_status = state.get("_goal_status")
+    # Mirrors the canonical `GoalStatus` vocabulary in `resume_state`; kept inline
+    # (not imported) because this leaf module deliberately avoids `resume_state`'s
+    # heavy `deepagents` import to stay off the startup hot path. Keep in sync.
     known_statuses = {"active", "paused", "blocked", "complete"}
     status = (
         raw_status

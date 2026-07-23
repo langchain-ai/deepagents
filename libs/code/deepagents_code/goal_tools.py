@@ -371,7 +371,15 @@ def _update_goal_command(
 
 
 class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
-    """Expose constrained goal tools to the main agent."""
+    """Expose constrained goal tools and maintain the goal-state notice.
+
+    Besides registering `get_goal`/`get_rubric`/`update_goal`, this middleware
+    keeps the model oriented at each model boundary: `before_model` persists a
+    fresh goal-state notice into checkpointed history when the latest one no
+    longer matches authoritative state, and `wrap_model_call` both appends the
+    static goal guidance to the system prompt and re-pins the notice into the
+    (post-summarization) request when the persisted one is out of view.
+    """
 
     state_schema = GoalToolState
 
@@ -447,6 +455,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
     @staticmethod
     def _notice_update(state: AgentState[Any]) -> dict[str, Any] | None:
+        """Compute the checkpointed notice update for a `before_model` boundary.
+
+        Returns:
+            A `messages` update carrying a fresh notice, or `None` when history
+            already reflects current goal/rubric state.
+        """
         values = cast("dict[str, Any]", state)
         raw_messages = values.get("messages", [])
         messages = list(raw_messages) if isinstance(raw_messages, list) else []
@@ -459,7 +473,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         state: AgentState[Any],
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        """Persist current goal availability at a safe model boundary.
+        """Persist a current goal-state notice into checkpointed history.
+
+        This is the durable half of the notice mechanism; the transient
+        counterpart in `wrap_model_call` re-pins the notice into a request whose
+        persisted notice has scrolled out of the model-visible window.
 
         Returns:
             Message update containing a current notice, or `None` when unchanged.
@@ -473,7 +491,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         state: AgentState[Any],
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        """Persist current goal availability at an async model boundary.
+        """Persist a current goal-state notice at an async model boundary.
+
+        Async twin of `before_model`; see it for the persisted-vs-transient split.
 
         Returns:
             Message update containing a current notice, or `None` when unchanged.
@@ -485,10 +505,16 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def _request_with_goal_system_prompt(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Append the static goal-tool guidance to a model request.
+        """Append static goal guidance and re-pin the notice into a request.
+
+        The system prompt gains the static goal-tool guidance, and — when
+        checkpointed history no longer surfaces a current notice — a transient
+        goal-state notice is appended to the request messages only (not
+        persisted; `before_model` owns the durable write).
 
         Returns:
-            Model request with static goal guidance in the system prompt.
+            Model request with goal guidance in the system prompt and, when
+            needed, a current goal-state notice appended to its messages.
         """
         if request.system_message is not None:
             content = [

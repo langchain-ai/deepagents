@@ -864,6 +864,9 @@ def test_usage_job_holds_langsmith_key_and_runs_collector() -> None:
     workflow = UNIFIED_WORKFLOW.read_text()
     usage = _indented_block(workflow, "  usage:")
     assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in usage
+    # Must share the `evals` Environment with the trace-writing jobs so the read
+    # uses the same key as the writes, not a stray repo/org secret.
+    assert "environment: evals" in usage
     assert "collect_langsmith_usage.py _leaves" in usage
     assert "--out _usage/langsmith_usage.json" in usage
     assert "name: unified-langsmith-usage" in usage

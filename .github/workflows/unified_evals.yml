@@ -322,6 +322,10 @@ jobs:
     # Best-effort — a usage failure must not fail the experiment workflow.
     continue-on-error: true
     runs-on: ubuntu-latest
+    # Same Environment as the trace-writing harbor jobs, so the read here and the
+    # writes there use the one `evals` LANGSMITH_API_KEY (which must carry both
+    # write and runs:read) rather than a stray repo/org key.
+    environment: evals
     permissions:
       actions: read
     env:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -43,6 +43,7 @@ from deepagents_code.hooks.models.transport import (
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
     ServerHooksMiddleware,
+    ServerHooksState,
     _append_message_text,
     _apply_post_tool_use,
     _apply_subagent_stop,
@@ -245,7 +246,7 @@ def test_stop_resets_continuation_count_when_finished(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    state: dict[str, Any] = {
+    state: ServerHooksState = {
         "messages": [],
         "_hooks_stop_continuation_count": 3,
     }

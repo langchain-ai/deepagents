@@ -10,6 +10,7 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
+    DcodeNotificationKind,
     HookEvent,
     NotificationEvent,
     PermissionRequestEvent,
@@ -361,9 +362,17 @@ def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
 
 
 def _notification_type(value: str) -> WireNotificationType:
+    mappings: dict[str, WireNotificationType] = {
+        DcodeNotificationKind.PERMISSION_REQUIRED: (
+            WireNotificationType.PERMISSION_PROMPT
+        ),
+        WireNotificationType.PERMISSION_PROMPT: WireNotificationType.PERMISSION_PROMPT,
+        DcodeNotificationKind.AGENT_NEEDS_INPUT: WireNotificationType.AGENT_NEEDS_INPUT,
+        DcodeNotificationKind.AGENT_COMPLETED: WireNotificationType.AGENT_COMPLETED,
+    }
     try:
-        return WireNotificationType(value)
-    except ValueError as exc:
+        return mappings[value]
+    except KeyError as exc:
         msg = f"Unsupported notification type: {value}"
         raise ValueError(msg) from exc
 

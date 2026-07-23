@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code.hooks.client_lifecycle import ClientHookService
     from deepagents_code.hooks.runtime import HooksRuntime
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,19 @@ logger = logging.getLogger(__name__)
 
 class HITLIterationLimitError(RuntimeError):
     """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
+
+
+class ClientHookStopError(RuntimeError):
+    """Raised when a client-owned hook stops headless processing."""
+
+
+def _raise_hitl_iteration_limit(message: str) -> NoReturn:
+    """Raise the bounded-turn failure outside the stream-control try block.
+
+    Raises:
+        HITLIterationLimitError: Always, with the supplied message.
+    """
+    raise HITLIterationLimitError(message)
 
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -365,6 +379,12 @@ class StreamState:
     hooks_runtime: HooksRuntime | None = None
     """Optional session-scoped HooksRuntime used to fulfill server hook interrupts."""
 
+    client_hooks: ClientHookService | None = None
+    """Client-owned lifecycle facade for this headless session."""
+
+    summarization_observed: bool = False
+    """Whether the current stream crossed a compaction boundary."""
+
     interrupt_occurred: bool = False
     """Flag indicating whether any HITL interrupt was received during the
     current stream pass."""
@@ -431,6 +451,7 @@ def _process_interrupts(
         console: Rich console for user-visible warnings.
     """
     from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+    from deepagents_code.hooks.models.domain import HookEvent
 
     interrupts = data["__interrupt__"]
     if interrupts:
@@ -461,7 +482,10 @@ def _process_interrupts(
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
-            dispatch_hook_fire_and_forget("input.required", {})
+            if state.client_hooks is None or not state.client_hooks.has_handlers(
+                HookEvent.NOTIFICATION
+            ):
+                dispatch_hook_fire_and_forget("input.required", {})
 
 
 def _process_ai_message(
@@ -618,6 +642,7 @@ def _process_message_chunk(
     # conversation history for the LLM. These are internal bookkeeping and
     # should not be rendered to the user.
     if metadata and metadata.get("lc_source") == "summarization":
+        state.summarization_observed = True
         return
 
     if isinstance(message_obj, AIMessage):
@@ -971,7 +996,11 @@ async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
     )
 
 
-def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
+async def _process_hitl_interrupts(
+    state: StreamState,
+    console: Console,
+    thread_id: str,
+) -> None:
     """Iterate over pending HITL interrupts and build approval/rejection responses.
 
     After processing, `state.pending_interrupts` is cleared and decisions
@@ -980,16 +1009,93 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
     Args:
         state: Stream state containing the pending interrupts to process.
         console: Rich console for status output.
+        thread_id: Active conversation thread.
+
+    Raises:
+        ClientHookStopError: If a hook stops or interrupts approval.
     """
     current_interrupts = dict(state.pending_interrupts)
     state.pending_interrupts.clear()
 
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.client_lifecycle import ClientHookContext
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        ToolCallData,
+    )
+
+    context = ClientHookContext.create(
+        thread_id=thread_id,
+        approval_mode=ApprovalMode.MANUAL,
+    )
     for interrupt_id, hitl_request in current_interrupts.items():
-        decisions = [
-            _make_hitl_decision(action_request, console)
-            for action_request in hitl_request["action_requests"]
-        ]
-        state.hitl_response[interrupt_id] = {"decisions": decisions}
+        action_requests = hitl_request["action_requests"]
+        decisions: list[dict[str, str] | None] = []
+        for index, action_request in enumerate(action_requests):
+            try:
+                hook_decision = (
+                    await state.client_hooks.permission_request(
+                        context,
+                        ToolCallData(
+                            id=f"{interrupt_id}:{index}",
+                            name=action_request.get("name", ""),
+                            args=action_request.get("args", {}),
+                        ),
+                    )
+                    if state.client_hooks is not None
+                    else None
+                )
+            except Exception:
+                logger.warning(
+                    "PermissionRequest hook invocation failed",
+                    exc_info=True,
+                )
+                hook_decision = None
+            if hook_decision is None:
+                decisions.append(None)
+                continue
+            if not hook_decision.continue_processing:
+                reason = hook_decision.stop_reason or "Permission stopped by hook"
+                raise ClientHookStopError(reason)
+            permission = hook_decision.permission
+            if permission.behavior == "allow":
+                decisions.append({"type": "approve"})
+            elif permission.behavior == "deny":
+                denied = {"type": "reject"}
+                if permission.reason:
+                    denied["message"] = permission.reason
+                if permission.interrupt:
+                    raise ClientHookStopError(
+                        permission.reason or "Permission interrupted by hook"
+                    )
+                decisions.append(denied)
+            else:
+                decisions.append(None)
+
+        if (
+            any(decision is None for decision in decisions)
+            and state.client_hooks is not None
+        ):
+            try:
+                await state.client_hooks.notification(
+                    context,
+                    DcodeNotificationKind.PERMISSION_REQUIRED,
+                    "Permission required",
+                )
+            except Exception:
+                logger.warning("Notification hook invocation failed", exc_info=True)
+        resolved: list[dict[str, str]] = []
+        for decision, action_request in zip(
+            decisions,
+            action_requests,
+            strict=True,
+        ):
+            resolved.append(
+                decision
+                if decision is not None
+                else _make_hitl_decision(action_request, console)
+            )
+        state.hitl_response[interrupt_id] = {"decisions": resolved}
 
 
 async def _stream_agent(
@@ -1117,7 +1223,7 @@ async def _run_agent_loop(
             iteration numbers.
 
     Raises:
-        HITLIterationLimitError: If the effective turn limit is exceeded.
+        ClientHookStopError: If a client-owned hook stops processing.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
     state = StreamState(
@@ -1144,7 +1250,17 @@ async def _run_agent_loop(
 
     from pathlib import Path
 
+    from deepagents_code.hooks.client_lifecycle import (
+        ClientHookContext,
+        ClientHookService,
+    )
     from deepagents_code.hooks.context import apply_hooks_context
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        HookEvent,
+        SessionEndCause,
+        SessionStartCause,
+    )
     from deepagents_code.hooks.runtime import HooksRuntime
 
     try:
@@ -1158,6 +1274,52 @@ async def _run_agent_loop(
         hooks_runtime = None
     apply_hooks_context(context, hooks_runtime)
     state.hooks_runtime = hooks_runtime
+    state.client_hooks = (
+        ClientHookService(
+            hooks_runtime,
+            notice=lambda notice: console.print(Text(notice), highlight=False),
+        )
+        if hooks_runtime is not None
+        else None
+    )
+
+    client_context = ClientHookContext.create(
+        thread_id=thread_id,
+        approval_mode="manual",
+    )
+    if state.client_hooks is not None:
+        try:
+            start_decision = await state.client_hooks.session_start(
+                client_context,
+                SessionStartCause.STARTUP,
+                model=settings.model_name or None,
+            )
+        except Exception:
+            logger.warning("SessionStart hook invocation failed", exc_info=True)
+            start_decision = None
+        if start_decision is None:
+            session_context = ()
+        else:
+            session_context = state.client_hooks.take_session_context(thread_id)
+        if start_decision is not None and not start_decision.continue_processing:
+            reason = start_decision.stop_reason or "Session start stopped by hook"
+            try:
+                await state.client_hooks.session_end(
+                    client_context,
+                    SessionEndCause.OTHER,
+                )
+            except Exception:
+                logger.warning("SessionEnd hook invocation failed", exc_info=True)
+            raise ClientHookStopError(reason)
+        if session_context:
+            messages = stream_input["messages"]
+            messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": "\n\n".join(session_context),
+                },
+            )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -1168,6 +1330,26 @@ async def _run_agent_loop(
         await _stream_agent(
             agent, stream_input, config, state, console, file_op_tracker, context
         )
+        if state.summarization_observed and state.client_hooks is not None:
+            try:
+                compact_decision = await state.client_hooks.session_start(
+                    client_context,
+                    SessionStartCause.COMPACT,
+                    model=settings.model_name or None,
+                )
+            except Exception:
+                logger.warning(
+                    "Compact SessionStart hook invocation failed",
+                    exc_info=True,
+                )
+            else:
+                if not compact_decision.continue_processing:
+                    reason = (
+                        compact_decision.stop_reason
+                        or "Compact session start stopped by hook"
+                    )
+                    raise ClientHookStopError(reason)
+            state.summarization_observed = False
 
         # The internal default applies when --max-turns is omitted, guarding
         # against unbounded runaway loops in scripts that forgot to set one.
@@ -1189,18 +1371,48 @@ async def _run_agent_loop(
                     "The agent may be stuck retrying rejected commands. "
                     "Increase --max-turns or break the task into smaller steps."
                 )
-                raise HITLIterationLimitError(msg)
+                _raise_hitl_iteration_limit(msg)
             turns += 1
             state.interrupt_occurred = False
             state.hitl_response.clear()
             state.hook_response.clear()
             await _fulfill_pending_hook_interrupts(state)
-            _process_hitl_interrupts(state, console)
+            await _process_hitl_interrupts(state, console, thread_id)
             resume_payload = {**state.hook_response, **state.hitl_response}
             stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
             )
+            if state.summarization_observed and state.client_hooks is not None:
+                try:
+                    compact_decision = await state.client_hooks.session_start(
+                        client_context,
+                        SessionStartCause.COMPACT,
+                        model=settings.model_name or None,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Compact SessionStart hook invocation failed",
+                        exc_info=True,
+                    )
+                else:
+                    if not compact_decision.continue_processing:
+                        reason = (
+                            compact_decision.stop_reason
+                            or "Compact session start stopped by hook"
+                        )
+                        raise ClientHookStopError(reason)
+                state.summarization_observed = False
+    except BaseException:
+        if state.client_hooks is not None:
+            try:
+                await state.client_hooks.session_end(
+                    client_context,
+                    SessionEndCause.OTHER,
+                )
+            except Exception:
+                logger.warning("SessionEnd hook invocation failed", exc_info=True)
+        raise
     finally:
         # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
         # aborted by a provider error mid-tool. On a clean run every id was
@@ -1269,8 +1481,29 @@ async def _run_agent_loop(
         console.print("[green]✓ Task completed[/green]")
         print_usage_table(state.stats, wall_time, console)
 
-    await dispatch_hook("task.complete", {"thread_id": thread_id})
-    await dispatch_hook("session.end", {"thread_id": thread_id})
+    if state.client_hooks is not None:
+        try:
+            await state.client_hooks.notification(
+                client_context,
+                DcodeNotificationKind.AGENT_COMPLETED,
+                "Agent completed",
+            )
+        except Exception:
+            logger.warning("Notification hook invocation failed", exc_info=True)
+        if not state.client_hooks.has_handlers(HookEvent.NOTIFICATION):
+            await dispatch_hook("task.complete", {"thread_id": thread_id})
+        try:
+            await state.client_hooks.session_end(
+                client_context,
+                SessionEndCause.PROMPT_INPUT_EXIT,
+            )
+        except Exception:
+            logger.warning("SessionEnd hook invocation failed", exc_info=True)
+        if not state.client_hooks.has_handlers(HookEvent.SESSION_END):
+            await dispatch_hook("session.end", {"thread_id": thread_id})
+    else:
+        await dispatch_hook("task.complete", {"thread_id": thread_id})
+        await dispatch_hook("session.end", {"thread_id": thread_id})
 
 
 def _build_non_interactive_header(

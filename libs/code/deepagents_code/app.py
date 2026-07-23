@@ -574,6 +574,12 @@ if TYPE_CHECKING:
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
+    from deepagents_code.hooks.client_lifecycle import (
+        ClientHookContext,
+        ClientHookService,
+    )
+    from deepagents_code.hooks.models.domain import SessionEndCause, SessionStartCause
+    from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.plugins.models import (
@@ -2186,8 +2192,8 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
-        # Optional session-scoped Hooks v2 client runtime.
-        self.hooks_runtime = None
+        self.hooks_runtime: HooksRuntime | None = None
+        self.client_hooks: ClientHookService | None = None
 
     @property
     def auto_approve(self) -> bool:
@@ -2810,6 +2816,7 @@ class DeepAgentsApp(App):
         Resolved into a concrete `_lc_thread_id` by `_resolve_resume_thread`
         during background startup.
         """
+        self._initial_resume_requested = resume_thread is not None
 
         self._resume_thread_resolved_event = asyncio.Event()
         """Set once `-r` resume resolution has completed or is unnecessary."""
@@ -4247,8 +4254,81 @@ class DeepAgentsApp(App):
         # in the worker thread. Re-read the app-owned selection on the event
         # loop so the newly assigned state cannot overwrite that newer choice.
         session_state.approval_mode = self._approval_mode
+        if session_state.hooks_runtime is not None:
+            from deepagents_code.hooks.client_lifecycle import ClientHookService
+
+            session_state.client_hooks = ClientHookService(
+                session_state.hooks_runtime,
+                notice=lambda message: self.notify(message, markup=False),
+            )
         self._session_state = session_state
         await self._auto_accept_pending_goal_rubric()
+
+    def _client_hook_context(
+        self, *, thread_id: str | None = None
+    ) -> ClientHookContext | None:
+        from deepagents_code.hooks.client_lifecycle import ClientHookContext
+
+        state = self._session_state
+        if state is None:
+            return None
+        return ClientHookContext.create(
+            thread_id=thread_id or state.thread_id,
+            approval_mode=state.approval_mode,
+            prompt_id=state.turn_id,
+        )
+
+    def _client_hook_service(self) -> ClientHookService | None:
+        from deepagents_code.hooks.client_lifecycle import ClientHookService
+
+        state = self._session_state
+        if state is None or not isinstance(state.client_hooks, ClientHookService):
+            return None
+        return state.client_hooks
+
+    async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
+        from deepagents_code.config import settings
+        from deepagents_code.hooks.models.domain import HookEvent
+
+        service = self._client_hook_service()
+        if service is None or not service.has_handlers(HookEvent.SESSION_START):
+            return True
+        context = self._client_hook_context()
+        if context is None:
+            return True
+        try:
+            decision = await service.session_start(
+                context,
+                cause,
+                model=settings.model_name or None,
+            )
+        except Exception:
+            logger.warning("SessionStart hook invocation failed", exc_info=True)
+            return True
+        if decision.continue_processing:
+            return True
+        message = decision.stop_reason or "Session start was stopped by a hook."
+        await self._mount_message(AppMessage(message))
+        return False
+
+    async def _run_session_end_hook(
+        self,
+        cause: SessionEndCause,
+        *,
+        thread_id: str | None = None,
+    ) -> None:
+        from deepagents_code.hooks.models.domain import HookEvent
+
+        service = self._client_hook_service()
+        if service is None or not service.has_handlers(HookEvent.SESSION_END):
+            return
+        context = self._client_hook_context(thread_id=thread_id)
+        if context is None:
+            return
+        try:
+            await service.session_end(context, cause)
+        except Exception:
+            logger.warning("SessionEnd hook invocation failed", exc_info=True)
 
     async def _ensure_managed_ripgrep(self) -> bool:
         """Install the managed `rg` and prepend it to `PATH`, exactly once.
@@ -4584,6 +4664,7 @@ class DeepAgentsApp(App):
                 candidate = await get_most_recent(agent_filter)
                 if not candidate:
                     self._lc_thread_id = generate_thread_id()
+                    self._initial_resume_requested = False
                     self._resuming = False
                     self._sync_status_connection()
                     if agent_filter:
@@ -4597,6 +4678,7 @@ class DeepAgentsApp(App):
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
+                self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
                 similar = await find_similar_threads(resume)
@@ -4641,6 +4723,7 @@ class DeepAgentsApp(App):
                 # User declined the resume: start a fresh session and skip the
                 # agent/model adoption below so it inherits the launch default.
                 self._lc_thread_id = generate_thread_id()
+                self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
                 self.notify(
@@ -4665,6 +4748,7 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
+            self._initial_resume_requested = False
             self._resuming = False
             self._sync_status_connection()
             self.notify(
@@ -7930,6 +8014,15 @@ class DeepAgentsApp(App):
         self._startup_sequence_running = True
         initial_submitted = False
         try:
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            start_cause = (
+                SessionStartCause.RESUME
+                if self._initial_resume_requested
+                else SessionStartCause.STARTUP
+            )
+            if not await self._run_session_start_hook(start_cause):
+                return
             should_load_history = bool(self._lc_thread_id and self._agent) and (
                 self._resume_thread_intent is not None
                 or not self._has_initial_submission()
@@ -11842,8 +11935,14 @@ class DeepAgentsApp(App):
         ):
             await self._handle_rubric_command(command)
         elif cmd in {"/clear", "/force-clear"}:
+            from deepagents_code.hooks.models.domain import (
+                SessionEndCause,
+                SessionStartCause,
+            )
+
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+            await self._run_session_end_hook(SessionEndCause.CLEAR)
             self._pending_messages.clear()
             self._queued_widgets.clear()
             self._sync_status_queued()
@@ -11922,6 +12021,7 @@ class DeepAgentsApp(App):
                         thread_id=previous_thread_id,
                         suffix=resume_hint,
                     )
+                await self._run_session_start_hook(SessionStartCause.CLEAR)
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -12889,6 +12989,9 @@ class DeepAgentsApp(App):
                 f"Context: {before} → {after} tokens "
                 f"({pct}% decrease), {messages_kept} messages kept."
             )
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            await self._run_session_start_hook(SessionStartCause.COMPACT)
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -15941,6 +16044,15 @@ class DeepAgentsApp(App):
         # `finally` in `run_textual_app`; `ServerProcess.stop()` is idempotent
         # and serialized, so the two callers never race or double-clean.
         server_proc = self._server_proc
+        from deepagents_code.hooks.models.domain import HookEvent
+
+        client_hook_service = self._client_hook_service()
+        has_client_session_hooks = (
+            client_hook_service is not None
+            and client_hook_service.has_handlers(HookEvent.SESSION_END)
+        )
+        if has_client_session_hooks:
+            session_end_payload = None
 
         if (
             should_wait_for_agent
@@ -15948,6 +16060,7 @@ class DeepAgentsApp(App):
             or should_drain_hooks
             or server_proc is not None
             or session_end_payload is not None
+            or has_client_session_hooks
         ):
             refreshed: asyncio.Event | None = None
             if should_wait_for_agent or should_drain_hooks:
@@ -16007,6 +16120,15 @@ class DeepAgentsApp(App):
                             )
 
                     session_end_task = asyncio.ensure_future(_dispatch_session_end())
+                client_session_end_task: asyncio.Task[None] | None = None
+                if has_client_session_hooks:
+                    from deepagents_code.hooks.models.domain import SessionEndCause
+
+                    client_session_end_task = asyncio.ensure_future(
+                        self._run_session_end_hook(
+                            SessionEndCause.PROMPT_INPUT_EXIT,
+                        )
+                    )
 
                 async def _drain_hooks() -> None:
                     phase_start = time.monotonic()
@@ -16189,6 +16311,14 @@ class DeepAgentsApp(App):
                             logger.debug(
                                 "session.end await interrupted during teardown "
                                 "(force-quit); dispatch may not have completed",
+                                exc_info=True,
+                            )
+                    if client_session_end_task is not None:
+                        try:
+                            await client_session_end_task
+                        except BaseException:
+                            logger.debug(
+                                "SessionEnd await interrupted during teardown",
                                 exc_info=True,
                             )
                     logger.debug(
@@ -17598,6 +17728,12 @@ class DeepAgentsApp(App):
                 self._update_status("")
 
                 if self._session_state:
+                    from deepagents_code.hooks.models.domain import SessionEndCause
+
+                    await self._run_session_end_hook(
+                        SessionEndCause.OTHER,
+                        thread_id=previous_thread_id,
+                    )
                     new_thread_id = self._session_state.reset_thread()
                     self._lc_thread_id = new_thread_id
                     self._update_welcome_banner(
@@ -17706,6 +17842,9 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
             self._sync_status_connection()
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            await self._run_session_start_hook(SessionStartCause.CLEAR)
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
             # SKILL.md files.
@@ -21445,6 +21584,16 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
+            from deepagents_code.hooks.models.domain import (
+                SessionEndCause,
+                SessionStartCause,
+            )
+
+            await self._run_session_end_hook(
+                SessionEndCause.RESUME,
+                thread_id=prev_session_thread,
+            )
+            await self._run_session_start_hook(SessionStartCause.RESUME)
 
             # The switch succeeded: record the thread we just left so a
             # subsequent bare `/threads -r` steps back to it rather than

@@ -76,6 +76,14 @@ class SessionEndCause(StrEnum):
     OTHER = "other"
 
 
+class DcodeNotificationKind(StrEnum):
+    """dcode lifecycle notifications with compatible wire mappings."""
+
+    PERMISSION_REQUIRED = "permission_required"
+    AGENT_NEEDS_INPUT = "agent_needs_input"
+    AGENT_COMPLETED = "agent_completed"
+
+
 class CompactTrigger(StrEnum):
     """Reason context compaction was requested."""
 

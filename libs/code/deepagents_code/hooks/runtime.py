@@ -12,6 +12,7 @@ from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.loading import load_hooks_config
 from deepagents_code.hooks.models.domain import (
     HookDecision,
+    HookEvent,
     HookInvocation,
     SubagentStartEvent,
     SubagentStopEvent,
@@ -101,6 +102,14 @@ class HooksRuntime:
         return tuple(
             sorted(event.value for event in self.snapshot.configured_server_events())
         )
+
+    def configured_events(self) -> frozenset[HookEvent]:
+        """Return every event with at least one configured handler.
+
+        Returns:
+            Immutable configured event set.
+        """
+        return self.snapshot.configured_events()
 
     def append_messages(
         self,

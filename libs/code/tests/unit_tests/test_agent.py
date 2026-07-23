@@ -3564,6 +3564,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         """
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3623,6 +3624,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert middleware_types == [
                 ConfigurableModelMiddleware,
                 ShellAllowListMiddleware,
+                ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
 
         pinned = subagents_by_name["pinned"]

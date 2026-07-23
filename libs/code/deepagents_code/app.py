@@ -7107,16 +7107,15 @@ class DeepAgentsApp(App):
             `True` if the spinner is already in the correct position.
         """
         children = list(container.children)
-        if not children or self._loading_widget not in children:
+        loading = self._loading_widget
+        if not children or loading is None or loading not in children:
             return False
 
         first_queued = self._first_mounted_queued_widget(container)
         if first_queued is not None:
-            return children.index(self._loading_widget) == (
-                children.index(first_queued) - 1
-            )
+            return children.index(loading) == (children.index(first_queued) - 1)
 
-        return children[-1] == self._loading_widget
+        return children[-1] == loading
 
     def sync_terminal_background(self) -> None:
         """Best-effort sync of terminal default background to the active theme.

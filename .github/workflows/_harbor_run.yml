@@ -286,6 +286,7 @@ jobs:
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
       HARBOR_BRANCH: ${{ inputs.branch }}
+      HARBOR_SOURCE_SHA: ${{ inputs.branch_sha }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
       # aggregated per category downstream.
@@ -859,9 +860,16 @@ jobs:
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --plugin langsmith \
+            --plugin deepagents_harbor.unified_langsmith_plugin:UnifiedComparisonLangSmithPlugin \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT" \
+            --plugin-kwarg source_branch="$HARBOR_BRANCH" \
+            --plugin-kwarg source_sha="$HARBOR_SOURCE_SHA" \
+            --plugin-kwarg model="$HARBOR_MODEL" \
+            --plugin-kwarg category="$HARBOR_CATEGORY" \
+            --plugin-kwarg agent_config="$HARBOR_AGENT_IMPL" \
+            --plugin-kwarg workflow_run_id="$GITHUB_RUN_ID" \
+            --plugin-kwarg workflow_run_attempt="$GITHUB_RUN_ATTEMPT"
 
       - name: "🏷️ Record LangSmith experiment marker"
         if: always()

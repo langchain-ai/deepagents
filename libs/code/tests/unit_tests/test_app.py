@@ -524,6 +524,49 @@ class TestStartupSequence:
         assert call_count == 1
         assert app._initial_session_started is True
 
+    async def test_session_start_waits_for_session_runtime(self) -> None:
+        """Mounted startup cannot outrun asynchronous session initialization."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello",
+        )
+        run_hook = AsyncMock(return_value=True)
+        submit = AsyncMock()
+        app._run_session_start_hook = run_hook  # ty: ignore[invalid-assignment]
+        app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
+        app._session_init_started = True
+
+        task = asyncio.create_task(app._run_session_start_sequence())
+        await asyncio.sleep(0)
+        run_hook.assert_not_awaited()
+        submit.assert_not_awaited()
+
+        app._session_state = TextualSessionState(thread_id="thread-123")
+        app._session_state_ready.set()
+        await task
+
+        run_hook.assert_awaited_once()
+        submit.assert_awaited_once()
+
+    async def test_stopped_session_start_blocks_initial_submission(self) -> None:
+        """A hook stop at startup prevents the initial prompt from running."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello",
+        )
+        app._session_state = TextualSessionState(thread_id="thread-123")
+        app._run_session_start_hook = AsyncMock(  # ty: ignore[invalid-assignment]
+            return_value=False
+        )
+        submit = AsyncMock()
+        app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
+
+        await app._run_session_start_sequence()
+
+        submit.assert_not_awaited()
+
     async def test_reconnect_drains_queue_without_reloading_history(self) -> None:
         """Later `ServerReady` events should drain queued input once connected."""
         app = DeepAgentsApp(

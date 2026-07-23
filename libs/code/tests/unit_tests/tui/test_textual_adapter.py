@@ -35,6 +35,11 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.hooks.models.domain import (
+    HookEvent,
+    PermissionEffect,
+    PermissionRequestDecision,
+)
 from deepagents_code.tui.textual_adapter import (
     RubricEvaluationEnd,
     SessionStats,
@@ -6327,6 +6332,65 @@ class TestToolHooksTextual:
             "tool_status": "error",
             "tool_output": "Tool approval rejected",
         }
+
+    async def test_yolo_permission_hook_can_reject_before_auto_approval(self) -> None:
+        """YOLO still invokes configured permission hooks before resolution."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        client_hooks = MagicMock()
+        client_hooks.has_handlers.side_effect = (
+            lambda event: event is HookEvent.PERMISSION_REQUEST
+        )
+        client_hooks.permission_request = AsyncMock(
+            return_value=PermissionRequestDecision(
+                event=HookEvent.PERMISSION_REQUEST,
+                permission=PermissionEffect(
+                    behavior="deny",
+                    reason="blocked by hook",
+                ),
+            )
+        )
+        request_approval = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(
+                thread_id="thread-1",
+                approval_mode=ApprovalMode.YOLO,
+                auto_approve=True,
+                turn_id=None,
+                client_hooks=client_hooks,
+            ),
+            adapter=adapter,
+        )
+
+        request_approval.assert_not_awaited()
+        client_hooks.permission_request.assert_awaited_once()
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["decisions"] == [
+            {"type": "reject", "message": "blocked by hook"}
+        ]
 
     async def test_hitl_reasoned_reject_preserves_tool_args_for_result(self) -> None:
         """A reasoned HITL reject keeps args until the resumed ToolMessage."""

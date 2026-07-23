@@ -359,8 +359,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             With `system_prompt=None` and no profile `base_system_prompt` or
             `system_prompt_suffix`, the model receives an empty authored system
-            prompt. Pass `system_prompt=BASE_AGENT_PROMPT` explicitly to opt
-            into the built-in persona and task guidance.
+            prompt.
 
             Passing a `SystemMessage` preserves any `cache_control` markers
             on its existing content blocks — useful for explicit Anthropic

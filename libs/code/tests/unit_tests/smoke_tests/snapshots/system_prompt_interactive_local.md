@@ -269,13 +269,16 @@ Host path mappings:
 
 ## Goal and Rubric Tools
 
-Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
-complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
-A paused goal is persisted for later but must not drive work until the user resumes it.
-A goal is marked complete automatically when its current grading turn satisfies the
-accepted criteria. Use `update_goal` to report a blocker; `status="complete"` remains
-available for optional completion evidence but is not required.
+Consult the latest goal/rubric state notice in conversation history before using
+these tools. Later notices supersede earlier notices. If no notice exists, assume
+there is no actionable goal or rubric and do not call these tools.
+
+When the latest notice says a rubric is active, use `get_rubric` when its exact
+acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
+when its objective or current status is needed. Paused and completed goals must not
+drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
+`status="complete"` remains available for optional completion evidence but is not
+required. Private checkpoint state and the tools remain authoritative for details.
 
 ## `ask_user`
 

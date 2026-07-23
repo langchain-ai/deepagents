@@ -863,7 +863,8 @@ _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
 
 def _is_secret_env(name: str) -> bool:
     """Return whether a credential env var name carries secret material."""
-    return any(marker in name for marker in _SECRET_NAME_MARKERS)
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
 def _credential_options() -> tuple[ConfigOption, ...]:

@@ -1,18 +1,76 @@
 """Tests for transient rubric grader transport retries."""
 
-from typing import Any, cast
+from collections.abc import Callable, Iterator, Sequence
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.rubric import GraderResponse, RubricState
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain.agents.middleware.human_in_the_loop import ApproveDecision
+from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
+from pydantic import Field
 
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
+    RubricGraderState,
     _is_transient_grader_transport_error,
+    _without_internal_control_messages,
 )
+
+if TYPE_CHECKING:
+    from langgraph.runtime import Runtime
+
+
+class _FixedGenericFakeChatModel(GenericFakeChatModel):
+    """Fake chat model whose structured-output tool binding returns itself."""
+
+    messages: Iterator[AIMessage | str] = Field(exclude=True)
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Return this deterministic model after tool binding."""
+        return self
+
+
+def _grader_call(
+    *,
+    result: str,
+    explanation: str,
+    criteria: list[dict[str, Any]] | None = None,
+) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "GraderResponse",
+                "args": {
+                    "result": result,
+                    "explanation": explanation,
+                    "criteria": criteria or [],
+                },
+                "id": "grader-call",
+                "type": "tool_call",
+            }
+        ],
+    )
 
 
 def _read_error() -> httpx.ReadError:
@@ -48,6 +106,18 @@ def _satisfied_result() -> dict[str, Any]:
             explanation="all checks pass",
             criteria=[],
         )
+    }
+
+
+def _tool_satisfied_result() -> dict[str, Any]:
+    return {
+        **_satisfied_result(),
+        "messages": [
+            _grader_call(
+                result="satisfied",
+                explanation="all checks pass",
+            )
+        ],
     }
 
 
@@ -113,6 +183,33 @@ class TestReliableRubricMiddleware:
 
         assert middleware.max_iterations == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 
+    def test_filters_goal_controls_before_sdk_grading(self) -> None:
+        visible = HumanMessage(content="user request")
+        state_notice = HumanMessage(
+            content="goal state",
+            additional_kwargs={"lc_source": "goal_state"},
+        )
+        continuation = HumanMessage(
+            content="goal continuation",
+            additional_kwargs={"lc_source": "goal_control"},
+        )
+        summary = HumanMessage(
+            content="conversation summary",
+            additional_kwargs={"lc_source": "summarization"},
+        )
+        state = cast(
+            "RubricState",
+            {
+                "rubric": "tests pass",
+                "messages": [visible, state_notice, continuation, summary],
+            },
+        )
+
+        filtered = _without_internal_control_messages(state)
+
+        assert filtered["messages"] == [visible, summary]
+        assert state["messages"] == [visible, state_notice, continuation, summary]
+
     async def test_retries_only_grading_without_mutating_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         error = httpx.ReadError(
@@ -123,12 +220,22 @@ class TestReliableRubricMiddleware:
         grader.ainvoke.side_effect = [error, _satisfied_result()]
         middleware._grader = grader
         state = _state()
+        state["_current_grading_run_id"] = "run-123"
         messages_before = list(state["messages"])
 
-        result = await middleware._agrade(state, 0)
+        context = {"approval_mode": "manual"}
+        result = await middleware._agrade(state, 2, context=context)
 
         assert result.result == "satisfied"
         assert grader.ainvoke.await_count == 2
+        assert all(
+            call.kwargs["context"] is context for call in grader.ainvoke.await_args_list
+        )
+        operation_ids = {
+            call.args[0]["rubric_grading_operation_id"]
+            for call in grader.ainvoke.await_args_list
+        }
+        assert operation_ids == {"run-123:2"}
         assert state["messages"] == messages_before
 
     async def test_does_not_retry_unrelated_exception(self) -> None:
@@ -153,6 +260,94 @@ class TestReliableRubricMiddleware:
         assert result.result == "satisfied"
         assert grader.invoke.call_count == 2
 
+    def test_sync_grade_preserves_trace_metadata_and_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        grader = MagicMock()
+        grader.invoke.return_value = _tool_satisfied_result()
+        middleware._grader = grader
+        monkeypatch.setattr(
+            middleware,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+        recorded: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            middleware,
+            "_record_grader_trace_metadata",
+            recorded.append,
+        )
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"tenant_id": "tenant-123"}},
+        )
+        context = {"approval_mode": "manual"}
+
+        result = middleware._grade_once(_state(), 0, context=context)
+
+        assert result.result == "satisfied"
+        assert grader.invoke.call_args.kwargs == {
+            "config": {
+                "metadata": {
+                    "tenant_id": "tenant-123",
+                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                    "rubric_grader_effective_strategy": "ProviderStrategy",
+                }
+            },
+            "context": context,
+        }
+        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
+    async def test_async_grade_preserves_trace_metadata_and_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        grader = AsyncMock()
+        grader.ainvoke.return_value = _tool_satisfied_result()
+        middleware._grader = grader
+        monkeypatch.setattr(
+            middleware,
+            "_resolved_model",
+            SimpleNamespace(
+                model_name="claude-sonnet-4-6",
+                profile={"structured_output": True},
+            ),
+        )
+        recorded: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            middleware,
+            "_record_grader_trace_metadata",
+            recorded.append,
+        )
+        monkeypatch.setattr(
+            "deepagents.middleware.rubric.ensure_config",
+            lambda: {"metadata": {"experiment_id": "experiment-123"}},
+        )
+        context = {"approval_mode": "manual"}
+
+        result = await middleware._agrade_once(_state(), 0, context=context)
+
+        assert result.result == "satisfied"
+        assert grader.ainvoke.await_args.kwargs == {
+            "config": {
+                "metadata": {
+                    "experiment_id": "experiment-123",
+                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                    "rubric_grader_effective_strategy": "ProviderStrategy",
+                }
+            },
+            "context": context,
+        }
+        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
     async def test_second_transient_failure_propagates_async(self) -> None:
         # The retry is bounded to one attempt: a second transient failure must
         # surface so the base middleware can report it as a grader_error.
@@ -176,3 +371,135 @@ class TestReliableRubricMiddleware:
             middleware._grade(_state(), 0)
 
         assert grader.invoke.call_count == 2
+
+    def test_builds_context_aware_nested_grader(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seen: dict[str, Any] = {}
+        grader = SimpleNamespace()
+
+        def fake_create_agent(**kwargs: Any) -> SimpleNamespace:
+            seen.update(kwargs)
+            return grader
+
+        class GraderContext:
+            pass
+
+        resolved_model = SimpleNamespace(
+            model_name="claude-sonnet-4-6",
+            profile={"structured_output": True},
+        )
+        nested_middleware = AgentMiddleware()
+        monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
+        monkeypatch.setattr(
+            "deepagents._models.resolve_model",
+            lambda _model: resolved_model,
+        )
+        middleware = ReliableRubricMiddleware(
+            model="fake-model",
+            grader_middleware=[nested_middleware],
+            grader_context_schema=GraderContext,
+        )
+
+        assert middleware._ensure_grader() is grader
+        assert seen["middleware"] == [nested_middleware]
+        assert seen["context_schema"] is GraderContext
+        assert seen["state_schema"] is RubricGraderState
+        assert middleware._resolved_model is resolved_model
+        assert (
+            middleware._grader_trace_metadata()["rubric_grader_effective_strategy"]
+            == "ProviderStrategy"
+        )
+
+    async def test_nested_grader_interrupt_propagates_with_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grade = AsyncMock(side_effect=GraphInterrupt(()))
+        monkeypatch.setattr(middleware, "_agrade", grade)
+        context = {"approval_mode": "manual"}
+        runtime = cast(
+            "Runtime[Any]",
+            SimpleNamespace(stream_writer=lambda _event: None, context=context),
+        )
+
+        with pytest.raises(GraphInterrupt):
+            await middleware.aafter_agent(_state(), runtime)
+
+        assert grade.await_args is not None
+        assert grade.await_args.kwargs["context"] is context
+
+    @pytest.mark.filterwarnings(
+        r"ignore:The middleware `RubricMiddleware` is in beta\..*"
+    )
+    def test_nested_grader_tool_approval_resumes_through_parent_graph(self) -> None:
+        observed: list[str] = []
+
+        @tool
+        def inspect_external(resource_id: str) -> str:
+            """Inspect an external resource without modifying it."""
+            observed.append(resource_id)
+            return "resource is updated"
+
+        main_model = _FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="external update complete")])
+        )
+        grader_model = _FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "inspect_external",
+                                "args": {"resource_id": "page-123"},
+                                "id": "inspect-call",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    _grader_call(
+                        result="satisfied",
+                        explanation="external state verified",
+                        criteria=[{"name": "resource updated", "passed": True}],
+                    ),
+                ]
+            )
+        )
+        rubric = ReliableRubricMiddleware(
+            model=grader_model,
+            tools=[inspect_external],
+            grader_middleware=[HumanInTheLoopMiddleware({"inspect_external": True})],
+        )
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[rubric],
+            checkpointer=InMemorySaver(),
+        )
+        config: RunnableConfig = {
+            "configurable": {"thread_id": "rubric-grader-tool-hitl"}
+        }
+
+        first = agent.invoke(
+            {
+                "messages": [HumanMessage(content="update the external resource")],
+                "rubric": "- resource updated",
+            },
+            config=config,
+        )
+        interrupt = first["__interrupt__"][0]
+        agent.invoke(
+            Command(
+                resume={interrupt.id: {"decisions": [ApproveDecision(type="approve")]}}
+            ),
+            config=config,
+        )
+
+        assert observed == ["page-123"]
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_evaluations"][-1]["criteria"] == [
+            {"name": "resource updated", "passed": True}
+        ]

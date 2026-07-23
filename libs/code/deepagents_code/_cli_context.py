@@ -47,6 +47,8 @@ class CLIContextSchema:
 
     thread_id: str | None = None
 
+    turn_id: str | None = None
+
     offload_tool_call_id: str | None = None
 
 
@@ -95,6 +97,9 @@ class CLIContext(TypedDict, total=False):
     middleware that needs per-request session identity, including Fireworks
     session-affinity headers.
     """
+
+    turn_id: str | None
+    """Current user-turn ID for binding trusted interactive responses."""
 
     offload_tool_call_id: str | None
     """The sole tool-call ID authorized during a server-driven `/offload` run.

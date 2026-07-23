@@ -2595,10 +2595,13 @@ def create_cli_agent(
     agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
     # Add ask_user middleware (must be early so its tool is available)
+    trusted_ask_user_tool: BaseTool | None = None
     if enable_ask_user:
         from deepagents_code.ask_user import AskUserMiddleware
 
-        agent_middleware.append(AskUserMiddleware())
+        ask_user_middleware = AskUserMiddleware()
+        agent_middleware.append(ask_user_middleware)
+        trusted_ask_user_tool = ask_user_middleware.tools[0]
 
     # Add memory middleware
     if enable_memory:
@@ -2796,13 +2799,12 @@ def create_cli_agent(
         )
 
     interrupt_on: dict[str, bool | InterruptOnConfig] | None
+    auto_mode_config: tuple[Path, list[str]] | None = None
     if resolved_interrupt_on is None:
         interrupt_on = {}
     else:
         interrupt_on = resolved_interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
         if auto_mode_enabled:
-            from deepagents_code.auto_mode import AutoModeHITLMiddleware
-
             configured_allow_list = shell_allow_list or settings.shell_allow_list
             narrow_allow_list = (
                 configured_allow_list if isinstance(configured_allow_list, list) else []
@@ -2813,13 +2815,7 @@ def create_cli_agent(
                 and project_context.project_root is not None
                 else effective_cwd or Path.cwd()
             )
-            agent_middleware.append(
-                AutoModeHITLMiddleware(
-                    resolved_interrupt_on,
-                    worktree_root=trusted_root,
-                    shell_allow_list=narrow_allow_list,
-                )
-            )
+            auto_mode_config = (Path(trusted_root), narrow_allow_list)
 
     # Set up composite backend with routing.
     if sandbox is None:
@@ -2859,6 +2855,21 @@ def create_cli_agent(
         composite_backend = CompositeBackend(
             default=backend,
             routes={},
+        )
+
+    compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
+    if auto_mode_config is not None and resolved_interrupt_on is not None:
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        trusted_root, narrow_allow_list = auto_mode_config
+        agent_middleware.append(
+            AutoModeHITLMiddleware(
+                resolved_interrupt_on,
+                worktree_root=trusted_root,
+                shell_allow_list=narrow_allow_list,
+                trusted_ask_user_tool=trusted_ask_user_tool,
+                trusted_compaction_tool=compaction_middleware.tools[0],
+            )
         )
 
     if fs_tools is not None:
@@ -2931,7 +2942,7 @@ def create_cli_agent(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
-    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
+    agent_middleware.append(compaction_middleware)
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

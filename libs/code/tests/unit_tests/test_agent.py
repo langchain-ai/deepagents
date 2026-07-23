@@ -18,7 +18,8 @@ from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
-    from langchain.agents.middleware.types import AgentState
+    from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
+    from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain.messages import ToolCall
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
@@ -4866,6 +4867,63 @@ class TestCreateCliAgentInterpreterWiring:
             is expected
         )
         assert "hitl_middleware" not in mock_create.call_args.kwargs
+        if expected:
+            from deepagents_code.ask_user import AskUserMiddleware
+            from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+            auto_middleware = next(
+                item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+            )
+            ask_user_middleware = next(
+                item for item in middleware if isinstance(item, AskUserMiddleware)
+            )
+            compaction_middleware = next(
+                item for item in middleware if isinstance(item, CLICompactionMiddleware)
+            )
+            assert (
+                auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
+            )
+            assert (
+                auto_middleware._trusted_compaction_tool
+                is compaction_middleware.tools[0]
+            )
+            assert middleware.index(auto_middleware) < middleware.index(
+                compaction_middleware
+            )
+
+    def test_compiled_agent_preserves_canonical_compaction_tool_identity(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents import create_deep_agent
+        from langgraph.prebuilt import ToolNode
+
+        from deepagents_code._fake_models import _ToolBindingFakeModel
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        compaction = CLICompactionMiddleware(Mock())
+        canonical_tool = compaction.tools[0]
+        review_config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+        auto = AutoModeHITLMiddleware(
+            {"compact_conversation": review_config},
+            worktree_root=tmp_path,
+            trusted_compaction_tool=canonical_tool,
+        )
+        agent = create_deep_agent(
+            model=_ToolBindingFakeModel(),
+            middleware=cast(
+                "list[AgentMiddleware[AgentState[Any], CLIContextSchema, Any]]",
+                [auto, compaction],
+            ),
+            interrupt_on={"compact_conversation": review_config},
+            context_schema=CLIContextSchema,
+        )
+
+        tool_node = agent.get_graph().nodes["tools"].data
+        assert isinstance(tool_node, ToolNode)
+        compiled_tool = tool_node.tools_by_name["compact_conversation"]
+        assert compiled_tool is canonical_tool
+        assert auto._trusted_compaction_tool is compiled_tool
 
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware

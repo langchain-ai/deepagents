@@ -1041,6 +1041,49 @@ async def test_migrated_legacy_handler_remains_side_effect_only(
     }
 
 
+async def test_migrated_dual_legacy_events_reconstruct_each_payload(
+    tmp_path: Path,
+) -> None:
+    payload_dir = tmp_path / "payloads"
+    payload_dir.mkdir()
+    script = (
+        "import json,pathlib,sys;"
+        "data=json.load(sys.stdin);"
+        "pathlib.Path(sys.argv[1], data['event']+'.json')"
+        ".write_text(json.dumps(data))"
+    )
+    config = migrate_legacy_hooks(
+        [
+            {
+                "command": [sys.executable, "-c", script, str(payload_dir)],
+                "events": ["session.start", "user.prompt"],
+            }
+        ]
+    )
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Continue",
+        ),
+    )
+
+    decision = await HookEngine(HooksSnapshot.from_config(config)).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+    )
+
+    assert isinstance(decision, UserPromptSubmitDecision)
+    assert decision.continue_processing is True
+    assert json.loads((payload_dir / "session.start.json").read_text()) == {
+        "event": "session.start",
+        "thread_id": "thread-1",
+    }
+    assert json.loads((payload_dir / "user.prompt.json").read_text()) == {
+        "event": "user.prompt",
+    }
+
+
 def test_reducer_permission_precedence_is_deny_ask_allow(tmp_path: Path) -> None:
     invocation = _invocation(
         tmp_path,

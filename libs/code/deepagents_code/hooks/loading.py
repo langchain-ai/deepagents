@@ -172,7 +172,9 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
 
 
 def _canonical_group(group: MatcherGroup) -> dict[str, object]:
-    raw = group.model_dump(mode="json", by_alias=True, exclude_none=True)
+    raw = group.model_dump(
+        mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
+    )
     handlers: list[dict[str, object]] = []
     hooks_raw = raw.get("hooks")
     if isinstance(hooks_raw, list):

@@ -14,9 +14,9 @@ import shlex
 import subprocess  # noqa: S404  # Legacy hooks are trusted user-configured commands.
 import sys
 from binascii import Error as BinasciiError
-from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT_SECONDS
 from deepagents_code.hooks.models.config import (
     CommandHandlerSpec,
     HooksConfig,
@@ -36,7 +36,10 @@ _LEGACY_EVENT_MAP: dict[str, tuple[HookEvent, str | None]] = {
     "context.compact": (HookEvent.PRE_COMPACT, "manual"),
     "input.required": (HookEvent.NOTIFICATION, "agent_needs_input"),
 }
-LEGACY_COMMAND_TIMEOUT_SECONDS = 5.0
+LEGACY_COMMAND_TIMEOUT_SECONDS = HOOK_SUBPROCESS_TIMEOUT_SECONDS
+# Outer runner grace so the nested adapter timeout can fire first on Windows,
+# where killing the adapter process may not reap its descendants.
+_ADAPTER_OUTER_TIMEOUT_SECONDS = LEGACY_COMMAND_TIMEOUT_SECONDS + 1.0
 _ADAPTER_MODULE = "deepagents_code.hooks.migration"
 _ADAPTER_ARGUMENT_COUNT = 2
 _THREAD_ID_EVENTS = frozenset({"session.start", "task.complete", "session.end"})
@@ -46,6 +49,10 @@ def migrate_legacy_hooks(
     legacy_hooks: Sequence[Mapping[str, object]],
 ) -> HooksConfig:
     """Convert legacy dotted-event hook entries into Hooks v2 configuration.
+
+    Each distinct legacy event name becomes its own matcher group so a single
+    entry subscribed to both `session.start` and `user.prompt` still runs once
+    per mapped name with the matching reconstructed stdin payload.
 
     Args:
         legacy_hooks: Entries from the legacy `hooks.json` list form.
@@ -71,25 +78,34 @@ def migrate_legacy_hooks(
             event_names = [name for name in events if isinstance(name, str)]
         else:
             continue
-        targets: dict[tuple[HookEvent, str | None], str] = {}
         for event_name in event_names:
             mapped = _LEGACY_EVENT_MAP.get(event_name)
-            if mapped is not None:
-                targets.setdefault(mapped, event_name)
-        for (event, matcher), legacy_event in targets.items():
+            if mapped is None:
+                continue
+            event, matcher = mapped
+            adapter_argv = _adapter_argv(argv, event_name)
             grouped.setdefault(event, []).append(
                 MatcherGroup(
                     matcher=matcher,
                     hooks=[
                         CommandHandlerSpec(
                             type="command",
-                            command=_observer_command(argv, legacy_event),
-                            timeout=LEGACY_COMMAND_TIMEOUT_SECONDS,
+                            command=_shell_command(adapter_argv, os_name=os.name),
+                            argv=adapter_argv,
+                            timeout=_ADAPTER_OUTER_TIMEOUT_SECONDS,
+                            inherit_environ=True,
                         )
                     ],
                 )
             )
     return HooksConfig(hooks=grouped)
+
+
+def _adapter_argv(argv: list[str], legacy_event: str) -> list[str]:
+    encoded_argv = base64.urlsafe_b64encode(
+        json.dumps(argv, separators=(",", ":")).encode()
+    ).decode()
+    return [sys.executable, "-m", _ADAPTER_MODULE, legacy_event, encoded_argv]
 
 
 def _observer_command(
@@ -108,11 +124,10 @@ def _observer_command(
     Returns:
         A shell command that invokes the cross-platform legacy adapter.
     """
-    encoded_argv = base64.urlsafe_b64encode(
-        json.dumps(argv, separators=(",", ":")).encode()
-    ).decode()
-    command = [sys.executable, "-m", _ADAPTER_MODULE, legacy_event, encoded_argv]
-    return _shell_command(command, os_name=os.name if os_name is None else os_name)
+    return _shell_command(
+        _adapter_argv(argv, legacy_event),
+        os_name=os.name if os_name is None else os_name,
+    )
 
 
 def _shell_command(argv: Sequence[str], *, os_name: str) -> str:
@@ -145,27 +160,35 @@ def _decode_argv(value: str) -> list[str] | None:
 
 
 def _run_adapter(args: Sequence[str]) -> int:
+    # Nested hook exit status is ignored (side-effect-only). Argument, decode,
+    # stdin, launch, and timeout failures return nonzero for runner diagnostics.
     if len(args) != _ADAPTER_ARGUMENT_COUNT:
-        return 0
+        return 1
     legacy_event, encoded_argv = args
     argv = _decode_argv(encoded_argv)
     if argv is None:
-        return 0
+        return 1
     try:
         payload: object = json.loads(sys.stdin.buffer.read())
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return 0
+        return 1
     if not isinstance(payload, dict):
-        return 0
+        return 1
     wire_payload = {str(key): value for key, value in payload.items()}
-    with suppress(OSError, ValueError):
+    try:
         subprocess.run(  # noqa: S603  # Runs the trusted legacy hook argv directly.
             argv,
             input=_legacy_payload(legacy_event, wire_payload),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=LEGACY_COMMAND_TIMEOUT_SECONDS,
+            start_new_session=True,
         )
+    except subprocess.TimeoutExpired:
+        return 1
+    except OSError:
+        return 1
     return 0
 
 

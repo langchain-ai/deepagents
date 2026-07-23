@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -140,19 +142,39 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
         HookEvent.SESSION_END,
         HookEvent.NOTIFICATION,
     }
-    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 1
-    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 1
-    assert migrated.hooks[HookEvent.PRE_COMPACT][0].matcher == "manual"
+    # Distinct legacy event names stay as separate groups (no setdefault collapse).
+    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 2
+    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 2
+    assert all(
+        group.matcher == "manual" for group in migrated.hooks[HookEvent.PRE_COMPACT]
+    )
     assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
         "agent_completed",
         "agent_needs_input",
     ]
+    prompt_legacy_events = [
+        group.hooks[0].argv[3]
+        for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
+        if group.hooks[0].argv is not None
+    ]
+    compact_legacy_events = [
+        group.hooks[0].argv[3]
+        for group in migrated.hooks[HookEvent.PRE_COMPACT]
+        if group.hooks[0].argv is not None
+    ]
+    assert prompt_legacy_events == ["session.start", "user.prompt"]
+    assert compact_legacy_events == ["context.offload", "context.compact"]
     assert HookEvent.SESSION_START not in migrated.hooks
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
     for groups in migrated.hooks.values():
         for group in groups:
             handler = group.hooks[0]
-            assert handler.timeout == pytest.approx(LEGACY_COMMAND_TIMEOUT_SECONDS)
+            assert handler.timeout == pytest.approx(
+                LEGACY_COMMAND_TIMEOUT_SECONDS + 1.0
+            )
+            assert handler.inherit_environ is True
+            assert handler.argv is not None
+            assert handler.argv[1:3] == ["-m", "deepagents_code.hooks.migration"]
             assert "deepagents_code.hooks.migration" in handler.command
             assert "/dev/null" not in handler.command
 
@@ -185,7 +207,7 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     assert any(item.code == "legacy_migrated" for item in loaded.diagnostics)
 
 
-def test_legacy_migration_uses_windows_shell_quoting(
+def test_legacy_migration_prefers_argv_over_shell_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(migration.os, "name", "nt")
@@ -196,12 +218,26 @@ def test_legacy_migration_uses_windows_shell_quoting(
     )
 
     migrated = migrate_legacy_hooks(
-        [{"command": [r"C:\Program Files\Hooks\observer.exe", "arg with space"]}]
+        [
+            {
+                "command": [
+                    r"C:\Program Files\Hooks\a&b\observer.exe",
+                    "arg with space",
+                ]
+            }
+        ]
     )
-    command = migrated.hooks[HookEvent.USER_PROMPT_SUBMIT][0].hooks[0].command
-
-    assert command.startswith('"C:\\Program Files\\Python\\python.exe"')
-    assert "'" not in command
+    handlers = [
+        group.hooks[0] for group in migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]
+    ]
+    assert handlers
+    for handler in handlers:
+        assert handler.argv is not None
+        assert handler.argv[0] == r"C:\Program Files\Python\python.exe"
+        assert "&" not in "".join(handler.argv[1:3])
+        # Shell form remains available for diagnostics; exec path uses argv.
+        assert handler.command.startswith('"C:\\Program Files\\Python\\python.exe"')
+        assert "'" not in handler.command
 
 
 def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:
@@ -213,14 +249,60 @@ def test_legacy_catch_all_migrates_only_safe_unique_targets() -> None:
         HookEvent.NOTIFICATION,
         HookEvent.PRE_COMPACT,
     }
-    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 1
-    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 1
+    assert len(migrated.hooks[HookEvent.USER_PROMPT_SUBMIT]) == 2
+    assert len(migrated.hooks[HookEvent.PRE_COMPACT]) == 2
     assert [group.matcher for group in migrated.hooks[HookEvent.NOTIFICATION]] == [
         "agent_completed",
         "agent_needs_input",
     ]
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
     assert HookEvent.PERMISSION_REQUEST not in migrated.hooks
+
+
+def test_legacy_timeout_constant_matches_dispatcher() -> None:
+    from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT_SECONDS
+    from deepagents_code.hooks.legacy import HOOK_SUBPROCESS_TIMEOUT
+
+    assert LEGACY_COMMAND_TIMEOUT_SECONDS == HOOK_SUBPROCESS_TIMEOUT_SECONDS
+    assert HOOK_SUBPROCESS_TIMEOUT == HOOK_SUBPROCESS_TIMEOUT_SECONDS
+
+
+def test_legacy_adapter_failures_are_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b"{"), encoding="utf-8"),
+    )
+    assert migration._run_adapter(["session.start"]) == 1
+    assert migration._run_adapter(["session.start", "!!!not-b64!!!"]) == 1
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b"[]"), encoding="utf-8"),
+    )
+    encoded = migration.base64.urlsafe_b64encode(
+        b'["/nonexistent-legacy-hook"]'
+    ).decode()
+    assert migration._run_adapter(["session.start", encoded]) == 1
+
+
+def test_legacy_adapter_ignores_nested_hook_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "hook.py"
+    script.write_text("import sys; sys.exit(2)\n", encoding="utf-8")
+    encoded = migration.base64.urlsafe_b64encode(
+        json.dumps([sys.executable, str(script)]).encode()
+    ).decode()
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
+    )
+    assert migration._run_adapter(["session.start", encoded]) == 0
 
 
 def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:

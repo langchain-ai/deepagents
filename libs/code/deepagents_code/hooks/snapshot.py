@@ -49,6 +49,8 @@ class HookHandler:
     status_message: str | None
     matcher: Pattern[str] | frozenset[str] | None
     matcher_text: str | None
+    argv: tuple[str, ...] | None = None
+    inherit_environ: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +144,8 @@ class HooksSnapshot:
                             status_message=spec.status_message,
                             matcher=matcher,
                             matcher_text=group.matcher,
+                            argv=tuple(spec.argv) if spec.argv is not None else None,
+                            inherit_environ=spec.inherit_environ,
                         )
                     )
             expanded[event] = tuple(handlers)

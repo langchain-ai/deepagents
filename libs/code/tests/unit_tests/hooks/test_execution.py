@@ -138,6 +138,86 @@ def test_sanitized_env_strips_secrets_from_injected_source() -> None:
     assert "mixed_case_secret" not in env
 
 
+async def test_runner_inherit_environ_preserves_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import sys
+
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-secret")
+    code = (
+        "import json,os;"
+        "print(json.dumps({"
+        "'systemMessage': os.environ.get('OPENAI_API_KEY','missing')"
+        "}))"
+    )
+    snapshot = HooksSnapshot.from_config(
+        HooksConfig.model_validate(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": (
+                                        f"{sys.executable} -c {json.dumps(code)}"
+                                    ),
+                                    "inheritEnviron": True,
+                                    "timeout": 5,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    handler = snapshot.handlers[HookEvent.SESSION_START][0]
+
+    result = await run_command_handler(handler, b"{}", cwd=tmp_path)
+
+    assert result.output is not None
+    assert result.output.system_message == "legacy-secret"
+
+
+async def test_runner_argv_avoids_shell_metacharacters(tmp_path: Path) -> None:
+    import sys
+
+    script = tmp_path / "ok.py"
+    script.write_text(
+        "import json; print(json.dumps({'systemMessage': 'argv'}))\n",
+        encoding="utf-8",
+    )
+    snapshot = HooksSnapshot.from_config(
+        HooksConfig.model_validate(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "unused & shell",
+                                    "argv": [sys.executable, str(script)],
+                                    "timeout": 5,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    handler = snapshot.handlers[HookEvent.SESSION_START][0]
+
+    result = await run_command_handler(handler, b"{}", cwd=tmp_path)
+
+    assert result.output is not None
+    assert result.output.system_message == "argv"
+
+
 def test_mcp_tool_mapping_requires_resolved_metadata() -> None:
     assert format_mcp_wire_name("github", "create_issue") == "mcp__github__create_issue"
     call = ToolCallData(

@@ -67,21 +67,43 @@ async def run_command_handler(
     Raises:
         asyncio.CancelledError: If the caller cancels command execution.
     """
-    if not handler.command.strip():
+    if handler.argv is not None:
+        if not handler.argv or not handler.argv[0].strip():
+            return _failure(handler.id, "invalid_command", "Hook argv is empty")
+    elif not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
+    if env is not None:
+        launch_env = env
+    elif handler.inherit_environ:
+        launch_env = dict(os.environ)
+    else:
+        launch_env = sanitize_hook_environ()
+
     try:
-        # Shell form preserves pipes, redirects, globs, and $VAR expansion to
-        # match the compatible command-hook contract (no separate args field).
-        process = await asyncio.create_subprocess_shell(
-            handler.command,
-            cwd=cwd,
-            env=env if env is not None else sanitize_hook_environ(),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        # Prefer argv + exec when present so Windows metacharacters in paths are
+        # not reinterpreted by cmd.exe. Shell form preserves pipes, redirects,
+        # globs, and $VAR expansion for ordinary command hooks.
+        if handler.argv is not None:
+            process = await asyncio.create_subprocess_exec(
+                *handler.argv,
+                cwd=cwd,
+                env=launch_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        else:
+            process = await asyncio.create_subprocess_shell(
+                handler.command,
+                cwd=cwd,
+                env=launch_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
     except (OSError, ValueError) as exc:
         return _failure(handler.id, "launch_failed", f"Could not launch hook: {exc}")
 

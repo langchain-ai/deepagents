@@ -363,6 +363,7 @@ def test_hooks_config_validates_event_keys_and_aliases() -> None:
             mode="json",
             by_alias=True,
             exclude_none=True,
+            exclude_defaults=True,
         )
         == payload
     )

@@ -47,8 +47,6 @@ class CLIContextSchema:
 
     thread_id: str | None = None
 
-    blocked_goal_retry_context: str | None = None
-
     offload_tool_call_id: str | None = None
 
 
@@ -96,14 +94,6 @@ class CLIContext(TypedDict, total=False):
     Mirrors `config.configurable.thread_id` into runtime context for model-call
     middleware that needs per-request session identity, including Fireworks
     session-affinity headers.
-    """
-
-    blocked_goal_retry_context: str | None
-    """One-turn model context for retrying a previously blocked goal.
-
-    This is intentionally carried in runtime context instead of the user
-    message so it is not parsed as a file mention or checkpointed as human
-    input.
     """
 
     offload_tool_call_id: str | None

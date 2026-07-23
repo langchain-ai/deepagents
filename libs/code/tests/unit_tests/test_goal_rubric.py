@@ -233,6 +233,34 @@ class TestConversationContext:
         ):
             assert secret not in context
 
+    def test_control_messages_are_excluded_but_summary_is_retained(self) -> None:
+        context = _conversation_context(
+            [
+                HumanMessage(content="visible user text"),
+                HumanMessage(
+                    content="STATE_SECRET",
+                    additional_kwargs={"lc_source": "goal_state"},
+                ),
+                HumanMessage(
+                    content="CONTINUATION_SECRET",
+                    additional_kwargs={"lc_source": "goal_control"},
+                ),
+                HumanMessage(
+                    content="visible summary",
+                    additional_kwargs={"lc_source": "summarization"},
+                ),
+                HumanMessage(content="[SYSTEM] Goal set by the user. LEGACY_SECRET"),
+                AIMessage(content="visible assistant text"),
+            ]
+        )
+
+        assert "visible user text" in context
+        assert "visible summary" in context
+        assert "visible assistant text" in context
+        assert "STATE_SECRET" not in context
+        assert "CONTINUATION_SECRET" not in context
+        assert "LEGACY_SECRET" not in context
+
     def test_context_is_bounded_and_favors_recent_messages(self) -> None:
         messages = [
             HumanMessage(content=f"message-{index} " + "&" * 2_000)

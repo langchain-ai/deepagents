@@ -308,7 +308,7 @@ def collect_experiment(
         except Exception as exc:  # noqa: BLE001  # API clients expose several transport exceptions
             print(
                 f"::warning::LangSmith usage query failed for {experiment!r} "
-                f"(attempt {attempt + 1}/{attempts}): {type(exc).__name__}"
+                f"(attempt {attempt + 1}/{attempts}): {type(exc).__name__}: {exc}"
             )
         if attempt + 1 < attempts:
             sleep(delays[min(attempt, len(delays) - 1)])
@@ -348,7 +348,7 @@ def collect_all(
                 except Exception as exc:  # noqa: BLE001  # API clients expose several transport exceptions
                     print(
                         f"::warning::LangSmith usage query failed for {experiment!r} "
-                        f"(attempt {attempt + 1}/{attempts}): {type(exc).__name__}"
+                        f"(attempt {attempt + 1}/{attempts}): {type(exc).__name__}: {exc}"
                     )
                     continue
                 if output[experiment]["status"] == "unavailable" or _coverage_rank(

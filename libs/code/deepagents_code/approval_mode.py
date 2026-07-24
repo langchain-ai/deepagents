@@ -22,6 +22,9 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
+AUTO_NOTICE_VERSION = "2026-03-26"
+"""Version of the first-run Auto mode education toast."""
+
 
 class ApprovalMode(StrEnum):
     """Tool-approval policy selected for an interactive thread."""
@@ -251,6 +254,62 @@ def yolo_acknowledgement_path() -> Path:
     return DEFAULT_STATE_DIR / "approval.json"
 
 
+def _load_approval_state(path: Path) -> dict[str, object]:
+    """Load the install-local approval state file, or an empty dict.
+
+    Args:
+        path: Path to `approval.json`.
+
+    Returns:
+        Parsed object mapping when valid; otherwise `{}`.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_approval_state(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    failure_label: str,
+) -> bool:
+    """Atomically write install-local approval state.
+
+    Args:
+        path: Destination path under the private dcode state directory.
+        payload: JSON-serializable mapping to persist.
+        failure_label: Human-readable label for the warning log on OSError.
+
+    Returns:
+        `True` when the private atomic write succeeds, otherwise `False`.
+    """
+    tmp_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            path.parent.chmod(0o700)
+        fd, raw_tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        tmp_path = Path(raw_tmp_path)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.write("\n")
+        if os.name != "nt":
+            tmp_path.chmod(0o600)
+        tmp_path.replace(path)
+        if os.name != "nt":
+            path.chmod(0o600)
+    except OSError:
+        logger.warning("Could not persist %s", failure_label, exc_info=True)
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        return False
+    return True
+
+
 def has_yolo_acknowledgement(path: Path | None = None) -> bool:
     """Return whether the current unrestricted-mode warning was accepted.
 
@@ -261,13 +320,9 @@ def has_yolo_acknowledgement(path: Path | None = None) -> bool:
         `True` only for a valid record matching the current policy version.
     """
     target = path or yolo_acknowledgement_path()
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
+    data = _load_approval_state(target)
     return (
-        isinstance(data, dict)
-        and data.get("version") == 1
+        data.get("version") == 1
         and data.get("policy_version") == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
         and data.get("acknowledged") is True
     )
@@ -275,6 +330,9 @@ def has_yolo_acknowledgement(path: Path | None = None) -> bool:
 
 def save_yolo_acknowledgement(path: Path | None = None) -> bool:
     """Persist the current unrestricted-mode warning acknowledgement.
+
+    Merges into any existing approval state so first-run Auto notice fields are
+    preserved.
 
     Args:
         path: Alternate acknowledgement path for tests.
@@ -284,29 +342,56 @@ def save_yolo_acknowledgement(path: Path | None = None) -> bool:
     """
     target = path or yolo_acknowledgement_path()
     payload = {
+        **_load_approval_state(target),
         "version": 1,
         "policy_version": YOLO_ACKNOWLEDGEMENT_POLICY_VERSION,
         "acknowledged": True,
     }
-    tmp_path: Path | None = None
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name != "nt":
-            target.parent.chmod(0o700)
-        fd, raw_tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
-        tmp_path = Path(raw_tmp_path)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"))
-            handle.write("\n")
-        if os.name != "nt":
-            tmp_path.chmod(0o600)
-        tmp_path.replace(target)
-        if os.name != "nt":
-            target.chmod(0o600)
-    except OSError:
-        logger.warning("Could not persist YOLO acknowledgement", exc_info=True)
-        if tmp_path is not None:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-        return False
-    return True
+    return _write_approval_state(
+        target,
+        payload,
+        failure_label="YOLO acknowledgement",
+    )
+
+
+def has_auto_mode_notice(path: Path | None = None) -> bool:
+    """Return whether the current Auto first-enable toast was already shown.
+
+    Args:
+        path: Alternate approval-state path for tests.
+
+    Returns:
+        `True` only when a shown notice matches `AUTO_NOTICE_VERSION`.
+    """
+    target = path or yolo_acknowledgement_path()
+    data = _load_approval_state(target)
+    return (
+        data.get("auto_notice_shown") is True
+        and data.get("auto_notice_version") == AUTO_NOTICE_VERSION
+    )
+
+
+def save_auto_mode_notice(path: Path | None = None) -> bool:
+    """Persist that the Auto first-enable toast was shown.
+
+    Merges into any existing approval state so YOLO acknowledgement fields are
+    preserved. Callers should fail open when this returns `False`.
+
+    Args:
+        path: Alternate approval-state path for tests.
+
+    Returns:
+        `True` when the private atomic write succeeds, otherwise `False`.
+    """
+    target = path or yolo_acknowledgement_path()
+    payload = {
+        **_load_approval_state(target),
+        "version": 1,
+        "auto_notice_version": AUTO_NOTICE_VERSION,
+        "auto_notice_shown": True,
+    }
+    return _write_approval_state(
+        target,
+        payload,
+        failure_label="Auto mode notice",
+    )

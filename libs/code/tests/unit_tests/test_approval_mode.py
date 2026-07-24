@@ -12,13 +12,17 @@ if TYPE_CHECKING:
 
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
+    AUTO_NOTICE_VERSION,
+    YOLO_ACKNOWLEDGEMENT_POLICY_VERSION,
     ApprovalMode,
     approval_mode_key,
     approval_mode_payload,
     aread_approval_mode_from_store,
     awrite_approval_mode,
+    has_auto_mode_notice,
     has_yolo_acknowledgement,
     read_approval_mode_from_store,
+    save_auto_mode_notice,
     save_yolo_acknowledgement,
 )
 
@@ -237,3 +241,56 @@ def test_yolo_acknowledgement_rejects_stale_policy(tmp_path: Path) -> None:
     path.write_text('{"version":1,"policy_version":"old","acknowledged":true}\n')
 
     assert not has_yolo_acknowledgement(path)
+
+
+def test_auto_mode_notice_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / ".state" / "approval.json"
+
+    assert not has_auto_mode_notice(path)
+    assert save_auto_mode_notice(path)
+    assert has_auto_mode_notice(path)
+
+
+def test_auto_mode_notice_rejects_stale_version(tmp_path: Path) -> None:
+    path = tmp_path / "approval.json"
+    path.write_text(
+        '{"version":1,"auto_notice_version":"old","auto_notice_shown":true}\n'
+    )
+
+    assert not has_auto_mode_notice(path)
+
+
+def test_auto_mode_notice_rejects_missing_or_corrupt_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing" / "approval.json"
+    corrupt = tmp_path / "approval.json"
+    corrupt.write_text("not-json\n", encoding="utf-8")
+
+    assert not has_auto_mode_notice(missing)
+    assert not has_yolo_acknowledgement(missing)
+    assert not has_auto_mode_notice(corrupt)
+    assert not has_yolo_acknowledgement(corrupt)
+
+
+def test_yolo_and_auto_notice_coexist(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "approval.json"
+
+    assert save_auto_mode_notice(path)
+    assert save_yolo_acknowledgement(path)
+    assert has_auto_mode_notice(path)
+    assert has_yolo_acknowledgement(path)
+
+    # Reverse order: YOLO first, then Auto, still keeps both records.
+    path.unlink()
+    assert save_yolo_acknowledgement(path)
+    assert save_auto_mode_notice(path)
+    assert has_auto_mode_notice(path)
+    assert has_yolo_acknowledgement(path)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == 1
+    assert data["policy_version"] == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
+    assert data["acknowledged"] is True
+    assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
+    assert data["auto_notice_shown"] is True

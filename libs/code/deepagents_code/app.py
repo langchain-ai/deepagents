@@ -130,7 +130,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_MODE_ENABLED_WARNING = (
-    "Auto enabled. It classifies gated actions but is not sandbox containment."
+    "Auto is active: a classifier reviews gated actions (not a sandbox)."
 )
 
 
@@ -3846,12 +3846,7 @@ class DeepAgentsApp(App):
 
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
-            self.notify(
-                _AUTO_MODE_ENABLED_WARNING,
-                severity="warning",
-                timeout=10,
-                markup=False,
-            )
+            self._notify_auto_mode_enabled_once()
         elif self._approval_mode.value == "yolo":
             self.notify(
                 "YOLO is active: gated actions run without review.",
@@ -7511,6 +7506,27 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
+    def _notify_auto_mode_enabled_once(self) -> None:
+        """Show the Auto education toast at most once per install.
+
+        Fail open when the install-local notice cannot be persisted: Auto still
+        enables and the toast may reappear on a later successful enable.
+        """
+        from deepagents_code.approval_mode import (
+            has_auto_mode_notice,
+            save_auto_mode_notice,
+        )
+
+        if has_auto_mode_notice():
+            return
+        self.notify(
+            _AUTO_MODE_ENABLED_WARNING,
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+        save_auto_mode_notice()
+
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.
 
@@ -7535,12 +7551,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
-        self.notify(
-            _AUTO_MODE_ENABLED_WARNING,
-            severity="warning",
-            timeout=8,
-            markup=False,
-        )
+        self._notify_auto_mode_enabled_once()
         await self._auto_accept_pending_goal_rubric()
         return True
 
@@ -16852,13 +16863,7 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
-            self.notify(
-                "Automated review is enabled. It checks approval-gated "
-                "actions, but may not catch every issue.",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
+            self._notify_auto_mode_enabled_once()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
 

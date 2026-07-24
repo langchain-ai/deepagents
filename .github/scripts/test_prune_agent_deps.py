@@ -182,7 +182,7 @@ def test_main_rewrites_file_in_place(
     """`main` prunes the file and leaves unrelated keys (`graphs`) intact."""
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, SAMPLE_DEPS)
-    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
     prune.main()
@@ -244,12 +244,12 @@ def test_main_handles_multi_colon_model(
 ) -> None:
     """`provider:model:tag` specs split on the first colon only.
 
-    Several matrix models carry a trailing tag (e.g. `ollama:glm-5:cloud`); the
+    Several matrix models carry a trailing tag (e.g. `ollama:glm-5.2:cloud`); the
     provider must still resolve via `split(':', 1)`.
     """
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, SAMPLE_DEPS)
-    monkeypatch.setenv("HARBOR_MODEL", "ollama:glm-5:cloud")
+    monkeypatch.setenv("HARBOR_MODEL", "ollama:glm-5.2:cloud")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
     prune.main()
@@ -268,7 +268,7 @@ def test_main_rejects_wrong_arg_count(
     monkeypatch: pytest.MonkeyPatch, argv_tail: list[str]
 ) -> None:
     """Missing or extra CLI arguments produce a usage error before any work."""
-    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), *argv_tail])
 
     with pytest.raises(SystemExit):
@@ -281,7 +281,7 @@ def test_main_prints_summary(
     """The operator-facing summary names the kept package and removed count."""
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, SAMPLE_DEPS)
-    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
     prune.main()
@@ -305,7 +305,7 @@ def test_main_annotates_drift_without_writing(
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, dependencies)
     original = config_path.read_text()
-    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
     with pytest.raises(SystemExit) as excinfo:
@@ -321,7 +321,7 @@ def test_main_annotates_malformed_json(
     """Invalid JSON fails with a `::error::` annotation rather than a traceback."""
     config_path = tmp_path / "langgraph.json"
     config_path.write_text("{not valid json")
-    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
     with pytest.raises(SystemExit, match="::error::"):

@@ -2467,7 +2467,9 @@ def _uv_tool_with_packages(
             raise ToolRequirementIntrospectionError(msg)
         if canonicalize_name(name) == main:
             continue
-        unsupported_keys = sorted(set(entry) - {"name"})
+        unsupported_keys = sorted(
+            str(key) for key in entry if not isinstance(key, str) or key != "name"
+        )
         if unsupported_keys:
             msg = (
                 f"uv tool receipt requirement {name!r} cannot be preserved "

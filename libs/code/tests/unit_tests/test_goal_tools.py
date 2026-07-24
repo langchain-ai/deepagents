@@ -599,6 +599,7 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
     ]
     system_refs: list[object] = []
     schema_bytes: list[bytes] = []
+    notice_texts: list[str] = []
 
     for state in states:
         captured: dict[str, SimpleNamespace] = {}
@@ -609,6 +610,13 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
             _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
         )
         system_refs.append(captured["request"].system_message)
+        notice_texts.append(
+            "".join(
+                message.content
+                for message in captured["request"].messages
+                if isinstance(getattr(message, "content", None), str)
+            )
+        )
         schemas = [convert_to_openai_tool(tool) for tool in middleware.tools]
         schema_bytes.append(
             json.dumps(schemas, sort_keys=True, separators=(",", ":")).encode()
@@ -616,8 +624,16 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
 
     assert all(system is base_system for system in system_refs)
     assert len(set(schema_bytes)) == 1
-    assert b"Current Persisted Goal/Rubric State" not in schema_bytes[0]
-    assert b"blocked_goal_retry_context" not in schema_bytes[0]
+    # The appended goal-state notice is the only model-visible surface this
+    # middleware adds, so it must stay coarse: the private objective, status
+    # note, and rubric criteria must never leak into it, while an
+    # objective-bearing state still produces a notice.
+    for state, notice_text in zip(states, notice_texts, strict=True):
+        assert "ship it" not in notice_text
+        assert "tests pass" not in notice_text
+        assert "waiting" not in notice_text
+        if state.get("_goal_objective"):
+            assert "Goal status:" in notice_text
 
 
 async def test_awrap_model_call_leaves_system_message_unchanged() -> None:

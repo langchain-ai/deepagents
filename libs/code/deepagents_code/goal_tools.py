@@ -398,7 +398,8 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
             Use this only when the latest goal/rubric state notice reports an
             actionable goal. It returns the objective, criteria, lifecycle status,
-            and any prior note from authoritative checkpoint state.
+            and any prior note from authoritative checkpoint state. Paused and
+            completed goals report `active=False` and must not drive work.
 
             Returns:
                 Goal snapshot with `active`, `objective`, `status`, `criteria`,

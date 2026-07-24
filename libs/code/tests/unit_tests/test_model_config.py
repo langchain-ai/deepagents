@@ -217,6 +217,65 @@ class TestHasProviderCredentials:
         ):
             assert has_provider_credentials("anthropic") is True
 
+    @pytest.mark.parametrize("provider", ["anthropic", "fireworks", "openai"])
+    def test_returns_true_with_langsmith_gateway(self, provider: str) -> None:
+        """Returns True for providers supported by LangSmith Gateway."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials(provider) is True
+
+    def test_returns_true_with_custom_langsmith_gateway_url(self) -> None:
+        """Returns True when the gateway setting is a custom URL."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "https://gateway.example.com",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("openai")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_GATEWAY_API_KEY"
+
+    @pytest.mark.parametrize("gateway", ["false", "0", "no", ""])
+    def test_returns_false_when_langsmith_gateway_disabled(self, gateway: str) -> None:
+        """Returns False when the gateway setting is disabled."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": gateway,
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials("anthropic") is False
+
+    def test_returns_false_when_langsmith_gateway_key_missing(self) -> None:
+        """Returns False when the enabled gateway has no API key."""
+        with patch.dict("os.environ", {"LANGSMITH_GATEWAY": "true"}, clear=True):
+            assert has_provider_credentials("openai") is False
+
+    def test_returns_false_for_unsupported_gateway_provider(self) -> None:
+        """Returns False when the provider integration lacks gateway support."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials("groq") is False
+
 
 @pytest.fixture
 def fake_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

@@ -540,6 +540,16 @@ Sized to fit comfortably above the provider-grouped list in `/model` without
 pushing the rest of the catalog off-screen on a typical terminal.
 """
 
+LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
+    {"anthropic", "fireworks", "openai"}
+)
+"""Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
+
+LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
+LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
+_LANGSMITH_GATEWAY_FALSE_VALUES = frozenset({"false", "0", "no"})
+
+
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
@@ -1878,6 +1888,26 @@ def resolve_provider_credential(provider: str) -> str | None:
     return None
 
 
+def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
+    """Return a configured status when LangSmith Gateway can authenticate."""
+    gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
+    gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
+    if (
+        provider not in LANGSMITH_GATEWAY_PROVIDERS
+        or not gateway
+        or gateway.lower() in _LANGSMITH_GATEWAY_FALSE_VALUES
+        or not gateway_key
+    ):
+        return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=provider,
+        env_var=LANGSMITH_GATEWAY_API_KEY_ENV,
+        source=ProviderAuthSource.ENV,
+        detail="LangSmith Gateway credentials set",
+    )
+
+
 def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
@@ -2011,6 +2041,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
             configured = _resolve_configured(provider, env_var)
             if configured:
                 return configured
+            gateway_configured = _resolve_gateway_configured(provider)
+            if gateway_configured:
+                return gateway_configured
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,
@@ -2034,6 +2067,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         configured = _resolve_configured(provider, env_var)
         if configured:
             return configured
+        gateway_configured = _resolve_gateway_configured(provider)
+        if gateway_configured:
+            return gateway_configured
         if provider in IMPLICIT_AUTH_PROVIDERS:
             return ProviderAuthStatus(
                 state=ProviderAuthState.IMPLICIT,

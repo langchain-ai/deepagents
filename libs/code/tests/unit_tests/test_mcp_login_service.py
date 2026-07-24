@@ -11,6 +11,7 @@ from deepagents_code.mcp_login_service import (
     ConfigResolution,
     ConfigResolutionError,
     ServerSelection,
+    format_legacy_ignored_notice,
     format_untrusted_project_notice,
     resolve_mcp_config,
     select_server,
@@ -18,6 +19,46 @@ from deepagents_code.mcp_login_service import (
 
 if TYPE_CHECKING:
     import pytest
+
+    from deepagents_code.json_types import JsonValue
+
+
+def _project_approval_config(
+    project_root: Path,
+    name: str,
+    server: JsonValue,
+    *,
+    disabled: list[str] | None = None,
+) -> str:
+    """Build user config text with one scoped project MCP approval."""
+    from deepagents_code.model_config import fingerprint_mcp_server_config
+
+    text = (
+        "[mcp]\n"
+        "enabled_project_server_approvals = ["
+        f'{{ project_root = "{project_root}", name = "{name}", '
+        f'fingerprint = "{fingerprint_mcp_server_config(server)}" }}]\n'
+    )
+    if disabled:
+        quoted = ", ".join(f'"{item}"' for item in disabled)
+        text += f"disabled_project_servers = [{quoted}]\n"
+    return text
+
+
+def _isolate_project_mcp_trust_lists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_text: str = "[mcp]\n",
+) -> Path:
+    """Point MCP trust lists at a test-only user config."""
+    from deepagents_code import _env_vars
+
+    user_config = tmp_path / "config.toml"
+    user_config.write_text(config_text)
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config)
+    monkeypatch.delenv(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
+    monkeypatch.delenv(_env_vars.DISABLED_PROJECT_MCP_SERVERS, raising=False)
+    return user_config
 
 
 class TestResolveMcpConfigExplicit:
@@ -81,27 +122,202 @@ class TestResolveMcpConfigAutodiscover:
     def test_untrusted_only_returns_no_usable_config_with_paths(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """An untrusted-only discovery returns the project paths it skipped."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
         project_cfg = tmp_path / "project.json"
         project_cfg.write_text(
             '{"mcpServers":{"notion":{"transport":"http",'
             '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
         )
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
         ):
             result = resolve_mcp_config(None)
         assert isinstance(result, ConfigResolutionError)
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
         assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_session_trust_allows_project_server_for_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An in-app login inherits the session's allow-once decision."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"notion"}
+
+    def test_legacy_enabled_project_servers_is_surfaced(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A legacy flat allowlist is reported so login can explain the change.
+
+        `mcp login` is non-interactive (no approval prompt), so a user who
+        relied on the removed `[mcp].enabled_project_servers` key must be told
+        why their server stopped loading rather than have it vanish silently.
+        """
+        _isolate_project_mcp_trust_lists(
+            monkeypatch, tmp_path, '[mcp]\nenabled_project_servers = ["notion"]\n'
+        )
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+        assert isinstance(result, ConfigResolutionError)
+        assert result.legacy_ignored == ("notion",)
+
+    def test_unreadable_policy_fails_closed_and_surfaces_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A broken trust policy skips even a previously-approved project server.
+
+        Regression guard: a valid approval plus a wrong-typed
+        `disabled_project_servers` sets `read_error` and empties the deny set, so
+        `is_enabled` would still match the live approval. The login resolver must
+        instead fail closed (a revoked-but-mistyped deny must not be bypassed)
+        and surface the policy read error rather than a bare "no usable config".
+        """
+        from deepagents_code.model_config import fingerprint_mcp_server_config
+
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        # Valid approval for slack, but a wrong-typed deny list -> read_error.
+        config_text = (
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_cfg.parent}", name = "slack", '
+            f'fingerprint = "{fingerprint_mcp_server_config(slack)}" }}]\n'
+            "disabled_project_servers = 123\n"
+        )
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path, config_text)
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (project_cfg,)
+        assert "config.toml" in result.message
+
+    def test_unreadable_policy_surfaced_even_when_a_config_loads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A policy read error is surfaced on success, not only when no config loads.
+
+        Regression guard: `policy_error` was previously consulted only in the
+        no-usable-config branch, so an unreadable `config.toml` was silently
+        swallowed whenever a user-level config still loaded — and the dropped
+        project servers were then mislabeled as merely "untrusted".
+        """
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        fake_home = tmp_path / "home"
+        user_dir = fake_home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        user_cfg = user_dir / ".mcp.json"
+        user_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text('{"mcpServers":{"fs":{"command":"node"}}}')
+        # Wrong-typed deny list -> read_error / load_failed.
+        _isolate_project_mcp_trust_lists(
+            monkeypatch, tmp_path, "[mcp]\ndisabled_project_servers = 123\n"
+        )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[user_cfg, project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.policy_error is not None
+        assert "config.toml" in format_policy_error_notice(result.policy_error)
+        # The project server was dropped by the policy failure; recorded so the
+        # caller can prefer the policy notice over the misleading untrusted one.
+        assert project_cfg in result.untrusted_project_paths
+
+    def test_legacy_env_var_surfaced_through_resolution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The removed env var, still set, rides through resolution for surfacing."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text('{"mcpServers":{"fs":{"command":"node"}}}')
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "fs")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        # `fs` is unapproved (the old name is ignored), so nothing loads, but the
+        # legacy-env flag must ride along so the caller can explain the rename.
+        assert result.legacy_env_ignored is True
+        assert format_legacy_env_ignored_notice(result.legacy_env_ignored)
+
+    def test_broken_project_config_surfaces_parse_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed `.mcp.json` surfaces its parse error, not a bare not-found."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text("{not valid json")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert "load errors" in result.message
+        assert str(project_cfg) in result.message
 
     def test_user_level_config_is_loaded_without_trust_prompt(
         self,
@@ -118,15 +334,9 @@ class TestResolveMcpConfigAutodiscover:
             '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
         )
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[user_cfg],
         ):
             result = resolve_mcp_config(None)
         assert isinstance(result, ConfigResolution)
@@ -139,6 +349,7 @@ class TestResolveMcpConfigAutodiscover:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """User config loads OK while an untrusted project config is noted."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
         fake_home = tmp_path / "home"
         user_dir = fake_home / ".deepagents"
         user_dir.mkdir(parents=True)
@@ -154,15 +365,9 @@ class TestResolveMcpConfigAutodiscover:
             '"url":"https://slack.com/mcp","auth":"oauth"}}}'
         )
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[user_cfg, project_cfg],
         ):
             result = resolve_mcp_config(None)
         # Resolution succeeds because the user config is usable.
@@ -174,48 +379,241 @@ class TestResolveMcpConfigAutodiscover:
         assert "notion" in result.config["mcpServers"]
         assert "slack" not in result.config["mcpServers"]
 
-    def test_trusted_project_config_is_merged(
+    def test_allowlisted_project_server_is_loaded_for_login(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Trusted project config merges into resolution alongside user configs."""
-        fake_home = tmp_path / "home"
-        user_dir = fake_home / ".deepagents"
-        user_dir.mkdir(parents=True)
-        user_cfg = user_dir / ".mcp.json"
-        user_cfg.write_text(
-            '{"mcpServers":{"notion":{"transport":"http",'
-            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        """An always-allowed project server is available to `mcp login`."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"},'
+            '"other":{"type":"http","url":"https://example.com/mcp",'
+            '"auth":"oauth"}}}'
         )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project_cfg.parent, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"slack"}
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_changed_override_hides_approved_lower_precedence_server(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Login cannot select a stale approval shadowed by a changed server."""
+        project = tmp_path / "project"
+        nested_cfg = project / ".deepagents" / ".mcp.json"
+        root_cfg = project / ".mcp.json"
+        nested_cfg.parent.mkdir(parents=True)
+        approved = {"type": "http", "url": "https://safe.test/mcp"}
+        nested_cfg.write_text(
+            '{"mcpServers":{"docs":{"type":"http","url":"https://safe.test/mcp"}}}'
+        )
+        root_cfg.write_text(
+            '{"mcpServers":{"docs":{"type":"http","url":"https://changed.test/mcp"}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project, "docs", approved),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[nested_cfg, root_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (root_cfg,)
+
+    def test_env_approval_survives_unreadable_trust_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Login retains explicit env approvals when trust TOML is unreadable."""
+        from deepagents_code import _env_vars
+
         project_cfg = tmp_path / "project" / ".mcp.json"
         project_cfg.parent.mkdir()
         project_cfg.write_text(
-            '{"mcpServers":{"slack":{"transport":"http",'
-            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+            '{"mcpServers":{"docs":{"type":"http",'
+            '"url":"https://docs.test/mcp"},'
+            '"other":{"type":"http","url":"https://other.test/mcp"}}}'
         )
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.project_utils.find_project_root",
-                return_value=tmp_path / "project",
-            ),
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path, "[[not valid toml")
+        monkeypatch.setenv(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, "docs")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
         ):
             result = resolve_mcp_config(None)
+
         assert isinstance(result, ConfigResolution)
-        assert user_cfg in result.used_paths
-        assert project_cfg in result.used_paths
-        assert "notion" in result.config["mcpServers"]
-        assert "slack" in result.config["mcpServers"]
-        assert result.untrusted_project_paths == ()
+        assert set(result.config["mcpServers"]) == {"docs"}
+        assert result.used_paths == (project_cfg,)
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_invalid_unapproved_sibling_does_not_block_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An invalid unapproved entry cannot block an approved login target."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"},'
+            '"broken":{"args":[]}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project_cfg.parent, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"slack"}
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_invalid_session_trusted_sibling_does_not_block_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed entry cannot hide a valid allow-once login target."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"},'
+            '"broken":{"args":[]}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert set(result.config["mcpServers"]) == {"notion"}
+
+    def test_symlinked_project_config_uses_containing_project_scope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Approving a symlink target project does not approve the symlink repo."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        approved_cfg = approved_project / ".mcp.json"
+        attack_cfg = attack_project / ".mcp.json"
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        approved_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        attack_cfg.symlink_to(approved_cfg)
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(approved_project, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[attack_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (attack_cfg,)
+
+    def test_disabled_project_server_overrides_allowlist_for_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A disabled project server stays unavailable even if also enabled."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(
+                project_cfg.parent, "slack", slack, disabled=["slack"]
+            ),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_partial_success_reports_load_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dropped unparseable config is carried on a successful resolution.
+
+        Regression: `load_errors` was only used to build the no-usable-config
+        message, so a broken file was silently discarded whenever another config
+        still loaded.
+        """
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        good = tmp_path / "good" / ".mcp.json"
+        good.parent.mkdir()
+        good.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[good, broken],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert set(result.config["mcpServers"]) == {"notion"}
+        assert broken in [path for path, _error in result.load_errors]
 
 
 class TestSelectServer:
@@ -288,4 +686,101 @@ class TestFormatUntrustedProjectNotice:
         notice = format_untrusted_project_notice((a, b))
         assert str(a) in notice
         assert str(b) in notice
-        assert "pass --mcp-config <path> to use it explicitly" in notice
+        assert "pass --mcp-config <path> to use the file explicitly" in notice
+
+
+class TestFormatLegacyIgnoredNotice:
+    """`format_legacy_ignored_notice` rendering."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No ignored names means no notice."""
+        assert format_legacy_ignored_notice(()) == ""
+
+    def test_names_and_migration_hint(self) -> None:
+        """The notice names each ignored server and how to re-approve."""
+        notice = format_legacy_ignored_notice(("docs", "slack"))
+        assert "docs" in notice
+        assert "slack" in notice
+        assert "enabled_project_servers is no longer used" in notice
+        assert "dcode" in notice
+
+
+class TestFormatMalformedApprovalsNotice:
+    """`format_malformed_approvals_notice` rendering."""
+
+    def test_zero_returns_empty_string(self) -> None:
+        """No dropped approvals means no notice."""
+        from deepagents_code.mcp_login_service import format_malformed_approvals_notice
+
+        assert format_malformed_approvals_notice(0) == ""
+
+    def test_count_and_migration_hint(self) -> None:
+        """The notice reports the count and how to re-approve."""
+        from deepagents_code.mcp_login_service import format_malformed_approvals_notice
+
+        notice = format_malformed_approvals_notice(2)
+        assert "2" in notice
+        assert "enabled_project_server_approvals" in notice
+        assert "could not be read" in notice
+        assert "dcode" in notice
+
+
+class TestFormatPolicyErrorNotice:
+    """`format_policy_error_notice` rendering."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """A readable policy (None) produces no notice."""
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        assert format_policy_error_notice(None) == ""
+
+    def test_names_reason_and_fix(self) -> None:
+        """The notice embeds the read error and points at config.toml."""
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        notice = format_policy_error_notice("Could not read foo")
+        assert "Could not read foo" in notice
+        assert "config.toml" in notice
+
+
+class TestFormatLegacyEnvIgnoredNotice:
+    """`format_legacy_env_ignored_notice` rendering."""
+
+    def test_false_returns_empty_string(self) -> None:
+        """The old env var unset means no notice."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        assert format_legacy_env_ignored_notice(False) == ""
+
+    def test_names_old_and_new_env_var(self) -> None:
+        """The notice names both the removed and the replacement env var."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        notice = format_legacy_env_ignored_notice(True)
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in notice
+        assert "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in notice
+
+
+class TestFormatLoadErrorsNotice:
+    """`format_load_errors_notice` rendering."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No load errors means no notice."""
+        from deepagents_code.mcp_login_service import format_load_errors_notice
+
+        assert format_load_errors_notice(()) == ""
+
+    def test_one_line_per_failure(self) -> None:
+        """Each `(path, error)` pair becomes its own reported line."""
+        from deepagents_code.mcp_login_service import format_load_errors_notice
+
+        notice = format_load_errors_notice(
+            (
+                (Path("/a/.mcp.json"), "bad json"),
+                (Path("/b/.mcp.json"), "missing command"),
+            )
+        )
+        lines = notice.splitlines()
+        assert len(lines) == 2
+        assert "Ignoring MCP config /a/.mcp.json: bad json" in lines[0]
+        assert "Ignoring MCP config /b/.mcp.json: missing command" in lines[1]

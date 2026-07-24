@@ -100,11 +100,14 @@ class TestAsyncSubAgentMiddleware:
         }
 
     def test_system_prompt_includes_agent_descriptions(self) -> None:
+        # The default is lean (no system prompt); when a prompt is supplied, the
+        # available agent descriptions are appended to it.
         mw = AsyncSubAgentMiddleware(
             async_subagents=[
                 _make_spec("alpha", description="Alpha agent"),
                 _make_spec("beta", description="Beta agent"),
-            ]
+            ],
+            system_prompt="Async subagent guidance.",
         )
         assert "alpha" in mw.system_prompt
         assert "beta" in mw.system_prompt
@@ -873,3 +876,21 @@ class TestCheckEdgeCases:
         assert parsed["status"] == "success"
         # result should show empty-messages fallback since thread values couldn't be fetched
         assert "no output" in parsed["result"].lower()
+
+
+class TestStaleStatusGuidanceInToolDescriptions:
+    """The stale-status rule lives in the async status tool descriptions.
+
+    It used to be in the (now-trimmed) async system prompt, so it is migrated
+    into the always-visible `check_async_task` / `list_async_tasks` descriptions.
+    """
+
+    def _descriptions(self) -> dict[str, str]:
+        tools = _build_async_subagent_tools([_make_spec()])
+        return {t.name: (t.description or "") for t in tools}
+
+    def test_check_async_task_warns_statuses_are_stale(self) -> None:
+        assert "stale" in self._descriptions()["check_async_task"].lower()
+
+    def test_list_async_tasks_warns_statuses_are_stale(self) -> None:
+        assert "stale" in self._descriptions()["list_async_tasks"].lower()

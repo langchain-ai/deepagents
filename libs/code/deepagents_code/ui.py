@@ -106,7 +106,10 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
-    console.print("  dcode config <show|list|get|path>         Inspect configuration")
+    console.print(
+        "  dcode config [get <key>|path]             Inspect configuration",
+        markup=False,
+    )
     console.print(
         "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
     )
@@ -139,8 +142,10 @@ def show_help() -> None:
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
+    console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
     console.print(
-        "  -y, --auto-approve         Auto-approve all tool calls in interactive mode (toggle: Shift+Tab)"  # noqa: E501
+        "  --yolo                     Run gated actions without review after "
+        "acknowledgement"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -177,6 +182,10 @@ def show_help() -> None:
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
         "tool names (may include 'safe')"
     )
+    console.print(
+        "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
+        "comma-separated tool names (must include 'read_file')"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
@@ -199,6 +208,10 @@ def show_help() -> None:
     )
     console.print(
         "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
+    )
+    console.print(
+        "  --recursion-limit N        Override the agent's graph recursion_limit"
+        " (default 2000)"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
@@ -382,6 +395,30 @@ def show_skills_help() -> None:
     console.print()
 
 
+def show_plugins_help() -> None:
+    """Show help information for the `plugin` / `plugins` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls                      List available plugins")
+    console.print("  install <id>                 Install a marketplace plugin")
+    console.print("  uninstall <id>               Uninstall a plugin")
+    console.print("  enable <id>                  Enable an installed plugin")
+    console.print("  disable <id>                 Disable a plugin")
+    console.print("  marketplace list|ls          List configured marketplaces")
+    console.print("  marketplace add <source>     Add a marketplace source")
+    console.print("  marketplace remove <name>    Remove a marketplace and its plugins")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin list")
+    console.print("  dcode plugin marketplace add ./marketplace")
+    console.print("  dcode plugin install quality-review-plugin@company-tools")
+    console.print("  dcode plugin enable quality-review-plugin@company-tools")
+    console.print()
+
+
 def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()
@@ -524,7 +561,7 @@ def show_doctor_help() -> None:
     console.print("  dcode doctor --json")
     console.print()
     console.print(
-        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "Tip: Run `dcode config` or `dcode config get <key>` "
         "to drill into config details.",
         style=theme.MUTED,
         highlight=False,
@@ -706,18 +743,20 @@ def show_mcp_config_help() -> None:
 
 
 def show_config_help() -> None:
-    """Show help information for the `config` subcommand.
+    """Show help information for the `config` command.
 
-    Invoked via the `-h` argparse action, the startup fast-path, or
-    `run_config_command` when no config subcommand is given. Kept import-light
-    so it stays on the startup fast path.
+    Invoked via the `-h` argparse action. Kept import-light so help remains on
+    the startup fast path.
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode config <command> [options]")
+    console.print("  dcode config [options]", markup=False)
+    console.print("  dcode config get <key> [--json]", markup=False)
+    console.print("  dcode config path [--json]", markup=False)
+    console.print()
+    console.print("Show effective configuration values and their source.")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  show|list|ls      Show effective values and their source")
     console.print("  get <key>         Show one option's value and source")
     console.print("  path              Show config file locations")
     console.print()
@@ -731,8 +770,8 @@ def show_config_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode config show")
-    console.print("  dcode config show --verbose")
+    console.print("  dcode config")
+    console.print("  dcode config --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
     console.print("  dcode config path")
     console.print()

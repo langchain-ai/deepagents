@@ -33,6 +33,24 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestApprovalModeDisplay:
+    """Tests for the three-state approval indicator."""
+
+    @pytest.mark.parametrize(
+        ("mode", "label"),
+        [("manual", "manual"), ("auto", "auto"), ("yolo", "YOLO")],
+    )
+    async def test_displays_mode(self, mode: str, label: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode(mode)
+            await pilot.pause()
+
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == label
+            assert indicator.has_class(mode)
+
+
 class TestCwdDisplay:
     """Tests for the cwd display in the status bar."""
 
@@ -206,8 +224,17 @@ class TestBranchDisplay:
             assert visible.rstrip().endswith("\u2026")
             assert "feature/" in visible
 
-    async def test_short_branch_name_not_truncated(self) -> None:
-        """A branch that fits should render in full with no ellipsis."""
+    async def test_short_branch_name_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A branch that fits should render in full with no ellipsis.
+
+        `HIDE_CWD` removes the cwd from the layout (as in
+        `test_branch_display_shows_branch_name`) so a deep real checkout path
+        cannot starve the branch region to zero width -- otherwise this flakes
+        on the run directory's length rather than any real behavior.
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
@@ -569,10 +596,10 @@ class TestModelLabelPrefixStripping:
         async with StatusBarApp().run_test() as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
-            label.model = "accounts/fireworks/routers/glm-5p1-fast"
+            label.model = "accounts/fireworks/routers/glm-5p2-fast"
             await pilot.pause()
             rendered = str(label.render())
-            assert "fireworks:glm-5p1-fast" in rendered
+            assert "fireworks:glm-5p2-fast" in rendered
             assert "accounts/fireworks/routers/" not in rendered
 
     async def test_fireworks_prefix_stripped_case_insensitively(self) -> None:

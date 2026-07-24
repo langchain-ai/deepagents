@@ -85,6 +85,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
 - For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
@@ -118,27 +119,35 @@ mdrxy/cli/startup-cmd-flag
 
 #### PR descriptions
 
-The description *is* the summary — do not add a `# Summary` header.
+Do not add a `# Summary` or `## Release note` heading. Use an opening block ("frontmatter") in this order:
 
-- When the PR closes an issue, lead with the closing keyword on its own line at the very top, followed by a horizontal rule and then the body:
+```md
+Closes #123
 
-  ```txt
-  Closes #123
+A high-level, plain-English summary of the user-visible change.
 
-  ---
+---
 
-  <rest of description>
-  ```
+<rest of PR body>
+```
 
-  Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced issue on merge. `Related:` or similar labels are informational and do not close anything.
-
-- Explain the *why*: the motivation and why this solution is the right one. Limit prose.
+- The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
+- For net new features or behavior-changing bugfixes, include the high-level user-facing summary in this opening block. Write it in release-note-ready plain English without a label or heading. Omit it for chores, refactors, or test-only changes.
+- Explain the *why* in the rest of the body: the motivation and why this solution is the right one. Limit prose.
 - Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
 - Wrap class, function, method, parameter, and variable names in backticks.
-- For net new features or behavior-changing bugfixes, PR descriptions should include a `## Release note` section that states the user-visible change in release-note-ready language. Otherwise, omit the header.
-- Skip dedicated "Test plan" or "Testing" sections in most cases. Mention tests only when coverage is non-obvious, risky, or otherwise notable.
+- Do not include a dedicated "Test plan" or "Testing" section unless the PR is large or the changes are highly consequential. When one is warranted, keep it collapsed with GitHub's `<details>` and `<summary>` elements:
+
+  ```html
+  <details>
+  <summary>Test plan</summary>
+
+  - Describe the verification performed.
+
+  </details>
+  ```
 - Call out areas of the change that require careful review.
 
 ## Core development principles
@@ -407,3 +416,13 @@ This repository require actions to be pinned to a full-length commit SHA. Attemp
 
 - **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview and source at https://github.com/langchain-ai/docs or `../docs/`. Prefer the local install and use file search tools for best results. If needed, use the docs MCP server as defined in `.mcp.json` for programmatic access.
 - **Contributing Guide:** [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview)
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->

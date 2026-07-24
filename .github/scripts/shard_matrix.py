@@ -33,9 +33,11 @@ from fnmatch import fnmatch
 # https://docs.github.com/actions/using-jobs/using-a-matrix-for-your-jobs
 GITHUB_MATRIX_MAX = 256
 
-# Upper bound on the shard axis itself, independent of the matrix cap. Keeps a
-# fat-fingered dispatch (e.g. n_shards=1000) from producing a nonsensical run.
-MAX_SHARDS = 64
+# Upper bound on the shard axis itself, independent of the matrix cap. Set below
+# GitHub's hard GITHUB_MATRIX_MAX so an oversized pool trips this clear error
+# rather than GitHub's opaque one; pools larger than this pack multiple tasks
+# per shard (see pack_tasks) instead of failing.
+MAX_SHARDS = 200
 
 
 class ShardConfigError(Exception):
@@ -182,6 +184,21 @@ def select_shard_tasks(
     if n_tasks > 0:
         selected = selected[:n_tasks]
     return [name for j, name in enumerate(selected) if j % n_shards == shard_index]
+
+
+def pack_tasks(names: list[str], max_shards: int = MAX_SHARDS) -> list[list[str]]:
+    """Split an ordered task list into at most ``max_shards`` contiguous groups.
+
+    One task per group when ``len(names) <= max_shards`` (the common 1-task-shard
+    case). Above the cap, each group holds ``ceil(n / max_shards)`` tasks so the
+    shard count stays legal; groups are contiguous slices of the input order, so
+    their union is exactly ``names`` with no reordering, duplication, or drops.
+    """
+    n = len(names)
+    if n == 0:
+        return []
+    per = -(-n // max_shards)  # ceil division
+    return [names[i : i + per] for i in range(0, n, per)]
 
 
 def main() -> None:

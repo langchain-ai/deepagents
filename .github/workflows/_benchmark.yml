@@ -57,7 +57,7 @@ jobs:
         run: uv sync --group test
 
       - name: "Run benchmarks"
-        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
+        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286 # v4.18.5
         with:
           working-directory: ${{ inputs.working-directory }}
           run: make bench
@@ -65,7 +65,7 @@ jobs:
 
       - name: "Run memory benchmarks"
         if: ${{ inputs.has-memory-benchmarks }}
-        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
+        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286 # v4.18.5
         with:
           working-directory: ${{ inputs.working-directory }}
           run: make bench-memory

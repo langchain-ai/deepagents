@@ -51,6 +51,12 @@ class TestResumeState:
         metadata = getattr(hints["_pending_goal_kind"], "__metadata__", ())
         assert PrivateStateAttr in metadata
 
+    def test_pending_goal_request_id_is_private(self) -> None:
+        """Proposal correlation must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_pending_goal_request_id"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState

@@ -9,7 +9,7 @@ import pytest
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.extras_info import (
@@ -20,6 +20,7 @@ from deepagents_code.extras_info import (
 )
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
+    LaunchGoalCriteriaPreferenceScreen,
     LaunchNameScreen,
     _normalize_name,
 )
@@ -70,6 +71,126 @@ class DummyNextScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         """Compose a minimal next screen."""
         yield Static("Next")
+
+
+class TestLaunchGoalCriteriaPreferenceScreen:
+    """Tests for the first-run Auto goal criteria choice."""
+
+    def test_uses_modal_backdrop(self) -> None:
+        """The selector should keep Textual's dimmed modal backdrop."""
+        assert "background: transparent" not in LaunchGoalCriteriaPreferenceScreen.CSS
+
+    async def test_defaults_to_review_and_explains_configuration(self) -> None:
+        """The safe review choice should be highlighted with change instructions."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(LaunchGoalCriteriaPreferenceScreen())
+            await pilot.pause()
+
+            options = app.screen.query_one(OptionList)
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert options.highlighted == 0
+        assert "How should Auto mode handle goal criteria?" in content
+        assert "~/.deepagents/config.toml" in content
+        assert "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA" in content
+
+    async def test_enter_chooses_review(self) -> None:
+        """Enter on the default option should preserve manual criteria review."""
+        app = LaunchNameTestApp()
+        results: list[bool | None] = []
+        async with app.run_test() as pilot:
+            app.push_screen(LaunchGoalCriteriaPreferenceScreen(), results.append)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert results == [False]
+
+    async def test_navigation_can_choose_auto_accept(self) -> None:
+        """The second option should enable automatic criteria acceptance."""
+        app = LaunchNameTestApp()
+        results: list[bool | None] = []
+        async with app.run_test() as pilot:
+            app.push_screen(LaunchGoalCriteriaPreferenceScreen(), results.append)
+            await pilot.pause()
+
+            await pilot.press("down", "enter")
+            await pilot.pause()
+
+        assert results == [True]
+
+    async def test_escape_chooses_review(self) -> None:
+        """Escape should fail closed to review rather than skipping the question."""
+        app = LaunchNameTestApp()
+        results: list[bool | None] = []
+        async with app.run_test() as pilot:
+            app.push_screen(LaunchGoalCriteriaPreferenceScreen(), results.append)
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert results == [False]
+
+    @pytest.mark.parametrize(
+        ("keys", "expected"),
+        [(("enter",), False), (("down", "enter"), True)],
+    )
+    async def test_choice_can_switch_directly_to_name_screen(
+        self,
+        keys: tuple[str, ...],
+        expected: bool,
+    ) -> None:
+        """Either choice should replace the modal without exposing the base screen."""
+        app = LaunchNameTestApp()
+        continued: list[bool] = []
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchGoalCriteriaPreferenceScreen(
+                    continue_screen=LaunchNameScreen(),
+                    on_continue=continued.append,
+                )
+            )
+            await pilot.pause()
+
+            await pilot.press(*keys)
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+
+        assert continued == [expected]
+
+    async def test_switch_failure_dismisses_with_safe_choice(self) -> None:
+        """A failed name-screen switch should still resolve the safe choice."""
+        app = LaunchNameTestApp()
+        continued: list[bool] = []
+        failed: list[bool] = []
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchGoalCriteriaPreferenceScreen(
+                    continue_screen=LaunchNameScreen(),
+                    on_continue=continued.append,
+                    on_continue_failed=failed.append,
+                ),
+                lambda result: setattr(app, "result", result),
+            )
+            await pilot.pause()
+
+            def fake_switch_screen(_screen: object) -> None:
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+
+            app.switch_screen = fake_switch_screen  # ty: ignore
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert continued == [False]
+        assert failed == [False]
+        assert app.result is False
 
 
 class TestLaunchNameScreen:

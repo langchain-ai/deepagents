@@ -4205,6 +4205,43 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "Real user message"
 
+    def test_known_internal_sources_are_skipped_without_prefix(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        messages = [
+            HumanMessage(
+                content=f"hidden {source}",
+                additional_kwargs={"lc_source": source},
+            )
+            for source in (
+                "goal_state",
+                "goal_control",
+                "rubric_grader",
+                "summarization",
+            )
+        ]
+        messages.append(HumanMessage(content="real user message"))
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert len(result) == 1
+        assert result[0].content == "real user message"
+
+    def test_unknown_source_remains_visible(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        result = DeepAgentsApp._convert_messages_to_data(
+            [
+                HumanMessage(
+                    content="connector user message",
+                    additional_kwargs={"lc_source": "slack"},
+                )
+            ]
+        )
+
+        assert len(result) == 1
+        assert result[0].content == "connector user message"
+
     def test_ai_message_text_content(self) -> None:
         """AIMessage with string content should become ASSISTANT MessageData."""
         from deepagents_code.tui.widgets.message_store import MessageType

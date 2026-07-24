@@ -18,10 +18,10 @@
     "toml>=0.10.2,<1.0.0"
   ],
   "graphs": {
-    "deepagent": "./langgraph_agent.py:make_graph",
-    "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
-    "tau3_deepagent": "./langgraph_agent.py:make_tau3_graph",
-    "bare_code_interpreter_deepagent": "./langgraph_agent.py:make_bare_code_interpreter_graph",
-    "rlm_deepagent": "./langgraph_agent.py:make_rlm_graph"
+    "dcode": "./langgraph_agent.py:make_graph",
+    "bare": "./langgraph_agent.py:make_bare_graph",
+    "tau3": "./langgraph_agent.py:make_tau3_graph",
+    "bare-code-interpreter": "./langgraph_agent.py:make_bare_code_interpreter_graph",
+    "rlm": "./langgraph_agent.py:make_rlm_graph"
   }
 }

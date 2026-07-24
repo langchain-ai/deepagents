@@ -4,7 +4,7 @@ These tests probe the behavioral properties of `WRITE_TODOS_SYSTEM_PROMPT` and
 `WRITE_TODOS_TOOL_DESCRIPTION` directly — using `create_agent` +
 `TodoListMiddleware` (not `create_deep_agent`) — so they exercise the
 prompt content that ships in `langchain.agents.middleware.todo` without
-any deepagents-side `BASE_AGENT_PROMPT` running in front of it.
+any Deep Agents system prompt running in front of it.
 
 The companion langchain PR landed a fix for the "wasted post-tool turn"
 pattern that fhuang originally reported on Sonnet 4.6: when the model

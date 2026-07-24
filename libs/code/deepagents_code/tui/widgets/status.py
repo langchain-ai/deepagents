@@ -222,12 +222,18 @@ class StatusBar(Horizontal):
         padding: 0 1;
     }
 
-    StatusBar .status-auto-approve.on {
+    StatusBar .status-auto-approve.yolo {
+        background: $error;
+        color: white;
+        text-style: bold;
+    }
+
+    StatusBar .status-auto-approve.auto {
         background: $success;
         color: $background;
     }
 
-    StatusBar .status-auto-approve.off {
+    StatusBar .status-auto-approve.manual {
         background: $warning;
         color: $background;
     }
@@ -319,7 +325,7 @@ class StatusBar(Horizontal):
     status_message: reactive[str] = reactive("", init=False)
     connection_state: reactive[ConnectionState] = reactive("", init=False)
     queued_count: reactive[int] = reactive(0, init=False)
-    auto_approve: reactive[bool] = reactive(default=False, init=False)
+    approval_mode: reactive[str] = reactive(default="manual", init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
@@ -351,7 +357,7 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
             "manual",
-            classes="status-auto-approve off",
+            classes="status-auto-approve manual",
             id="auto-approve-indicator",
         )
         with Horizontal(classes="status-left-collapsible"):
@@ -457,20 +463,16 @@ class StatusBar(Horizontal):
             indicator.update("")
             indicator.add_class("normal")
 
-    def watch_auto_approve(self, new_value: bool) -> None:
-        """Update auto-approve indicator when state changes."""
+    def watch_approval_mode(self, new_value: str) -> None:
+        """Update the three-state approval indicator."""
         try:
             indicator = self.query_one("#auto-approve-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("on", "off")
-
-        if new_value:
-            indicator.update("YOLO")
-            indicator.add_class("on")
-        else:
-            indicator.update("manual")
-            indicator.add_class("off")
+        indicator.remove_class("manual", "auto", "yolo")
+        mode = new_value if new_value in {"manual", "auto", "yolo"} else "manual"
+        indicator.update("YOLO" if mode == "yolo" else mode)
+        indicator.add_class(mode)
 
     def watch_cwd(self, new_value: str) -> None:
         """Update cwd display when it changes."""
@@ -664,13 +666,30 @@ class StatusBar(Horizontal):
         """
         self.mode = mode
 
-    def set_auto_approve(self, *, enabled: bool) -> None:
-        """Set the auto-approve state.
+    @property
+    def auto_approve(self) -> bool:
+        """Whether unrestricted compatibility mode is active."""
+        return self.approval_mode == "yolo"
+
+    @auto_approve.setter
+    def auto_approve(self, enabled: bool) -> None:
+        self.set_approval_mode("yolo" if enabled else "manual")
+
+    def set_approval_mode(self, mode: str) -> None:
+        """Set the approval mode.
 
         Args:
-            enabled: Whether auto-approve is enabled
+            mode: `manual`, `auto`, or `yolo`.
         """
-        self.auto_approve = enabled
+        self.approval_mode = mode if mode in {"manual", "auto", "yolo"} else "manual"
+
+    def set_auto_approve(self, *, enabled: bool) -> None:
+        """Set the compatibility unrestricted state.
+
+        Args:
+            enabled: Whether unrestricted mode is enabled.
+        """
+        self.set_approval_mode("yolo" if enabled else "manual")
 
     def set_status_message(self, message: str) -> None:
         """Set the status message.

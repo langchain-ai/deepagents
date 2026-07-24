@@ -893,6 +893,8 @@ class MessageStore:
         scroll_position: float,
         viewport_height: int,
         bottom_spacer_top: int,
+        *,
+        max_scroll: float | None = None,
     ) -> bool:
         """Check if we should hydrate messages below the current view.
 
@@ -900,12 +902,22 @@ class MessageStore:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
             bottom_spacer_top: Estimated row where the bottom spacer begins.
+            max_scroll: Maximum scroll offset of the viewport, when known. When
+                the view is scrolled to this edge but history is still archived
+                below, hydration must run regardless of the spacer-distance
+                heuristic: the user cannot scroll any further, and estimated
+                spacer heights can drift from the real DOM layout enough to
+                leave the distance check just short of its threshold, stranding
+                the tail. Mirrors how scrolling to the top (offset 0) always
+                hydrates above.
 
         Returns:
-            True if the viewport is near the bottom spacer.
+            True if the viewport is near (or at) the bottom spacer.
         """
         if not self.has_messages_below:
             return False
+        if max_scroll is not None and scroll_position >= max_scroll:
+            return True
         viewport_bottom = scroll_position + viewport_height
         distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
         threshold = viewport_height * 2

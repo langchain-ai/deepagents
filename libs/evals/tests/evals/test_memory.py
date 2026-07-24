@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.protocol import FileData
 from langgraph.store.memory import InMemoryStore
 
 from tests.evals.utils import (
@@ -313,17 +314,21 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
     store.put(
         ("filesystem",),
         "/AGENTS.md",
-        {
-            "content": ["Your name is Jackson"],
-            "created_at": now,
-            "modified_at": now,
-        },
+        FileData(
+            content="Your name is Jackson",
+            encoding="utf-8",
+            created_at=now,
+            modified_at=now,
+        ),
     )
 
     sample_backend = CompositeBackend(
         default=StateBackend(),
         routes={
-            "/memories/": StoreBackend(store=store),
+            "/memories/": StoreBackend(
+                store=store,
+                namespace=lambda _runtime: ("filesystem",),
+            ),
         },
     )
 

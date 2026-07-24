@@ -415,7 +415,7 @@ uv run harbor run \
   --agent langgraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
-  --agent-kwarg graph=deepagent \
+  --agent-kwarg graph=dcode \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
@@ -428,7 +428,7 @@ uv run harbor run \
   --agent langgraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
-  --agent-kwarg graph=deepagent \
+  --agent-kwarg graph=dcode \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
@@ -480,7 +480,7 @@ uv run harbor run \
   --agent langgraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
-  --agent-kwarg graph=deepagent \
+  --agent-kwarg graph=dcode \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \

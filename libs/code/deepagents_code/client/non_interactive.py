@@ -82,7 +82,9 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from pathlib import Path
 
+    from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
@@ -1089,7 +1091,10 @@ async def _run_agent_loop(
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    stream_input: dict[str, Any] | Command = {
+        "messages": [user_msg],
+        "goal_criteria_request": None,
+    }
     if rubric is not None:
         stream_input["rubric"] = rubric
 
@@ -1355,10 +1360,12 @@ async def run_non_interactive(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -1420,6 +1427,10 @@ async def run_non_interactive(
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
         rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
@@ -1429,6 +1440,8 @@ async def run_non_interactive(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Grader iterations per rubric attempt; `None`
             uses the middleware default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
@@ -1450,16 +1463,29 @@ async def run_non_interactive(
             build_skill_invocation_envelope,
             discover_skills_and_roots,
         )
-        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.load import (
+            ExtendedSkillMetadata,
+            load_skill_content,
+        )
 
         normalized_skill = initial_skill.strip().lower()
         try:
             # Offloaded to a thread: discovery does blocking filesystem I/O
             # (a JSON trust-store read plus `Path.resolve()` calls) that must
             # not block the event loop.
-            skills, allowed_roots = await asyncio.to_thread(
-                discover_skills_and_roots, assistant_id
+            from deepagents_code.plugins.adapters.skills import (
+                discover_plugin_skill_sources_and_roots,
             )
+
+            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
+                return discover_skills_and_roots(
+                    assistant_id,
+                    plugin_skill_sources=plugin_sources,
+                    plugin_skill_roots=plugin_roots,
+                )
+
+            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
             console.print(
@@ -1541,19 +1567,6 @@ async def run_non_interactive(
 
     thread_id = generate_thread_id()
 
-    # One user turn per process: fresh turn id, turn_number 1.
-    from uuid import uuid4
-
-    from deepagents_code.config import build_stream_config
-
-    config: RunnableConfig = build_stream_config(
-        thread_id,
-        assistant_id,
-        sandbox_type=sandbox_type,
-        turn_id=str(uuid4()),
-        turn_number=1,
-    )
-
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
@@ -1601,6 +1614,23 @@ async def run_non_interactive(
             else None
         )
 
+        # One user turn per process: fresh turn id, turn_number 1. Built here so
+        # the resolved `use_auto_approve` is stamped into the trace metadata
+        # (headless auto-approve means tools run without HITL because shell is
+        # unrestricted or disabled).
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        config: RunnableConfig = build_stream_config(
+            thread_id,
+            assistant_id,
+            sandbox_type=sandbox_type,
+            turn_id=str(uuid4()),
+            turn_number=1,
+            auto_approve=use_auto_approve,
+        )
+
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
@@ -1608,6 +1638,7 @@ async def run_non_interactive(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_override,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,
             shell_allow_list=restrictive_allow_list,
@@ -1620,8 +1651,10 @@ async def run_non_interactive(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

@@ -176,7 +176,7 @@ class TestSkillTrustStore:
 
 
 class TestSkillTrustStoreRobustness:
-    """Durability and honesty guarantees, mirroring `test_mcp_trust.py`."""
+    """Durability and honesty guarantees for the skill trust store."""
 
     def test_save_failure_returns_false(self, tmp_path: Path) -> None:
         """An unwritable store path returns False instead of raising."""

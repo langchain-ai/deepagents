@@ -52,7 +52,6 @@ class NotificationSettingsScreen(ModalScreen[None]):
     CSS = """
     NotificationSettingsScreen {
         align: center middle;
-        background: transparent;
     }
 
     NotificationSettingsScreen > VerticalGroup {

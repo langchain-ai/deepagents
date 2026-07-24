@@ -4478,6 +4478,28 @@ class TestSelectiveProjectMcpTrust:
         return {"type": "sse", "url": url}
 
     @staticmethod
+    def _create_git_repository(root: Path) -> Path:
+        root.mkdir()
+        common_dir = root / ".git"
+        (common_dir / "objects").mkdir(parents=True)
+        (common_dir / "refs").mkdir()
+        (common_dir / "worktrees").mkdir()
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n\tbare = false\n")
+        return common_dir
+
+    @staticmethod
+    def _create_git_worktree(common_dir: Path, root: Path, name: str) -> None:
+        root.mkdir()
+        git_entry = root / ".git"
+        git_dir = common_dir / "worktrees" / name
+        git_dir.mkdir()
+        git_entry.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{git_entry}\n")
+        (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+
+    @staticmethod
     def _write_user_approvals(
         user_config: Path,
         project_root: Path,
@@ -4513,6 +4535,7 @@ class TestSelectiveProjectMcpTrust:
         *,
         user_config: Path,
         trust_project_mcp: bool | None,
+        additional_configs: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any] | None:
         """Run resolution and return the merged config passed to the loader.
 
@@ -4534,6 +4557,7 @@ class TestSelectiveProjectMcpTrust:
         await resolve_and_load_mcp_tools(
             project_context=ctx,
             trust_project_mcp=trust_project_mcp,
+            additional_configs=additional_configs,
         )
         if not loader.called:
             return None
@@ -4616,6 +4640,85 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_local_approval_does_not_load_in_sibling_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import model_config
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        approved_servers = {"docs": self._stdio("echo")}
+        self._write_project_config(second, approved_servers)
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
+        )
+
+        merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_remote_approval_loads_in_sibling_but_not_clone_or_new_transport(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import model_config
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        clone = tmp_path / "clone"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        self._create_git_repository(clone)
+        approved_servers = {"docs": self._remote()}
+        self._write_project_config(second, approved_servers)
+        self._write_project_config(clone, approved_servers)
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=approved_servers,
+        )
+
+        sibling_merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+        clone_merged = await self._resolve_merged(
+            clone,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+        self._write_project_config(second, {"docs": self._stdio("python")})
+        changed_merged = await self._resolve_merged(
+            second,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert sibling_merged is not None
+        assert set(sibling_merged["mcpServers"]) == {"docs"}
+        assert clone_merged is None
+        assert changed_merged is None
 
     async def test_same_name_in_different_project_is_not_approved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5188,6 +5291,151 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_installed_plugin_config_is_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Installing a plugin implicitly trusts its bundled MCP servers."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin", "other"}
+
+    async def test_disabled_plugin_server_stays_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit deny overrides the trust granted at plugin install."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+        self._write_user_approvals(
+            user_config, project, servers, [], disabled=["other"]
+        )
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": servers},),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin"}
+
+    async def test_unreadable_policy_does_not_implicitly_trust_plugin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plugin trust fails closed when a saved disable cannot be read."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[[not valid toml", encoding="utf-8")
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": {"plugin": self._stdio()}},),
+        )
+
+        assert merged is None
+
+    async def test_multiple_plugin_configs_all_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every entry in `additional_configs` is filtered, not only the first."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+            additional_configs=(
+                {"mcpServers": {"alpha": self._stdio()}},
+                {"mcpServers": {"beta": self._stdio("run")}},
+            ),
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"alpha", "beta"}
+
+    async def test_disabled_plugin_server_logs_drop(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Dropping a disabled plugin server emits a warning that names it."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        servers = {"plugin": self._stdio(), "other": self._stdio("run")}
+        self._write_user_approvals(
+            user_config, project, servers, [], disabled=["other"]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+            merged = await self._resolve_merged(
+                project,
+                monkeypatch,
+                user_config=user_config,
+                trust_project_mcp=False,
+                additional_configs=({"mcpServers": servers},),
+            )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"plugin"}
+        assert any(
+            "other" in record.getMessage()
+            and "plugin MCP servers" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_malformed_plugin_servers_surfaced_as_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-mapping plugin `mcpServers` is surfaced, not silently skipped."""
+        project = tmp_path / "project"
+        project.mkdir()
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _, _, server_infos = await resolve_and_load_mcp_tools(
+            project_context=ctx,
+            trust_project_mcp=False,
+            additional_configs=({"mcpServers": ["not", "a", "mapping"]},),
+        )
+
+        assert any(
+            info.status == "error" and "mcpServers" in (info.error or "")
+            for info in server_infos
+        )
 
 
 class TestProjectRootForMcpConfigPath:

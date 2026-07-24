@@ -7,7 +7,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (29 models)
+### `set0` (25 models)
 
 - `anthropic:claude-opus-4-5-20251101`
 - `anthropic:claude-opus-4-6`
@@ -16,14 +16,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-sonnet-4-6`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
-- `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
-- `baseten:zai-org/GLM-5`
 - `fireworks:accounts/fireworks/models/deepseek-v3-0324`
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
-- `fireworks:accounts/fireworks/models/glm-5`
-- `fireworks:accounts/fireworks/models/kimi-k2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-flash`
@@ -39,13 +35,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4-mini`
 - `openai:gpt-5.5`
 
-### `set1` (14 models)
+### `set1` (13 models)
 
 - `anthropic:claude-opus-4-6`
 - `anthropic:claude-opus-4-7`
 - `anthropic:claude-sonnet-4-6`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
-- `baseten:zai-org/GLM-5`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3.1-pro-preview`
@@ -56,15 +51,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4`
 - `openai:gpt-5.5`
 
-### `set2` (10 models)
+### `set2` (7 models)
 
 - `groq:moonshotai/kimi-k2-instruct`
 - `groq:openai/gpt-oss-120b`
 - `groq:qwen/qwen3-32b`
-- `ollama:glm-5.1:cloud`
-- `ollama:glm-5:cloud`
 - `ollama:minimax-m2.5:cloud`
-- `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 - `xai:grok-3-mini-fast`
 - `xai:grok-4`
@@ -87,27 +79,22 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3-flash-preview`
 - `openai:gpt-5.4-mini`
 
-### `open` (7 models)
+### `open` (4 models)
 
 - `baseten:moonshotai/Kimi-K2.6`
-- `baseten:zai-org/GLM-5`
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
-- `openrouter:nvidia/nemotron-3-super-120b-a12b`
-- `openrouter:z-ai/glm-5.1`
 - `openrouter:z-ai/glm-5.2`
 
-### `open-fireworks` (7 models)
+### `open-fireworks` (5 models)
 
 - `fireworks:accounts/fireworks/models/deepseek-v4-pro`
-- `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/glm-5p2`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
 - `fireworks:accounts/fireworks/models/minimax-m3`
-- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 
-### `docs` (7 models)
+### `docs` (6 models)
 
 - `anthropic:claude-opus-4-7`
 - `baseten:moonshotai/Kimi-K2.6`
@@ -115,7 +102,6 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.5`
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
-- `openrouter:z-ai/glm-5.1`
 
 ## Provider groups
 
@@ -128,29 +114,23 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 
-### `baseten` (6 models)
+### `baseten` (4 models)
 
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
-- `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
-- `baseten:zai-org/GLM-5`
 
-### `fireworks` (13 models)
+### `fireworks` (9 models)
 
 - `fireworks:accounts/fireworks/models/deepseek-v3-0324`
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
 - `fireworks:accounts/fireworks/models/deepseek-v4-pro`
-- `fireworks:accounts/fireworks/models/glm-5`
-- `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/glm-5p2`
-- `fireworks:accounts/fireworks/models/kimi-k2p5`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
 - `fireworks:accounts/fireworks/models/minimax-m3`
-- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 
 ### Google (`google_genai`) (4 models)
@@ -166,17 +146,13 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `groq:openai/gpt-oss-120b`
 - `groq:qwen/qwen3-32b`
 
-### `nvidia` (1 model)
+### `nvidia` (0 models)
 
-- `nvidia:nvidia/nemotron-3-super-120b-a12b`
 
-### `ollama` (6 models)
+### `ollama` (3 models)
 
-- `ollama:glm-5.1:cloud`
-- `ollama:glm-5:cloud`
 - `ollama:minimax-m2.5:cloud`
 - `ollama:minimax-m2.7:cloud`
-- `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 
 ### `openai` (7 models)
@@ -189,14 +165,11 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4-mini`
 - `openai:gpt-5.5`
 
-### `openrouter` (7 models)
+### `openrouter` (4 models)
 
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
-- `openrouter:moonshotai/kimi-k2.5`
 - `openrouter:moonshotai/kimi-k2.6`
-- `openrouter:nvidia/nemotron-3-super-120b-a12b`
-- `openrouter:z-ai/glm-5.1`
 - `openrouter:z-ai/glm-5.2`
 
 ### `xai` (2 models)
@@ -204,7 +177,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-3-mini-fast`
 - `xai:grok-4`
 
-## `all` (56 models)
+## `all` (43 models)
 
 - `anthropic:claude-haiku-4-5`
 - `anthropic:claude-opus-4-5-20251101`
@@ -214,22 +187,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-sonnet-4-6`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
-- `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
-- `baseten:zai-org/GLM-5`
 - `fireworks:accounts/fireworks/models/deepseek-v3-0324`
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
 - `fireworks:accounts/fireworks/models/deepseek-v4-pro`
-- `fireworks:accounts/fireworks/models/glm-5`
-- `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/glm-5p2`
-- `fireworks:accounts/fireworks/models/kimi-k2p5`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
 - `fireworks:accounts/fireworks/models/minimax-m3`
-- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-flash`
 - `google_genai:gemini-2.5-pro`
@@ -238,12 +205,8 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `groq:moonshotai/kimi-k2-instruct`
 - `groq:openai/gpt-oss-120b`
 - `groq:qwen/qwen3-32b`
-- `nvidia:nvidia/nemotron-3-super-120b-a12b`
-- `ollama:glm-5.1:cloud`
-- `ollama:glm-5:cloud`
 - `ollama:minimax-m2.5:cloud`
 - `ollama:minimax-m2.7:cloud`
-- `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 - `openai:gpt-4.1`
 - `openai:gpt-5.1-codex`
@@ -255,10 +218,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.5-pro`
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
-- `openrouter:moonshotai/kimi-k2.5`
 - `openrouter:moonshotai/kimi-k2.6`
-- `openrouter:nvidia/nemotron-3-super-120b-a12b`
-- `openrouter:z-ai/glm-5.1`
 - `openrouter:z-ai/glm-5.2`
 - `xai:grok-3-mini-fast`
 - `xai:grok-4`

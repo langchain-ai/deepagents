@@ -126,6 +126,48 @@ def read_langsmith_experiment(root: Path) -> str | None:
     return None
 
 
+def analysis_issue(
+    code: str, message: str, *, path: str | None = None
+) -> dict[str, str]:
+    """Build one structured warning from leaf aggregation."""
+    issue = {"stage": "leaf_aggregation", "code": code, "message": message}
+    if path is not None:
+        issue["path"] = path
+    return issue
+
+
+def _markdown_warning(value: object) -> str:
+    """Flatten and escape untrusted text for a Markdown warning bullet."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def read_download_issues(root: Path) -> list[dict[str, str]]:
+    """Read an artifact-download error left by the workflow."""
+    path = root / "artifact-download-error.log"
+    if not path.is_file():
+        return []
+    try:
+        message = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        message = f"Artifact download failed and its error log was unreadable: {exc}"
+    return [
+        analysis_issue(
+            "artifact_download_failed",
+            message or "Artifact download failed after three attempts.",
+            path=path.name,
+        )
+    ]
+
+
 class Aggregation(NamedTuple):
     """Result of one walk of the merged shard tree.
 

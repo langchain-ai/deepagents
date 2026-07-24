@@ -966,6 +966,28 @@ class TestOpenAIPromptCacheKey:
 
         assert captured[0] is request
 
+    async def test_async_explicit_opt_out_param_skips(self) -> None:
+        """The async path honors the opt-out flag like the sync path.
+
+        `awrap_model_call` threads `self._openai_prompt_cache_key` through
+        `_apply_overrides_async` symmetrically with the sync path; this pins that
+        wiring so a future edit dropping the kwarg on only one path is caught.
+        """
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        await middleware.awrap_model_call(request, handler)
+
+        assert captured[0] is request
+
     def test_opt_out_preserves_user_supplied_key(self) -> None:
         """Disabling injection still forwards a user-supplied key untouched."""
         middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
@@ -1011,6 +1033,30 @@ class TestOpenAIPromptCacheKey:
         )
 
         assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_blocking_error_propagates_not_fail_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `BlockingError` from the config read is re-raised, never masked.
+
+        Fail-open must not swallow a blocking-I/O-on-the-event-loop violation:
+        that would hide the regression and silently defeat the opt-out. The
+        resolver matches by class name (blockbuster is not a runtime dep), so a
+        stand-in exception named `BlockingError` reproduces the path.
+        """
+
+        class BlockingError(Exception):
+            """Stand-in matching the resolver's by-name check."""
+
+        def _boom() -> bool:
+            raise BlockingError
+
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            _boom,
+        )
+        with pytest.raises(BlockingError):
+            ConfigurableModelMiddleware()
 
     def test_empty_thread_id_skips_prompt_cache_key(self) -> None:
         request = _make_request(

@@ -218,15 +218,27 @@ def _with_openai_prompt_cache_key(
 def _resolve_openai_prompt_cache_key_enabled() -> bool:
     """Resolve the `models.openai_prompt_cache_key` opt-out (default on).
 
-    Called once when `ConfigurableModelMiddleware` is constructed — off the
-    guarded server loop — so the `config.toml` read never blocks a model call.
+    Called once when `ConfigurableModelMiddleware` is constructed. The read is
+    kept off the blockbuster-guarded server loop by the caller: on the server
+    path `create_cli_agent` runs inside `asyncio.to_thread` (see
+    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent
-    construction over a config hiccup is worse than an unwanted cache key, and
-    the ordinary failure modes (a missing or corrupt `config.toml`) are already
-    absorbed by `load_config_toml`. The trade-off is that a user who opted out
-    can still get injection if resolution hard-fails here, so the fallback logs
-    at `warning` (not `debug`) to leave a breadcrumb.
+    construction over a config hiccup is worse than injecting the key, and the
+    ordinary failure modes (a missing or corrupt `config.toml`) are already
+    absorbed by `load_config_toml`. The trade-off is real, not cosmetic — a user
+    who opted out *because their endpoint 400s on unknown request fields* would
+    then see that per-request failure rather than a benign extra key — so the
+    fallback logs at `warning` (not `debug`) to leave a breadcrumb.
+
+    `BlockingError` is deliberately excluded from the fail-open: it signals a
+    real blocking-I/O-on-the-event-loop regression (construction moved back onto
+    the guarded loop), and swallowing it would mask that bug *and* silently
+    defeat the opt-out. It is re-raised so the violation surfaces loudly. It is
+    matched by class name because `blockbuster` is not a runtime dependency of
+    this package (it is supplied by the langgraph runtime), so it cannot be
+    imported here for an `isinstance` check.
 
     Returns:
         `True` when injection is enabled (the default), `False` when the opt-out
@@ -236,7 +248,9 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
         from deepagents_code.config import is_openai_prompt_cache_key_enabled
 
         return is_openai_prompt_cache_key_enabled()
-    except Exception:
+    except Exception as exc:
+        if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+            raise
         logger.warning(
             "Could not resolve models.openai_prompt_cache_key; defaulting to ON "
             "(an opt-out you set may not take effect)",
@@ -346,9 +360,11 @@ def _build_overrides(
     if ctx.thread_id:
         settings = overrides.get("model_settings", request.model_settings)
         if _is_fireworks_model(effective_model):
-            # Fireworks has no opt-out gate: it is a fixed hosted endpoint, not
-            # an arbitrary proxy, so unknown-field rejection is not a concern the
-            # way it is for the broadened OpenAI-provider path below.
+            # Fireworks has no opt-out gate. The classifier is provider-only
+            # (like the OpenAI one), so this does not *verify* a fixed endpoint;
+            # it rests on the assumption that `ChatFireworks` in practice targets
+            # Fireworks' hosted API, where unknown-field rejection is not the
+            # concern it is for the broadened, proxy-reachable OpenAI path below.
             updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
             injected = "Fireworks session settings"
         elif _is_openai_model(effective_model):
@@ -593,10 +609,15 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 not own the parent thread's resume state.
             openai_prompt_cache_key: Whether to inject a per-thread OpenAI
                 `prompt_cache_key`. Left as `None` (the default) it is resolved
-                once here from `models.openai_prompt_cache_key`; construction
-                happens off the guarded server loop, so the config read never
-                blocks a model call. Pass an explicit bool to bypass the config
-                read (mainly for tests).
+                once here from `models.openai_prompt_cache_key` and cached, so no
+                per-call read happens. The one-time `config.toml` read assumes
+                current callers construct the middleware off the
+                blockbuster-guarded server loop (the server path offloads
+                `create_cli_agent` via `asyncio.to_thread`); if that assumption
+                is ever broken the read would trip `BlockingError`, which
+                `_resolve_openai_prompt_cache_key_enabled` re-raises rather than
+                masks. Pass an explicit bool to bypass the config read (mainly
+                for tests).
         """
         self._persist_model_state = persist_model_state
         self._openai_prompt_cache_key = (

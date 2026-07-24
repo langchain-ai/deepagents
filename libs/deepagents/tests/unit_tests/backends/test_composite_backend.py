@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -18,18 +17,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
-
-
-def make_runtime(tid: str = "tc", *, store=None):
-    """Minimal ToolRuntime - only needed for _intercept_large_tool_result calls."""
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tid,
-        store=store or InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
 
 
 def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
@@ -377,7 +364,7 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
 
     class TrackingRouteBackend(StoreBackend):
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(namespace=lambda _rt: ("tracking",))
             self.called = False
 
         def glob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -385,7 +372,10 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
             return GlobResult(matches=[])
 
     routed_backend = TrackingRouteBackend()
-    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+    comp = CompositeBackend(
+        default=ErrorDefaultBackend(namespace=lambda _rt: ("default",)),
+        routes={"/store/": routed_backend},
+    )
 
     result = comp.glob("*", path="/")
 
@@ -600,48 +590,43 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_composite_backend_intercept_large_tool_result(file_format):
+def test_composite_backend_intercept_large_tool_result():
     mem_store = InMemoryStore()
-    rt = make_runtime("t10", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
             routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
         ),
         tool_token_limit_before_evict=1000,
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
     # Verify the file was written to the default store backend
     stored_item = mem_store.get(("default",), "/large_tool_results/test_789")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_composite_backend_intercept_large_tool_result_routed_to_store(file_format):
+def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
     mem_store = InMemoryStore()
-    rt = make_runtime("t11", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
-            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)},
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
         ),
         tool_token_limit_before_evict=1000,
     )
 
     large_content = "w" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_routed_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -649,8 +634,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store(file_form
 
     stored_item = mem_store.get(("filesystem",), "/test_routed_123")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
 # Mock sandbox backend for testing execute functionality
@@ -1232,9 +1216,9 @@ def test_composite_grep_error_in_routed_backend() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Invalid regex pattern error"
+            return GrepResult(error="Invalid regex pattern error")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1251,9 +1235,9 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Backend error occurred"
+            return GrepResult(error="Backend error occurred")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1270,9 +1254,9 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Default backend error"
+            return GrepResult(error="Default backend error")
 
-    error_default = ErrorDefaultBackend()
+    error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
     store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})

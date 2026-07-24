@@ -113,12 +113,13 @@ jobs:
       - name: "🚀 Run Integration Tests"
         working-directory: ${{ matrix.working-directory }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # sandboxes
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/partners/quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
+          DAYTONA_API_KEY: ${{ (matrix.working-directory == 'libs/partners/daytona' || matrix.working-directory == 'libs/code') && secrets.DAYTONA_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/code') && secrets.LANGSMITH_API_KEY || '' }}
+          MODAL_TOKEN_ID: ${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_ID || '' }}
+          MODAL_TOKEN_SECRET: ${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_SECRET || '' }}
+          OPENAI_API_KEY: ${{ matrix.working-directory == 'libs/deepagents' && secrets.OPENAI_API_KEY || '' }}
+          RUNLOOP_API_KEY: ${{ (matrix.working-directory == 'libs/partners/runloop' || matrix.working-directory == 'libs/code') && secrets.RUNLOOP_API_KEY || '' }}
         run: make integration_tests
 
       - name: "🧹 Verify Clean Working Directory"

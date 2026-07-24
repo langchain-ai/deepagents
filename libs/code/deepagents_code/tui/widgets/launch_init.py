@@ -11,7 +11,8 @@ from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
+from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,8 +58,177 @@ def _normalize_name(value: str) -> str:
     return name
 
 
+class LaunchGoalCriteriaPreferenceScreen(ModalScreen[bool]):
+    """One-time choice for how Auto mode handles generated goal criteria."""
+
+    AUTO_FOCUS = "#launch-goal-criteria-options"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "review", "Review", show=False, priority=True),
+        Binding("tab", "cursor_down", "Next", show=False, priority=True),
+        Binding("shift+tab", "cursor_up", "Previous", show=False, priority=True),
+    ]
+
+    CSS = """
+    LaunchGoalCriteriaPreferenceScreen {
+        align: center middle;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen > Vertical {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen .launch-init-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen .launch-init-copy {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen OptionList {
+        height: auto;
+        max-height: 4;
+        background: $background;
+        margin-bottom: 1;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen .launch-init-note {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    LaunchGoalCriteriaPreferenceScreen .launch-init-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        continue_screen: Screen[Any] | None = None,
+        on_continue: Callable[[bool], None] | None = None,
+        on_continue_failed: Callable[[bool], None] | None = None,
+    ) -> None:
+        """Initialize the goal criteria preference screen.
+
+        Args:
+            continue_screen: Optional screen to switch to after choosing.
+            on_continue: Optional callback invoked with the selected preference
+                before switching to `continue_screen`.
+            on_continue_failed: Optional callback invoked when switching to
+                `continue_screen` fails.
+        """
+        super().__init__()
+        self._continue_screen = continue_screen
+        self._on_continue = on_continue
+        self._on_continue_failed = on_continue_failed
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual override
+        """Compose the preference selector.
+
+        Yields:
+            Widgets for the prompt and its two choices.
+        """
+        glyphs = get_glyphs()
+        with Vertical():
+            yield Static(
+                "How should Auto mode handle goal criteria?",
+                classes="launch-init-title",
+            )
+            yield Static(
+                "When you create or update a goal, dcode drafts acceptance "
+                "criteria before starting.",
+                classes="launch-init-copy",
+            )
+            options = OptionList(
+                Option("Review before applying (recommended)", id="review"),
+                Option("Apply automatically in Auto mode", id="auto"),
+                id="launch-goal-criteria-options",
+            )
+            options.highlighted = 0
+            yield options
+            yield Static(
+                "You can change this at any time in ~/.deepagents/config.toml "
+                "or with DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA.",
+                classes="launch-init-note",
+            )
+            yield Static(
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+                f" {glyphs.bullet} Enter select"
+                f" {glyphs.bullet} Esc review",
+                classes="launch-init-help",
+            )
+
+    def on_mount(self) -> None:
+        """Apply the ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Continue with the selected preference.
+
+        Args:
+            event: The selected option.
+        """
+        if event.option.id == "auto":
+            self._finish(True)
+        elif event.option.id == "review":
+            self._finish(False)
+
+    def action_review(self) -> None:
+        """Use the fail-closed review preference and continue."""
+        self._finish(False)
+
+    def action_cancel(self) -> None:
+        """Treat the global cancel action as the safe review choice."""
+        self.action_review()
+
+    def action_cursor_down(self) -> None:
+        """Move the option cursor down."""
+        self.query_one(OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move the option cursor up."""
+        self.query_one(OptionList).action_cursor_up()
+
+    def _finish(self, auto_accept: bool) -> None:
+        """Resolve the choice before replacing or dismissing this screen."""
+        if self._on_continue is not None:
+            self._on_continue(auto_accept)
+        if self._continue_screen is None:
+            self.dismiss(auto_accept)
+            return
+        try:
+            self.app.switch_screen(self._continue_screen)
+        except ScreenStackError:
+            logger.warning(
+                "Could not switch from goal preference screen; dismissing instead",
+                exc_info=True,
+            )
+            if self._on_continue_failed is not None:
+                self._on_continue_failed(auto_accept)
+            self.dismiss(auto_accept)
+
+
 class LaunchNameScreen(ModalScreen[str | None]):
-    """First-step onboarding screen that asks for the user's name.
+    """Onboarding screen that asks for the user's name.
 
     Dismissal values:
 
@@ -75,6 +245,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
         continue_screen: Screen[Any] | None = None,
         on_continue: Callable[[str], None] | None = None,
         on_continue_failed: Callable[[str], None] | None = None,
+        on_skip: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the name-entry screen.
 
@@ -84,11 +255,13 @@ class LaunchNameScreen(ModalScreen[str | None]):
                 switching to `continue_screen`.
             on_continue_failed: Optional callback invoked with the submitted
                 name when switching to `continue_screen` fails.
+            on_skip: Optional callback invoked before Escape dismisses the screen.
         """
         super().__init__()
         self._continue_screen = continue_screen
         self._on_continue = on_continue
         self._on_continue_failed = on_continue_failed
+        self._on_skip = on_skip
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "skip", "Skip", show=False, priority=True),
@@ -192,6 +365,8 @@ class LaunchNameScreen(ModalScreen[str | None]):
 
     def action_skip(self) -> None:
         """Skip the onboarding sequence."""
+        if self._on_skip is not None:
+            self._on_skip()
         self.dismiss(None)
 
     def action_cancel(self) -> None:

@@ -142,9 +142,7 @@ def show_help() -> None:
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
-    console.print(
-        "  -y, --auto-approve         Enable beta classifier-backed Auto mode"
-    )
+    console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
     console.print(
         "  --yolo                     Run gated actions without review after "
         "acknowledgement"
@@ -210,6 +208,10 @@ def show_help() -> None:
     )
     console.print(
         "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
+    )
+    console.print(
+        "  --recursion-limit N        Override the agent's graph recursion_limit"
+        " (default 2000)"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"

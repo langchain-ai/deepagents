@@ -37,6 +37,7 @@ from deepagents_code.config_manifest import (
     INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
     INTERPRETER_PTC_DEFAULT,
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
+    RECURSION_LIMIT_DEFAULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -1466,12 +1467,17 @@ in `tool_display`.
 """
 
 config: RunnableConfig = {
-    "recursion_limit": 1000,
+    "recursion_limit": RECURSION_LIMIT_DEFAULT,
 }
-"""Default LangGraph runnable config.
+"""Default LangGraph runnable config for the main agent.
 
-Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
-hitting the default LangGraph ceiling.
+Sets `recursion_limit` to `RECURSION_LIMIT_DEFAULT` (2000) to accommodate deeply
+nested agent graphs in long-running sessions without hitting the default
+LangGraph ceiling. The literal lives in `config_manifest` so the default is
+defined in exactly one place. This value is the fallback: `create_cli_agent`
+resolves the effective limit at agent-build time via `resolve_recursion_limit`,
+which honors the `--recursion-limit` CLI flag, the `DEEPAGENTS_CODE_RECURSION_LIMIT`
+env var, and `[runtime].recursion_limit` in `config.toml`.
 """
 
 _git_branch_cache: dict[str, str | None] = {}
@@ -3130,6 +3136,31 @@ def is_memory_auto_save_enabled() -> bool:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
+
+
+def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
+    """Resolve whether Auto mode applies generated goal criteria without review.
+
+    Returns:
+        The effective preference and its config source. The preference fails closed
+        to disabled if the manifest entry is unavailable.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("goals.auto_accept_criteria")
+    if option is None:
+        logger.warning(
+            "Manifest option 'goals.auto_accept_criteria' is missing; goal "
+            "criteria auto-accept is disabled and any saved preference is "
+            "ignored.",
+        )
+        return False, "default"
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value), source
 
 
 def configure_langsmith_secret_redaction() -> bool:

@@ -636,7 +636,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if not enabled:
             return
         current = options.highlighted
-        if current in enabled:
+        if current is not None and current in enabled:
             position = enabled.index(current)
             options.highlighted = enabled[(position + step) % len(enabled)]
         else:

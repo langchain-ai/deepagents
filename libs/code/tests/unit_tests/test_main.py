@@ -1653,20 +1653,32 @@ class TestRunTextualCliAsyncMcp:
 
 
 class TestServerCleanupLifecycle:
-    """Verify server_proc.stop() is guaranteed after the TUI exits."""
+    """Verify server_proc.stop() is guaranteed after the TUI exits.
+
+    The `Server log preserved at:` notice is drained by the process-global
+    `emit_preserved_log_notices()` (patched here), called unconditionally once
+    the terminal is restored — even when startup failed and no `_server_proc`
+    was ever tracked (PR #4999 review).
+    """
 
     async def test_server_proc_stopped_after_app_exits(self) -> None:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
-        with patch.object(
-            DeepAgentsApp,
-            "run_async",
-            new_callable=AsyncMock,
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
 
     async def test_server_proc_stopped_even_on_crash(self) -> None:
         """server_proc.stop() must fire even when run_async raises."""
@@ -1679,11 +1691,15 @@ class TestServerCleanupLifecycle:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
             pytest.raises(RuntimeError, match="boom"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
 
     async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
         """server_proc set by the background worker must still be cleaned up."""
@@ -1693,10 +1709,15 @@ class TestServerCleanupLifecycle:
             # Simulate the background worker having set _server_proc
             self._server_proc = server_proc
 
-        with patch.object(
-            DeepAgentsApp,
-            "run_async",
-            new=_fake_run_async,
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new=_fake_run_async,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
         ):
             await run_textual_app(
                 server_kwargs={"assistant_id": "a"},
@@ -1704,6 +1725,36 @@ class TestServerCleanupLifecycle:
             )
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_notice_drained_when_startup_left_no_server_proc(self) -> None:
+        """A failed startup queues a path but never tracks a `_server_proc`.
+
+        The teardown must still drain the process-global queue so that
+        debug-preserved log path is announced (PR #4999 review); the drain is
+        not gated on `_server_proc` being set.
+        """
+
+        async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
+            # Startup failed: the background worker never assigns _server_proc.
+            self._server_proc = None
+
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new=_fake_run_async,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+        ):
+            await run_textual_app(
+                server_kwargs={"assistant_id": "a"},
+                thread_id="t-1",
+            )
+
+        emit.assert_called_once_with()
 
 
 class TestCheckOptionalTools:

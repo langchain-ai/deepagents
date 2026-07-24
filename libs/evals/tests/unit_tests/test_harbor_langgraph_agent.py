@@ -622,12 +622,12 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
             "kwargs": {"temperature": 0.0},
         }
     ]
-    assert captured_backend == [{"root_dir": tmp_path, "inherit_env": False}]
+    assert captured_backend == [{"root_dir": tmp_path, "inherit_env": False, "virtual_mode": False}]
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
-    # The bare path must not inject a harness system prompt; the overlaid
-    # branch's own BASE_AGENT_PROMPT is the variable this benchmark tests.
+    # The bare path must not inject a harness system prompt, preserving the
+    # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
 
 
@@ -674,9 +674,8 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
     assert result == "graph"
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
-    # The tau3 conversation protocol comes from the MCP tools' descriptions, not a
-    # harness system prompt; the overlaid branch's BASE_AGENT_PROMPT is the only
-    # injected system-prompt content, parallel to the bare path.
+    # The tau3 conversation protocol comes from the MCP tools' descriptions, not
+    # a harness system prompt.
     assert "system_prompt" not in captured_create[0]
     assert captured_create[0]["tools"] == [
         "start_conversation",

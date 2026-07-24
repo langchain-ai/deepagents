@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     InputAgentState,
@@ -73,7 +73,7 @@ class DeepAgentState(AgentState):
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
 
-BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+_LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
 ## Core Behavior
 
@@ -116,35 +116,25 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Authored base prompt (persona + task guidance), available for opt-in.
 
-Not injected by default. `create_deep_agent` passes an empty string as the
-base, so a deep agent ships with no authored base prompt. Callers who want
-this built-in persona and task guidance back pass it explicitly, e.g.
-`create_deep_agent(system_prompt=BASE_AGENT_PROMPT)`, or set it as a
-`HarnessProfile.base_system_prompt`.
 
-The final system prompt sent to the model is composed from up to three
-named parts:
-
-- `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
-    `SystemMessage`); when unset, no `USER` segment is included.
-- `BASE` — empty by default; replaced by `HarnessProfile.base_system_prompt`
-    when set on a matching profile.
-- `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
-    matching profile, appended last; when unset, no `SUFFIX` segment is
-    included.
-
-The order is always `USER` -> `BASE` -> `SUFFIX`, joined by blank lines
-(`\\n\\n`). When `USER` is a `SystemMessage`, the right-hand assembly is
-appended as an additional text content block onto the message's existing
-`content_blocks` list, preserving any `cache_control` markers the caller
-set.
-
-See `create_deep_agent`'s `system_prompt` parameter or
-[Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
-for the full assembly order.
-"""
+def __getattr__(name: str) -> str:
+    """Provide deprecated compatibility access to legacy module attributes."""
+    if name == "BASE_AGENT_PROMPT":
+        warn_deprecated(
+            since="0.7.0",
+            removal="0.9.0",
+            message=(
+                "`BASE_AGENT_PROMPT` was deprecated in `deepagents==0.7.0` and "
+                "will be removed in `deepagents==0.9.0`. Deep Agents no longer "
+                "provides an "
+                "authored base prompt."
+            ),
+            package="deepagents",
+        )
+        return _LEGACY_BASE_AGENT_PROMPT
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 def _build_default_model() -> ChatAnthropic:
@@ -300,7 +290,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     By default, this agent has access to the following tools:
 
-    - `write_todos`: manage a todo list
     - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
     - `execute`: run shell commands
     - `task`: call subagents
@@ -342,26 +331,30 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         tools: Additional tools the agent should have access to.
 
             These are merged with the built-in tool suite listed above
-            (`write_todos`, filesystem tools, `execute`, and `task`).
+            (filesystem tools, `execute`, and `task`).
 
             Passing tools here is additive — it never removes a built-in.
             To drop a built-in tool, register a
             [`HarnessProfile`][deepagents.HarnessProfile] with
             `excluded_tools`.
-        system_prompt: Custom system instructions placed at the front of
-            the system prompt sent to the model.
+        system_prompt: Caller-authored system instructions (`USER`) placed
+            first in the system prompt sent to the model.
 
-            Whatever you pass here always sits before the SDK's default
-            deep-agent prompt and any model-tuning suffix from a
-            registered `HarnessProfile`. With `system_prompt=None`, the
-            SDK default is used on its own (plus the profile suffix
-            when one applies). Sections are joined by a blank line.
+            The final authored prompt is assembled as `USER` -> `BASE` -> `SUFFIX`.
+            `BASE` is empty unless the active
+            [`HarnessProfile`][deepagents.HarnessProfile] defines
+            `base_system_prompt`, and `SUFFIX` is the profile's optional
+            `system_prompt_suffix`. Parts are separated by blank lines.
 
-            Passing a `SystemMessage` instead of a string preserves any
-            `cache_control` markers on the message's content blocks —
-            useful for placing explicit Anthropic prompt-cache
-            breakpoints. The same ordering applies (caller's blocks
-            first, SDK content appended as an additional text block).
+            With `system_prompt=None` and no profile `base_system_prompt` or
+            `system_prompt_suffix`, the model receives an empty authored system
+            prompt.
+
+            Passing a `SystemMessage` preserves any `cache_control` markers
+            on its existing content blocks — useful for explicit Anthropic
+            prompt-cache breakpoints. When profile content is present, its
+            assembled `BASE` and `SUFFIX` are appended as an additional text
+            content block after the caller's blocks.
 
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
@@ -370,7 +363,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Base stack:
 
-            - [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
             - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
             - [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
             - [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]
@@ -673,7 +665,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(system_prompt=""),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
@@ -759,7 +750,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-            TodoListMiddleware(system_prompt=""),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
@@ -824,9 +814,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(system_prompt=""),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.append(

@@ -2609,6 +2609,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             if decision["disposition"] == "require_human"
         }
         denied_messages: list[ToolMessage] = []
+        # A classifier timeout (and often a uniform policy denial) stamps every
+        # tool call in the batch with the same disposition and reason. Each call
+        # still needs its own ToolMessage, but the transcript event is a
+        # batch-level note, so coalesce identical events to avoid flooding the
+        # transcript with N duplicate lines for an N-tool batch.
+        emitted_events: set[tuple[str, str, str]] = set()
         for call in ai_message.tool_calls:
             decision = decision_by_id.get(_tool_call_id(call))
             if decision is None:
@@ -2629,10 +2635,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     status="error",
                 )
             )
+            event_kind = "unavailable" if unavailable else "denial"
+            event_key = (event_kind, label, decision["reason"])
+            if event_key in emitted_events:
+                continue
+            emitted_events.add(event_key)
             self._emit_event(
                 runtime,
                 {
-                    "event": "unavailable" if unavailable else "denial",
+                    "event": event_kind,
                     "category": label,
                     "reason": decision["reason"],
                     "tool_name": call["name"],

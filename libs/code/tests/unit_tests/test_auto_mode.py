@@ -3378,6 +3378,75 @@ async def test_policy_denial_becomes_error_tool_message(tmp_path: Path) -> None:
     assert "destructive_action" in denial.content
 
 
+async def test_classifier_unavailable_emits_single_event_for_batch(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    calls = [
+        {
+            "name": "delete",
+            "args": {"file_path": "old.py"},
+            "id": "call-1",
+            "type": "tool_call",
+        },
+        {
+            "name": "delete",
+            "args": {"file_path": "older.py"},
+            "id": "call-2",
+            "type": "tool_call",
+        },
+    ]
+    ai_message = AIMessage(content="", tool_calls=calls)
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+    reason = "The authorization classifier was unavailable (TimeoutError)."
+    plan = {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": ["call-1", "call-2"],
+        "decisions": [
+            {
+                "tool_call_id": call["id"],
+                "disposition": "classifier_unavailable",
+                "category": "other_policy",
+                "reason": reason,
+                "path": "classifier",
+            }
+            for call in calls
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+    state = {"messages": [ai_message], "_auto_decision_plan": plan}
+
+    update = await middleware.aafter_model(
+        cast("AgentState[Any]", state), cast("Runtime[Any]", runtime)
+    )
+
+    assert update is not None
+    denials = [
+        message for message in update["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert {message.tool_call_id for message in denials} == {"call-1", "call-2"}
+    assert all(message.status == "error" for message in denials)
+    unavailable_events = [
+        event for event in events if event.get("event") == "unavailable"
+    ]
+    assert len(unavailable_events) == 1
+    assert unavailable_events[0]["reason"] == reason
+
+
 async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     guard = HeadlessMCPGuardMiddleware({"mcp_mutate"})
     executed = False

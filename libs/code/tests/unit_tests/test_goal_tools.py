@@ -31,7 +31,6 @@ def test_rubric_snapshot_without_rubric() -> None:
     assert _rubric_snapshot({}) == {
         "active": False,
         "criteria": None,
-        "source": None,
         "grading_status": None,
     }
 
@@ -49,13 +48,12 @@ def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
     ) == {
         "active": True,
         "criteria": "- one-shot criteria",
-        "source": "invocation",
         "grading_status": "needs_revision",
     }
 
 
 def test_rubric_snapshot_identifies_goal_rubric() -> None:
-    """A goal-backed rubric should be labeled as goal criteria."""
+    """A goal-backed rubric should surface the goal criteria."""
     assert _rubric_snapshot(
         {
             "rubric": "- tests pass",
@@ -65,7 +63,22 @@ def test_rubric_snapshot_identifies_goal_rubric() -> None:
     ) == {
         "active": True,
         "criteria": "- tests pass",
-        "source": "goal",
+        "grading_status": None,
+    }
+
+
+def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input() -> None:
+    """Actionable goal criteria are returned when no public rubric is set."""
+    assert _rubric_snapshot(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "- goal criteria",
+            "_sticky_rubric": "- sticky criteria",
+        }
+    ) == {
+        "active": True,
+        "criteria": "- goal criteria",
         "grading_status": None,
     }
 
@@ -83,7 +96,6 @@ def test_rubric_snapshot_suppresses_inactive_goal_rubric(status: str) -> None:
     ) == {
         "active": False,
         "criteria": None,
-        "source": None,
         "grading_status": None,
     }
 
@@ -100,7 +112,6 @@ def test_rubric_snapshot_keeps_standalone_sticky_rubric_for_paused_goal() -> Non
     ) == {
         "active": True,
         "criteria": "- standalone criteria",
-        "source": "sticky",
         "grading_status": None,
     }
 
@@ -110,7 +121,6 @@ def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
     assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {
         "active": True,
         "criteria": "- sticky criteria",
-        "source": "sticky",
         "grading_status": None,
     }
 

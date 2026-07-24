@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.6...langchain-runloop==0.0.7) (2026-07-24)
+
+
+### Features
+
+* **code:** add Claude Opus 5 support ([#5049](https://github.com/langchain-ai/deepagents/issues/5049)) ([c0afec5](https://github.com/langchain-ai/deepagents/commit/c0afec5ab7e9860d1572002c1f689f95dd15cf8e))
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.5...langchain-runloop==0.0.6) (2026-06-03)
 
 ### Features

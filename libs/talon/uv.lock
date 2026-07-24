@@ -822,7 +822,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.46"
+version = "0.1.47"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },

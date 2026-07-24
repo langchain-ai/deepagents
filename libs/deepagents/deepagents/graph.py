@@ -914,7 +914,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    base_prompt = _apply_profile_prompt(_profile, "")
+    # Eval baseline: restore the pre-#4859 verbose authored base prompt as the
+    # default (PR #4859 emptied it to ""). Reproduces the "before" system prompt
+    # for the token/cost comparison without unwinding later refactors.
+    base_prompt = _apply_profile_prompt(_profile, _LEGACY_BASE_AGENT_PROMPT)
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = base_prompt
     elif isinstance(system_prompt, SystemMessage):

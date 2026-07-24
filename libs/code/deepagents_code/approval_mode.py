@@ -8,11 +8,15 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from typing import TypedDict
+
+from filelock import FileLock, Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,13 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
+
+AUTO_NOTICE_VERSION = "2026-07-24"
+"""Version of the first-run Auto mode education notice.
+
+Bump this string whenever the notice copy changes materially enough that
+already-shown installs should see it again.
+"""
 
 
 class ApprovalMode(StrEnum):
@@ -240,6 +251,13 @@ async def awrite_approval_mode(
     return key
 
 
+_APPROVAL_STATE_LOCK_TIMEOUT_SECONDS = 5.0
+"""Longest a save waits for the shared install-local approval-state lock."""
+
+_APPROVAL_STATE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_APPROVAL_STATE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
 def yolo_acknowledgement_path() -> Path:
     """Return the installation-local acknowledgement file path.
 
@@ -249,6 +267,195 @@ def yolo_acknowledgement_path() -> Path:
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
     return DEFAULT_STATE_DIR / "approval.json"
+
+
+def _approval_state_lock_path(path: Path) -> Path:
+    """Return the sibling lock file path that serializes approval-state saves.
+
+    Args:
+        path: Path to `approval.json`.
+
+    Returns:
+        Dedicated `.lock` path next to the state file.
+    """
+    return path.with_name(f"{path.name}.lock")
+
+
+def _approval_state_thread_lock(path: Path) -> threading.Lock:
+    """Return the process-local mutation lock for an approval-state path.
+
+    Each `_approval_state_lock` builds a fresh `FileLock(thread_local=False)`, so
+    the cross-process lock alone does not serialize threads within one dcode
+    process. This threading lock guarantees only one in-process thread runs the
+    read-merge-write at a time, independent of the filelock backend's cross-thread
+    behavior.
+
+    Args:
+        path: Path to `approval.json`.
+
+    Returns:
+        Process-lifetime lock keyed by the normalized path string.
+    """
+    key = str(path)
+    with _APPROVAL_STATE_THREAD_LOCKS_GUARD:
+        lock = _APPROVAL_STATE_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _APPROVAL_STATE_THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _approval_state_lock(path: Path) -> Iterator[None]:
+    """Serialize read-merge-write updates to install-local approval state.
+
+    Combines a process-local threading lock with a cross-process `FileLock` on a
+    sibling `.lock` file so concurrent YOLO and Auto saves cannot drop each
+    other's fields.
+
+    Args:
+        path: Path to `approval.json`.
+
+    Yields:
+        Control while the caller exclusively holds the mutation lock.
+
+    Callers should handle `filelock.Timeout` (lock wait expired) and `OSError`
+    (lock directory creation failure).
+    """
+    # These run during __enter__, before the lock is held. Any OSError from
+    # mkdir/chmod propagates out of the `with` to the caller, which must catch
+    # it (the only caller, `_merge_approval_state`, does).
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        path.parent.chmod(0o700)
+    file_lock = FileLock(
+        str(_approval_state_lock_path(path)),
+        timeout=_APPROVAL_STATE_LOCK_TIMEOUT_SECONDS,
+        thread_local=False,
+    )
+    with _approval_state_thread_lock(path), file_lock:
+        yield
+
+
+def _load_approval_state(path: Path) -> dict[str, object]:
+    """Load the install-local approval state file, or an empty dict.
+
+    A missing file is the normal first-run case and returns `{}` silently.
+    Unreadable, corrupt, or non-object state also returns `{}` (so callers fail
+    closed and re-prompt) but is logged: the next save overwrites the file, so
+    this warning is the only surviving evidence of the corruption.
+
+    Args:
+        path: Path to `approval.json`.
+
+    Returns:
+        Parsed object mapping when valid; otherwise `{}`.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning(
+            "Ignoring unreadable or corrupt approval state at %s; a re-prompt "
+            "may follow and the file will be overwritten on the next save",
+            path,
+            exc_info=True,
+        )
+        return {}
+    if not isinstance(data, dict):
+        logger.warning(
+            "Ignoring non-object approval state at %s; a re-prompt may follow "
+            "and the file will be overwritten on the next save",
+            path,
+        )
+        return {}
+    return data
+
+
+def _write_approval_state(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    failure_label: str,
+) -> bool:
+    """Atomically write install-local approval state.
+
+    Callers that load-then-merge must hold `_approval_state_lock` around both
+    the load and this write so concurrent savers cannot clobber each other.
+
+    Args:
+        path: Destination path under the private dcode state directory.
+        payload: JSON-serializable mapping to persist.
+        failure_label: Human-readable label for the warning log on OSError.
+
+    Returns:
+        `True` when the private atomic write succeeds, otherwise `False`.
+    """
+    tmp_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            path.parent.chmod(0o700)
+        fd, raw_tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        tmp_path = Path(raw_tmp_path)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+            handle.write("\n")
+        if os.name != "nt":
+            tmp_path.chmod(0o600)
+        tmp_path.replace(path)
+        if os.name != "nt":
+            path.chmod(0o600)
+    except OSError:
+        logger.warning("Could not persist %s", failure_label, exc_info=True)
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        return False
+    return True
+
+
+def _merge_approval_state(
+    path: Path,
+    updates: Mapping[str, object],
+    *,
+    failure_label: str,
+) -> bool:
+    """Load, merge, and write install-local approval state under a lock.
+
+    Args:
+        path: Path to `approval.json`.
+        updates: Fields to overlay onto the current state mapping.
+        failure_label: Human-readable label for warning logs.
+
+    Returns:
+        `True` when the locked merge-write succeeds, otherwise `False`.
+    """
+    try:
+        with _approval_state_lock(path):
+            payload = {
+                **_load_approval_state(path),
+                **updates,
+                "version": 1,
+            }
+            return _write_approval_state(
+                path,
+                payload,
+                failure_label=failure_label,
+            )
+    except Timeout:
+        logger.warning(
+            "Timed out waiting to persist %s",
+            failure_label,
+            exc_info=True,
+        )
+        return False
+    except OSError:
+        logger.warning(
+            "Could not lock approval state for %s", failure_label, exc_info=True
+        )
+        return False
 
 
 def has_yolo_acknowledgement(path: Path | None = None) -> bool:
@@ -261,13 +468,9 @@ def has_yolo_acknowledgement(path: Path | None = None) -> bool:
         `True` only for a valid record matching the current policy version.
     """
     target = path or yolo_acknowledgement_path()
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
+    data = _load_approval_state(target)
     return (
-        isinstance(data, dict)
-        and data.get("version") == 1
+        data.get("version") == 1
         and data.get("policy_version") == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
         and data.get("acknowledged") is True
     )
@@ -276,6 +479,9 @@ def has_yolo_acknowledgement(path: Path | None = None) -> bool:
 def save_yolo_acknowledgement(path: Path | None = None) -> bool:
     """Persist the current unrestricted-mode warning acknowledgement.
 
+    Merges into any existing approval state so first-run Auto notice fields are
+    preserved. Concurrent saves are serialized with a cross-process lock.
+
     Args:
         path: Alternate acknowledgement path for tests.
 
@@ -283,30 +489,56 @@ def save_yolo_acknowledgement(path: Path | None = None) -> bool:
         `True` when the private atomic write succeeds, otherwise `False`.
     """
     target = path or yolo_acknowledgement_path()
-    payload = {
-        "version": 1,
-        "policy_version": YOLO_ACKNOWLEDGEMENT_POLICY_VERSION,
-        "acknowledged": True,
-    }
-    tmp_path: Path | None = None
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name != "nt":
-            target.parent.chmod(0o700)
-        fd, raw_tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
-        tmp_path = Path(raw_tmp_path)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"))
-            handle.write("\n")
-        if os.name != "nt":
-            tmp_path.chmod(0o600)
-        tmp_path.replace(target)
-        if os.name != "nt":
-            target.chmod(0o600)
-    except OSError:
-        logger.warning("Could not persist YOLO acknowledgement", exc_info=True)
-        if tmp_path is not None:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-        return False
-    return True
+    return _merge_approval_state(
+        target,
+        {
+            "policy_version": YOLO_ACKNOWLEDGEMENT_POLICY_VERSION,
+            "acknowledged": True,
+        },
+        failure_label="YOLO acknowledgement",
+    )
+
+
+def has_auto_mode_notice(path: Path | None = None) -> bool:
+    """Return whether the current Auto first-enable notice was already shown.
+
+    The notice self-versions on `auto_notice_version` and deliberately does not
+    gate on the top-level `version` (unlike `has_yolo_acknowledgement`), so the
+    two records can evolve independently within one `approval.json`.
+
+    Args:
+        path: Alternate approval-state path for tests.
+
+    Returns:
+        `True` only when a shown notice matches `AUTO_NOTICE_VERSION`.
+    """
+    target = path or yolo_acknowledgement_path()
+    data = _load_approval_state(target)
+    return (
+        data.get("auto_notice_shown") is True
+        and data.get("auto_notice_version") == AUTO_NOTICE_VERSION
+    )
+
+
+def save_auto_mode_notice(path: Path | None = None) -> bool:
+    """Persist that the Auto first-enable notice was shown.
+
+    Merges into any existing approval state so YOLO acknowledgement fields are
+    preserved. Concurrent saves are serialized with a cross-process lock.
+    Callers should fail open when this returns `False`.
+
+    Args:
+        path: Alternate approval-state path for tests.
+
+    Returns:
+        `True` when the private atomic write succeeds, otherwise `False`.
+    """
+    target = path or yolo_acknowledgement_path()
+    return _merge_approval_state(
+        target,
+        {
+            "auto_notice_version": AUTO_NOTICE_VERSION,
+            "auto_notice_shown": True,
+        },
+        failure_label="Auto mode notice",
+    )

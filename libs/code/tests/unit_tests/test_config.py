@@ -14,12 +14,14 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _QUIET_SDK_LOGGER_NAMES,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     LangSmithApiError,
     LangSmithProjectNotFoundError,
+    LangsmithShadowResult,
     ModelResult,
     Settings,
     _apply_default_langsmith_project,
@@ -28,7 +30,7 @@ from deepagents_code.config import (
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
-    _quiet_sdk_tracing_logging,
+    _quiet_sdk_logging,
     apply_stored_langsmith_auth,
     build_langsmith_thread_url,
     configure_langsmith_secret_redaction,
@@ -42,6 +44,7 @@ from deepagents_code.config import (
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
+    langsmith_key_shadowed_by_empty_override,
     newline_shortcut,
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
@@ -106,6 +109,41 @@ class TestRuntimeDotenvReload:
             assert "openai_api_key: set -> set" in changes
         finally:
             config_mod._dotenv_loaded_values.clear()
+
+    def test_reload_resets_prefixed_resolution_logging(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Runtime reload starts a new generation of resolution diagnostics."""
+        import deepagents_code.config as config_mod
+        from deepagents_code.model_config import (
+            reset_env_resolution_log,
+            resolve_env_var,
+        )
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-prefixed")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
+        reset_env_resolution_log()
+        try:
+            runtime = Settings.from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            runtime.reload_from_environment(start_path=tmp_path)
+            assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+            assert (
+                caplog.messages.count(
+                    "Resolved OPENAI_API_KEY from DEEPAGENTS_CODE_OPENAI_API_KEY"
+                )
+                == 2
+            )
+        finally:
+            reset_env_resolution_log()
 
     def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
         self,
@@ -1532,22 +1570,236 @@ class TestGetLangsmithProjectName:
             )
 
 
+class TestLangsmithKeyShadowedByEmptyOverride:
+    """Tests for langsmith_key_shadowed_by_empty_override()."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_tracing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Start each test from a clean slate for the four tracing key vars.
+
+        Every case below sets only the vars it cares about; clearing the rest
+        up front keeps results independent of whatever the test runner happens
+        to have exported (e.g. a developer's own empty override).
+        """
+        for var in (
+            "LANGSMITH_API_KEY",
+            "LANGCHAIN_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.fixture
+    def fake_state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Redirect the credential store into a temp directory."""
+        state = tmp_path / ".state"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state)
+        return state
+
+    def test_returns_none_without_empty_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No empty prefixed override means nothing is being shadowed."""
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_returns_none_when_override_shadows_nothing(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override with no underlying key is not a shadow."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_detects_shadowed_canonical_env_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty override shadowing a canonical env key is reported."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+            shadowing_var="DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_detects_shadowed_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty override shadowing a `/auth`-stored key is reported."""
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+            shadowing_var="DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_langchain_override_does_not_consult_the_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stored-key bridge is `LANGSMITH`-only, so `LANGCHAIN` ignores it.
+
+        `/auth` only bridges its stored key onto `LANGSMITH_API_KEY`, never
+        `LANGCHAIN_API_KEY`. An empty `LANGCHAIN` override with no canonical
+        `LANGCHAIN_API_KEY` therefore shadows nothing even when a key is stored,
+        so no shadow is reported. Pins the asymmetry against a future change that
+        wrongly makes the `LANGCHAIN` path consult the store.
+        """
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_returns_none_when_override_carries_a_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-empty prefixed override resolves normally, so no shadow."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_detects_shadowed_langchain_canonical_env_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The legacy `LANGCHAIN_API_KEY` override path is reported too."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+            shadowing_var="DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
+
+    def test_reports_the_override_that_actually_shadows_the_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With both overrides empty, name the one hiding the only real key.
+
+        The `LANGSMITH` override is empty but shadows nothing (no canonical
+        value, no stored key); only `LANGCHAIN_API_KEY` carries a key, so
+        unsetting the `LANGCHAIN` override -- not the `LANGSMITH` one -- is what
+        restores tracing. The hint must name the `LANGCHAIN` override.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+            shadowing_var="DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+        )
+
+    def test_prefers_langsmith_when_both_overrides_shadow_a_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both overrides genuinely shadow a key, `LANGSMITH` wins."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+            shadowing_var="DEEPAGENTS_CODE_LANGSMITH_API_KEY"
+        )
+
+    def test_ignores_empty_override_when_a_key_already_resolves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty override is not reported when a key resolves anyway.
+
+        `LANGSMITH_API_KEY` resolves fine; the empty `LANGCHAIN` override hides
+        no key (no canonical `LANGCHAIN_API_KEY`). Tracing may still be off for
+        an unrelated reason (e.g. a missing tracing flag), but this override is
+        not the cause, so the generic hint -- not a false shadow claim -- is
+        correct.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_ignores_lower_precedence_override_when_langsmith_key_resolves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolving `LANGSMITH` key silences a genuine `LANGCHAIN` shadow.
+
+        `LANGSMITH_API_KEY` resolves and wins under precedence, so the effective
+        key is present and unsetting the empty `LANGCHAIN` override (which does
+        shadow `LANGCHAIN_API_KEY`) would change nothing. Reporting it would send
+        the user to unset the wrong variable, so nothing is reported.
+        """
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_langsmith")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_langchain")
+        assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult()
+
+    def test_reports_store_unreadable_when_no_other_shadow_found(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A corrupt store with no other shadow surfaces `store_unreadable`.
+
+        The warning must carry the underlying exception text (not a static
+        guess) so logs point at the real fault.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        with (
+            patch(
+                "deepagents_code.auth_store.get_stored_key",
+                side_effect=RuntimeError("bad json at line 3"),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+                store_unreadable=True
+            )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("empty-override shadow" in m for m in messages)
+        assert any("bad json at line 3" in m for m in messages)
+
+    def test_unreadable_store_does_not_abort_scan_of_later_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store error on `LANGSMITH` must not stop the `LANGCHAIN` check.
+
+        `LANGSMITH`'s stored-key read raises, but an empty `LANGCHAIN` override
+        genuinely shadows a canonical `LANGCHAIN_API_KEY`. That concrete shadow
+        is the actionable answer and must win over the store uncertainty, which
+        proves the loop continued past the exception rather than bailing.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_test")
+        with patch(
+            "deepagents_code.auth_store.get_stored_key",
+            side_effect=RuntimeError("corrupt"),
+        ):
+            assert langsmith_key_shadowed_by_empty_override() == LangsmithShadowResult(
+                shadowing_var="DEEPAGENTS_CODE_LANGCHAIN_API_KEY"
+            )
+
+
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
-    def test_redaction_enabled_by_default(self) -> None:
-        """LangSmith trace redaction defaults to enabled."""
-        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
-            assert is_langsmith_redaction_enabled() is True
+    @pytest.fixture(autouse=True)
+    def _enable_redaction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
 
-    def test_redaction_can_be_disabled_by_env(
+    def test_redaction_disabled_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The redaction env var can opt out for local debugging."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        """LangSmith trace redaction defaults to disabled."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
             assert is_langsmith_redaction_enabled() is False
+
+    def test_redaction_can_be_enabled_by_env(self) -> None:
+        """The redaction env var can opt in to secret redaction."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
 
     def test_configures_langsmith_client_with_secret_anonymizer(
         self,
@@ -1576,14 +1828,14 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
-    def test_skips_client_configuration_when_redaction_disabled(
+    def test_skips_client_configuration_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Opting out leaves the LangSmith client untouched."""
+        """Tracing leaves the LangSmith client untouched until redaction is enabled."""
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -1671,6 +1923,81 @@ class TestLangsmithSecretRedaction:
 
         _, kwargs = client_cls.call_args
         assert kwargs["api_url"] == "https://eu.smith.example.com"
+
+    def test_does_not_forward_default_us_endpoint_as_api_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The SDK default US SaaS URL is not forwarded as a custom `api_url`."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", LANGSMITH_US_ENDPOINT)
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert "api_url" not in kwargs
+
+    def test_default_us_env_does_not_forward_profile_custom_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A populated default env endpoint wins over a profile custom `api_url`.
+
+        The SDK resolves `env_api_url or profile_config.api_url`, so an explicit
+        default US env value must not fall through to the profile when building
+        the redacting client.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", LANGSMITH_US_ENDPOINT)
+
+        profile = Mock()
+        profile.api_url = "https://eu.smith.example.com"
+        profile.api_key = None
+        profile.oauth_access_token = None
+        profile.oauth_refresh_token = None
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._load_langsmith_profile_config",
+                return_value=profile,
+            ),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert "api_url" not in kwargs
+
+    def test_skips_keyless_default_us_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keyless default US endpoint is not treated as an upload target."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", f"{LANGSMITH_US_ENDPOINT}/")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
 
     def test_configures_client_for_keyless_custom_endpoint(
         self,
@@ -1800,25 +2127,29 @@ class TestLangsmithSecretRedaction:
         assert "api_key" not in kwargs
         assert "anonymizer" in kwargs
 
-    def test_redaction_can_be_disabled_by_toml(self) -> None:
-        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+    def test_redaction_can_be_enabled_by_toml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `[tracing] langsmith_redact = true` in config.toml opts in."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_REDACT")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is False
+            assert is_langsmith_redaction_enabled() is True
 
     def test_env_redaction_toggle_overrides_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The redaction env var takes precedence over a conflicting config.toml."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
         with patch(
             "deepagents_code.config_manifest.load_config_toml",
-            return_value={"tracing": {"langsmith_redact": False}},
+            return_value={"tracing": {"langsmith_redact": True}},
         ):
-            assert is_langsmith_redaction_enabled() is True
+            assert is_langsmith_redaction_enabled() is False
 
     def test_fail_closed_clears_env_when_sdk_disable_also_fails(
         self,
@@ -1980,6 +2311,18 @@ class TestDisableOrphanedTracing:
             # Nothing was disabled, so no startup notice should be staged.
             assert consume_orphaned_tracing_disabled_notice() is None
 
+    def test_disables_tracing_when_only_default_us_endpoint_set(self) -> None:
+        """SDK default US endpoint alone is not a keyless custom upload target."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = LANGSMITH_US_ENDPOINT
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+
     def test_preserves_tracing_when_runs_endpoints_set(self) -> None:
         """Replica endpoints are trusted upload targets even without a top-level key."""
         env = self._clean_env()
@@ -2016,6 +2359,55 @@ class TestDisableOrphanedTracing:
             assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
             # Nothing was disabled, so no startup notice should be staged.
             assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_disables_tracing_when_profile_only_has_default_us_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile default US api_url alone does not count as a custom endpoint."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            f'"profiles":{{"default":{{"api_url":"{LANGSMITH_US_ENDPOINT}"}}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+
+    def test_disables_tracing_when_default_us_env_overrides_profile_custom(
+        self, tmp_path: Path
+    ) -> None:
+        """Populated default US env wins over profile custom for orphaned disable.
+
+        The SDK would still target keyless US in that case, so the profile's
+        custom api_url must not be trusted as a keyless upload target.
+        """
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = LANGSMITH_US_ENDPOINT
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
 
     def test_preserves_tracing_when_key_present(self) -> None:
         """Tracing stays enabled when a usable API key is set."""
@@ -2819,8 +3211,8 @@ class TestGetTracingStatus:
             )
 
 
-class TestQuietSdkTracingLogging:
-    """Tests for _quiet_sdk_tracing_logging()."""
+class TestQuietSdkLogging:
+    """Tests for _quiet_sdk_logging()."""
 
     def test_attaches_null_handler_without_debug(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2829,33 +3221,74 @@ class TestQuietSdkTracingLogging:
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             logger.handlers.clear()
             logger.setLevel(logging.NOTSET)
+            monkeypatch.setattr(logger, "propagate", True)
 
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logger = logging.getLogger(name)
             handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
             assert logger.level == logging.NOTSET
+            # Propagation is left intact so a deliberately configured handler
+            # (an embedding app's root handler, pytest's caplog) still receives
+            # real SDK errors; the NullHandler alone keeps routine noise off the
+            # last-resort stderr handler.
+            assert logger.propagate is True
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG
 
         monkeypatch.delenv(DEBUG, raising=False)
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             logging.getLogger(name).handlers.clear()
 
-        _quiet_sdk_tracing_logging()
-        _quiet_sdk_tracing_logging()
+        _quiet_sdk_logging()
+        _quiet_sdk_logging()
 
-        for name in ("langsmith", "langchain"):
+        for name in _QUIET_SDK_LOGGER_NAMES:
             handlers = logging.getLogger(name).handlers
             assert len(handlers) == 1
+
+    def test_routes_harness_diagnostics_to_debug_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode configures a file handler for harness diagnostics."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.setenv(DEBUG, "1")
+        harness_logger = logging.getLogger(
+            "deepagents.profiles.harness.harness_profiles"
+        )
+        harness_logger.handlers.clear()
+        monkeypatch.setattr(harness_logger, "propagate", True)
+
+        with patch("deepagents_code._debug.configure_debug_logging") as configure:
+            _quiet_sdk_logging()
+
+        assert any(call.args == (harness_logger,) for call in configure.call_args_list)
+        assert harness_logger.propagate is True
+
+    def test_leaves_other_deepagents_loggers_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Actionable Deep Agents runtime warnings keep their normal routing."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        runtime_logger = logging.getLogger("deepagents.backends.filesystem")
+        runtime_logger.handlers.clear()
+        monkeypatch.setattr(runtime_logger, "propagate", True)
+
+        _quiet_sdk_logging()
+
+        assert runtime_logger.handlers == []
+        assert runtime_logger.propagate is True
 
 
 class TestFetchLangsmithProjectUrl:
@@ -3696,6 +4129,64 @@ class TestCreateModelForwardsProviderProfile:
 
         _, call_kwargs = mock_init.call_args
         assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_does_not_add_summary(self, mock_init: Mock) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={"reasoning_effort": "high"},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        mock_init: Mock,
+        tmp_path: Path,
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+models = ["gpt-5.5"]
+[models.providers.openai.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_native_reasoning_effort_keeps_precedence(
+        self,
+        mock_init: Mock,
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={
+                "reasoning_effort": "high",
+                "reasoning": {"effort": "low", "summary": "auto"},
+            },
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["reasoning"] == {"effort": "low", "summary": "auto"}
+        assert "reasoning_effort" not in call_kwargs
 
     @patch("langchain.chat_models.init_chat_model")
     def test_config_toml_opt_out_wins_over_profile(
@@ -5733,6 +6224,42 @@ class TestCreateModelCodex:
         assert result.provider == "openai_codex"
         assert result.model_name == "gpt-5.2-codex"
 
+    def test_reasoning_effort_composes_with_configured_summary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        token_path = tmp_path / "auth.json"
+        self._plant_token(token_path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: token_path)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+models = ["gpt-5.5"]
+[models.providers.openai_codex.params."gpt-5.5".reasoning]
+summary = "auto"
+effort = "low"
+""")
+        captured: dict[str, Any] = {}
+        model = _make_init_chat_model_mock()
+
+        def _capture(_model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401
+            captured.update(kwargs)
+            return model
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "openai_codex:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "high"},
+            )
+
+        assert captured["reasoning"] == {"summary": "auto", "effort": "high"}
+        assert "reasoning_effort" not in captured
+
     def test_api_key_kwarg_is_stripped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5824,3 +6351,52 @@ class TestCreateModelCodex:
         with pytest.raises(ModelConfigError) as exc_info:
             create_model("openai_codex:gpt-5.2-codex")
         assert "openai_codex:gpt-5.2-codex" in str(exc_info.value)
+
+
+class TestResolveGoalAutoAcceptCriteria:
+    """Coverage for the config.py wrapper over the goals manifest option."""
+
+    def test_missing_manifest_option_fails_closed_with_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missing manifest entry disables auto-accept and logs why.
+
+        The `option is None` branch only fires on a manifest regression (a
+        renamed or dropped key), so it must fail closed to review *and* leave a
+        trail rather than silently ignoring a user's saved preference.
+        """
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.get_option",
+                return_value=None,
+            ) as get_option,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            result = resolve_goal_auto_accept_criteria()
+
+        assert result == (False, "default")
+        get_option.assert_called_once_with("goals.auto_accept_criteria")
+        assert any(
+            "goals.auto_accept_criteria" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_resolves_effective_preference_and_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The wrapper reports the resolved value and its config source."""
+        from deepagents_code import config_manifest
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
+        monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+        assert resolve_goal_auto_accept_criteria() == (
+            True,
+            f"env ({GOAL_AUTO_ACCEPT_CRITERIA})",
+        )

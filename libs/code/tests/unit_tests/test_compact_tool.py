@@ -862,9 +862,8 @@ class TestSdkContractGuards:
             )
         )
 
-        # Called on the tool-middleware subclass itself.
+        # Inherited SDK helpers called on the tool-middleware subclass.
         for name in (
-            "_resolve_backend",
             "_build_compact_result",
             "_nothing_to_compact",
         ):

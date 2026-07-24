@@ -7,7 +7,7 @@ import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
-from deepagents.backends.protocol import FILE_NOT_FOUND
+from deepagents.backends.protocol import FILE_NOT_FOUND, BackendProtocol
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,
@@ -28,8 +28,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.protocol import (
-        BACKEND_TYPES,
-        BackendProtocol,
         EditResult,
         FileDownloadResponse,
         WriteResult,
@@ -335,7 +333,7 @@ class RetryingSummarizationMiddleware(SummarizationMiddleware):
 
 def create_retrying_summarization_middleware(
     model: BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     model_retries: int,
 ) -> RetryingSummarizationMiddleware:
@@ -657,17 +655,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             coroutine=async_compact,
         )
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve the backend with fail-closed archive append behavior.
-
-        Args:
-            runtime: Runtime used to resolve backend factories.
+    def _guarded_backend(self) -> BackendProtocol:
+        """Wrap the configured backend with fail-closed archive append behavior.
 
         Returns:
             A backend adapter that refuses writes after raised archive reads.
         """
-        backend = super()._resolve_backend(runtime)
-        return cast("BackendProtocol", _ArchiveReadGuard(backend))
+        return cast("BackendProtocol", _ArchiveReadGuard(self._summarization._backend))
 
     def _is_runtime_compaction_eligible(
         self,
@@ -694,7 +688,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
         Returns:
             The startup summarizer when no runtime model is selected, otherwise
-                a model-aware summarizer using the same resolved backend.
+                a model-aware summarizer using the same configured backend.
         """
         config = _runtime_model_config(runtime)
         if not config.model_spec:
@@ -728,7 +722,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        backend = self._resolve_backend(runtime)
+        backend = self._guarded_backend()
         return create_summarization_middleware(model, backend)
 
     def _summarize_with_retry(
@@ -826,7 +820,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         try:
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = self._summarize_with_retry(summarization, to_summarize, runtime)
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = summarization._offload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
@@ -865,7 +859,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary = await self._asummarize_with_retry(
                 summarization, to_summarize, runtime
             )
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = await summarization._aoffload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
@@ -910,7 +904,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = self._summarize_with_retry(summarization, to_summarize, runtime)
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = summarization._offload_to_backend(backend, to_summarize)
             # The inherited `_build_compact_result` produces the same event and
             # tool message as the SDK's gated path via model-independent helpers
@@ -947,7 +941,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary = await self._asummarize_with_retry(
                 summarization, to_summarize, runtime
             )
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = await summarization._aoffload_to_backend(backend, to_summarize)
             # See `_run_forced_compact` for why the inherited builder is reused
             # and why it stays inside the `try`.
@@ -1001,7 +995,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
 def _create_cli_compaction_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     model_retries: int | None = None,
 ) -> CLICompactionMiddleware:

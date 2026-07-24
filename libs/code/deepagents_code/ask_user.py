@@ -21,6 +21,7 @@ from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
+from pydantic import Field
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
@@ -306,16 +307,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         @tool(description=self.tool_description)
         def _ask_user(
-            questions: list[Question],
+            questions: Annotated[
+                list[Question],
+                Field(description="Questions to present to the user."),
+            ],
             tool_call_id: Annotated[str, InjectedToolCallId],
             runtime: ToolRuntime[Any, Any],
         ) -> Command[Any]:
             """Ask the user one or more questions.
-
-            Args:
-                questions: Questions to present to the user.
-                tool_call_id: Tool call identifier injected by LangChain.
-                runtime: Trusted graph runtime for thread and turn identity.
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.

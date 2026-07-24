@@ -42,12 +42,12 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type, expand_glob_pattern
+from deepagents.backends.utils import _get_backend_read_file_type
 
 logger = logging.getLogger(__name__)
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
-import glob
+import fnmatch
 import os
 import json
 import base64
@@ -56,43 +56,133 @@ import base64
 path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
+
+def _brace_expand(pat):
+    start = pat.find('{{')
+    if start < 0:
+        return [pat]
+    end = pat.find('}}', start + 1)
+    if end < 0 or '{{' in pat[start + 1 : end]:
+        return [pat]
+    prefix, body, suffix = pat[:start], pat[start + 1 : end], pat[end + 1 :]
+    parts = body.split(',')
+    if len(parts) < 2:
+        return [pat]
+    out = []
+    for part in parts:
+        out.extend(_brace_expand(prefix + part + suffix))
+    return out
+
+
+def _basename_match(name, pat):
+    for candidate in _brace_expand(pat):
+        # No DOTMATCH: leading-dot basenames need an explicit leading '.' pattern.
+        if name.startswith('.') and not candidate.startswith('.'):
+            continue
+        if fnmatch.fnmatch(name, candidate):
+            return True
+    return False
+
+
+def _parts_match(rel_parts, pat_parts):
+    def match_from(ri, pi):
+        while pi < len(pat_parts):
+            if pat_parts[pi] == '**':
+                while pi < len(pat_parts) and pat_parts[pi] == '**':
+                    pi += 1
+                if pi == len(pat_parts):
+                    return all(not part.startswith('.') for part in rel_parts[ri:])
+                while ri <= len(rel_parts):
+                    if match_from(ri, pi):
+                        return True
+                    if ri == len(rel_parts):
+                        break
+                    # ** without DOTMATCH does not traverse leading-dot segments.
+                    if rel_parts[ri].startswith('.'):
+                        return False
+                    ri += 1
+                return False
+            if ri >= len(rel_parts):
+                return False
+            name = rel_parts[ri]
+            seg = pat_parts[pi]
+            if name.startswith('.') and not seg.startswith('.'):
+                return False
+            if not fnmatch.fnmatch(name, seg):
+                return False
+            ri += 1
+            pi += 1
+        return ri == len(rel_parts)
+
+    return match_from(0, 0)
+
+
+def _path_match(rel, pat):
+    rel_parts = [] if rel in ('', '.') else rel.split('/')
+    for candidate in _brace_expand(pat):
+        pat_parts = candidate.split('/') if candidate else []
+        if _parts_match(rel_parts, pat_parts):
+            return True
+    return False
+
+
+def _include_match(rel, pat):
+    # Shared backend contract (same idea as compile_grep_include_glob):
+    # - no '/' -> basename at any depth (including under hidden dirs)
+    # - with '/' -> path-relative, ** supported, leading '/' anchors after lstrip
+    if '/' not in pat:
+        name = rel.rsplit('/', 1)[-1]
+        return _basename_match(name, pat)
+    return _path_match(rel, pat.lstrip('/'))
+
+
 try:
     real_root = os.path.realpath(path)
     os.chdir(path)
-    # Host expands bare basename globs via expand_glob_pattern before encoding
-    # so *.py arrives as **/*.py. Defensive lstrip keeps residual leading /
-    # paths relative to the search root.
-    rel_pattern = pattern.lstrip('/')
-    if any(seg == '..' for seg in rel_pattern.replace(chr(92), '/').split('/')):
+    if any(seg == '..' for seg in pattern.replace(chr(92), '/').split('/')):
         print(json.dumps({{'error': 'invalid_pattern'}}))
     else:
-        matches = sorted(glob.glob(rel_pattern, recursive=True))
-        for m in matches:
-            candidate = os.path.realpath(m)
-            if candidate != real_root and not candidate.startswith(real_root + os.sep):
-                continue
-            try:
-                st = os.stat(candidate)
-            except OSError:
-                continue
-            print(json.dumps({{
-                'path': m,
-                'size': st.st_size,
-                'mtime': st.st_mtime,
-                'is_dir': os.path.isdir(candidate),
-            }}))
+        matches = []
+        # os.walk includes hidden directories; matching rules still exclude leading-dot
+        # basenames unless the pattern is explicit (no DOTMATCH).
+        for dirpath, dirnames, filenames in os.walk('.'):
+            for is_dir, names in ((True, dirnames), (False, filenames)):
+                for name in names:
+                    full = name if dirpath == '.' else os.path.join(dirpath, name)
+                    rel = full.replace(chr(92), '/')
+                    if rel.startswith('./'):
+                        rel = rel[2:]
+                    if not _include_match(rel, pattern):
+                        continue
+                    candidate = os.path.realpath(full)
+                    if candidate != real_root and not candidate.startswith(real_root + os.sep):
+                        continue
+                    try:
+                        st = os.stat(candidate)
+                    except OSError:
+                        continue
+                    matches.append({{
+                        'path': rel,
+                        'size': st.st_size,
+                        'mtime': st.st_mtime,
+                        'is_dir': is_dir,
+                    }})
+        for item in sorted(matches, key=lambda row: row['path']):
+            print(json.dumps(item))
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
     print(json.dumps({{'error': 'not_a_directory'}}))
 except PermissionError:
     print(json.dumps({{'error': 'permission_denied'}}))
+
 " 2>&1"""
 """Find files matching a pattern with metadata.
 
-Uses base64-encoded parameters to avoid shell escaping issues. The host expands
-bare basename globs via `expand_glob_pattern` before encoding so `*.py` matches
-nested files under the search root.
+Uses base64-encoded parameters to avoid shell escaping issues. Walks the search
+tree with `os.walk` (including hidden directories) and applies the shared
+basename/path glob contract so bare `*.py` matches nested files under hidden
+dirs while still excluding leading-dot basenames unless the pattern is explicit.
 """
 
 
@@ -719,11 +809,10 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
 
 
 def _build_glob_cmd(pattern: str, search_path: str) -> str:
-    # Expand bare basename patterns on the host so remote stdlib `glob.glob`
-    # (which only treats `**` specially even with recursive=True) matches the
-    # shared backend contract used by Filesystem/Store/State.
-    effective_pattern = expand_glob_pattern(pattern)
-    pattern_b64 = base64.b64encode(effective_pattern.encode("utf-8")).decode("ascii")
+    # Pass the user pattern through unchanged. The remote script walks with
+    # `os.walk` (including hidden directories) and applies the shared basename /
+    # path-relative contract (see template docstring).
+    pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
     path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
     return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
 

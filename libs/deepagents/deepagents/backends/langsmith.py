@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from typing import TYPE_CHECKING
@@ -23,9 +24,17 @@ from deepagents.backends.sandbox import (
 from deepagents.backends.utils import _get_backend_read_file_type
 
 if TYPE_CHECKING:
-    from langsmith.sandbox import Sandbox
+    from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _execute_response(result: ExecutionResult) -> ExecuteResponse:
+    """Build an `ExecuteResponse` from a LangSmith SDK execution result."""
+    output = result.stdout or ""
+    if result.stderr:
+        output += "\n" + result.stderr if output else result.stderr
+    return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
 def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
@@ -60,6 +69,9 @@ class LangSmithSandbox(BaseSandbox):
         """
         self._sandbox = sandbox
         self._default_timeout: int = 30 * 60
+        self._async_sandbox: AsyncSandbox | None = None
+        self._async_client: AsyncSandboxClient | None = None
+        self._async_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def id(self) -> str:
@@ -82,17 +94,53 @@ class LangSmithSandbox(BaseSandbox):
             `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        result = self._sandbox.run(command, timeout=effective_timeout)
+        return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
 
-        output = result.stdout or ""
-        if result.stderr:
-            output += "\n" + result.stderr if output else result.stderr
+    def _aget_sandbox(self) -> AsyncSandbox:
+        """Return a cached `AsyncSandbox` bound to the running event loop.
 
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.exit_code,
-            truncated=False,
-        )
+        `Sandbox.to_async()` builds a fresh client with its own connection pool
+        on every call, so it is cached: rebuilding per command would add a TCP
+        and TLS handshake to each one. The cache is keyed on the running loop
+        because the underlying httpx client is bound to the loop that created
+        it.
+        """
+        loop = asyncio.get_running_loop()
+        if self._async_sandbox is None or self._async_loop is not loop:
+            # The SDK exposes no public accessor for a sandbox's client, and
+            # the async client is held here so `aclose()` can reach its pool.
+            self._async_client = self._sandbox._client.to_async()
+            self._async_sandbox = self._sandbox.to_async(client=self._async_client)
+            self._async_loop = loop
+        return self._async_sandbox
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+        """Execute a shell command inside the sandbox.
+
+        Overrides the protocol default, which offloads the blocking `execute()`
+        to a worker thread. `BaseSandbox` routes every async filesystem
+        operation through `aexecute`, so using the SDK's async client here keeps
+        all of them off the sync transport.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If `None`, uses the backend's default timeout.
+
+        Returns:
+            `ExecuteResponse` containing output, exit code, and truncation flag.
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        sandbox = self._aget_sandbox()
+        return _execute_response(await sandbox.run(command, timeout=effective_timeout))
+
+    async def aclose(self) -> None:
+        """Close the cached async client's connection pool, if one was created."""
+        client = self._async_client
+        self._async_sandbox = self._async_client = self._async_loop = None
+        if client is not None:
+            await client.aclose()
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write content using the LangSmith SDK to avoid ARG_MAX.

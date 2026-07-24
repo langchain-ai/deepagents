@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
@@ -517,3 +517,67 @@ def test_max_binary_bytes_constant_matches_template() -> None:
 def test_max_output_bytes_constant_matches_template() -> None:
     assert "MAX_OUTPUT_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
     assert MAX_OUTPUT_BYTES == 500 * 1024
+
+
+def _make_async_sandbox() -> tuple[LangSmithSandbox, MagicMock, MagicMock]:
+    sb, mock_sdk = _make_sandbox()
+    async_sdk = MagicMock()
+    async_sdk.run = AsyncMock(return_value=SimpleNamespace(stdout="out", stderr="", exit_code=0))
+    async_client = MagicMock()
+    async_client.aclose = AsyncMock()
+    mock_sdk._client.to_async.return_value = async_client
+    mock_sdk.to_async.return_value = async_sdk
+    return sb, async_sdk, async_client
+
+
+async def test_aexecute_uses_async_client_not_sync_run() -> None:
+    """`aexecute` must not fall through to the protocol's `to_thread(execute)`."""
+    sb, async_sdk, _ = _make_async_sandbox()
+
+    result = await sb.aexecute("echo hi", timeout=30)
+
+    assert result.output == "out"
+    assert result.exit_code == 0
+    async_sdk.run.assert_awaited_once_with("echo hi", timeout=30)
+    sb._sandbox.run.assert_not_called()
+
+
+async def test_aexecute_combines_stdout_and_stderr() -> None:
+    sb, async_sdk, _ = _make_async_sandbox()
+    async_sdk.run.return_value = SimpleNamespace(stdout="out", stderr="err", exit_code=1)
+
+    result = await sb.aexecute("failing-cmd")
+
+    assert result.output == "out\nerr"
+    assert result.exit_code == 1
+    async_sdk.run.assert_awaited_once_with("failing-cmd", timeout=30 * 60)
+
+
+async def test_aexecute_reuses_one_async_client() -> None:
+    """A client per command would add a TCP + TLS handshake to every call."""
+    sb, _, _ = _make_async_sandbox()
+
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+
+    assert sb._sandbox.to_async.call_count == 1
+
+
+async def test_aclose_closes_pool_and_allows_rebuild() -> None:
+    sb, _, async_client = _make_async_sandbox()
+    await sb.aexecute("true")
+
+    await sb.aclose()
+    async_client.aclose.assert_awaited_once()
+
+    await sb.aexecute("true")
+    assert sb._sandbox.to_async.call_count == 2
+
+
+async def test_aclose_without_async_use_is_a_noop() -> None:
+    sb, _, async_client = _make_async_sandbox()
+
+    await sb.aclose()
+
+    async_client.aclose.assert_not_awaited()

@@ -12259,6 +12259,48 @@ class TestRubricCommand:
             assert app._active_rubric is None
             assert app._next_rubric is None
 
+    async def test_rubric_clear_drops_pending_goal_when_no_visible_rubric(
+        self,
+    ) -> None:
+        """Pending goal criteria still clear even when sticky/next are empty."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "ship login"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric cleared." in rendered
+            assert "No rubric set. Nothing to clear." not in rendered
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_kind is None
+
+    async def test_rubric_clear_drops_queued_goal_when_no_visible_rubric(
+        self,
+    ) -> None:
+        """Accepted-but-queued goals still clear even when sticky/next are empty."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._queued_goal_application = _GoalApplication(
+                "ship login",
+                "- tests pass",
+                "create",
+            )
+
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric cleared." in rendered
+            assert "No rubric set. Nothing to clear." not in rendered
+            assert app._queued_goal_application is None
+
     async def test_clear_command_clears_rubric_state(self) -> None:
         """Starting a new thread should not carry hidden rubric behavior."""
         app = DeepAgentsApp(agent=MagicMock())

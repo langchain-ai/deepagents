@@ -10144,6 +10144,26 @@ class DeepAgentsApp(App):
             and application.request_id == proposal.request_id
         )
 
+    def _has_clearable_goal_rubric_state(self) -> bool:
+        """Return whether `/rubric clear` would drop any correlated local state.
+
+        Pending proposals and accepted-but-queued applications can be live while
+        `_active_rubric` / `_next_rubric` are still empty, so the empty-check for
+        clear must look beyond those two user-visible fields.
+        """
+        return bool(
+            self._active_rubric
+            or self._next_rubric
+            or self._active_goal
+            or self._goal_status_note
+            or self._pending_goal_completion_note
+            or self._pending_goal_objective
+            or self._pending_goal_rubric
+            or self._queued_goal_application is not None
+            or self._last_consumed_next_rubric is not None
+            or self._last_consumed_next_previous_rubric is not None
+        )
+
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
@@ -11804,7 +11824,7 @@ class DeepAgentsApp(App):
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
-            if not (self._active_rubric or self._next_rubric):
+            if not self._has_clearable_goal_rubric_state():
                 await self._mount_message(
                     AppMessage("No rubric set. Nothing to clear.")
                 )

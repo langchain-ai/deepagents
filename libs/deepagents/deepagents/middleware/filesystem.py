@@ -895,7 +895,13 @@ class DeleteSchema(BaseModel):
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
-    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    pattern: str = Field(
+        description=(
+            "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md'). "
+            "A pattern without '/' matches the file name at any depth; a pattern containing "
+            "'/' matches the search-root-relative path."
+        )
+    )
 
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
@@ -1003,7 +1009,9 @@ Usage:
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
-Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`."""
+Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`.
+
+A pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files)."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.

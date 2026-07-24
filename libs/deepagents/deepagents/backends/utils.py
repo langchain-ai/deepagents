@@ -131,33 +131,50 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
     """Compile a `glob` pattern into a per-entry matcher for a recursive walk.
 
-    `Path.rglob(pattern)` is equivalent to `Path.glob("**/" + pattern)`, so the
-    pattern matches at any depth (e.g. `*.py` matches `src/app/main.py`). Prefix
-    the pattern with `**/` and compile it with globstar support so a matcher can
-    be applied to each visited entry while walking the tree, letting the caller
-    enforce a deadline on every entry instead of only on matched paths.
+    Shared with `compile_grep_include_glob` so backend `glob()` and grep
+    include-filters agree:
 
-    Depth (`GLOBSTAR`) and dotfile matching (`DOTMATCH`) mirror `Path.rglob`:
-    `DOTMATCH` is required because `wcmatch` excludes dotfiles by default whereas
-    stdlib `rglob` includes them. Brace expansion (`BRACE`) is an intentional
-    *divergence* from `rglob` — `{a,b}.py` expands here but `Path.rglob` treats
-    the braces literally — chosen so `glob` matches the include-glob semantics of
-    `compile_grep_include_glob`.
+    - Patterns without `/` match the basename at any depth (`*.py` matches
+      `src/app/main.py`).
+    - Patterns containing `/` match the path relative to the search root, with
+      `**` support (`src/**/*.py` matches `src/app/main.py`).
+    - A leading `/` anchors to the search root (`/*.py` matches `top.py` but not
+      `src/app/main.py`).
+
+    Callers walk every entry (e.g. `Path.rglob("*")`) and apply this matcher so
+    deadlines can be checked per entry rather than only on matches.
 
     Args:
-        pattern: Glob pattern (a leading `/` is stripped).
+        pattern: Glob pattern.
 
     Returns:
         Predicate accepting a search-root-relative POSIX path; returns True when
-        the path matches `pattern` under recursive-glob semantics.
+        the path matches `pattern` under the shared backend glob contract.
     """
-    flags = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTMATCH
-    compiled = wcglob.compile("**/" + pattern.lstrip("/"), flags=flags)
+    return compile_grep_include_glob(pattern)
 
-    def matcher(rel_path: str) -> bool:
-        return bool(compiled.match(rel_path))
 
-    return matcher
+def expand_glob_pattern(pattern: str) -> str:
+    """Expand a user glob pattern for path-relative recursive matching.
+
+    Produces a pattern suitable for stdlib `glob.glob(..., recursive=True)` (and
+    equivalent walkers) that mirrors `compile_grep_include_glob`:
+
+    - Patterns without `/` are rewritten to `**/pattern` so the basename matches
+      at any depth (`*.py` → `**/*.py`).
+    - Patterns containing `/` are left path-relative; a leading `/` is stripped so
+      it anchors to the search root rather than the host filesystem
+      (`/*.py` → `*.py`, `src/**/*.py` unchanged).
+
+    Args:
+        pattern: User-supplied glob pattern.
+
+    Returns:
+        Search-root-relative pattern with bare basename globs expanded.
+    """
+    if "/" not in pattern:
+        return f"**/{pattern}"
+    return pattern.lstrip("/")
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -744,9 +761,15 @@ def _glob_search_files(
 ) -> str:
     r"""Search files dict for paths matching glob pattern.
 
+    Uses the shared backend contract from `compile_grep_include_glob`:
+
+    - Patterns without `/` match the basename at any depth under `path`.
+    - Patterns containing `/` match paths relative to `path`, with `**` support.
+    - A leading `/` anchors to the search root (narrows, does not widen).
+
     Args:
         files: Dictionary of file paths to FileData.
-        pattern: Glob pattern (e.g., `"*.py"`, `"**/*.ts"`).
+        pattern: Glob pattern (e.g., `"*.py"`, `"**/*.ts"`, `"src/**/*.py"`).
         path: Base path to search from. `None` defaults to root.
 
     Returns:
@@ -767,29 +790,16 @@ def _glob_search_files(
         return "No files found"
 
     filtered = _filter_files_by_path(files, normalized_path)
-
-    # Respect standard glob semantics:
-    # - Patterns without path separators (e.g., "*.py") match only in the current
-    #   directory (non-recursive) relative to `path`.
-    # - Use "**" explicitly for recursive matching.
-    # Strip leading "/" from pattern since matching is done against relative paths.
-    effective_pattern = pattern.lstrip("/")
+    matcher = compile_grep_include_glob(pattern)
 
     matches = []
     for file_path, file_data in filtered.items():
         # Compute relative path for glob matching
         # If normalized_path is "/dir", we want "/dir/file.txt" -> "file.txt"
         # If normalized_path is "/dir/file.txt" (exact file), we want "file.txt"
-        if normalized_path == "/":
-            relative = file_path[1:]  # Remove leading slash
-        elif file_path == normalized_path:
-            # Exact file match - use just the filename
-            relative = file_path.split("/")[-1]
-        else:
-            # Directory prefix - strip the directory path
-            relative = file_path[len(normalized_path) + 1 :]  # +1 for the slash
+        relative = _relative_to_root(file_path, normalized_path)
 
-        if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+        if matcher(relative):
             matches.append((file_path, file_data["modified_at"]))
 
     matches.sort(key=lambda x: x[1], reverse=True)

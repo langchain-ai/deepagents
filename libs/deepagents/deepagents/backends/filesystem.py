@@ -1283,8 +1283,17 @@ class FilesystemBackend(BackendProtocol):
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
+        Pattern matching uses the shared backend contract (same as grep
+        include-glob):
+
+        - Patterns without `/` match the basename at any depth under `path`
+          (e.g. `'*.py'` matches nested files).
+        - Patterns containing `/` match paths relative to `path`, with `**`
+          support. A leading `/` anchors to the search root.
+
         Args:
-            pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
+            pattern: Glob pattern to match files against (e.g., `'*.py'`,
+                `'**/*.txt'`, `'src/**/*.py'`).
             path: Base directory to search from.
 
                 Defaults to `root_dir` / `cwd`.
@@ -1293,10 +1302,10 @@ class FilesystemBackend(BackendProtocol):
             `GlobResult` with matching files. `truncated` is `True` (and
             `matches` is partial) when the walk exceeded its wall-clock budget.
         """
-        if pattern.startswith("/"):
-            pattern = pattern.lstrip("/")
-
-        if self.virtual_mode and ".." in Path(pattern).parts:
+        # Detect traversal on the raw pattern (including a leading `/` anchor)
+        # before compilation. Do not strip the leading `/` here: the matcher
+        # uses it for search-root anchoring (`/*.py` → top-level only).
+        if self.virtual_mode and ".." in Path(pattern.lstrip("/")).parts:
             msg = "Path traversal not allowed in glob pattern"
             raise ValueError(msg)
 

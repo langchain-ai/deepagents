@@ -13,6 +13,9 @@ from deepagents.backends.utils import (
     _get_file_type,
     _glob_search_files,
     _looks_like_regex,
+    compile_grep_include_glob,
+    compile_recursive_glob,
+    expand_glob_pattern,
     grep_matches_from_files,
     perform_string_replacement,
     regex_literal_hint,
@@ -189,7 +192,11 @@ class TestValidatePath:
 
 
 class TestGlobSearchFiles:
-    """Tests for _glob_search_files."""
+    """Tests for `_glob_search_files` under the shared backend glob contract.
+
+    Bare basename patterns (`*.py`) match at any depth — same rules as
+    `compile_grep_include_glob` / FilesystemBackend.
+    """
 
     @pytest.fixture
     def sample_files(self) -> dict[str, Any]:
@@ -202,21 +209,40 @@ class TestGlobSearchFiles:
             "/test.py": {"modified_at": "2024-01-01T12:00:00"},
         }
 
-    def test_basic_glob(self, sample_files: dict[str, Any]) -> None:
-        """Test basic glob matching."""
-        result = _glob_search_files(sample_files, "*.py", "/")
-        assert "/test.py" in result
+    def _paths(self, result: str) -> set[str]:
+        if result == "No files found":
+            return set()
+        return set(result.strip().split("\n"))
 
-    def test_recursive_glob(self, sample_files: dict[str, Any]) -> None:
-        """Test recursive glob pattern."""
-        result = _glob_search_files(sample_files, "**/*.py", "/")
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" in result
+    def test_slashless_basename_glob_matches_at_any_depth(self, sample_files: dict[str, Any]) -> None:
+        """`*.py` matches nested and top-level Python files."""
+        assert self._paths(_glob_search_files(sample_files, "*.py", "/")) == {
+            "/test.py",
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
 
-    def test_path_filter(self, sample_files: dict[str, Any]) -> None:
-        """Test glob respects path parameter."""
+    def test_globstar_matches_same_python_set(self, sample_files: dict[str, Any]) -> None:
+        """`**/*.py` matches the same files as bare `*.py`."""
+        bare = self._paths(_glob_search_files(sample_files, "*.py", "/"))
+        recursive = self._paths(_glob_search_files(sample_files, "**/*.py", "/"))
+        assert bare == recursive
+
+    def test_path_filter_still_matches_nested_under_root(self, sample_files: dict[str, Any]) -> None:
+        """Path scopes the tree; bare patterns still match nested basenames under it."""
+        result = _glob_search_files(sample_files, "*.py", "/src/")
+        assert self._paths(result) == {
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
+        assert "/test.py" not in result
+
+    def test_path_filter_nested_directory(self, sample_files: dict[str, Any]) -> None:
+        """Scoping to a nested directory excludes sibling trees."""
         result = _glob_search_files(sample_files, "*.py", "/src/utils/")
-        assert "/src/utils/helper.py" in result
+        assert self._paths(result) == {"/src/utils/helper.py", "/src/utils/common.py"}
         assert "/src/main.py" not in result
 
     def test_no_matches(self, sample_files: dict[str, Any]) -> None:
@@ -225,7 +251,7 @@ class TestGlobSearchFiles:
 
     def test_sorted_by_modification_time(self, sample_files: dict[str, Any]) -> None:
         """Test results sorted by modification time (most recent first)."""
-        result = _glob_search_files(sample_files, "**/*.py", "/")
+        result = _glob_search_files(sample_files, "*.py", "/")
         assert result.strip().split("\n")[0] == "/test.py"
 
     def test_path_traversal_rejected(self, sample_files: dict[str, Any]) -> None:
@@ -233,8 +259,22 @@ class TestGlobSearchFiles:
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
 
-    def test_leading_slash_in_pattern(self, sample_files: dict[str, Any]) -> None:
-        """Patterns with a leading slash should still match (models often produce them)."""
+    def test_path_relative_pattern(self, sample_files: dict[str, Any]) -> None:
+        """Patterns containing `/` match relative to the search root."""
+        result = _glob_search_files(sample_files, "src/**/*.py", "/")
+        assert self._paths(result) == {
+            "/src/main.py",
+            "/src/utils/helper.py",
+            "/src/utils/common.py",
+        }
+        assert "/test.py" not in result
+
+    def test_leading_slash_anchors_to_root(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` anchors to the search root (top-level only for `/*.py`)."""
+        assert self._paths(_glob_search_files(sample_files, "/*.py", "/")) == {"/test.py"}
+
+    def test_leading_slash_with_globstar(self, sample_files: dict[str, Any]) -> None:
+        """Patterns with a leading slash and `**` match from the root."""
         result = _glob_search_files(sample_files, "/src/**/*.py", "/")
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
@@ -250,6 +290,31 @@ class TestGlobSearchFiles:
         assert "/foo/a.md" in result
         assert "/foo/c.md" in result
         assert "/foo/b.txt" not in result
+
+
+class TestExpandGlobPattern:
+    """Host-side pattern expansion for stdlib-based walkers (sandbox)."""
+
+    def test_slashless_becomes_globstar(self) -> None:
+        assert expand_glob_pattern("*.py") == "**/*.py"
+        assert expand_glob_pattern("*.{py,md}") == "**/*.{py,md}"
+
+    def test_path_relative_unchanged_aside_from_leading_slash(self) -> None:
+        assert expand_glob_pattern("src/**/*.py") == "src/**/*.py"
+        assert expand_glob_pattern("**/*.py") == "**/*.py"
+        assert expand_glob_pattern("/*.py") == "*.py"
+        assert expand_glob_pattern("/src/**/*.py") == "src/**/*.py"
+
+
+class TestCompileRecursiveGlobSharesIncludeContract:
+    """`compile_recursive_glob` is the walk entry-point for the shared contract."""
+
+    def test_delegates_to_include_glob_matcher(self) -> None:
+        paths = ["top.py", "src/app/main.py", "readme.md"]
+        for pattern in ("*.py", "**/*.py", "/*.py", "src/**/*.py"):
+            expected = [p for p in paths if compile_grep_include_glob(pattern)(p)]
+            actual = [p for p in paths if compile_recursive_glob(pattern)(p)]
+            assert actual == expected, pattern
 
 
 class TestGrepIncludeGlob:

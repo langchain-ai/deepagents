@@ -87,21 +87,35 @@ def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) ->
     assert str(outside_root) not in omitted_paths
 
 
-def test_filesystem_backend_glob_matches_hidden_paths(tmp_path: Path) -> None:
+def test_filesystem_backend_glob_hidden_paths_require_explicit_dot_patterns(tmp_path: Path) -> None:
+    """Leading-dot names are not matched by bare `*` (shared grep include contract).
+
+    Hidden files remain reachable with explicit dot patterns (`.*`, `.github/**`).
+    This mirrors `compile_grep_include_glob` / bash without `dotglob`, not
+    pathlib `rglob` which does surface dotfiles under `*`.
+    """
     root = tmp_path
     write_file(root / ".env", "TOKEN=value")
     write_file(root / ".hidden.py", "print('hidden')")
+    write_file(root / "visible.py", "print('visible')")
     write_file(root / ".github" / "workflows" / "ci.yml", "name: ci")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    root_matches = {info["path"] for info in be.glob("*", path="/").matches or []}
-    py_matches = {info["path"] for info in be.glob("*.py", path="/").matches or []}
-    yml_matches = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    bare_root = {info["path"] for info in be.glob("*", path="/").matches or []}
+    bare_py = {info["path"] for info in be.glob("*.py", path="/").matches or []}
+    bare_yml = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    assert "/.env" not in bare_root
+    assert "/.hidden.py" not in bare_py
+    assert "/visible.py" in bare_py
+    assert "/.github/workflows/ci.yml" not in bare_yml
 
-    assert "/.env" in root_matches
-    assert "/.hidden.py" in py_matches
-    assert "/.github/workflows/ci.yml" in yml_matches
+    explicit_dot = {info["path"] for info in be.glob(".*", path="/").matches or []}
+    explicit_py = {info["path"] for info in be.glob(".*.py", path="/").matches or []}
+    explicit_yml = {info["path"] for info in be.glob(".github/**/*.yml", path="/").matches or []}
+    assert "/.env" in explicit_dot
+    assert "/.hidden.py" in explicit_py
+    assert "/.github/workflows/ci.yml" in explicit_yml
 
 
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

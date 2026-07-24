@@ -10170,6 +10170,26 @@ class DeepAgentsApp(App):
             and application.request_id == proposal.request_id
         )
 
+    def _has_clearable_goal_rubric_state(self) -> bool:
+        """Return whether `/rubric clear` would drop any correlated local state.
+
+        Pending proposals and accepted-but-queued applications can be live while
+        `_active_rubric` / `_next_rubric` are still empty, so the empty-check for
+        clear must look beyond those two user-visible fields.
+        """
+        return bool(
+            self._active_rubric
+            or self._next_rubric
+            or self._active_goal
+            or self._goal_status_note
+            or self._pending_goal_completion_note
+            or self._pending_goal_objective
+            or self._pending_goal_rubric
+            or self._queued_goal_application is not None
+            or self._last_consumed_next_rubric is not None
+            or self._last_consumed_next_previous_rubric is not None
+        )
+
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
@@ -11794,7 +11814,7 @@ class DeepAgentsApp(App):
         if subcommand == "set":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric set <criteria>"))
+                await self._mount_message(AppMessage(self._rubric_set_usage_text()))
                 return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
@@ -11813,7 +11833,7 @@ class DeepAgentsApp(App):
         if subcommand == "next":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric next <criteria>"))
+                await self._mount_message(AppMessage(self._rubric_next_usage_text()))
                 return
             self._next_rubric = arg
             self._sync_status_rubric()
@@ -11823,13 +11843,18 @@ class DeepAgentsApp(App):
         if subcommand == "file":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+                await self._mount_message(AppMessage(self._rubric_file_usage_text()))
                 return
             await self._set_rubric_from_file(arg)
             return
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            if not self._has_clearable_goal_rubric_state():
+                await self._mount_message(
+                    AppMessage("No rubric set. Nothing to clear.")
+                )
+                return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
                 self._clear_all_goal_rubric_state()
@@ -11868,7 +11893,46 @@ class DeepAgentsApp(App):
             "  /rubric model [provider:model|clear]\n"
             "  /rubric max-iterations <N|clear>\n\n"
             "Use /rubric next for a one-turn quality gate. Use /rubric set "
-            "when you want explicit acceptance criteria to persist across turns."
+            "when you want explicit acceptance criteria to persist across turns.\n"
+            "Example: /rubric set tests pass; keep the diff minimal"
+        )
+
+    @staticmethod
+    def _rubric_set_usage_text() -> str:
+        """Return usage for bare `/rubric set`."""
+        return (
+            "Usage: /rubric set <criteria>\n\n"
+            "Keep these acceptance criteria across turns.\n"
+            "Graded after each agent response until you clear or replace them.\n"
+            "Example: /rubric set tests pass; keep the diff minimal"
+        )
+
+    @staticmethod
+    def _rubric_next_usage_text() -> str:
+        """Return usage for bare `/rubric next`."""
+        return (
+            "Usage: /rubric next <criteria>\n\n"
+            "Use these acceptance criteria for the next agent turn only.\n"
+            "Example: /rubric next tests pass; no unrelated changes"
+        )
+
+    @staticmethod
+    def _rubric_file_usage_text() -> str:
+        """Return usage for bare `/rubric file`."""
+        return (
+            "Usage: /rubric file <path>\n\n"
+            "Load acceptance criteria from a file (same as /rubric set).\n"
+            "Example: /rubric file ./rubric.md"
+        )
+
+    @staticmethod
+    def _rubric_empty_state_text() -> str:
+        """Return the empty-state message for `/rubric show`."""
+        return (
+            "No rubric set.\n\n"
+            "Set one with `/rubric set <criteria>`, or load a file:\n"
+            "  /rubric set tests pass; keep the diff minimal\n"
+            "  /rubric file ./rubric.md"
         )
 
     async def _show_rubric_usage(self) -> None:
@@ -11882,13 +11946,15 @@ class DeepAgentsApp(App):
         ):
             state: list[str] = []
             if self._active_rubric:
-                state.append("Sticky rubric is set.")
+                state.append("Rubric is set.")
             if self._next_rubric:
                 state.append("Next-turn rubric is set.")
             if self._rubric_model:
                 state.append(f"Rubric grader model: {self._rubric_model}")
             if self._rubric_max_iterations is not None:
                 state.append(f"Rubric max iterations: {self._rubric_max_iterations}")
+            if self._active_rubric or self._next_rubric:
+                state.append("Use /rubric show to view.")
             parts.append(
                 "Current state:\n" + "\n".join(f"  - {line}" for line in state)
             )
@@ -11901,8 +11967,24 @@ class DeepAgentsApp(App):
             lines.append(f"Rubric:\n{self._active_rubric}")
         if self._next_rubric:
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
-        if not lines and not self._rubric_model and self._rubric_max_iterations is None:
-            await self._mount_message(AppMessage("No rubric set."))
+        if not lines:
+            # Grader settings can exist without criteria; still teach how to set
+            # a rubric when nothing is grading yet.
+            if self._rubric_model or self._rubric_max_iterations is not None:
+                grader_model, grader_iterations = self._grader_display_values()
+                await self._mount_message(
+                    AppMessage(
+                        "\n\n".join(
+                            [
+                                self._rubric_empty_state_text(),
+                                f"Rubric grader model: {grader_model}",
+                                f"Rubric max iterations: {grader_iterations}",
+                            ]
+                        )
+                    )
+                )
+                return
+            await self._mount_message(AppMessage(self._rubric_empty_state_text()))
             return
         grader_model, grader_iterations = self._grader_display_values()
         lines.extend(
@@ -11921,7 +12003,7 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(f"Could not parse path: {exc}"))
             return
         if len(parts) != 1:
-            await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+            await self._mount_message(AppMessage(self._rubric_file_usage_text()))
             return
         try:
             path, text = await asyncio.to_thread(

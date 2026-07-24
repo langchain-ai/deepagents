@@ -133,7 +133,7 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             "bcd2ba49218906704ab6c1aa796996da409d3eb1"
         )
         assert app_token["with"] == {
-            "client-id": "${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}",
+            "client-id": "${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}",
             "private-key": "${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}",
             "permission-contents": "write",
             "permission-issues": "write",

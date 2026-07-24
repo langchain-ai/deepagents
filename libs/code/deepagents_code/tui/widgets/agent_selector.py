@@ -51,7 +51,6 @@ class AgentSelectorScreen(ModalScreen[str | None]):
     CSS = """
     AgentSelectorScreen {
         align: center middle;
-        background: transparent;
     }
 
     AgentSelectorScreen > Vertical {

@@ -209,6 +209,46 @@ def parse_int_input(
     return value
 
 
+def parse_nonnegative_integer_input(name: str, raw: str) -> int:
+    """Parse a decimal integer greater than or equal to zero.
+
+    Args:
+        name: Input name to include in validation errors.
+        raw: Raw workflow input.
+
+    Returns:
+        The parsed integer.
+
+    Raises:
+        SystemExit: If `raw` is not an unsigned decimal integer.
+    """
+    value = raw.strip()
+    if not re.fullmatch(r"[0-9]+", value):
+        msg = f"{name} must be a non-negative integer, got {raw!r}"
+        raise SystemExit(msg)
+    return int(value)
+
+
+def parse_positive_decimal_input(name: str, raw: str) -> str:
+    """Validate and normalize a strictly positive decimal workflow input.
+
+    Args:
+        name: Input name to include in validation errors.
+        raw: Raw workflow input.
+
+    Returns:
+        The stripped decimal string for lossless forwarding.
+
+    Raises:
+        SystemExit: If `raw` is not a positive non-scientific decimal.
+    """
+    value = raw.strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value) or not value.strip("0."):
+        msg = f"{name} must be a positive decimal, got {raw!r}"
+        raise SystemExit(msg)
+    return value
+
+
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
@@ -256,6 +296,43 @@ def _load_tasks_json(path: str) -> dict[str, list[str]]:
     ):
         raise SystemExit(msg)
     return cast(dict[str, list[str]], raw)
+
+
+def filter_tasks(
+    tasks_by_category: dict[str, list[str]], selection: str
+) -> dict[str, list[str]]:
+    """Filter resolved profile tasks by an optional exact-name CSV selection.
+
+    Args:
+        tasks_by_category: Tasks resolved for each selected evaluation category.
+        selection: Comma-separated exact task names, or an empty string for all.
+
+    Returns:
+        Category task lists restricted to the requested names in request order.
+
+    Raises:
+        SystemExit: If a requested task is unavailable in the selected scope.
+    """
+    requested = list(
+        dict.fromkeys(task.strip() for task in selection.split(",") if task.strip())
+    )
+    if not requested:
+        return tasks_by_category
+
+    available = {
+        task for tasks in tasks_by_category.values() for task in tasks
+    }
+    unknown = [task for task in requested if task not in available]
+    if unknown:
+        raise SystemExit(
+            "UNIFIED_INCLUDE_TASKS contains tasks outside the selected categories/profile: "
+            f"{unknown}"
+        )
+
+    return {
+        category: [task for task in requested if task in set(tasks)]
+        for category, tasks in tasks_by_category.items()
+    }
 
 
 def _resolve_branch_sha(branch: str) -> str:
@@ -401,6 +478,13 @@ def main(argv: list[str] | None = None) -> int:
     rollouts = parse_int_input(
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
+    parse_nonnegative_integer_input(
+        "UNIFIED_N_RETRIES", os.environ.get("UNIFIED_N_RETRIES", "0")
+    )
+    parse_positive_decimal_input(
+        "UNIFIED_AGENT_TIMEOUT_MULTIPLIER",
+        os.environ.get("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", "1.0"),
+    )
 
     # Comma list of code harnesses; empty defaults to the bare create_deep_agent
     # harness. Conversation is always tau3 and is never taken from this input.
@@ -446,9 +530,21 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
         tasks_by_cat = _load_tasks_json(tasks_json)
 
-    empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
-    if empty_categories:
-        raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
+    include_tasks = os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
+    tasks_by_cat = filter_tasks(tasks_by_cat, include_tasks)
+
+    if include_tasks:
+        # An explicit task selection narrows the active categories to those that
+        # actually contain a requested task. Unknown names already errored in
+        # filter_tasks, so a category emptied here simply wasn't targeted by the
+        # selection and is dropped rather than treated as unresolved.
+        categories = [category for category in categories if tasks_by_cat.get(category)]
+        if not categories:
+            raise SystemExit("UNIFIED_INCLUDE_TASKS matched no selected categories.")
+    else:
+        empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
+        if empty_categories:
+            raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
 
     n_models = len(model_specs)
 

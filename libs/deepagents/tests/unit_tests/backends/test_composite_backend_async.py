@@ -955,9 +955,9 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Invalid regex pattern error"
+            return GrepResult(error="Invalid regex pattern error")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -974,9 +974,9 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Backend error occurred"
+            return GrepResult(error="Backend error occurred")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -993,9 +993,9 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
-            return "Default backend error"
+            return GrepResult(error="Default backend error")
 
-    error_default = ErrorDefaultBackend()
+    error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
     store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
@@ -1044,7 +1044,7 @@ async def test_composite_aglob_default_error_short_circuits_routes_async() -> No
 
     class TrackingRouteBackend(StoreBackend):
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(namespace=lambda _rt: ("tracking",))
             self.called = False
 
         async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -1052,7 +1052,10 @@ async def test_composite_aglob_default_error_short_circuits_routes_async() -> No
             return GlobResult(matches=[])
 
     routed_backend = TrackingRouteBackend()
-    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+    comp = CompositeBackend(
+        default=ErrorDefaultBackend(namespace=lambda _rt: ("default",)),
+        routes={"/store/": routed_backend},
+    )
 
     result = await comp.aglob("*", path="/")
 

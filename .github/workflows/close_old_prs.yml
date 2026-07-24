@@ -1,7 +1,8 @@
 # Warn on open PRs after 14 days and close them after 30 days, measured from
-# when the PR was opened (by age, not last activity). Draft PRs and PRs with
-# the "do-not-close" label are skipped. Thresholds and the bypass label are
-# defined in .github/scripts/close-old-prs.js.
+# when the PR was opened (by age, not last activity). The warning also applies
+# a "pending-deletion" label. Draft PRs and PRs with the "do-not-close" label
+# are skipped. Thresholds and labels are defined in
+# .github/scripts/close-old-prs.js.
 
 name: Close Old PRs
 

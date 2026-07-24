@@ -11,10 +11,8 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from deepagents.backends.protocol import _resolve_backend
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
-    SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -412,8 +410,8 @@ class TestCompactErrorHandling:
         assert "Compaction failed" in msg.content
         assert "_summarization_event" not in result.update
 
-    def test_backend_resolve_failure_returns_error_tool_message(self) -> None:
-        """Backend factory failure should return an error ToolMessage."""
+    def test_offload_failure_returns_error_tool_message(self) -> None:
+        """Offload failure should return an error ToolMessage."""
         mw = _make_middleware()
         messages = _make_messages(10)
         runtime = _make_runtime(messages)
@@ -427,8 +425,8 @@ class TestCompactErrorHandling:
             ),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
             patch.object(
-                mw,
-                "_resolve_backend",
+                mw._summarization,
+                "_offload_to_backend",
                 side_effect=ConnectionError("sandbox unreachable"),
             ),
         ):
@@ -473,55 +471,30 @@ class TestMalformedEvent:
         assert result[0] is summary_msg
 
 
-class TestResolveBackend:
-    """Test backend resolution for tool context."""
+class TestCompactBackendUsage:
+    """Test backend use for compact offloading."""
 
-    def test_static_backend(self) -> None:
-        """Should return the backend directly when it's not callable."""
+    def test_static_backend_is_passed_to_offload(self) -> None:
+        """Should pass the configured backend instance to offload."""
         backend = StateBackend()
-        summ = SummarizationMiddleware(
-            model=_make_mock_model(),
-            backend=backend,
-        )
-        mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        assert mw._resolve_backend(runtime) is backend
+        mw = _make_middleware(backend=backend)
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
 
-    def test_callable_backend(self) -> None:
-        """Should call the factory with the ToolRuntime."""
-        resolved = _make_mock_backend()
-        factory = MagicMock(return_value=resolved)
-        summ = SummarizationMiddleware(
-            model=_make_mock_model(),
-            backend=factory,
-        )
-        mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        result = mw._resolve_backend(runtime)
-        assert result is resolved
-        factory.assert_called_once_with(runtime)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None) as offload,
+        ):
+            mw._run_compact(runtime)
 
-
-class TestResolveBackendHelper:
-    """Direct tests for the module-level `_resolve_backend` helper.
-
-    The middleware wrappers guard with `callable()` before delegating, so these
-    cover both branches of the helper in isolation.
-    """
-
-    def test_returns_instance_unchanged(self) -> None:
-        """A `BackendProtocol` instance is returned as-is, not invoked."""
-        backend = StateBackend()
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(backend, runtime) is backend
-
-    def test_invokes_factory_with_runtime(self) -> None:
-        """A factory callable is invoked with the runtime."""
-        resolved = StateBackend()
-        factory = MagicMock(return_value=resolved)
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(factory, runtime) is resolved
-        factory.assert_called_once_with(runtime)
+        offload.assert_called_once()
+        assert offload.call_args.args[0] is backend
 
 
 class TestComputeStateCutoff:
@@ -774,24 +747,6 @@ class TestSystemPromptOverride:
         """`system_prompt` must be str or None."""
         with pytest.raises(TypeError, match="must be str or None"):
             SummarizationToolMiddleware(_make_summarization_middleware(), system_prompt=0)  # type: ignore[arg-type]
-
-    def test_wrap_model_call_appends_default_nudge(self) -> None:
-        """Baseline: default `system_prompt` appends the standard nudge text."""
-        mw = _make_middleware()
-        captured: dict[str, ModelRequest] = {}
-
-        def handler(req: ModelRequest) -> None:
-            captured["req"] = req
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([])),
-            messages=[HumanMessage(content="hi")],
-            system_message=SystemMessage(content="base"),
-            state={"messages": []},
-        )
-        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
-        appended = list(captured["req"].system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
-        assert SUMMARIZATION_SYSTEM_PROMPT in appended
 
     def test_wrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
         """`system_prompt=None` passes the request through untouched."""

@@ -161,6 +161,13 @@ class TestPatchedSequenceToKeyEvents:
         """
         assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
 
+    def test_kitty_subfield_strip_preserves_all_associated_text(self) -> None:
+        r"""Textual 8.2.8 receives every colon-separated associated character."""
+        assert _keys_for("\x1b[58;2;126:47u", alt=False) == [
+            ("tilde", "~"),
+            ("slash", "/"),
+        ]
+
     @pytest.mark.parametrize(
         ("sequence", "key"),
         [

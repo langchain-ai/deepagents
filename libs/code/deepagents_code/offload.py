@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
 
+CONVERSATION_HISTORY_DIRNAME = "conversation_history"
+"""Subdirectory of the offload root that holds per-thread conversation archives.
+
+Lives directly under `~/.deepagents/` in local mode, so it is reserved and must
+never be listed as an agent by the `/agent` picker.
+"""
+
 
 @dataclass(frozen=True)
 class _ArtifactsStorage:
@@ -184,7 +191,7 @@ def _offload_fallback_root() -> Path:
         # Ensure the shared config root exists and is usable, but leave its
         # permissions untouched -- hardening belongs on the archive subdir only.
         base.mkdir(parents=True, exist_ok=True)
-        archive_dir = base / "conversation_history"
+        archive_dir = base / CONVERSATION_HISTORY_DIRNAME
         _harden_dir(archive_dir)
         _probe_writable(archive_dir)
         return base
@@ -264,7 +271,7 @@ def delete_offloaded_history(thread_id: str) -> bool:
     if not thread_id:
         return False
     try:
-        archive_dir = _offload_fallback_root() / "conversation_history"
+        archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
     except (OSError, RuntimeError):
         logger.warning(
             "Could not resolve offload root to clean history for thread %s",

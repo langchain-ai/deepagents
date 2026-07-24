@@ -197,15 +197,17 @@ def test_filtered_run_with_success_is_not_incomplete(tmp_path: Path):
     assert summary["incomplete"] is False  # empty shards are not losses
 
 
-def test_multiple_models_is_rejected(tmp_path: Path):
+def test_multiple_models_are_quarantined(tmp_path: Path):
     _write_trial(tmp_path / "a__0", "taskA", reward=1.0, model="m1")
     _write_trial(tmp_path / "a__1", "taskA", reward=0.0, model="m2")
-    try:
-        agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(tmp_path / "o")])
-    except SystemExit as exc:
-        assert exc.code not in (0, None)
-        return
-    raise AssertionError("expected SystemExit for multiple models")
+    out = tmp_path / "o"
+
+    assert agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out)]) == 0
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["incomplete"] is True
+    assert summary["totals"]["tasks"] == 0
+    assert summary["issues"][0]["code"] == "mixed_models"
 
 
 def test_empty_tree_is_no_op(tmp_path: Path):
@@ -418,6 +420,24 @@ def test_successful_empty_shards_satisfy_expected_count(tmp_path: Path):
     assert summary["incomplete"] is False
 
 
+def test_download_failure_marker_produces_incomplete_diagnostic(tmp_path: Path):
+    (tmp_path / "artifact-download-error.log").write_text("HTTP 503 from artifacts")
+    out = tmp_path / "out"
+
+    assert agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out)]) == 0
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["incomplete"] is True
+    assert summary["issues"] == [
+        {
+            "stage": "leaf_aggregation",
+            "code": "artifact_download_failed",
+            "message": "HTTP 503 from artifacts",
+            "path": "artifact-download-error.log",
+        }
+    ]
+
+
 def test_writes_github_step_summary(tmp_path: Path):
     _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
     step_file = tmp_path / "step_summary.md"
@@ -551,7 +571,13 @@ def test_make_summary_records_branch():
         skipped_files=0,
         harbor_result="success",
         incomplete=False,
-        totals={"tasks": 1, "trials": 3, "expected_trials": 3, "passed": 1, "errored": 0},
+        totals={
+            "tasks": 1,
+            "trials": 3,
+            "expected_trials": 3,
+            "passed": 1,
+            "errored": 0,
+        },
         pass_at_k=1.0,
         avg_at_k=1.0,
     )
@@ -565,10 +591,21 @@ def test_main_cli_records_branch(tmp_path):
     root.mkdir()
     agg.main(
         [
-            str(root), "--rollouts", "3",
-            "--config", "bare", "--branch", "main",
-            "--model", "openai:gpt", "--category", "autonomous",
-            "--dataset", "d", "--harbor-result", "success",
+            str(root),
+            "--rollouts",
+            "3",
+            "--config",
+            "bare",
+            "--branch",
+            "main",
+            "--model",
+            "openai:gpt",
+            "--category",
+            "autonomous",
+            "--dataset",
+            "d",
+            "--harbor-result",
+            "success",
         ]
     )
     summary = json.loads((root / "summary.json").read_text())

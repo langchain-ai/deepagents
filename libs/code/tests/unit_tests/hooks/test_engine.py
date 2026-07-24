@@ -22,6 +22,7 @@ from deepagents_code.hooks.models.domain import (
     AgentIdentity,
     CompactTrigger,
     DcodeNotification,
+    DcodeNotificationKind,
     HookContext,
     HookDiagnostic,
     HookEvent,
@@ -189,7 +190,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
         NotificationEvent(
             event=HookEvent.NOTIFICATION,
             notification=DcodeNotification(
-                type="permission_prompt",
+                type=DcodeNotificationKind.PERMISSION_REQUIRED,
                 message="Approve",
             ),
         ),
@@ -390,7 +391,7 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             NotificationEvent(
                 event=HookEvent.NOTIFICATION,
                 notification=DcodeNotification(
-                    type="permission_prompt",
+                    type=DcodeNotificationKind.PERMISSION_REQUIRED,
                     message="Approve",
                 ),
             ),

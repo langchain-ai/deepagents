@@ -566,18 +566,58 @@ def encode_to_base64(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
-def create_multimodal_content(
-    text: str, images: list[ImageData], videos: list[VideoData] | None = None
-) -> list[Any]:
-    """Create multimodal message content with text, images, and videos.
+def omitted_modality_summaries(
+    images: list[ImageData],
+    videos: list[VideoData] | None,
+    unsupported_modalities: frozenset[str],
+) -> list[str]:
+    """Summarize attachments that would be dropped as unsupported.
 
     Args:
-        text: Text content of the message
-        images: List of ImageData objects
-        videos: Optional list of VideoData objects
+        images: List of `ImageData` objects attached to the turn.
+        videos: Optional list of `VideoData` objects attached to the turn.
+        unsupported_modalities: Media types the active model cannot process.
 
     Returns:
-        List of content blocks in LangChain message format.
+        One human-readable phrase per omitted modality
+        (e.g. `"1 image attachment(s)"`), or an empty list when nothing is
+        dropped. Only `"image"` and `"video"` are recognized — other entries
+        (e.g. `"audio"`, `"pdf"`) have no attachment surface here and are
+        ignored. Callers use this both to build the model-facing notice and to
+        surface the drop to the user.
+    """
+    omitted: list[str] = []
+    if images and "image" in unsupported_modalities:
+        omitted.append(f"{len(images)} image attachment(s)")
+    if videos and "video" in unsupported_modalities:
+        omitted.append(f"{len(videos)} video attachment(s)")
+    return omitted
+
+
+def create_multimodal_content(
+    text: str,
+    images: list[ImageData],
+    videos: list[VideoData] | None = None,
+    *,
+    unsupported_modalities: frozenset[str] = frozenset(),
+) -> list[Any]:
+    """Create model-compatible content from text and media attachments.
+
+    Args:
+        text: Text content of the message.
+        images: List of `ImageData` objects.
+        videos: Optional list of `VideoData` objects.
+        unsupported_modalities: Media types to omit from the model request.
+            Only `"image"` and `"video"` are recognized. When attachments of
+            an omitted type are present, their content blocks are dropped and a
+            human-readable `[Omitted ...]` notice is appended to the text block
+            so the model is told why the referenced media is missing.
+
+    Returns:
+        List of content blocks in LangChain message format. When media is
+        omitted and the prompt was attachment-only (no other text), the
+        returned list still contains a single text block holding the notice,
+        so the message is never empty.
     """
     content_blocks = []
 
@@ -599,14 +639,19 @@ def create_multimodal_content(
         item.placeholder_span for item in media if item.placeholder_span is not None
     ]
     clean_text = strip_media_placeholders(text, placeholders, placeholder_spans=spans)
+    omitted = omitted_modality_summaries(images, videos, unsupported_modalities)
+    if omitted:
+        notice = (
+            f"[Omitted {' and '.join(omitted)}: the active model cannot process them.]"
+        )
+        clean_text = f"{clean_text}\n\n{notice}" if clean_text else notice
     if clean_text:
         content_blocks.append({"type": "text", "text": clean_text})
 
-    # Add image blocks
-    content_blocks.extend(image.to_message_content() for image in images)
+    if "image" not in unsupported_modalities:
+        content_blocks.extend(image.to_message_content() for image in images)
 
-    # Add video blocks
-    if videos:
+    if videos and "video" not in unsupported_modalities:
         content_blocks.extend(video.to_message_content() for video in videos)
 
     return content_blocks

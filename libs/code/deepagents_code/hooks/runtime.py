@@ -9,7 +9,7 @@ from pathlib import (  # noqa: TC003 - used in runtime fields and path joins
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.engine import HookEngine
-from deepagents_code.hooks.loading import load_hooks_config
+from deepagents_code.hooks.loading import load_hooks_config, project_hooks_path
 from deepagents_code.hooks.models.domain import (
     HookDecision,
     HookEvent,
@@ -20,6 +20,7 @@ from deepagents_code.hooks.models.domain import (
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import TranscriptStore
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,6 +52,8 @@ class HooksRuntime:
     transcripts: TranscriptStore
     engine: HookEngine
     cwd: Path
+    workspace_trusted: bool
+    project_hooks_loaded: bool
 
     @classmethod
     def create(
@@ -75,8 +78,10 @@ class HooksRuntime:
         Returns:
             A runtime ready to execute invocations for this session.
         """
+        project_context = ProjectContext.from_user_cwd(cwd)
+        project_root = project_context.project_root or project_context.user_cwd
         loaded = load_hooks_config(
-            project_root=cwd,
+            project_root=project_root,
             workspace_trusted=workspace_trusted,
             config_dir=config_dir,
         )
@@ -91,7 +96,15 @@ class HooksRuntime:
             else DEFAULT_CONFIG_DIR / "transcripts"
         )
         engine = HookEngine(snapshot)
-        return cls(snapshot=snapshot, transcripts=store, engine=engine, cwd=cwd)
+        project_path = project_hooks_path(project_root).resolve(strict=False)
+        return cls(
+            snapshot=snapshot,
+            transcripts=store,
+            engine=engine,
+            cwd=project_context.user_cwd,
+            workspace_trusted=workspace_trusted,
+            project_hooks_loaded=project_path in loaded.sources,
+        )
 
     @property
     def snapshot_id(self) -> str:
@@ -140,7 +153,13 @@ class HooksRuntime:
 
         Returns:
             Event-specific decision with notices, sequences, and diagnostics.
+
+        Raises:
+            PermissionError: If project handlers were loaded without workspace trust.
         """
+        if self.project_hooks_loaded and not self.workspace_trusted:
+            msg = "Project hooks cannot execute before workspace trust is granted"
+            raise PermissionError(msg)
         prepared = self.prepare_invocation(invocation)
         return await self.engine.run(
             prepared.invocation,

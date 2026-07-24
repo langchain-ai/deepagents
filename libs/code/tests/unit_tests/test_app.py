@@ -25714,14 +25714,15 @@ class TestLiveApprovalModeWrites:
 
         app = DeepAgentsApp()
 
-        async def create_stale_session_state(*_args: object) -> TextualSessionState:
-            await asyncio.sleep(0)
+        def change_mode_during_construction(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
             app._approval_mode = ApprovalMode.AUTO
-            return TextualSessionState(approval_mode=ApprovalMode.MANUAL)
+            return MagicMock()
 
         with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new=create_stale_session_state,
+            "deepagents_code.hooks.runtime.HooksRuntime.create",
+            side_effect=change_mode_during_construction,
         ):
             await app._init_session_state()
 

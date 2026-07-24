@@ -2715,6 +2715,7 @@ class DeepAgentsApp(App):
         model_explicitly_set: bool = False,
         interpreter_arg: bool | None = None,
         defer_server_start: bool = False,
+        trust_project_hooks: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
         **kwargs: Any,
@@ -2782,6 +2783,7 @@ class DeepAgentsApp(App):
                 `server_kwargs`.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
+            trust_project_hooks: Whether project-scoped hook commands may run.
             title: Override the Textual `App.title` shown in the optional
                 header bar (shown when `DEEPAGENTS_CODE_SHOW_HEADER` is set or
                 the installation is stale).
@@ -2805,6 +2807,7 @@ class DeepAgentsApp(App):
             self.sub_title = sub_title
 
         self._register_custom_themes()
+        self._trust_project_hooks = trust_project_hooks
 
         self.theme = _load_theme_preference()
         """Active Textual theme name.
@@ -4306,11 +4309,9 @@ class DeepAgentsApp(App):
                     thread_id=self._lc_thread_id,
                 )
                 try:
-                    # Interactive sessions keep project hooks off until a dedicated
-                    # workspace-trust prompt lands (design-doc security follow-up).
                     state.hooks_runtime = HooksRuntime.create(
                         cwd=Path(self._cwd),
-                        workspace_trusted=False,
+                        workspace_trusted=self._trust_project_hooks,
                     )
                 except Exception:
                     logger.exception(
@@ -4360,7 +4361,7 @@ class DeepAgentsApp(App):
             runtime = await asyncio.to_thread(
                 HooksRuntime.create,
                 cwd=Path(self._cwd),
-                workspace_trusted=False,
+                workspace_trusted=self._trust_project_hooks,
             )
         except Exception:
             logger.exception("Failed to refresh HooksRuntime; hooks disabled")
@@ -22963,6 +22964,7 @@ async def run_textual_app(
     model_explicitly_set: bool = False,
     interpreter_arg: bool | None = None,
     defer_server_start: bool = False,
+    trust_project_hooks: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
 ) -> AppResult:
@@ -23021,6 +23023,7 @@ async def run_textual_app(
             explicit opt-out from a sandbox-suppressed default.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
+        trust_project_hooks: Whether project-scoped hook commands may run.
         title: Override the Textual `App.title` shown in the optional header
             bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`, or shown automatically
             when the installation is stale). When `None`, the default
@@ -23054,6 +23057,7 @@ async def run_textual_app(
         model_explicitly_set=model_explicitly_set,
         interpreter_arg=interpreter_arg,
         defer_server_start=defer_server_start,
+        trust_project_hooks=trust_project_hooks,
         title=title,
         sub_title=sub_title,
     )

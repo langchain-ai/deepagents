@@ -2,6 +2,14 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.47](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.46...deepagents-code==0.1.47) (2026-07-24)
+
+
+### Features
+
+* **code:** include `yolo` mode in `Shift+Tab` approval cycle ([#5035](https://github.com/langchain-ai/deepagents/issues/5035)) ([9f2cc21](https://github.com/langchain-ai/deepagents/commit/9f2cc212dc3ba59540a9f738d2849e38ac9ecfc2))
+* **code:** show changelog link before install-script update prompt ([#5034](https://github.com/langchain-ai/deepagents/issues/5034)) ([e3d2a87](https://github.com/langchain-ai/deepagents/commit/e3d2a870b77e548611929be56952f68825d3d52e))
+
 ## [0.1.46](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.45...deepagents-code==0.1.46) (2026-07-24)
 
 ### Highlights

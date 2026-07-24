@@ -4,54 +4,28 @@
 
 ## [0.1.46](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.45...deepagents-code==0.1.46) (2026-07-24)
 
+### Highlights
 
-### ⚠ BREAKING CHANGES
+- Auto mode is now generally available. [#4957](https://github.com/langchain-ai/deepagents/issues/4957)
+- Added configurable Auto goal-criteria acceptance. [#4940](https://github.com/langchain-ai/deepagents/issues/4940)
+- Improved Auto behavior by authorizing actions from active goal/rubric directives, avoiding redundant approval prompts, showing the enable notice only on first global enable, deduplicating classifier-unavailable transcript spam, logging underlying classifier failures, and reporting classifier timeout budgets. [#5017](https://github.com/langchain-ai/deepagents/issues/5017) [#4993](https://github.com/langchain-ai/deepagents/issues/4993) [#5012](https://github.com/langchain-ai/deepagents/issues/5012) [#5013](https://github.com/langchain-ai/deepagents/issues/5013) [#5011](https://github.com/langchain-ai/deepagents/issues/5011) [#5025](https://github.com/langchain-ai/deepagents/issues/5025)
+- Added Hooks v2 capability snapshots and session transcripts, and hardened Hooks v2 command execution. [#4916](https://github.com/langchain-ai/deepagents/issues/4916) [#4918](https://github.com/langchain-ai/deepagents/issues/4918) [#4917](https://github.com/langchain-ai/deepagents/issues/4917)
+- Raised the agent recursion limit to 2000 and made it configurable. [#4994](https://github.com/langchain-ai/deepagents/issues/4994)
 
-* **sdk,code,quickjs:** make the `ToDoListMiddleware` list opt-in ([#4929](https://github.com/langchain-ai/deepagents/issues/4929))
+### Improvements and fixes
 
-### Features
-
-* **code:** add Hooks v2 capability snapshots ([#4916](https://github.com/langchain-ai/deepagents/issues/4916)) ([8b4e508](https://github.com/langchain-ai/deepagents/commit/8b4e508d4664ef02e220854d50f5d98e0913aed8))
-* **code:** add Hooks v2 session transcripts ([#4918](https://github.com/langchain-ai/deepagents/issues/4918)) ([ca86fbe](https://github.com/langchain-ai/deepagents/commit/ca86fbecca1a43facb4281397760c5e52edb1ddd))
-* **code:** configure Auto goal criteria acceptance ([#4940](https://github.com/langchain-ai/deepagents/issues/4940)) ([37addfc](https://github.com/langchain-ai/deepagents/commit/37addfc8bb5533d6670d14defea38770c8d54d1e))
-* **code:** let the rubric grader inspect working-directory files ([#4835](https://github.com/langchain-ai/deepagents/issues/4835)) ([5dcf749](https://github.com/langchain-ai/deepagents/commit/5dcf749a6e7d5ab6611f30d485a3382c7ef31f22))
-* **code:** make Version, Model, CWD copyable in Debug Console ([#4975](https://github.com/langchain-ai/deepagents/issues/4975)) ([52b8993](https://github.com/langchain-ai/deepagents/commit/52b8993489a9b6b92be077fe835743ef7704b6a0))
-* **code:** raise agent recursion limit to 2000 and make it configurable ([#4994](https://github.com/langchain-ai/deepagents/issues/4994)) ([94962a5](https://github.com/langchain-ai/deepagents/commit/94962a5f588ce84991ad382b7713155d6a5a231e))
-* **sdk,code,quickjs:** make the `ToDoListMiddleware` list opt-in ([#4929](https://github.com/langchain-ai/deepagents/issues/4929)) ([9340518](https://github.com/langchain-ai/deepagents/commit/9340518a26c4287f9ad0c543edc9b69106c15154))
-
-
-### Bug Fixes
-
-* **code,evals:** unify goal activation signaling ([#4980](https://github.com/langchain-ai/deepagents/issues/4980)) ([0c4016e](https://github.com/langchain-ai/deepagents/commit/0c4016e3c8a7293fdf1a24e12340759068a2bb9a))
-* **code:** abort YOLO launch on `Ctrl+C`/`Ctrl+D` ([#4953](https://github.com/langchain-ai/deepagents/issues/4953)) ([e6ab9c0](https://github.com/langchain-ai/deepagents/commit/e6ab9c05e8fcb9a332396a9425e2b302607be823))
-* **code:** authorize Auto actions from active goal/rubric directives ([#5017](https://github.com/langchain-ai/deepagents/issues/5017)) ([728dbe7](https://github.com/langchain-ai/deepagents/commit/728dbe7df62ad9960f21cabd6e6c37e8d9a66da7))
-* **code:** avoid redundant Auto approval prompts ([#4993](https://github.com/langchain-ai/deepagents/issues/4993)) ([9975874](https://github.com/langchain-ai/deepagents/commit/9975874d897ada8979c084145eb730e15c9cf979))
-* **code:** consistent modal backdrop dimming for selectors ([#4990](https://github.com/langchain-ai/deepagents/issues/4990)) ([3606e3f](https://github.com/langchain-ai/deepagents/commit/3606e3f3fa2faac97f30141f9ee54e37631d16ad))
-* **code:** dedupe Auto classifier-unavailable transcript spam ([#5013](https://github.com/langchain-ai/deepagents/issues/5013)) ([9500306](https://github.com/langchain-ai/deepagents/commit/9500306a17f90dc2f27897c364c24cafffbc474a))
-* **code:** disable LangSmith secret redaction by default ([#4970](https://github.com/langchain-ai/deepagents/issues/4970)) ([d029585](https://github.com/langchain-ai/deepagents/commit/d029585ab79432d00edfa5a70e77a31f2388ed5b))
-* **code:** flag empty env override shadowing LangSmith key in `/trace` ([#4996](https://github.com/langchain-ai/deepagents/issues/4996)) ([313f952](https://github.com/langchain-ai/deepagents/commit/313f9520cef28c105aa53eac645176d422ec4a97))
-* **code:** give `config get` a useful missing-key message ([#4976](https://github.com/langchain-ai/deepagents/issues/4976)) ([260c33e](https://github.com/langchain-ai/deepagents/commit/260c33ee28ade91741ba226ef3e719b6b8c8c02c))
-* **code:** harden Hooks v2 command execution ([#4917](https://github.com/langchain-ai/deepagents/issues/4917)) ([05dd0d1](https://github.com/langchain-ai/deepagents/commit/05dd0d1bee7d79be6ac7f18db0d05b521e760326))
-* **code:** ignore LangSmith default US endpoint as custom target ([#5022](https://github.com/langchain-ai/deepagents/issues/5022)) ([ffb7aab](https://github.com/langchain-ai/deepagents/commit/ffb7aabe25d3d5ad7c5fce139f3bc3e14e245adf))
-* **code:** improve `/rubric` help and empty-state messaging ([#5015](https://github.com/langchain-ai/deepagents/issues/5015)) ([1a3f46b](https://github.com/langchain-ai/deepagents/commit/1a3f46b85861779ed44e880cc7921cdd6f28fdfa))
-* **code:** inject OpenAI `prompt_cache_key` for any OpenAI-provider endpoint ([#4995](https://github.com/langchain-ai/deepagents/issues/4995)) ([6d6632f](https://github.com/langchain-ai/deepagents/commit/6d6632fa39822f1b774fcabd61ed371a90427113))
-* **code:** keep finished calls on live tool-group line ([#4927](https://github.com/langchain-ai/deepagents/issues/4927)) ([976c54b](https://github.com/langchain-ai/deepagents/commit/976c54b2e1392282044d9890a4a5d5d655f3e8dc))
-* **code:** log underlying Auto classifier failures ([#5011](https://github.com/langchain-ai/deepagents/issues/5011)) ([bd03e8a](https://github.com/langchain-ai/deepagents/commit/bd03e8a1ca4b38883e11148d5614a444cdefa407))
-* **code:** make Auto mode generally available ([#4957](https://github.com/langchain-ai/deepagents/issues/4957)) ([1709dbf](https://github.com/langchain-ai/deepagents/commit/1709dbf9b27766aacce1a5a9c17396b3654f026c))
-* **code:** make YOLO warning friendlier for new users ([#4950](https://github.com/langchain-ai/deepagents/issues/4950)) ([fe07f39](https://github.com/langchain-ai/deepagents/commit/fe07f39ad78c5c09ea6959540a49196cd2f47f3e))
-* **code:** omit `plugins/` and `conversation_history/` from `/agent` picker ([#4991](https://github.com/langchain-ai/deepagents/issues/4991)) ([db26688](https://github.com/langchain-ai/deepagents/commit/db26688eee32232a1b73e98cc02642b5bf4165f4))
-* **code:** put field descriptions on first-party tool schemas ([#5019](https://github.com/langchain-ai/deepagents/issues/5019)) ([4ccb873](https://github.com/langchain-ai/deepagents/commit/4ccb87325f3f97e416683233c94405e3ee105cda))
-* **code:** report Auto classifier timeout budget ([#5025](https://github.com/langchain-ai/deepagents/issues/5025)) ([516619b](https://github.com/langchain-ai/deepagents/commit/516619b7bf516e56f0e56ebc319dcab928c68c40))
-* **code:** restore `"Server log preserved at:"` notice on exit ([#4999](https://github.com/langchain-ai/deepagents/issues/4999)) ([5bc7714](https://github.com/langchain-ai/deepagents/commit/5bc7714fe55a73ac4892deb1785522ea310607ce))
-* **code:** show Auto enable notice modal only on first global enable ([#5012](https://github.com/langchain-ai/deepagents/issues/5012)) ([c2dbd17](https://github.com/langchain-ai/deepagents/commit/c2dbd176f06ff1a29637107101ae61344a09fc59))
-* **code:** show rubric grader defaults ([#4966](https://github.com/langchain-ai/deepagents/issues/4966)) ([465b9de](https://github.com/langchain-ai/deepagents/commit/465b9de17f9f4e6cd07a8674d9a186e60f5bf4d4))
-* **code:** trim `web_search` and `fetch_url` tool descriptions ([#5016](https://github.com/langchain-ai/deepagents/issues/5016)) ([170b4a6](https://github.com/langchain-ai/deepagents/commit/170b4a6c4590b3f95fb5219b5d9074c7f01a1937))
-* **code:** use SDK pin as effective editable version ([#4949](https://github.com/langchain-ai/deepagents/issues/4949)) ([1b270c8](https://github.com/langchain-ai/deepagents/commit/1b270c86fe24381c28d3ed35a31d754bd58bbf6e))
-
-
-### Reverted Changes
-
-* **code,sdk:** revert `SystemPromptConfig` ([#4969](https://github.com/langchain-ai/deepagents/issues/4969)) ([d046427](https://github.com/langchain-ai/deepagents/commit/d046427b536c8ddbce5d804d6ae8b860511a9b44))
+- Let the rubric grader inspect working-directory files, show rubric grader defaults, and improved `/rubric` help and empty-state messaging. [#4835](https://github.com/langchain-ai/deepagents/issues/4835) [#4966](https://github.com/langchain-ai/deepagents/issues/4966) [#5015](https://github.com/langchain-ai/deepagents/issues/5015)
+- Unified goal activation signaling. [#4980](https://github.com/langchain-ai/deepagents/issues/4980)
+- Made Version, Model, and CWD copyable in the Debug Console. [#4975](https://github.com/langchain-ai/deepagents/issues/4975)
+- Improved `config get` output when a key is missing. [#4976](https://github.com/langchain-ai/deepagents/issues/4976)
+- Aborted YOLO launch on `Ctrl+C`/`Ctrl+D` and made the YOLO warning friendlier for new users. [#4953](https://github.com/langchain-ai/deepagents/issues/4953) [#4950](https://github.com/langchain-ai/deepagents/issues/4950)
+- Updated LangSmith handling: secret redaction is disabled by default, `/trace` now flags empty env overrides that shadow the LangSmith key, and the default US endpoint is no longer treated as a custom target. [#4970](https://github.com/langchain-ai/deepagents/issues/4970) [#4996](https://github.com/langchain-ai/deepagents/issues/4996) [#5022](https://github.com/langchain-ai/deepagents/issues/5022)
+- Injected OpenAI `prompt_cache_key` for any OpenAI-provider endpoint. [#4995](https://github.com/langchain-ai/deepagents/issues/4995)
+- Improved tool and schema presentation: finished calls stay on the live tool-group line, first-party tool schemas now include field descriptions, and `web_search`/`fetch_url` tool descriptions were trimmed. [#4927](https://github.com/langchain-ai/deepagents/issues/4927) [#5019](https://github.com/langchain-ai/deepagents/issues/5019) [#5016](https://github.com/langchain-ai/deepagents/issues/5016)
+- Omitted `plugins/` and `conversation_history/` from the `/agent` picker. [#4991](https://github.com/langchain-ai/deepagents/issues/4991)
+- Made selector modal backdrop dimming consistent. [#4990](https://github.com/langchain-ai/deepagents/issues/4990)
+- Restored the `"Server log preserved at:"` notice on exit. [#4999](https://github.com/langchain-ai/deepagents/issues/4999)
+- Used the SDK pin as the effective editable version. [#4949](https://github.com/langchain-ai/deepagents/issues/4949)
 
 ## [0.1.45](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.44...deepagents-code==0.1.45) (2026-07-22)
 

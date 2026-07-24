@@ -255,7 +255,7 @@ class TestDebugTagStyle:
 
 
 class TestExperimentalTagStyle:
-    """Tests for the `(experimental mode)` tag style."""
+    """Tests for the `(experimental)` tag style."""
 
     def test_ansi_uses_bold_magenta_markup(self) -> None:
         """Under ANSI themes the tag stays visible via bold magenta terminal text."""
@@ -364,10 +364,10 @@ class TestTitle:
         assert "(local)" not in plain
 
     def test_no_experimental_tag_by_default(self) -> None:
-        """No `(experimental mode)` tag when `DEEPAGENTS_CODE_EXPERIMENTAL` is unset."""
+        """No `(experimental)` tag when `DEEPAGENTS_CODE_EXPERIMENTAL` is unset."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner()._build_banner().plain
-        assert "(experimental mode)" not in plain
+        assert "(experimental)" not in plain
 
     def test_no_experimental_tag_when_env_falsy(self) -> None:
         """A present-but-falsy `DEEPAGENTS_CODE_EXPERIMENTAL` shows no tag.
@@ -378,27 +378,27 @@ class TestTitle:
         """
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={EXPERIMENTAL: "0"})._build_banner().plain
-        assert "(experimental mode)" not in plain
+        assert "(experimental)" not in plain
 
     def test_marks_experimental_when_env_set(self) -> None:
-        """`DEEPAGENTS_CODE_EXPERIMENTAL` shows an `(experimental mode)` tag."""
+        """`DEEPAGENTS_CODE_EXPERIMENTAL` shows an `(experimental)` tag."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={EXPERIMENTAL: "1"})._build_banner().plain
         assert f"v{__version__}" in plain
         # Leading space guards the separator from the preceding segment.
-        assert " (experimental mode)" in plain
+        assert " (experimental)" in plain
         assert "(local)" not in plain
-        assert plain.index(f"v{__version__}") < plain.index("(experimental mode)")
+        assert plain.index(f"v{__version__}") < plain.index("(experimental)")
 
     def test_experimental_tag_follows_debug_precedes_local(self) -> None:
-        """`(experimental mode)` renders after `(debug enabled)`, before `(local)`."""
+        """`(experimental)` renders after `(debug enabled)`, before `(local)`."""
         with patch(_EDITABLE, return_value=True):
             plain = (
                 _make_banner(env={DEBUG: "1", EXPERIMENTAL: "1"})._build_banner().plain
             )
         assert (
             plain.index("(debug enabled)")
-            < plain.index("(experimental mode)")
+            < plain.index("(experimental)")
             < plain.index("(local)")
         )
 
@@ -411,7 +411,7 @@ class TestTitle:
                 .plain
             )
         assert f"v{__version__}" not in plain
-        assert "(experimental mode)" in plain
+        assert "(experimental)" in plain
         assert "(local)" not in plain
 
     def test_experimental_tag_carries_its_own_style(self) -> None:
@@ -424,9 +424,9 @@ class TestTitle:
             patch(_EXPERIMENTAL_STYLE, return_value=experimental_style),
         ):
             content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
-        assert _style_covering(
-            content, "(experimental mode)"
-        ).foreground == TColor.parse("#070809")
+        assert _style_covering(content, "(experimental)").foreground == TColor.parse(
+            "#070809"
+        )
 
     def test_experimental_tag_uses_ansi_markup_under_ansi_theme(self) -> None:
         """Under an ANSI theme the experimental span carries bold-magenta markup."""
@@ -440,7 +440,7 @@ class TestTitle:
                 content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
         finally:
             app.theme = previous_theme
-        assert _raw_style_covering(content, "(experimental mode)") == "bold magenta"
+        assert _raw_style_covering(content, "(experimental)") == "bold magenta"
 
     def test_title_tags_carry_their_own_styles(self) -> None:
         """Each title tag's span carries its own style helper's output.

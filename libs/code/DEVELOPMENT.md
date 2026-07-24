@@ -85,7 +85,7 @@ export DEEPAGENTS_CODE_LANGSMITH_PROJECT=shared-deepagents-code-dev
 uv run deepagents-code
 ```
 
-You can also set it persistently under `[tracing]` in the config file (`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and `/trace` show the project a run is writing to — confirm it is not the GA project before doing noisy work.
+Set the same override for [local dev installs](#local-dev-installs) (`dcode-dev`), not only ad-hoc `uv run` sessions. You can also set it persistently under `[tracing]` in the config file (`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and `/trace` show the project a run is writing to — confirm it is not the GA project before doing noisy work.
 
 When onboarding a new tracing project to Engine, capture the nature of that project first: a production/GA app warrants high-priority alerts, while a staging or active-dev project should use looser thresholds (or stay off Engine) so it does not generate false positives.
 

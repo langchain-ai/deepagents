@@ -1,14 +1,18 @@
-# Advisory check: posts a comment on Code release PRs when the deepagents
-# SDK pin is older than the actual SDK version. Does not block merge — the
-# release workflow enforces the pin at publish time. Removes the comment
-# once resolved.
+# SDK pin check for Code release PRs.
+#
+# - Stale pin: posts an advisory comment/warning only. The release workflow
+#   enforces the pin at publish time.
+# - Prerelease pin: posts a warning and fails until the PR carries the
+#   `release-deps: acknowledged` label (re-runs on labeled/unlabeled).
+# Removes the comment once the pin no longer needs attention.
 # See also: release.yml "Verify package pins SDK at or ahead of workspace
-# version" step (hard gate).
+# version" step (hard gate for stale pins at publish).
 
 name: "🔗 Check SDK Pin"
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "libs/deepagents/pyproject.toml"
       - "libs/code/pyproject.toml"
@@ -133,8 +137,14 @@ jobs:
               return;
             }
 
+            const labels = (context.payload.pull_request.labels ?? [])
+              .map(label => (typeof label === 'string' ? label : label.name))
+              .filter(Boolean);
+            const prereleaseAcknowledged = labels.includes(releaseDepsBypassLabel);
+
             let body = null;
             let warning = null;
+            let fail = false;
             if (stale) {
               body = [
                 marker,
@@ -153,7 +163,7 @@ jobs:
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
               ].join('\n');
               warning = `${pkgLabel} has a stale SDK pin: deepagents==${pkgPin} but SDK is ${sdkVersion}`;
-            } else if (prerelease) {
+            } else if (prerelease && !prereleaseAcknowledged) {
               body = [
                 marker,
                 '> [!WARNING]',
@@ -164,6 +174,12 @@ jobs:
                 `> **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and skips the release dependency / freshness checks that commonly fail when the pinned SDK is not on PyPI yet (for example during an intentional cross-package release sequence).`,
               ].join('\n');
               warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; add ${releaseDepsBypassLabel} to acknowledge before merging.`;
+              fail = true;
+            } else if (prerelease) {
+              core.info(
+                `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; ` +
+                `\`${releaseDepsBypassLabel}\` is present so the pin is acknowledged.`
+              );
             }
 
             if (body === null && existing) {
@@ -185,7 +201,9 @@ jobs:
                 }
               }
             } else if (body === null) {
-              core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
+              if (!prerelease) {
+                core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
+              }
             } else {
               try {
                 // Update silently (no workflow annotation) to avoid repeated warnings on re-pushes.
@@ -209,6 +227,10 @@ jobs:
                   warning
                 );
               }
-              // Always emit annotation regardless of comment success.
-              core.warning(warning);
+              // Fail unacknowledged prerelease pins; stale pins stay advisory.
+              if (fail) {
+                core.setFailed(warning);
+              } else {
+                core.warning(warning);
+              }
             }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -43,6 +43,7 @@ from deepagents_code.hooks.models.transport import (
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
     ServerHooksMiddleware,
+    ServerHooksState,
     _append_message_text,
     _apply_post_tool_use,
     _apply_subagent_stop,
@@ -245,7 +246,7 @@ def test_stop_resets_continuation_count_when_finished(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    state: dict[str, Any] = {
+    state: ServerHooksState = {
         "messages": [],
         "_hooks_stop_continuation_count": 3,
     }
@@ -266,6 +267,66 @@ def test_stop_resets_continuation_count_when_finished(
     )
     update = middleware._after_agent(state, runtime)
     assert update == {"_hooks_stop_continuation_count": 0}
+
+
+def test_emit_stop_false_skips_after_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"), emit_stop=False)
+    state: ServerHooksState = {"messages": []}
+    runtime = MagicMock()
+    runtime.context = {
+        "hooks_snapshot_id": "snap",
+        "hooks_server_events": ["Stop"],
+        "thread_id": "t1",
+        "approval_mode": "manual",
+    }
+    invoke = MagicMock()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        invoke,
+    )
+    assert middleware._after_agent(state, runtime) is None
+    invoke.assert_not_called()
+
+
+def test_subagent_start_deny_returns_error_tool_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.hooks.models.domain import SubagentStartDecision
+
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    request = MagicMock()
+    request.tool_call = {
+        "name": "task",
+        "args": {"subagent_type": "researcher", "description": "go"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    request.tool = None
+    request.runtime.context = {
+        "hooks_snapshot_id": "snap",
+        "hooks_server_events": ["SubagentStart"],
+        "thread_id": "t1",
+        "approval_mode": "manual",
+    }
+    request.runtime.config = {"configurable": {"thread_id": "t1"}}
+
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        lambda *_args, **_kwargs: SubagentStartDecision(
+            event=HookEvent.SUBAGENT_START,
+            continue_processing=False,
+            stop_reason="no subagents",
+        ),
+    )
+
+    handler = MagicMock()
+    blocked = middleware.wrap_tool_call(request, handler)
+    assert isinstance(blocked, ToolMessage)
+    assert blocked.status == "error"
+    assert "no subagents" in str(blocked.content)
+    handler.assert_not_called()
 
 
 async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:

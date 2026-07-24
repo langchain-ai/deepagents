@@ -102,16 +102,21 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         *,
         cwd: Path,
         default_deadline: timedelta = _DEFAULT_DEADLINE,
+        emit_stop: bool = True,
     ) -> None:
         """Initialize middleware.
 
         Args:
             cwd: Session working directory projected into hook context.
             default_deadline: Client execution deadline attached to requests.
+            emit_stop: Whether to emit the main-agent `Stop` event from
+                `after_agent`. Subagent graphs set this to `False` so they still
+                wrap tools without firing parent `Stop` handlers.
         """
         super().__init__()
         self._cwd = cwd
         self._default_deadline = default_deadline
+        self._emit_stop = emit_stop
 
     def wrap_tool_call(
         self,
@@ -128,7 +133,10 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context = _hook_context(
             request.runtime.context, request.runtime.config, self._cwd
         )
-        request = self._maybe_subagent_start(request, call, context, gate)
+        started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
+        if isinstance(started_or_blocked, ToolMessage):
+            return started_or_blocked
+        request = started_or_blocked
         pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
         if pre.blocked is not None:
             return _append_message_text(pre.blocked, pre.context)
@@ -158,7 +166,10 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context = _hook_context(
             request.runtime.context, request.runtime.config, self._cwd
         )
-        request = self._maybe_subagent_start(request, call, context, gate)
+        started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
+        if isinstance(started_or_blocked, ToolMessage):
+            return started_or_blocked
+        request = started_or_blocked
         pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
         if pre.blocked is not None:
             return _append_message_text(pre.blocked, pre.context)
@@ -205,7 +216,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         call: ToolCallData,
         context: HookContext,
         gate: _SessionHookGate | None,
-    ) -> ToolCallRequest:
+    ) -> ToolCallRequest | ToolMessage:
         if call.name != _TASK_TOOL_NAME or not _event_enabled(
             gate, HookEvent.SUBAGENT_START
         ):
@@ -220,17 +231,11 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         )
         decision = _require_decision(decision, SubagentStartDecision)
         if not decision.continue_processing:
-            # SubagentStart has no deny ToolMessage path; refuse spawn by
-            # clearing the description so the task tool fails closed upstream.
-            return _inject_subagent_start_context(
-                request,
-                SubagentStartDecision(
-                    event=HookEvent.SUBAGENT_START,
-                    context=[
-                        decision.stop_reason or "Blocked by SubagentStart hook",
-                        *decision.context,
-                    ],
-                    continue_processing=False,
+            return _denied_tool_message(
+                call,
+                PermissionEffect(
+                    behavior="deny",
+                    reason=decision.stop_reason or "Blocked by SubagentStart hook",
                 ),
             )
         return _inject_subagent_start_context(request, decision)
@@ -336,6 +341,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        if not self._emit_stop:
+            return None
         gate = _session_gate(runtime.context)
         if not _event_enabled(gate, HookEvent.STOP):
             return None

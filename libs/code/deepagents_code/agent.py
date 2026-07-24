@@ -2430,11 +2430,13 @@ def create_cli_agent(
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
-        # ToolUse only fire on the parent graph.
+        # ToolUse only fire on the parent graph. Disable Stop so finishing a
+        # subagent does not emit the main-agent Stop event (SubagentStop still
+        # fires from the parent wrap around `task`).
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        middleware.append(ServerHooksMiddleware(cwd=hooks_cwd))
+        middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, emit_stop=False))
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when

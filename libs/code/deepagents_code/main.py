@@ -2083,6 +2083,12 @@ def parse_args() -> argparse.Namespace:
         "(skip interactive approval prompt)",
     )
     parser.add_argument(
+        "--trust-project-hooks",
+        action="store_true",
+        help="Trust project-level `.deepagents/hooks.json` command handlers "
+        "(required for headless/CI runs that should load repository hooks)",
+    )
+    parser.add_argument(
         "--interpreter",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -4551,6 +4557,9 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                            trust_project_hooks=getattr(
+                                args, "trust_project_hooks", False
+                            ),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             allow_fs_tools=allow_fs_tools,

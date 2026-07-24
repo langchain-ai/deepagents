@@ -1083,6 +1083,7 @@ async def _run_agent_loop(
     max_turns: int | None = None,
     rubric: str | None = None,
     show_rubric_iterations: bool = False,
+    trust_project_hooks: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -1115,6 +1116,11 @@ async def _run_agent_loop(
             `None` leaves it unset (no grading).
         show_rubric_iterations: Whether rubric lifecycle messages should include
             iteration numbers.
+        trust_project_hooks: When `True`, load project-scoped
+            `.deepagents/hooks.json` command handlers.
+
+            Defaults to `False` so untrusted checkouts cannot execute repository
+            hooks in CI without an explicit opt-in.
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
@@ -1148,10 +1154,10 @@ async def _run_agent_loop(
     from deepagents_code.hooks.runtime import HooksRuntime
 
     try:
-        # Non-interactive mirrors Claude Code: project hooks are trusted.
+        # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
         hooks_runtime = HooksRuntime.create(
             cwd=Path.cwd(),
-            workspace_trusted=True,
+            workspace_trusted=trust_project_hooks,
         )
     except Exception:
         logger.exception("Failed to create HooksRuntime; server hooks disabled")
@@ -1425,6 +1431,7 @@ async def run_non_interactive(
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
+    trust_project_hooks: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -1501,6 +1508,11 @@ async def run_non_interactive(
             uses the middleware default.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
+        trust_project_hooks: When `True`, load project-scoped
+            `.deepagents/hooks.json` handlers.
+
+            Defaults to `False` so untrusted repositories cannot execute hook
+            commands without an explicit `--trust-project-hooks` opt-in.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
@@ -1751,6 +1763,7 @@ async def run_non_interactive(
                 max_turns=max_turns,
                 rubric=rubric,
                 show_rubric_iterations=rubric_max_iterations is not None,
+                trust_project_hooks=trust_project_hooks,
             )
 
     except KeyboardInterrupt:

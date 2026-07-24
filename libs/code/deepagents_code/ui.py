@@ -172,6 +172,9 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
+        "  --trust-project-hooks      Trust project hooks.json command handlers"
+    )
+    console.print(
         "  --interpreter, --no-interpreter"
         "  Enable or disable JS interpreter (`js_eval`) middleware"
     )

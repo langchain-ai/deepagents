@@ -1013,7 +1013,7 @@ async def execute_task_textual(
 
             apply_hooks_context(
                 context,
-                session_state.hooks_runtime,
+                getattr(session_state, "hooks_runtime", None),
                 prompt_id=getattr(session_state, "turn_id", None),
             )
 
@@ -1147,7 +1147,9 @@ async def execute_task_textual(
                             for interrupt_obj in interrupts:
                                 iv = interrupt_obj.value
                                 if is_hook_interrupt_payload(iv):
-                                    hooks_runtime = session_state.hooks_runtime
+                                    hooks_runtime = getattr(
+                                        session_state, "hooks_runtime", None
+                                    )
                                     if hooks_runtime is None:
                                         msg = (
                                             "Received hook invocation interrupt "

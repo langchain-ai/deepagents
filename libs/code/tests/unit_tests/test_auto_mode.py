@@ -61,6 +61,7 @@ from deepagents_code.auto_mode import (
     HeadlessMCPGuardMiddleware,
     _active_user_directives,
     _batch_id,
+    _ClassifierDeadlineExceededError,
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
@@ -2897,13 +2898,22 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
 
 
 def test_classifier_unavailable_reason_specializes_timeouts() -> None:
-    assert classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0) == (
+    assert classifier_unavailable_reason(
+        _ClassifierDeadlineExceededError(20.0), timeout_seconds=20.0
+    ) == (
         "dcode cancelled the authorization classifier after its local "
         "20s timeout (app-imposed, not a provider timeout)."
     )
-    assert classifier_unavailable_reason(TimeoutError(), timeout_seconds=1.5) == (
+    assert classifier_unavailable_reason(
+        _ClassifierDeadlineExceededError(1.5), timeout_seconds=1.5
+    ) == (
         "dcode cancelled the authorization classifier after its local "
         "1.5s timeout (app-imposed, not a provider timeout)."
+    )
+    # Provider exception type alone must not claim dcode cancelled the call.
+    assert (
+        classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0)
+        == "The authorization classifier was unavailable (TimeoutError)."
     )
     assert (
         classifier_unavailable_reason(
@@ -2914,8 +2924,22 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
 
 
 async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> None:
-    model = _StructuredModel(error=TimeoutError())
-    middleware = _middleware(tmp_path)
+    class _SlowModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(5)
+            return self.result
+
+    model = _SlowModel()
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {
+            "delete": config,
+        },
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=0.05,
+    )
     request, _store, _key = _request(
         tmp_path,
         model=model,
@@ -2933,7 +2957,30 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == (
         "dcode cancelled the authorization classifier after its local "
-        "1s timeout (app-imposed, not a provider timeout)."
+        "0.05s timeout (app-imposed, not a provider timeout)."
+    )
+
+
+async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
+    model = _StructuredModel(error=TimeoutError("socket timed out"))
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert plan["decisions"][0]["reason"] == (
+        "The authorization classifier was unavailable (TimeoutError)."
     )
 
 

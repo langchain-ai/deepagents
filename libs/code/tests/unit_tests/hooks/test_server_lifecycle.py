@@ -7,7 +7,7 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -57,6 +57,7 @@ from deepagents_code.hooks.server_middleware import (
     ServerHooksMiddleware,
     ServerHooksState,
     _append_message_text,
+    _append_tool_result_text,
     _apply_post_tool_use,
     _apply_subagent_stop,
     _ask_permission_via_hitl,
@@ -64,6 +65,8 @@ from deepagents_code.hooks.server_middleware import (
     _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
+    _tool_result_failed,
+    _tool_result_text,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
@@ -320,6 +323,7 @@ def test_apply_subagent_stop_preserves_structured_content() -> None:
             event=HookEvent.SUBAGENT_STOP,
             context=["extra"],
         ),
+        "c1",
     )
     assert isinstance(updated, ToolMessage)
     assert isinstance(updated.content, list)
@@ -335,6 +339,7 @@ def test_apply_post_tool_use_appends_feedback_and_context() -> None:
             feedback=["fix it"],
             context=["note"],
         ),
+        "c1",
     )
     assert "ok" in str(updated.content)
     assert "fix it" in str(updated.content)
@@ -388,6 +393,49 @@ def test_post_tool_use_updates_successful_command_result(
     invoke.assert_called_once()
 
 
+def _multi_result_command() -> Command[Any]:
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(content="mine", name="execute", tool_call_id="c1"),
+                ToolMessage(
+                    content="theirs",
+                    name="execute",
+                    tool_call_id="c2",
+                    status="error",
+                ),
+            ]
+        }
+    )
+
+
+def test_append_tool_result_text_only_touches_matching_call() -> None:
+    updated = _append_tool_result_text(_multi_result_command(), "hook context", "c1")
+
+    assert isinstance(updated, Command)
+    assert isinstance(updated.update, dict)
+    mine, theirs = updated.update["messages"]
+    assert "hook context" in str(mine.content)
+    assert str(theirs.content) == "theirs"
+
+
+def test_append_tool_result_text_leaves_command_without_matching_call() -> None:
+    result = _multi_result_command()
+
+    assert _append_tool_result_text(result, "hook context", "c3") is result
+
+
+def test_tool_result_text_reads_only_matching_call() -> None:
+    assert _tool_result_text(_multi_result_command(), "c1") == "mine"
+
+
+def test_tool_result_failed_ignores_unrelated_failure() -> None:
+    result = _multi_result_command()
+
+    assert _tool_result_failed(result, "c1") is False
+    assert _tool_result_failed(result, "c2") is True
+
+
 def test_post_tool_use_skips_failed_tool_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -423,7 +471,7 @@ def test_post_tool_use_skips_failed_tool_message(
 
 def test_append_pretool_context_to_result() -> None:
     result = ToolMessage(content="ran", tool_call_id="c1", name="execute")
-    updated = _append_message_text(result, ("pre context",))
+    updated = _append_message_text(result, ("pre context",), "c1")
     assert isinstance(updated, ToolMessage)
     assert "ran" in str(updated.content)
     assert "pre context" in str(updated.content)

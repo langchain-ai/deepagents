@@ -368,6 +368,12 @@ def test_anthropic_profile_contract() -> None:
     assert default_effort_for_model("anthropic:claude-opus-4-5") == "high"
 
 
+def test_opus_5_profile_contract() -> None:
+    expected = ("low", "medium", "high", "xhigh", "max")
+    assert supported_efforts_for_model("anthropic:claude-opus-5") == expected
+    assert default_effort_for_model("anthropic:claude-opus-5") == "high"
+
+
 def test_openai_integration_translates_standard_effort_without_summary() -> None:
     from langchain_core.messages import HumanMessage
     from langchain_openai import ChatOpenAI

@@ -14,7 +14,16 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    NotRequired,
+    TypeAlias,
+    TypeGuard,
+    TypeVar,
+    cast,
+)
 from uuid import UUID, uuid5
 
 from langchain.agents.middleware.human_in_the_loop import (
@@ -215,7 +224,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             request.runtime.context, request.runtime.config, self._cwd
         )
         if pre.blocked is not None:
-            return _append_message_text(pre.blocked, pre.context)
+            return _append_message_text(pre.blocked, pre.context, call.id)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
         if isinstance(started_or_blocked, ToolMessage):
             return started_or_blocked
@@ -224,7 +233,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         with _subagent_transcript_config(call, request.runtime.config):
             result = handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        result = _append_message_text(result, pre.context)
+        result = _append_message_text(result, pre.context, call.id)
         result = self._maybe_post_tool_use(
             call, context, gate, request.runtime.config, result, duration_ms
         )
@@ -249,7 +258,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             request.runtime.context, request.runtime.config, self._cwd
         )
         if pre.blocked is not None:
-            return _append_message_text(pre.blocked, pre.context)
+            return _append_message_text(pre.blocked, pre.context, call.id)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
         if isinstance(started_or_blocked, ToolMessage):
             return started_or_blocked
@@ -258,7 +267,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         with _subagent_transcript_config(call, request.runtime.config):
             result = await handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        result = _append_message_text(result, pre.context)
+        result = _append_message_text(result, pre.context, call.id)
         result = self._maybe_post_tool_use(
             call, context, gate, request.runtime.config, result, duration_ms
         )
@@ -417,7 +426,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
     ) -> ToolMessage | Command[Any]:
         if not _event_enabled(gate, HookEvent.POST_TOOL_USE):
             return result
-        if _tool_result_failed(result):
+        if _tool_result_failed(result, call.id):
             return result
         decision = _invoke_hook(
             context,
@@ -432,7 +441,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             deadline=self._default_deadline,
         )
         decision = _require_decision(decision, PostToolUseDecision)
-        return _apply_post_tool_use(result, decision)
+        return _apply_post_tool_use(result, decision, call.id)
 
     def _maybe_subagent_stop(
         self,
@@ -453,14 +462,14 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 event=HookEvent.SUBAGENT_STOP,
                 agent=agent,
                 continuation_count=0,
-                last_assistant_message=_tool_result_text(result),
+                last_assistant_message=_tool_result_text(result, call.id),
             ),
             gate=gate,
             config=config,
             deadline=self._default_deadline,
         )
         decision = _require_decision(decision, SubagentStopDecision)
-        return _apply_subagent_stop(result, decision)
+        return _apply_subagent_stop(result, decision, call.id)
 
     def _after_agent(
         self,
@@ -874,15 +883,17 @@ def _ask_permission_via_hitl(
 def _append_message_text(
     result: ToolMessage | Command[Any],
     parts: Sequence[str],
+    call_id: str,
 ) -> ToolMessage | Command[Any]:
     if not parts:
         return result
-    return _append_tool_result_text(result, "\n".join(parts))
+    return _append_tool_result_text(result, "\n".join(parts), call_id)
 
 
 def _apply_post_tool_use(
     result: ToolMessage | Command[Any],
     decision: PostToolUseDecision,
+    call_id: str,
 ) -> ToolMessage | Command[Any]:
     extras: list[str] = []
     if decision.feedback:
@@ -896,34 +907,34 @@ def _apply_post_tool_use(
     return _append_tool_result_text(
         result,
         "\n\n".join(part for part in extras if part),
+        call_id,
     )
 
 
 def _apply_subagent_stop(
     result: ToolMessage | Command[Any],
     decision: SubagentStopDecision,
+    call_id: str,
 ) -> ToolMessage | Command[Any]:
     if not decision.context:
         return result
-    return _append_tool_result_text(result, "\n".join(decision.context))
+    return _append_tool_result_text(result, "\n".join(decision.context), call_id)
 
 
 def _append_tool_result_text(
     result: ToolMessage | Command[Any],
     suffix: str,
+    call_id: str,
 ) -> ToolMessage | Command[Any]:
     if isinstance(result, ToolMessage):
         return _merge_tool_message_content(result, suffix)
     update = result.update
     if not isinstance(update, Mapping):
         return result
-    raw_messages = update.get("messages")
-    if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, str):
-        return result
     changed = False
     messages: list[object] = []
-    for message in raw_messages:
-        if isinstance(message, ToolMessage):
+    for message in _command_messages(result):
+        if _is_call_result(message, call_id):
             messages.append(_merge_tool_message_content(message, suffix))
             changed = True
         else:
@@ -933,19 +944,40 @@ def _append_tool_result_text(
     return replace(result, update={**update, "messages": messages})
 
 
-def _tool_result_failed(result: ToolMessage | Command[Any]) -> bool:
+def _tool_result_failed(result: ToolMessage | Command[Any], call_id: str) -> bool:
     if isinstance(result, ToolMessage):
         return result.status == "error"
+    return any(
+        _is_call_result(message, call_id) and message.status == "error"
+        for message in _command_messages(result)
+    )
+
+
+def _command_messages(result: Command[Any]) -> Sequence[object]:
+    """Return the `messages` list carried by a `Command` update.
+
+    Returns:
+        The update's messages, or an empty sequence when absent or malformed.
+    """
     update = result.update
     if not isinstance(update, Mapping):
-        return False
+        return ()
     messages = update.get("messages")
     if not isinstance(messages, Sequence) or isinstance(messages, str):
-        return False
-    return any(
-        isinstance(message, ToolMessage) and message.status == "error"
-        for message in messages
-    )
+        return ()
+    return messages
+
+
+def _is_call_result(message: object, call_id: str) -> TypeGuard[ToolMessage]:
+    """Check whether a message is the `ToolMessage` for the in-flight call.
+
+    A `Command` update may carry results for several calls, so hook context must
+    only read from and write to the one this wrapper is handling.
+
+    Returns:
+        `True` when the message answers `call_id`.
+    """
+    return isinstance(message, ToolMessage) and message.tool_call_id == call_id
 
 
 def _merge_tool_message_content(result: ToolMessage, suffix: str) -> ToolMessage:
@@ -1001,18 +1033,14 @@ def _task_agent_identity(call: ToolCallData) -> AgentIdentity:
     return AgentIdentity(id=call.id or name, name=name)
 
 
-def _tool_result_text(result: ToolMessage | Command[Any]) -> str:
+def _tool_result_text(result: ToolMessage | Command[Any], call_id: str) -> str:
     if isinstance(result, ToolMessage):
         content = result.content
         return content if isinstance(content, str) else str(content)
-    update = result.update
-    if not isinstance(update, Mapping):
-        return ""
-    messages = update.get("messages")
-    if not isinstance(messages, Sequence) or isinstance(messages, str):
-        return ""
     return "\n".join(
-        str(message.content) for message in messages if isinstance(message, ToolMessage)
+        str(message.content)
+        for message in _command_messages(result)
+        if _is_call_result(message, call_id)
     )
 
 

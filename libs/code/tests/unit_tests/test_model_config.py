@@ -7285,6 +7285,26 @@ class TestGetModelProfiles:
         assert entry["profile"]["tool_calling"] is True
         assert entry["overridden_keys"] == frozenset()
 
+    def test_returns_upstream_opus_5_profile(self, tmp_path: Path) -> None:
+        """Uses the provider package's Opus 5 profile without a local fallback."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            profiles = get_model_profiles()
+
+        profile = profiles["anthropic:claude-opus-5"]["profile"]
+        assert profile["tool_calling"] is True
+        assert profile["max_output_tokens"] == 128000
+        assert profile["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert profile["reasoning_effort_default"] == "high"
+
     def test_merges_config_overrides(self, tmp_path: Path) -> None:
         """Config.toml profile overrides are merged and tracked."""
         config_path = tmp_path / "config.toml"

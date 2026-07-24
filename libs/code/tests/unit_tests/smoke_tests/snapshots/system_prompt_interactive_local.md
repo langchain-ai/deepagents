@@ -249,19 +249,6 @@ Host path mappings:
 - `<tmp_path>/dcode-artifacts/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `<tmp_path>/dcode-artifacts/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
 - `/dcode-artifacts-fallback/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `/dcode-artifacts-fallback/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
 
-## Goal and Rubric Tools
-
-Consult the latest goal/rubric state notice in conversation history before using
-these tools. Later notices supersede earlier notices. If no notice exists, assume
-there is no actionable goal or rubric and do not call these tools.
-
-When the latest notice says a rubric is active, use `get_rubric` when its exact
-acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
-when its objective or current status is needed. Paused and completed goals must not
-drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
-`status="complete"` remains available for optional completion evidence but is not
-required. Private checkpoint state and the tools remain authoritative for details.
-
 ## `ask_user`
 
 You have access to the `ask_user` tool to ask the user questions when you need clarification or input.

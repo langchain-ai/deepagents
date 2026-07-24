@@ -1244,11 +1244,6 @@ async def execute_task_textual(
 
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":
-                    # Skip subagent outputs - only render main agent content in chat
-                    if not is_main_agent:
-                        logger.debug("Skipping subagent message ns=%s", ns_key)
-                        continue
-
                     if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                         logger.debug(
                             "Skipping non-2-tuple message data: type=%s",
@@ -1264,21 +1259,9 @@ async def execute_task_textual(
                         hasattr(message, "content_blocks"),
                     )
 
-                    # Filter out summarization model output, but keep UI feedback.
-                    # The summarization model streams AIMessage chunks tagged
-                    # with lc_source="summarization" in the callback metadata.
-                    # These are hidden from the user; only the spinner and a
-                    # notification widget provide feedback.
-                    if _is_summarization_chunk(metadata):
-                        if not summarization_in_progress:
-                            summarization_in_progress = True
-                            if adapter._set_spinner:
-                                await adapter._set_spinner("Offloading")
-                        continue
-
-                    # Extract token usage before filtering hidden model output.
-                    # Usage may be attached to any message chunk, including the
-                    # internal Auto mode classifier response.
+                    # Account cost/tokens before render filters. Subagent
+                    # namespaces and summarization/auto-classifier calls still
+                    # spend money even though their text stays out of the chat.
                     if hasattr(message, "usage_metadata"):
                         usage = message.usage_metadata
                         if usage:
@@ -1332,6 +1315,23 @@ async def execute_task_textual(
                                 and adapter._on_cost_update
                             ):
                                 adapter._on_cost_update(cost_usd)
+
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
+                        continue
+
+                    # Filter out summarization model output, but keep UI feedback.
+                    # The summarization model streams AIMessage chunks tagged
+                    # with lc_source="summarization" in the callback metadata.
+                    # These are hidden from the user; only the spinner and a
+                    # notification widget provide feedback.
+                    if _is_summarization_chunk(metadata):
+                        if not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Offloading")
+                        continue
 
                     # The Auto mode authorization classifier is a nested model
                     # call. Its structured JSON is internal policy machinery,

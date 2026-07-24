@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 import pytest
-from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Overwrite
 
 from deepagents_code.cost_tracking import (
     CostState,
@@ -231,12 +231,12 @@ class TestEstimateCost:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
-    def test_cost_channel_is_private(self) -> None:
+    def test_cost_channel_uses_additive_reducer(self) -> None:
         hints = get_type_hints(CostState, include_extras=True)
         metadata = getattr(hints["_session_cost_usd"], "__metadata__", ())
-        assert PrivateStateAttr in metadata
+        assert any(getattr(item, "__name__", None) == "add" for item in metadata)
 
-    def test_accumulates_onto_prior_checkpoint_total(self) -> None:
+    def test_returns_request_cost_as_delta(self) -> None:
         middleware = CostTrackingMiddleware()
         state: CostState = {
             "messages": [HumanMessage("hello"), _message(_usage())],
@@ -244,19 +244,26 @@ class TestCostTrackingMiddleware:
         }
         result = middleware.after_model(state, _runtime())
         assert result is not None
-        assert result["_session_cost_usd"] > 1.25
-
-    def test_overflowing_prior_total_is_treated_as_zero(self) -> None:
-        middleware = CostTrackingMiddleware()
-        state: CostState = {
-            "messages": [_message(_usage())],
-            "_session_cost_usd": 10**1000,
-        }
-
-        result = middleware.after_model(state, _runtime())
-
-        assert result is not None
+        # Additive channel: only this request's estimate is returned.
         assert 0 < result["_session_cost_usd"] < 1
+        assert result["_session_cost_usd"] == estimate_cost(
+            _usage(),
+            KNOWN_MODEL,
+            KNOWN_PROVIDER,
+        )
+
+    def test_nested_agent_resets_cost_on_start(self) -> None:
+        middleware = CostTrackingMiddleware(reset_on_start=True)
+        state = cast("CostState", {"messages": [], "_session_cost_usd": 9.5})
+        result = middleware.before_agent(state, _runtime())
+        assert result is not None
+        assert isinstance(result["_session_cost_usd"], Overwrite)
+        assert result["_session_cost_usd"].value == pytest.approx(0.0)
+
+    def test_main_agent_does_not_reset_cost_on_start(self) -> None:
+        middleware = CostTrackingMiddleware()
+        state = cast("CostState", {"messages": [], "_session_cost_usd": 9.5})
+        assert middleware.before_agent(state, _runtime()) is None
 
     def test_uses_persisted_model_spec_when_message_metadata_is_absent(self) -> None:
         middleware = CostTrackingMiddleware()

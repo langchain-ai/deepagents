@@ -6,6 +6,11 @@ model bookkeeping focused while still writing `_session_cost_usd` from inside
 the graph, so each cost update rides the model checkpoint and works for local,
 headless, and remote graph execution without a client-side state update.
 
+The cost channel uses an additive reducer and each model call contributes only
+its own estimate. Nested agents install the same middleware with
+`reset_on_start=True` so a parent total copied into a subagent is cleared before
+the child runs; the child's sum then merges back into the parent once.
+
 Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
 stay off the CLI startup path. Unsupported models and malformed usage return
@@ -16,15 +21,16 @@ from __future__ import annotations
 
 import logging
 import math
+import operator
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
-    PrivateStateAttr,
 )
 from langchain_core.messages import AIMessage
+from langgraph.types import Overwrite
 
 from deepagents_code.resume_state import ResumeState
 
@@ -73,21 +79,6 @@ def _cache_write_tokens(details: Mapping[str, Any]) -> int:
     if detailed:
         return detailed
     return _token_count(details.get("cache_creation") or details.get("cache_write"))
-
-
-def _coerce_cost_usd(value: object) -> float:
-    """Coerce a cumulative cost to a finite non-negative float.
-
-    Returns:
-        The valid cost, or `0.0` for malformed and overflowing values.
-    """
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return 0.0
-    try:
-        cost_usd = float(value)
-    except (OverflowError, ValueError):
-        return 0.0
-    return cost_usd if math.isfinite(cost_usd) and cost_usd >= 0 else 0.0
 
 
 def estimate_cost(
@@ -207,10 +198,15 @@ def resolve_message_model(
 
 
 class CostState(ResumeState):
-    """Agent state extended with the private cumulative thread-cost channel."""
+    """Agent state extended with the cumulative thread-cost channel."""
 
-    _session_cost_usd: Annotated[NotRequired[float], PrivateStateAttr]
-    """Cumulative estimated USD cost for all priceable calls in this thread."""
+    _session_cost_usd: Annotated[NotRequired[float], operator.add]
+    """Cumulative estimated USD cost for all priceable calls in this thread.
+
+    Uses an additive reducer so each model call contributes only its own
+    estimate, and so nested agents can return their local total into the
+    parent without replacing the parent's prior spend.
+    """
 
 
 class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
@@ -218,19 +214,57 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
 
     state_schema = CostState
 
+    def __init__(self, *, reset_on_start: bool = False) -> None:
+        """Initialize cost tracking.
+
+        Args:
+            reset_on_start: When `True`, clear the cost channel before the agent
+                runs. Subagents inherit parent state and need a clean zero so
+                their returned total is only nested spend.
+        """
+        super().__init__()
+        self._reset_on_start = reset_on_start
+
+    def before_agent(  # ty: ignore[invalid-method-override]
+        self,
+        state: CostState,  # noqa: ARG002
+        runtime: Runtime[ContextT],  # noqa: ARG002
+    ) -> dict[str, Any] | None:
+        """Optionally zero the cost channel before a nested agent run.
+
+        Returns:
+            An overwrite of `_session_cost_usd` to `0.0` when nested start reset
+            is enabled, otherwise `None`.
+        """
+        if not self._reset_on_start:
+            return None
+        return {"_session_cost_usd": Overwrite(0.0)}
+
+    async def abefore_agent(  # ty: ignore[invalid-method-override]
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Async variant of `before_agent`.
+
+        Returns:
+            The same state update as `before_agent`.
+        """
+        return self.before_agent(state, runtime)
+
     def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
         self,
         state: CostState,
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Add the latest model response's estimate to the prior thread total.
+        """Contribute the latest model response's estimate as an additive delta.
 
         Args:
             state: Current state containing messages and prior session cost.
             runtime: LangGraph runtime required by the middleware interface.
 
         Returns:
-            The new cumulative cost, or `None` when the latest response cannot be
+            The latest request's estimated cost, or `None` when it cannot be
             priced. Returning `None` leaves the prior checkpoint value unchanged.
         """
         for message in reversed(state.get("messages") or []):
@@ -265,7 +299,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             if cost_usd is None:
                 return None
 
-            prior_cost_usd = _coerce_cost_usd(state.get("_session_cost_usd"))
-            return {"_session_cost_usd": prior_cost_usd + cost_usd}
+            return {"_session_cost_usd": cost_usd}
 
         return None

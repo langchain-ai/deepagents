@@ -2131,6 +2131,61 @@ class TestExecuteTaskTextualUsageStats:
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
         assert cost_updates == [0.42]
 
+    async def test_records_hidden_subagent_and_summarization_usage(self) -> None:
+        """Subagent and summarization spend still accumulate even when hidden."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        turn_stats = SessionStats()
+        cost_updates: list[float] = []
+
+        def record_cost(cost_usd: float) -> None:
+            cost_updates.append(cost_usd)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_cost_update = record_cost
+
+        main_usage = _usage_chunk(input_tokens=40, output_tokens=10)
+        subagent_usage = (
+            ("tools:task:subagent",),
+            main_usage[1],
+            main_usage[2],
+        )
+        chunks = [
+            subagent_usage,
+            _usage_chunk(
+                input_tokens=25,
+                output_tokens=5,
+                metadata={"lc_source": "summarization"},
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
+        ):
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.request_count == 2
+        assert turn_stats.input_tokens == 65
+        assert turn_stats.output_tokens == 15
+        assert cost_updates == [0.1, 0.1]
+
 
 class TestExecuteTaskTextualAutoModeClassifier:
     """Internal Auto mode model output stays out of the transcript."""

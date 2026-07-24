@@ -2417,11 +2417,16 @@ def create_cli_agent(
         *,
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+
         middleware: list[AgentMiddleware[Any, Any]] = []
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        # Nested model spend is written locally then returned into the parent
+        # additive cost channel. Reset first so parent totals are not re-added.
+        middleware.append(CostTrackingMiddleware(reset_on_start=True))
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
         # activates only for the measured Fireworks GLM-5.2 endpoint.

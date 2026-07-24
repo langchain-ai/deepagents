@@ -598,6 +598,46 @@ class TestGetLatestVersion:
         assert result is None
         assert not cache_file.exists()
 
+    def test_bypass_cache_busts_cdn_cache(self, cache_file) -> None:  # noqa: ARG002
+        """A forced check sends no-cache headers and a cache-busting param.
+
+        PyPI's JSON API is served through a CDN, so bypassing only the local
+        cache can still return a stale answer right after a release. The
+        request must defeat the edge cache too.
+        """
+        with patch(
+            "requests.get", return_value=_mock_pypi_response("2.0.0")
+        ) as mock_get:
+            get_latest_version(bypass_cache=True)
+
+        kwargs = mock_get.call_args.kwargs
+        assert kwargs["headers"]["Cache-Control"] == "no-cache"
+        assert kwargs["headers"]["Pragma"] == "no-cache"
+        assert kwargs["params"]["_"]
+
+    def test_cache_bust_params_are_unique_per_call(self, cache_file) -> None:  # noqa: ARG002
+        """Each forced check uses a distinct cache-busting token."""
+        with patch(
+            "requests.get", return_value=_mock_pypi_response("2.0.0")
+        ) as mock_get:
+            get_latest_version(bypass_cache=True)
+            get_latest_version(bypass_cache=True)
+
+        first, second = mock_get.call_args_list
+        assert first.kwargs["params"]["_"] != second.kwargs["params"]["_"]
+
+    def test_non_bypass_fetch_omits_cache_busting(self, cache_file) -> None:  # noqa: ARG002
+        """A routine (non-forced) refresh does not add cache-busting."""
+        with patch(
+            "requests.get", return_value=_mock_pypi_response("2.0.0")
+        ) as mock_get:
+            get_latest_version(bypass_cache=False)
+
+        kwargs = mock_get.call_args.kwargs
+        assert "Cache-Control" not in kwargs["headers"]
+        assert "Pragma" not in kwargs["headers"]
+        assert "params" not in kwargs
+
 
 class TestPrereleasePinRequirements:
     """Unit tests for the targeted `Requires-Dist` pre-release pin extractor.

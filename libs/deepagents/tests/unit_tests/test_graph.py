@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
@@ -24,13 +25,14 @@ from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
-    BASE_AGENT_PROMPT,
     DeepAgentState,
     _apply_custom_middleware,
-    _create_bedrock_prompt_caching_middleware,
-    _create_fireworks_prompt_caching_middleware,
     create_deep_agent,
     get_default_model,
+)
+from deepagents.middleware._prompt_caching import (
+    _create_bedrock_prompt_caching_middleware,
+    _create_fireworks_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
@@ -257,7 +259,6 @@ class TestToolDescriptionOverrideWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
@@ -367,7 +368,7 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
@@ -388,7 +389,7 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
@@ -415,9 +416,9 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
             patch(
-                "deepagents.graph.import_module",
+                "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
             ),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
@@ -433,7 +434,7 @@ class TestPromptCachingWiring:
 
     def test_bedrock_prompt_caching_preserves_unrelated_import_errors(self) -> None:
         with (
-            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
             pytest.raises(ImportError),
         ):
             _create_bedrock_prompt_caching_middleware()
@@ -446,8 +447,8 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
@@ -467,8 +468,8 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
-            patch("deepagents.graph._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
@@ -494,9 +495,9 @@ class TestPromptCachingWiring:
         fake_agent.with_config.return_value = "compiled-agent"
 
         with (
-            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
             patch(
-                "deepagents.graph.import_module",
+                "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),
             ),
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
@@ -512,7 +513,7 @@ class TestPromptCachingWiring:
 
     def test_fireworks_prompt_caching_preserves_unrelated_import_errors(self) -> None:
         with (
-            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
             pytest.raises(ImportError),
         ):
             _create_fireworks_prompt_caching_middleware()
@@ -522,7 +523,7 @@ class TestPromptCachingWiring:
         middleware_cls = MagicMock(return_value=middleware)
         module = MagicMock(FireworksPromptCachingMiddleware=middleware_cls)
 
-        with patch("deepagents.graph.import_module", return_value=module):
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
             result = _create_fireworks_prompt_caching_middleware()
 
         assert result is middleware
@@ -545,7 +546,6 @@ class TestSystemPromptAssembly:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -557,17 +557,12 @@ class TestSystemPromptAssembly:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_default_uses_base_agent_prompt(self) -> None:
-        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
-        assert prompt == BASE_AGENT_PROMPT
-
     def test_profile_base_system_prompt_replaces_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
             HarnessProfile(base_system_prompt="You are a custom agent."),
         )
         assert prompt == "You are a custom agent."
-        assert BASE_AGENT_PROMPT not in prompt
 
     def test_profile_base_system_prompt_with_suffix(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -578,14 +573,13 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "You are a custom agent.\n\nBe concise."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
+    def test_suffix_without_base_system_prompt_omits_empty_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "suffprov",
             HarnessProfile(system_prompt_suffix="Think step by step."),
         )
-        assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
+        assert prompt == "Think step by step."
 
     def test_user_system_prompt_prepended_before_profile_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -594,15 +588,14 @@ class TestSystemPromptAssembly:
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_user_system_prompt_prepended_before_default_base(self) -> None:
+    def test_user_system_prompt_is_used_without_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "defprov",
             HarnessProfile(),
             system_prompt="User instructions.",
         )
-        assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
+        assert prompt == "User instructions."
 
     def test_triple_combo_all_three_inputs(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -614,20 +607,40 @@ class TestSystemPromptAssembly:
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base.\n\nExtra."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_system_message_with_profile_base(self) -> None:
-        msg = SystemMessage(content="User content.")
+    def test_system_message_preserves_caller_blocks_and_appends_profile_prompt(self) -> None:
+        caller_block = {
+            "type": "text",
+            "text": "User content.",
+            "cache_control": {"type": "ephemeral"},
+        }
+        msg = SystemMessage(content=[caller_block])
         result = self._build_and_capture_system_prompt(
             "custprov",
-            HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(
+                base_system_prompt="Custom base.",
+                system_prompt_suffix="Extra.",
+            ),
             system_prompt=msg,
         )
+
         assert isinstance(result, SystemMessage)
-        # Last content block should contain the custom base, not BASE_AGENT_PROMPT
-        last_block = result.content_blocks[-1]
-        assert "Custom base." in last_block["text"]
-        assert BASE_AGENT_PROMPT not in last_block["text"]
+        assert result.content_blocks == [
+            caller_block,
+            {"type": "text", "text": "\n\nCustom base.\n\nExtra."},
+        ]
+        assert msg.content_blocks == [caller_block]
+
+    def test_system_message_without_profile_prompt_is_passed_through(self) -> None:
+        msg = SystemMessage(content="User content.")
+
+        result = self._build_and_capture_system_prompt(
+            "defprov",
+            HarnessProfile(),
+            system_prompt=msg,
+        )
+
+        assert result is msg
 
     def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -635,7 +648,6 @@ class TestSystemPromptAssembly:
             HarnessProfile(base_system_prompt=""),
         )
         assert prompt == ""
-        assert BASE_AGENT_PROMPT not in prompt
 
     def test_empty_string_suffix_still_appended(self) -> None:
         prompt = self._build_and_capture_system_prompt(
@@ -646,6 +658,111 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+    def test_default_base_is_empty(self) -> None:
+        """With no profile base and no caller base, the assembled base is empty."""
+        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
+        assert prompt == ""
+
+
+class TestBaseAgentPromptDeprecation:
+    """Tests for the deprecated legacy base prompt accessor."""
+
+    def test_graph_base_agent_prompt_emits_deprecation_warning(self) -> None:
+        """Legacy graph-level access returns the prompt and signals its removal."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from deepagents.graph import BASE_AGENT_PROMPT  # noqa: PLC0415  # verifies the legacy import contract
+
+            prompt = BASE_AGENT_PROMPT
+
+        assert prompt.startswith("You are a deep agent")
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert "BASE_AGENT_PROMPT" in str(deprecations[0].message)
+        assert "0.7.0" in str(deprecations[0].message)
+        assert "deepagents==0.9.0" in str(deprecations[0].message)
+        assert deprecations[0].filename == __file__
+
+
+_ABSENT = object()
+
+
+class TestDuplicateToolPromptTrimming:
+    """`create_deep_agent` ships the built-in tool-usage guidance prose trimmed.
+
+    The deepagents-owned middleware (Filesystem, SubAgent, AsyncSubAgent) default
+    to emitting no tool-usage prose, so `create_deep_agent` passes them no
+    `system_prompt` override.
+
+    Skills and Memory are never trimmed: their fragment is the only channel that
+    surfaces the loaded skill index / memory content, so they always emit it
+    (kwarg omitted). The lean middleware defaults themselves are covered by the
+    per-middleware unit tests and `TestFilesystemRoutingPrompt`.
+    """
+
+    def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
+        """Capture the `system_prompt` each built-in middleware is built with.
+
+        Patches the middleware, calls `create_deep_agent`, and returns, per
+        middleware class name, the `system_prompt` value each was constructed
+        with (`_ABSENT` when the kwarg was omitted).
+        """
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        patched = {
+            "FilesystemMiddleware": MagicMock(),
+            "SkillsMiddleware": MagicMock(),
+            "SubAgentMiddleware": MagicMock(),
+            "AsyncSubAgentMiddleware": MagicMock(),
+            "MemoryMiddleware": MagicMock(),
+        }
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+            patch("deepagents.graph.FilesystemMiddleware", patched["FilesystemMiddleware"]),
+            patch("deepagents.graph.SkillsMiddleware", patched["SkillsMiddleware"]),
+            patch("deepagents.graph.SubAgentMiddleware", patched["SubAgentMiddleware"]),
+            patch("deepagents.graph.AsyncSubAgentMiddleware", patched["AsyncSubAgentMiddleware"]),
+            patch("deepagents.graph.MemoryMiddleware", patched["MemoryMiddleware"]),
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", **create_kwargs)
+
+        return {name: [call.kwargs.get("system_prompt", _ABSENT) for call in mock.call_args_list] for name, mock in patched.items()}
+
+    def _create_kwargs(self) -> dict[str, Any]:
+        """Args that force every built-in middleware to be constructed."""
+        return {
+            "skills": ["skill-a"],
+            "memory": ["memory-a"],
+            "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
+        }
+
+    def test_builtin_middleware_use_lean_defaults(self) -> None:
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+
+        # deepagents-owned middleware are lean by default; no override is passed.
+        for name in ("FilesystemMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} should use its lean default"
+
+    def test_skills_and_memory_never_trimmed(self) -> None:
+        """Regression guard for the skills/memory content channel.
+
+        Their fragments carry the feature's only content, so they must emit
+        (kwarg omitted, never `None`) rather than be trimmed like usage prose.
+        """
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+        for name in ("SkillsMiddleware", "MemoryMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed"
 
 
 class TestToolExclusionMiddleware:
@@ -727,7 +844,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -759,7 +875,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -792,7 +907,6 @@ class TestToolExclusionWiring:
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
                 patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -1637,14 +1751,12 @@ class TestStringFormExcludedMiddleware:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_entry_matching_only_gp_subagent_stack_is_accepted(self) -> None:
-        """An entry matching only the GP subagent stack (not the main stack) is accepted.
+    def test_excluding_non_default_todo_middleware_raises_coverage_error(self) -> None:
+        """Excluding `TodoListMiddleware` now raises, since it is no longer a default.
 
-        Coverage is aggregated across all stacks the profile applies to, so a
-        profile-level exclusion only has to match somewhere — not in every
-        stack. `TodoListMiddleware` is added unconditionally to the GP
-        subagent stack; excluding it should work even though the main agent
-        also has one (both count as matches).
+        Todos are opt-in: `TodoListMiddleware` is not added to any default stack,
+        so a profile excluding it matches nothing across the main and GP subagent
+        stacks and trips the coverage guard — a typo/stale-profile signal.
         """
         original = dict(_HARNESS_PROFILES)
         try:
@@ -1653,17 +1765,11 @@ class TestStringFormExcludedMiddleware:
                 HarnessProfile(excluded_middleware=frozenset({"TodoListMiddleware"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-            fake_agent = MagicMock()
-            fake_agent.with_config.return_value = "compiled-agent"
-
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
-                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+                pytest.raises(ValueError, match="matched no middleware"),
             ):
                 create_deep_agent(model="strexcprov:some-model")
-
-            mw_stack = mock_create.call_args.kwargs["middleware"]
-            assert not any(type(m).__name__ == "TodoListMiddleware" for m in mw_stack)
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -2648,6 +2754,90 @@ class TestSubagentMiddlewareIsolation:
         _, sub_mw = self._setup([custom], enable_gp=True)
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(m is custom for m in gp_spec["middleware"])
+
+    # ── TodoListMiddleware is opt-in (no longer a default) ─────────────────────
+
+    def test_default_has_no_todos_in_main_or_gp(self) -> None:
+        """With no opt-in, neither the main agent nor the GP subagent has todos."""
+        main_stack, sub_mw = self._setup([], enable_gp=True)
+        assert not any(isinstance(m, TodoListMiddleware) for m in main_stack)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_main_opt_in_todos_not_mirrored_to_gp(self) -> None:
+        """A caller-supplied TodoListMiddleware stays on the main agent only.
+
+        It is treated like any other main-agent-only middleware: because it is
+        not a default GP slot, it is not propagated to the general-purpose
+        subagent.
+        """
+        custom = TodoListMiddleware()
+        main_stack, sub_mw = self._setup([custom], enable_gp=True)
+        main_todos = [m for m in main_stack if isinstance(m, TodoListMiddleware)]
+        assert len(main_todos) == 1
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_gp_override_can_opt_in_todos(self) -> None:
+        """Overriding the GP subagent by name lets its own middleware add todos."""
+        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
+
+        gp_override: SubAgent = {**GENERAL_PURPOSE_SUBAGENT, "middleware": [TodoListMiddleware()]}
+        _, sub_mw = self._setup([], subagents=[gp_override])
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+
+    def test_declarative_subagent_todos_opt_in(self) -> None:
+        """A declarative subagent gets todos when its own spec includes the middleware."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [TodoListMiddleware()],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert len([m for m in helper_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+
+    def test_declarative_subagent_does_not_inherit_main_opt_in(self) -> None:
+        """A main-agent todos opt-in is not inherited by a declarative subagent."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([TodoListMiddleware()], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, TodoListMiddleware) for m in helper_spec["middleware"])
+
+    def test_profile_extra_middleware_todos_on_main_and_gp(self) -> None:
+        """A profile that supplies todos via `extra_middleware` gets it on both stacks.
+
+        This is the mechanism the GLM-5.2 and Codex profiles rely on to keep
+        `write_todos` after the SDK default was removed.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "todoprof",
+                HarnessProfile(extra_middleware=lambda: [TodoListMiddleware()]),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="todoprof:some-model")
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            assert len([m for m in main_stack if isinstance(m, TodoListMiddleware)]) == 1
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+            assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
     def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
         """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""

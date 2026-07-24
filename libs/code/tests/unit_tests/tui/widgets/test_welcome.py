@@ -9,6 +9,7 @@ from textual.style import Style as TStyle
 
 from deepagents_code._env_vars import (
     DEBUG,
+    EXPERIMENTAL,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_VERSION,
@@ -20,6 +21,7 @@ from deepagents_code._version import __version__
 from deepagents_code.tui.widgets.welcome import (
     WelcomeBanner,
     _debug_tag_style,
+    _experimental_tag_style,
     _home_prefixed,
     _langsmith_project_link,
     _langsmith_project_link_style,
@@ -32,6 +34,7 @@ _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"
 _REPLICA_PROJECT = "deepagents_code.tui.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.tui.widgets.welcome.fetch_langsmith_project_url"
 _DEBUG_STYLE = "deepagents_code.tui.widgets.welcome._debug_tag_style"
+_EXPERIMENTAL_STYLE = "deepagents_code.tui.widgets.welcome._experimental_tag_style"
 _LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
 
 
@@ -251,6 +254,27 @@ class TestDebugTagStyle:
         assert style.foreground == TColor.parse(DARK_COLORS.warning)
 
 
+class TestExperimentalTagStyle:
+    """Tests for the `(experimental mode)` tag style."""
+
+    def test_ansi_uses_bold_magenta_markup(self) -> None:
+        """Under ANSI themes the tag stays visible via bold magenta terminal text."""
+        from deepagents_code.theme import DARK_COLORS
+
+        assert _experimental_tag_style(ansi=True, colors=DARK_COLORS) == "bold magenta"
+
+    def test_non_ansi_uses_themed_accent_color(self) -> None:
+        """Non-ANSI themes color the tag with the theme's accent color."""
+        from textual.color import Color as TColor
+
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _experimental_tag_style(ansi=False, colors=DARK_COLORS)
+        assert isinstance(style, TStyle)
+        assert style.bold is True
+        assert style.foreground == TColor.parse(DARK_COLORS.accent)
+
+
 class TestTitle:
     """Tests for the banner title line."""
 
@@ -338,6 +362,85 @@ class TestTitle:
         assert f"v{__version__}" not in plain
         assert "(debug enabled)" in plain
         assert "(local)" not in plain
+
+    def test_no_experimental_tag_by_default(self) -> None:
+        """No `(experimental mode)` tag when `DEEPAGENTS_CODE_EXPERIMENTAL` is unset."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner()._build_banner().plain
+        assert "(experimental mode)" not in plain
+
+    def test_no_experimental_tag_when_env_falsy(self) -> None:
+        """A present-but-falsy `DEEPAGENTS_CODE_EXPERIMENTAL` shows no tag.
+
+        Locks the truthy gate (`is_env_truthy`) against a regression to a bare
+        presence check (`EXPERIMENTAL in os.environ`), which every other test
+        would pass.
+        """
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={EXPERIMENTAL: "0"})._build_banner().plain
+        assert "(experimental mode)" not in plain
+
+    def test_marks_experimental_when_env_set(self) -> None:
+        """`DEEPAGENTS_CODE_EXPERIMENTAL` shows an `(experimental mode)` tag."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={EXPERIMENTAL: "1"})._build_banner().plain
+        assert f"v{__version__}" in plain
+        # Leading space guards the separator from the preceding segment.
+        assert " (experimental mode)" in plain
+        assert "(local)" not in plain
+        assert plain.index(f"v{__version__}") < plain.index("(experimental mode)")
+
+    def test_experimental_tag_follows_debug_precedes_local(self) -> None:
+        """`(experimental mode)` renders after `(debug enabled)`, before `(local)`."""
+        with patch(_EDITABLE, return_value=True):
+            plain = (
+                _make_banner(env={DEBUG: "1", EXPERIMENTAL: "1"})._build_banner().plain
+            )
+        assert (
+            plain.index("(debug enabled)")
+            < plain.index("(experimental mode)")
+            < plain.index("(local)")
+        )
+
+    def test_experimental_tag_when_version_hidden(self) -> None:
+        """The experimental tag stays visible without exposing local-install info."""
+        with patch(_EDITABLE, return_value=True):
+            plain = (
+                _make_banner(env={EXPERIMENTAL: "1", HIDE_SPLASH_VERSION: "1"})
+                ._build_banner()
+                .plain
+            )
+        assert f"v{__version__}" not in plain
+        assert "(experimental mode)" in plain
+        assert "(local)" not in plain
+
+    def test_experimental_tag_carries_its_own_style(self) -> None:
+        """The experimental span carries the experimental style helper's output."""
+        from textual.color import Color as TColor
+
+        experimental_style = TStyle(foreground=TColor.parse("#070809"), bold=True)
+        with (
+            patch(_EDITABLE, return_value=False),
+            patch(_EXPERIMENTAL_STYLE, return_value=experimental_style),
+        ):
+            content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
+        assert _style_covering(
+            content, "(experimental mode)"
+        ).foreground == TColor.parse("#070809")
+
+    def test_experimental_tag_uses_ansi_markup_under_ansi_theme(self) -> None:
+        """Under an ANSI theme the experimental span carries bold-magenta markup."""
+        from textual._context import active_app
+
+        app = active_app.get()
+        previous_theme = app.theme
+        app.theme = "ansi-dark"
+        try:
+            with patch(_EDITABLE, return_value=False):
+                content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
+        finally:
+            app.theme = previous_theme
+        assert _raw_style_covering(content, "(experimental mode)") == "bold magenta"
 
     def test_title_tags_carry_their_own_styles(self) -> None:
         """Each title tag's span carries its own style helper's output.

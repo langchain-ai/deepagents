@@ -14,7 +14,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-import deepagents_code.hooks as hooks_mod
+import deepagents_code.hooks.legacy as hooks_mod
 
 
 @pytest.fixture(autouse=True)

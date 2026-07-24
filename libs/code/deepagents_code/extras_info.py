@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import re
+import tomllib
 from dataclasses import dataclass
 from importlib.metadata import (
     PackageNotFoundError,
@@ -212,7 +213,7 @@ class VersionReport:
 
     Bundles the running CLI and installed SDK version facts with the result of
     comparing the `deepagents` requirement that `deepagents-code` declares
-    against the installed SDK metadata version.
+    against the effective SDK version for diagnostics.
     """
 
     cli: DistributionVersion
@@ -225,15 +226,38 @@ class VersionReport:
     """The `deepagents` requirement declared by `deepagents-code`, if found."""
 
     sdk_requirement_satisfied: bool | None
-    """Whether the installed SDK metadata satisfies `sdk_requirement`.
+    """Whether the effective SDK version satisfies `sdk_requirement`.
 
     `None` when the comparison cannot be made (no declared requirement, the SDK
-    is not installed, or an unparseable version).
+    version cannot be resolved — genuinely not installed or an unexpected
+    metadata error — or an unparseable version).
     """
 
     @property
+    def effective_sdk_version(self) -> str | None:
+        """Published SDK baseline represented by the running client checkout."""
+        return _effective_sdk_version(self.cli, self.sdk, self.sdk_requirement)
+
+    @property
+    def sdk_is_workspace_head(self) -> bool:
+        """Whether the SDK is the editable sibling workspace represented by its pin."""
+        return _uses_exact_requirement_as_effective_version(
+            self.cli, self.sdk, self.sdk_requirement
+        )
+
+    @property
+    def display_sdk_version(self) -> str | None:
+        """SDK version string for user-facing diagnostics and trace metadata."""
+        return _display_sdk_version(self.cli, self.sdk, self.sdk_requirement)
+
+    @property
+    def sdk_source_version_invalid(self) -> bool:
+        """Whether an editable SDK has no parseable live source version."""
+        return self.sdk.editable and _parse_version(self.sdk.source_version) is None
+
+    @property
     def sdk_requirement_mismatch(self) -> bool:
-        """Whether the installed SDK metadata violates the declared requirement."""
+        """Whether the effective SDK version violates the declared requirement."""
         # `is False`, not `not`: an inconclusive comparison (`None`) is *not* a
         # mismatch. Collapsing this to `not self.sdk_requirement_satisfied` would
         # silently report every unknown as a mismatch and flag doctor unhealthy.
@@ -403,6 +427,11 @@ def sdk_requirement_from_cli(
         )
         return None
 
+    return _sdk_requirement_from_entries(requirements)
+
+
+def _sdk_requirement_from_entries(requirements: list[str]) -> Requirement | None:
+    """Return the applicable base SDK requirement from dependency entries."""
     target = canonicalize_name("deepagents")
     for raw in requirements:
         try:
@@ -436,14 +465,202 @@ def sdk_requirement_from_cli(
     return None
 
 
+def _sdk_requirement_from_cli_source(source_path: str | None) -> Requirement | None:
+    """Read the SDK requirement from an editable dcode source checkout.
+
+    Editable installation metadata can lag the working tree after an update, so
+    workspace diagnostics must use the live `pyproject.toml` dependency instead.
+
+    Returns:
+        The current source requirement, or `None` when it cannot be read safely.
+    """
+    root = _resolve_source_path(source_path)
+    if root is None:
+        return None
+    pyproject = root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        project = data.get("project")
+        if not isinstance(project, dict):
+            return None
+        dependencies = project.get("dependencies")
+        if not isinstance(dependencies, list) or not all(
+            isinstance(entry, str) for entry in dependencies
+        ):
+            return None
+    except (OSError, TypeError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read deepagents requirement from editable dcode source",
+            exc_info=True,
+        )
+        return None
+    return _sdk_requirement_from_entries(dependencies)
+
+
+def _exact_pin(requirement: Requirement | None) -> str | None:
+    """Return the single `==` pin from `requirement`, if it has one."""
+    if requirement is None:
+        return None
+    specs = list(requirement.specifier)
+    if len(specs) == 1 and specs[0].operator == "==":
+        return specs[0].version
+    return None
+
+
+def _parse_version(value: str | None) -> Version | None:
+    """Parse a version string for best-effort diagnostic comparisons.
+
+    Returns:
+        The parsed version, or `None` when the input is absent or unparseable.
+    """
+    if value is None:
+        return None
+    try:
+        return Version(value)
+    except InvalidVersion:
+        logger.debug("Could not parse version %r", value, exc_info=True)
+        return None
+
+
+def _with_editable_local_version(value: str) -> str:
+    """Add an `editable` local segment to a normalized version string.
+
+    Returns:
+        The version with an `editable` local segment, or the original value when
+            it cannot be parsed.
+    """
+    parsed = _parse_version(value)
+    if parsed is None:
+        return value
+    local = f"{parsed.local}.editable" if parsed.local else "editable"
+    return f"{parsed.public}+{local}"
+
+
+def _resolve_source_path(path: str | None) -> Path | None:
+    """Resolve an editable source path for workspace-shape comparisons.
+
+    Returns:
+        The resolved path, or `None` when the path is absent or unusable.
+    """
+    if path is None:
+        return None
+    try:
+        normalized = path
+        if re.match(r"^/?[A-Za-z]:[/\\]", normalized):
+            # PEP 610 paths can arrive as `/C:/repo` while `url2pathname`
+            # returns `C:\repo`. Normalize both before asking `Path` to resolve
+            # them so Windows workspace siblings share the same anchor.
+            normalized = normalized.removeprefix("/")
+            normalized = f"{normalized[0].upper()}{normalized[1:]}"
+            normalized = normalized.replace("\\", "/")
+        return Path(normalized).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Could not resolve editable source path %r", path, exc_info=True)
+        return None
+
+
+def _editable_sdk_is_cli_workspace_sibling(
+    cli: DistributionVersion, sdk: DistributionVersion
+) -> bool:
+    """Whether editable SDK and dcode installs are sibling monorepo packages.
+
+    Returns:
+        `True` for the known `<repo>/libs/code` and `<repo>/libs/deepagents`
+        checkout shape.
+    """
+    if not cli.editable or not sdk.editable:
+        return False
+    cli_path = _resolve_source_path(cli.source_path)
+    sdk_path = _resolve_source_path(sdk.source_path)
+    if cli_path is None or sdk_path is None:
+        return False
+    return (
+        cli_path.name == "code"
+        and sdk_path.name == "deepagents"
+        and cli_path.parent == sdk_path.parent
+        and cli_path.parent.name == "libs"
+    )
+
+
+def _uses_exact_requirement_as_effective_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> bool:
+    """Whether an exact `deepagents-code` pin represents sibling workspace HEAD.
+
+    Main does not track every SDK alpha release in `libs/deepagents`, so the
+    sibling SDK package in the same monorepo checkout can carry the previous
+    stable marker while `deepagents-code` intentionally declares a newer exact
+    alpha requirement. In that case the pin is the nearest published SDK baseline
+    represented by the running workspace. Ranged requirements and unrelated
+    editable SDK checkouts are never inferred this way.
+
+    Returns:
+        `True` when the exact pin is newer than every known editable SDK marker
+        and the SDK checkout is the monorepo sibling of the dcode checkout.
+    """
+    if not _editable_sdk_is_cli_workspace_sibling(cli, sdk):
+        return False
+    pinned = _parse_version(_exact_pin(requirement))
+    if pinned is None:
+        return False
+    parsed_source = _parse_version(sdk.source_version)
+    if parsed_source is None:
+        return False
+    parsed_metadata = _parse_version(sdk.metadata_version)
+    markers = [parsed_source]
+    if parsed_metadata is not None:
+        markers.append(parsed_metadata)
+    return pinned > max(markers)
+
+
+def _sdk_requirement_for_cli(cli: DistributionVersion) -> Requirement | None:
+    """Return the live SDK requirement appropriate for the CLI install type."""
+    if cli.editable:
+        return _sdk_requirement_from_cli_source(cli.source_path)
+    return sdk_requirement_from_cli()
+
+
+def _effective_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version diagnostics should treat as effective."""
+    pinned = _exact_pin(requirement)
+    if _uses_exact_requirement_as_effective_version(cli, sdk, requirement):
+        return pinned
+    return sdk.primary_version
+
+
+def _display_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version string for diagnostics and trace metadata."""
+    version = _effective_sdk_version(cli, sdk, requirement)
+    if version is None or not _uses_exact_requirement_as_effective_version(
+        cli, sdk, requirement
+    ):
+        return version
+    return _with_editable_local_version(version)
+
+
+def _sdk_requirement_comparison_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version to compare against the declared requirement."""
+    if sdk.status != "resolved":
+        return None
+    if sdk.editable:
+        return _effective_sdk_version(cli, sdk, requirement)
+    return sdk.metadata_version
+
+
 def _requirement_satisfied(
-    requirement: Requirement | None, metadata_version: str | None
+    requirement: Requirement | None, version: str | None
 ) -> bool | None:
-    """Return whether `metadata_version` satisfies `requirement`.
+    """Return whether `version` satisfies `requirement`.
 
     Args:
         requirement: The declared requirement, or `None`.
-        metadata_version: The installed SDK metadata version, or `None`.
+        version: The SDK version to compare, or `None`.
 
     Returns:
         `True`/`False` when the comparison can be made, or `None` when either
@@ -451,14 +668,14 @@ def _requirement_satisfied(
             allowed so a prerelease pin (e.g. `==0.7.0a7`) is evaluated
             correctly.
     """
-    if requirement is None or metadata_version is None:
+    if requirement is None or version is None:
         return None
     try:
-        parsed = Version(metadata_version)
+        parsed = Version(version)
     except InvalidVersion:
         logger.debug(
-            "Could not parse SDK metadata version %r for requirement comparison",
-            metadata_version,
+            "Could not parse SDK version %r for requirement comparison",
+            version,
             exc_info=True,
         )
         return None
@@ -470,16 +687,15 @@ def collect_version_report() -> VersionReport:
 
     Returns:
         A `VersionReport` bundling CLI and SDK version facts with the declared
-            `deepagents` requirement and whether the installed SDK metadata
+            `deepagents` requirement and whether the effective SDK version
             satisfies it. Performs no network or subprocess calls.
     """
     cli = collect_cli_version_info()
     sdk = collect_sdk_version_info()
-    requirement = sdk_requirement_from_cli()
-    # Compare against the metadata version — what the environment actually
-    # installed — rather than the (possibly ahead) editable source version, so
-    # the mismatch reflects the real dependency resolution.
-    satisfied = _requirement_satisfied(requirement, sdk.metadata_version)
+    requirement = _sdk_requirement_for_cli(cli)
+    satisfied = _requirement_satisfied(
+        requirement, _sdk_requirement_comparison_version(cli, sdk, requirement)
+    )
     return VersionReport(
         cli=cli,
         sdk=sdk,
@@ -535,57 +751,64 @@ def format_cli_version_annotation(info: DistributionVersion) -> str:
 
 
 def format_sdk_version_annotation(report: VersionReport) -> str:
-    """Return the editable/drift/mismatch annotation for the SDK version line.
+    """Return the workspace/editable/drift/mismatch SDK version annotation.
 
     Args:
         report: The collected version report.
 
     Returns:
-        A trailing ` (...)` suffix flagging an editable SDK install, any drift
-            between the source and installed metadata versions, and an
-            actionable requirement mismatch when the installed SDK metadata does
-            not satisfy the requirement declared by `deepagents-code`. Empty
-            when none applies.
-
-    The mismatch is judged against the installed SDK *metadata* version (what
-    the environment actually resolved), not the source version shown as primary
-    for editable installs. When the two differ, the accompanying
-    `installed metadata:` note makes that basis explicit, so an editable source
-    version that appears to match the requirement can still read as a mismatch.
+        A trailing ` (...)` suffix identifying sibling workspace HEAD or a
+            general editable install, preserving raw source/metadata facts when
+            useful, and flagging an actionable requirement mismatch. Empty when
+            none applies.
     """
     info = report.sdk
+    workspace_head = report.sdk_is_workspace_head
     parts: list[str] = []
-    if info.editable:
+    if workspace_head:
+        parts.append("workspace HEAD")
+    elif info.editable:
         parts.append("editable")
-    if info.has_drift and info.metadata_version is not None:
+    if workspace_head and info.source_version is not None:
+        parts.append(f"source marker: {info.source_version}")
+    elif report.sdk_source_version_invalid:
+        marker = info.source_version or "unavailable"
+        parts.append(f"invalid source marker: {marker}")
+    metadata_needs_annotation = info.has_drift or (
+        info.editable
+        and info.source_version is None
+        and info.metadata_version != report.effective_sdk_version
+    )
+    if metadata_needs_annotation and info.metadata_version is not None:
         parts.append(f"installed metadata: {info.metadata_version}")
-    if report.sdk_requirement_mismatch and report.sdk_requirement is not None:
-        # Compared against `metadata_version` (see docstring), which is why the
-        # drift note above is emitted alongside so the basis is visible.
+    if (
+        not workspace_head
+        and report.sdk_requirement_mismatch
+        and report.sdk_requirement is not None
+    ):
         required = _format_requirement_display(report.sdk_requirement)
         parts.append(f"required by deepagents-code: {required} — mismatch")
     return _join_annotation_parts(parts)
 
 
 def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
-    """Resolve the installed `deepagents` SDK version.
+    """Resolve the diagnostic `deepagents` SDK version.
 
-    Compatibility wrapper over `collect_sdk_version_info` for callers that only
-    need the primary version and lookup status. Editable installs can have stale
-    package metadata after local version files change, so they prefer the source
-    tree's `_version.py` and fall back to metadata when the source version is
-    unavailable. Distinguishes a genuinely missing package from an unexpected
-    metadata error so diagnostic callers can report the two differently, while
-    collapse-friendly callers can ignore the split.
+    Compatibility wrapper for callers that only need one SDK version string and
+    lookup status. For sibling monorepo packages whose stable source marker trails
+    dcode's exact SDK pin, the pin identifies the nearest published baseline and
+    an `+editable` local segment identifies the running workspace HEAD.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
             `status` is `"resolved"`, otherwise `None`.
     """
-    info = collect_sdk_version_info()
-    if info.status != "resolved":
-        return None, info.status
-    return info.primary_version, "resolved"
+    cli = collect_cli_version_info()
+    sdk = collect_sdk_version_info()
+    if sdk.status != "resolved":
+        return None, sdk.status
+    requirement = _sdk_requirement_for_cli(cli)
+    return _display_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

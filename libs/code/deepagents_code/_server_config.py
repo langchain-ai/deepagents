@@ -15,12 +15,14 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
+    from deepagents import FsToolName
+
     from deepagents_code.project_utils import ProjectContext
 
 
@@ -66,6 +68,63 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
             f"Value was: {raw[:200]!r}"
         )
         raise ValueError(msg) from exc
+
+
+def _read_env_allow_fs_tools() -> list[FsToolName] | None:
+    """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
+
+    The parent writes only an absent variable (unrestricted — `None`, which is
+    also what `--allow-fs-tools all` collapses to) or a non-empty JSON list of
+    tool names (`main._parse_allow_fs_tools_flag`). This runs in the server
+    subprocess, where the variable could be tampered with, so — because the
+    value is a security control — any unrecognized shape must fail closed
+    (raise) rather than fall through to an unrestricted filesystem.
+    (`_read_env_json` already fails closed on malformed JSON.)
+
+    `[]` and unknown tool names are rejected here, not deferred downstream, so
+    the returned list genuinely satisfies `list[FsToolName]` and the `cast`
+    asserts membership that was actually checked. Importing `deepagents` here is
+    fine: the subprocess already imports the SDK to build the agent (this is not
+    the arg-parsing hot path guarded in `main`). The `"read_file"` requirement
+    is not checked here: `ServerConfig.__post_init__` enforces it when the
+    returned value is placed on the config (with `FilesystemMiddleware` as a
+    final backstop), so a tampered list without `read_file` still fails closed
+    at construction.
+
+    Returns:
+        `None` when the variable is absent, or a non-empty list of filesystem
+            tool-name strings, each a valid `FsToolName`.
+
+    Raises:
+        ValueError: If the present variable parses to anything other than a
+            non-empty list of strings, or if any list element is not a
+            recognized filesystem tool name.
+    """
+    env_name = f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS"
+    if env_name not in os.environ:
+        return None
+
+    raw = _read_env_json("ALLOW_FS_TOOLS")
+    if isinstance(raw, list) and raw and all(isinstance(name, str) for name in raw):
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        valid_names = frozenset(get_args(FsToolName))
+        unknown = [name for name in raw if name not in valid_names]
+        if unknown:
+            msg = (
+                f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: unknown "
+                f"filesystem tool name(s) {unknown!r}; valid names are "
+                f"{sorted(valid_names)}."
+            )
+            raise ValueError(msg)
+        return cast("list[FsToolName]", raw)
+    msg = (
+        f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: {raw!r}; expected "
+        "a non-empty list of filesystem tool names."
+    )
+    raise ValueError(msg)
 
 
 def _read_env_str(suffix: str) -> str | None:
@@ -261,6 +320,17 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
+    allow_fs_tools: list[FsToolName] | None = None
+    """Allowlist for `FilesystemMiddleware`'s `tools` param, from
+    `--allow-fs-tools`.
+
+    `None` means "all filesystem tools" and is also what `--allow-fs-tools all`
+    parses to: it leaves the SDK's own default `FilesystemMiddleware` in place
+    (no replacement). A list is an explicit allowlist of filesystem tool names,
+    must include `"read_file"`, and installs a restricted replacement (see
+    `create_cli_agent`).
+    """
+
     rubric_model: str | None = None
     """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
 
@@ -269,6 +339,15 @@ class ServerConfig:
 
     rubric_max_iterations: int | None = None
     """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
+
+    recursion_limit: int | None = None
+    """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
+
+    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
+    `[runtime].recursion_limit` / the default at agent-build time"
+    (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
+    over those layers. Must be a positive integer when set.
+    """
 
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
@@ -306,20 +385,42 @@ class ServerConfig:
         """Normalize fields and validate invariants.
 
         Raises:
-            TypeError: If `rubric_max_iterations` is a boolean.
-            ValueError: If `shell_allow_list` is an empty list or
-                `rubric_max_iterations` is non-positive.
+            TypeError: If `rubric_max_iterations` or `recursion_limit` is a
+                boolean.
+            ValueError: If `shell_allow_list` is an empty list,
+                `allow_fs_tools` is an empty list or omits `"read_file"`, or
+                `rubric_max_iterations` / `recursion_limit` is non-positive.
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
             raise ValueError(msg)
+        # `allow_fs_tools` is a security control: `None` means unrestricted, but
+        # an explicit list must be a usable allowlist. Own the non-empty +
+        # `read_file`-required invariant here (the single authoritative point
+        # for both the env round-trip via `from_env` and direct construction)
+        # rather than deferring to `FilesystemMiddleware`, which would only
+        # surface the violation a process boundary away. `_parse_allow_fs_tools_flag`
+        # still enforces the same rule at the CLI for a friendlier error.
+        if self.allow_fs_tools is not None:
+            if len(self.allow_fs_tools) == 0:
+                msg = "allow_fs_tools must be None or a non-empty list"
+                raise ValueError(msg)
+            if "read_file" not in self.allow_fs_tools:
+                msg = "allow_fs_tools must include 'read_file'"
+                raise ValueError(msg)
         if isinstance(self.rubric_max_iterations, bool):
             msg = "rubric_max_iterations must be None or a positive integer"
             raise TypeError(msg)
         if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
             msg = "rubric_max_iterations must be None or a positive integer"
+            raise ValueError(msg)
+        if isinstance(self.recursion_limit, bool):
+            msg = "recursion_limit must be None or a positive integer"
+            raise TypeError(msg)
+        if self.recursion_limit is not None and self.recursion_limit <= 0:
+            msg = "recursion_limit must be None or a positive integer"
             raise ValueError(msg)
 
     # ------------------------------------------------------------------
@@ -370,11 +471,19 @@ class ServerConfig:
             "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
                 self.interpreter_ptc_acknowledge_unsafe
             ).lower(),
+            "ALLOW_FS_TOOLS": (
+                json.dumps(self.allow_fs_tools)
+                if self.allow_fs_tools is not None
+                else None
+            ),
             "RUBRIC_MODEL": self.rubric_model,
             "RUBRIC_MAX_ITERATIONS": (
                 str(self.rubric_max_iterations)
                 if self.rubric_max_iterations is not None
                 else None
+            ),
+            "RECURSION_LIMIT": (
+                str(self.recursion_limit) if self.recursion_limit is not None else None
             ),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
@@ -425,8 +534,10 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
+            allow_fs_tools=_read_env_allow_fs_tools(),
             rubric_model=_read_env_str("RUBRIC_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
+            recursion_limit=_read_env_int("RECURSION_LIMIT", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
@@ -463,8 +574,10 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
+        allow_fs_tools: list[FsToolName] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
+        recursion_limit: int | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -499,9 +612,14 @@ class ServerConfig:
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
+            allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools`
+                param to forward to the server subprocess. `None` leaves the
+                SDK default (all tools).
             rubric_model: Grader model spec; `None` reuses the main model.
             rubric_max_iterations: Explicit grader iterations per rubric attempt;
                 `None` uses the SDK default.
+            recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+                from env / `config.toml` / default at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -530,8 +648,10 @@ class ServerConfig:
             enable_interpreter=resolved_enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_snapshot_name=sandbox_snapshot_name,

@@ -5033,7 +5033,7 @@ max_tokens = 1024
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             result = create_model("anthropic:claude-opus-5", extra_kwargs=extra_kwargs)
 
-        assert result.model.max_tokens == expected
+        assert result.model.model_dump()["max_tokens"] == expected
 
     @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:

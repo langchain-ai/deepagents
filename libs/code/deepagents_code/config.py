@@ -4854,6 +4854,8 @@ def create_model(
         reasoning_effort_override,
         reasoning_override,
     )
+    if provider == "anthropic" and model_name == "claude-opus-5":
+        kwargs.setdefault("max_tokens", 128000)
 
     # `--max-retries` outranks everything: fold it under the provider's resolved
     # retry-param name (honoring `[retries.<provider>].param`) so a custom

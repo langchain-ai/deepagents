@@ -5013,6 +5013,27 @@ max_tokens = 1024
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 
+    @pytest.mark.parametrize(
+        ("extra_kwargs", "expected"),
+        [(None, 128000), ({"max_tokens": 64000}, 64000)],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_opus_5_max_tokens_default_preserves_override(
+        self,
+        mock_init_chat_model: Mock,
+        extra_kwargs: dict[str, int] | None,
+        expected: int,
+    ) -> None:
+        """Opus 5 uses its documented limit unless the user overrides it."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("anthropic:claude-opus-5", extra_kwargs=extra_kwargs)
+
+        _, call_kwargs = mock_init_chat_model.call_args
+        assert call_kwargs["max_tokens"] == expected
+
     @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs=None does not affect behavior."""

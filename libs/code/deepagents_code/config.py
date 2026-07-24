@@ -714,6 +714,12 @@ def _disable_orphaned_tracing() -> None:
         return
 
     env = dict(os.environ)
+    # Match SDK endpoint precedence: a populated env var wins over the profile,
+    # even when it is the default US URL. Only consult the profile when no
+    # endpoint env var is set.
+    has_env_endpoint = any(
+        (env.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+    )
     has_custom_endpoint = any(
         (value := (env.get(var) or "").strip())
         and not _is_langsmith_sdk_default_endpoint(value)
@@ -721,7 +727,7 @@ def _disable_orphaned_tracing() -> None:
     )
     if (
         has_custom_endpoint
-        or _has_langsmith_profile_custom_endpoint()
+        or (not has_env_endpoint and _has_langsmith_profile_custom_endpoint())
         or _has_langsmith_runs_endpoints_from(env)
     ):
         return
@@ -3649,17 +3655,23 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     LangSmith SDK reads them canonically, so only the canonical names (plus the
     active profile's `api_url`) are consulted here.
 
-    The SDK default US SaaS URL is ignored whether it comes from env or profile:
-    it is not a custom ingest target, and forwarding it would make keyless
-    upload-target checks fire for ordinary cloud profiles.
+    Mirrors SDK resolution order (`env_api_url or profile_config.api_url`): a
+    populated env endpoint wins over the profile. The SDK default US SaaS URL is
+    not a custom ingest target — when env is that default, return `None` without
+    falling through to the profile. When env is unset, a non-default profile
+    `api_url` still counts.
 
     Args:
         env: Environment mapping to read.
     """
     for var in _TRACING_ENDPOINT_ENV_VARS:
         value = (env.get(var) or "").strip()
-        if value and not _is_langsmith_sdk_default_endpoint(value):
-            return value
+        if not value:
+            continue
+        if _is_langsmith_sdk_default_endpoint(value):
+            # Non-empty env wins over profile, even when it is the SDK default.
+            return None
+        return value
     config = _load_langsmith_profile_config(env)
     if config is not None:
         api_url = (config.api_url or "").strip()

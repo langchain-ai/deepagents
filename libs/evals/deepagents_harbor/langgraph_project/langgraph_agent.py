@@ -494,6 +494,8 @@ Protocol:
 Unlike terminal tasks, there IS a user to talk to here: do not try to finish
 silently. Keep working with the user until the case is resolved.
 """
+
+
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
     """Build langchain-mcp-adapters connections from Harbor-forwarded servers.
 

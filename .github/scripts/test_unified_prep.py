@@ -100,8 +100,14 @@ def test_derive_impl_sets_new_graph_is_selectable():
 
 
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
-    assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
+    assert up.KNOWN_AGENT_IMPLS == {
+        "bare",
+        "bare-code-interpreter",
+        "dcode",
+        "rlm",
+        "tau3",
+    }
+    assert up.CODE_AGENT_IMPLS == {"bare", "bare-code-interpreter", "dcode", "rlm"}
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

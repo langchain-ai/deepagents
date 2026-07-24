@@ -4289,7 +4289,7 @@ class DeepAgentsApp(App):
             )
 
     async def _init_session_state(self) -> None:
-        """Create session state in a thread (imports deepagents_code.sessions)."""
+        """Create session state (hooks runtime + client hook service)."""
         async with self._session_init_lock:
             if self._session_state is not None:
                 self._session_state_ready.set()
@@ -4320,7 +4320,10 @@ class DeepAgentsApp(App):
                 return state
 
             try:
-                session_state = await asyncio.to_thread(_create)
+                # Keep construction on the event loop. `HooksRuntime.create` is
+                # cheap (config load), and `to_thread` races server-ready startup
+                # tests that only yield a few event-loop turns.
+                session_state = _create()
             except Exception:
                 logger.exception("Failed to create session state")
                 self.notify(
@@ -4330,9 +4333,8 @@ class DeepAgentsApp(App):
                 )
                 self._session_state_ready.set()
                 return
-            # A user can change the approval mode while session construction runs
-            # in the worker thread. Re-read the app-owned selection on the event
-            # loop so the newly assigned state cannot overwrite that newer choice.
+            # Re-read the app-owned selection so a mode change during construction
+            # cannot be overwritten by the freshly built state.
             session_state.approval_mode = self._approval_mode
             if session_state.hooks_runtime is not None:
                 from deepagents_code.hooks.client_lifecycle import ClientHookService

@@ -555,8 +555,8 @@ class TestStartupSequence:
         assert call_count == 1
         assert app._initial_session_started is True
 
-    async def test_session_start_waits_for_session_runtime(self) -> None:
-        """Mounted startup cannot outrun asynchronous session initialization."""
+    async def test_session_start_initializes_session_runtime_inline(self) -> None:
+        """Startup builds session/hooks state before client SessionStart runs."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             thread_id="thread-123",
@@ -566,17 +566,10 @@ class TestStartupSequence:
         submit = AsyncMock()
         app._run_session_start_hook = run_hook  # ty: ignore[invalid-assignment]
         app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
-        app._session_init_started = True
 
-        task = asyncio.create_task(app._run_session_start_sequence())
-        await asyncio.sleep(0)
-        run_hook.assert_not_awaited()
-        submit.assert_not_awaited()
+        await app._run_session_start_sequence()
 
-        app._session_state = TextualSessionState(thread_id="thread-123")
-        app._session_state_ready.set()
-        await task
-
+        assert app._session_state is not None
         run_hook.assert_awaited_once()
         submit.assert_awaited_once()
 

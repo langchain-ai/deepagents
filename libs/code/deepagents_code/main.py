@@ -2012,7 +2012,7 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Interactive local TUI only: enable beta classifier-backed Auto mode.",
+        help="Interactive local TUI only: enable classifier-backed Auto mode.",
     )
     approval_group.add_argument(
         "--yolo",

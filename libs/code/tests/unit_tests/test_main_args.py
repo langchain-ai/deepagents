@@ -341,7 +341,6 @@ class TestAutoApproveHeadlessValidation:
         with (
             patch.object(sys, "argv", ["deepagents", "--auto-approve", "-m", "hello"]),
             patch.object(sys, "stdin", mock_stdin),
-            patch.dict(os.environ, {"DEEPAGENTS_CODE_EXPERIMENTAL": "0"}),
             patch("deepagents_code.main.run_textual_cli_async", run_tui),
             patch("deepagents_code.main._run_startup_auto_update"),
             patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),

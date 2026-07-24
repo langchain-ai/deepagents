@@ -25271,18 +25271,6 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
-    def test_auto_startup_does_not_require_experimental_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.approval_mode import ApprovalMode
-
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
-
-        app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-
-        assert app._approval_mode is ApprovalMode.AUTO
-
     def test_auto_startup_unavailable_with_sandbox(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 

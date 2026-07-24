@@ -117,7 +117,7 @@ def _debug_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
 
 
 def _experimental_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
-    """Build the style for the `(experimental mode)` tag.
+    """Build the style for the `(experimental)` tag.
 
     Args:
         ansi: Whether the active theme is an ANSI terminal theme.
@@ -162,7 +162,7 @@ class WelcomeBanner(Static):
 
     Renders a bordered box with the product title and optional version. A
     `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is enabled
-    (truthy), and an `(experimental mode)` tag appears when
+    (truthy), and an `(experimental)` tag appears when
     `DEEPAGENTS_CODE_EXPERIMENTAL` is enabled (truthy), both even when the
     version is hidden. A `(local)` tag appears for
     editable installs only when the version is shown. Rows follow that appear
@@ -372,7 +372,7 @@ class WelcomeBanner(Static):
 
         Returns:
             Content with the title, optional version, and any applicable header
-            tags (`(debug enabled)` when debug is on; `(experimental mode)` when
+            tags (`(debug enabled)` when debug is on; `(experimental)` when
             experimental mode is on; `(local)` for editable
             installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
@@ -406,7 +406,7 @@ class WelcomeBanner(Static):
         if self._experimental_enabled:
             parts.append(
                 (
-                    " (experimental mode)",
+                    " (experimental)",
                     _experimental_tag_style(ansi=ansi, colors=colors),
                 )
             )

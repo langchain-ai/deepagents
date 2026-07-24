@@ -357,7 +357,7 @@ class TestModelSwitchNoOp:
         ):
             await app._switch_model(
                 "openai:gpt-5.5",
-                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+                extra_kwargs={"reasoning_effort": "low"},
             )
 
         app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
@@ -410,10 +410,7 @@ class TestModelSwitchNoOp:
         ):
             await app._switch_model("anthropic:claude-opus-4-5")
 
-        assert app._model_params_override == {
-            "thinking": {"type": "adaptive", "display": "summarized"},
-            "output_config": {"effort": "high"},
-        }
+        assert app._model_params_override == {"reasoning_effort": "high"}
 
     async def test_switch_model_params_effort_overrides_saved(self) -> None:
         app = DeepAgentsApp()
@@ -434,13 +431,11 @@ class TestModelSwitchNoOp:
         ):
             await app._switch_model(
                 "openai:gpt-5.5",
-                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+                extra_kwargs={"reasoning_effort": "low"},
             )
 
         # Explicit --model-params effort wins over the saved preference.
-        assert app._model_params_override == {
-            "reasoning": {"effort": "low", "summary": "auto"}
-        }
+        assert app._model_params_override == {"reasoning_effort": "low"}
 
 
 class TestModelSwitchErrorHandling:

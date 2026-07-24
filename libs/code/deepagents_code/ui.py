@@ -184,6 +184,10 @@ def show_help() -> None:
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
         "tool names (may include 'safe')"
     )
+    console.print(
+        "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
+        "comma-separated tool names (must include 'read_file')"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
@@ -206,6 +210,10 @@ def show_help() -> None:
     )
     console.print(
         "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
+    )
+    console.print(
+        "  --recursion-limit N        Override the agent's graph recursion_limit"
+        " (default 2000)"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"

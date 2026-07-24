@@ -38,6 +38,7 @@ class TestServerConfigRoundTrip:
             auto_approve=True,
             interrupt_shell_only=True,
             shell_allow_list=["ls", "cat", "grep"],
+            allow_fs_tools=["ls", "read_file"],
             interactive=False,
             enable_shell=False,
             enable_ask_user=True,
@@ -72,6 +73,98 @@ class TestServerConfigRoundTrip:
             restored = ServerConfig.from_env()
 
         assert restored == original
+
+    def test_allow_fs_tools_list_round_trips(self) -> None:
+        """An explicit allowlist survives the env round trip as a JSON list."""
+        original = ServerConfig(allow_fs_tools=["ls", "read_file"])
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools == ["ls", "read_file"]
+
+    def test_rejects_allow_fs_tools_without_read_file(self) -> None:
+        """An explicit allowlist missing `read_file` fails at construction.
+
+        `ServerConfig.__post_init__` owns this invariant so a tampered env value
+        (which `_read_env_allow_fs_tools` intentionally does not check for
+        `read_file`) fails closed here rather than a process boundary away in
+        `FilesystemMiddleware`.
+        """
+        with pytest.raises(ValueError, match="allow_fs_tools must include"):
+            ServerConfig(allow_fs_tools=["ls"])
+
+    def test_rejects_empty_allow_fs_tools(self) -> None:
+        """An empty explicit allowlist is rejected at construction."""
+        with pytest.raises(ValueError, match="allow_fs_tools must be None"):
+            ServerConfig(allow_fs_tools=[])
+
+    def test_from_env_absent_allow_fs_tools_is_none(self) -> None:
+        """An absent `ALLOW_FS_TOOLS` var deserializes to `None` (unrestricted).
+
+        `None` is the "flag omitted" state (also what `--allow-fs-tools all`
+        collapses to); it leaves the SDK default in place. Guards the
+        absent-variable passthrough in `_read_env_allow_fs_tools`.
+        """
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop(f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS", None)
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools is None
+
+    def test_from_env_rejects_invalid_allow_fs_tools_shape(self) -> None:
+        """A tampered/skewed ALLOW_FS_TOOLS value fails closed rather than open.
+
+        Well-formed JSON of an unexpected type must raise instead of falling
+        through to an unrestricted filesystem — see `_read_env_allow_fs_tools`.
+        Covers non-list scalars/objects, a list containing non-strings (the
+        `all(isinstance(...))` guard), and the empty list (rejected directly so
+        the fail-closed guarantee is self-contained, not SDK-dependent).
+        """
+        bad_values = (
+            "null",  # explicit null is not the same as an absent variable
+            '"all"',  # the "all" sentinel is collapsed to None before serialize
+            '"read_file"',  # bare string, not a list
+            "42",  # number
+            "true",  # boolean
+            "{}",  # object
+            "[1, 2]",  # list of non-strings
+            '["ls", null]',  # list with a null element
+            "[]",  # empty list
+        )
+        for bad in bad_values:
+            with (
+                patch.dict(
+                    os.environ,
+                    {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": bad},
+                    clear=True,
+                ),
+                pytest.raises(ValueError, match="ALLOW_FS_TOOLS"),
+            ):
+                ServerConfig.from_env()
+
+    def test_from_env_rejects_unknown_allow_fs_tools_name(self) -> None:
+        """A well-shaped list with an unrecognized tool name fails closed.
+
+        The parent CLI (`_parse_allow_fs_tools_flag`) already rejects unknown
+        names, but the server subprocess re-validates independently: a tampered
+        value like `["read_file", "evil_tool"]` is a non-empty list of strings
+        (so it passes the shape guard) yet must still raise here rather than be
+        cast to `list[FsToolName]` and have the bogus name silently dropped
+        downstream. This keeps the `cast` in `_read_env_allow_fs_tools` honest.
+        """
+        with (
+            patch.dict(
+                os.environ,
+                {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": '["read_file", "evil_tool"]'},
+                clear=True,
+            ),
+            pytest.raises(ValueError, match="unknown filesystem tool name"),
+        ):
+            ServerConfig.from_env()
 
     def test_trust_project_mcp_none_round_trips(self) -> None:
         """None trust_project_mcp should survive a round trip."""
@@ -236,6 +329,60 @@ class TestStartServerAndGetAgent:
             )
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
+
+    async def test_forwards_allow_fs_tools_into_server_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`allow_fs_tools` reaches the `ServerConfig` written to the subprocess.
+
+        The higher-level TUI/non-interactive forwarding tests mock this function
+        out, so without this a dropped kwarg here would disable the feature for
+        every server-backed session with no failing test.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        captured: list[ServerConfig] = []
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server_manager._apply_server_config",
+                side_effect=captured.append,
+            ),
+            patch("deepagents_code.client.launch.server.generate_langgraph_json"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent",
+                return_value=object(),
+            ),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+                allow_fs_tools=["ls", "read_file"],
+            )
+
+        assert len(captured) == 1
+        assert captured[0].allow_fs_tools == ["ls", "read_file"]
 
     async def test_stops_server_when_graph_readiness_fails(
         self, tmp_path: Path, monkeypatch

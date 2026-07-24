@@ -605,27 +605,25 @@ class _SnapshotView(Static):
         on_copy: Callable[[str], None],
         *,
         classes: str | None = None,
-        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
     ) -> None:
         """Initialize with a callback used to copy a clicked span's text.
 
         Args:
             on_copy: Called with the span text when a copyable span is clicked.
             classes: Optional space-separated CSS classes.
-            click_to_copy: Whether copyable spans respond to clicks. Links
-                always open regardless of this setting.
         """
         super().__init__(classes=classes)
         self._on_copy = on_copy
-        self.click_to_copy = click_to_copy
-        """Whether clicking a copyable span copies its value."""
 
     def on_click(self, event: events.Click) -> None:
-        """Copy a marked span or open a link span under the click."""
+        """Copy a marked span or open a link span under the click.
+
+        Copyable snapshot spans (e.g. the thread id) always copy on click; the
+        console's "Click to copy" checkbox governs only the log lines, never the
+        snapshot.
+        """
         if getattr(event.style, "link", None):
             open_style_link(event)
-            return
-        if not self.click_to_copy:
             return
         text = _snapshot_copy_text(event.style)
         if text is not None:
@@ -635,7 +633,7 @@ class _SnapshotView(Static):
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Show a hand pointer over clickable spans and reset it elsewhere."""
         clickable = bool(getattr(event.style, "link", None)) or (
-            self.click_to_copy and _snapshot_copy_text(event.style) is not None
+            _snapshot_copy_text(event.style) is not None
         )
         self.styles.pointer = "pointer" if clickable else "default"
 
@@ -801,7 +799,6 @@ class DebugConsoleScreen(ModalScreen[None]):
             snapshot_view = _SnapshotView(
                 self._copy_snapshot_value,
                 classes="debug-console-snapshot",
-                click_to_copy=self._click_to_copy,
             )
             snapshot_view.update(self._render_snapshot())
             yield snapshot_view
@@ -967,14 +964,15 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._refresh_log_view(scroll_end=True)
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Toggle click-to-copy for the log lines and snapshot spans."""
+        """Toggle click-to-copy for the log lines.
+
+        The checkbox governs only the log lines; copyable snapshot spans (e.g.
+        the thread id) always copy on click regardless of this setting.
+        """
         if event.checkbox.id != _CLICK_TO_COPY_ID:
             return
         self._click_to_copy = event.value
         self.query_one("#debug-log", _DebugLogView).click_to_copy = event.value
-        self.query_one(
-            ".debug-console-snapshot", _SnapshotView
-        ).click_to_copy = event.value
         if self._on_click_to_copy_change is not None:
             self._on_click_to_copy_change(event.value)
 
@@ -1022,8 +1020,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · "
-            "Enter copy line · check 'Click to copy' to copy on click",
+            "Esc close · Ctrl+L clear view · c copy visible logs · Enter copy line",
             "dim italic",
         )
 

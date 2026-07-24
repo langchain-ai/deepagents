@@ -85,6 +85,12 @@ class TestDebugConsoleScreen:
             assert "openai:gpt-test" in text
             assert "/tmp/[brackets]/work" in text
 
+    def test_footer_omits_click_to_copy_hint(self) -> None:
+        footer = str(DebugConsoleScreen._render_help())
+
+        assert "Enter copy line" in footer
+        assert "check 'Click to copy'" not in footer
+
     async def test_live_tail_writes_buffered_records(self) -> None:
         logger.info("debug-console-tail-marker")
         app = _Harness()
@@ -961,9 +967,6 @@ class TestDebugConsoleScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            screen.query_one("#debug-click-to-copy", Checkbox).value = True
-            await pilot.pause()
-
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
             # Single "Thread" field: label (6 chars) + 2-space gutter puts the
             # value at column 8, so an x offset of 10 lands inside the copyable
@@ -973,9 +976,10 @@ class TestDebugConsoleScreen:
 
         assert captured["text"] == "thread-abc"
 
-    async def test_click_to_copy_defaults_off_and_ignores_snapshot_click(
+    async def test_snapshot_click_copies_regardless_of_checkbox(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The thread id always copies on click, even with the checkbox off."""
         captured: dict[str, str] = {}
 
         def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
@@ -998,7 +1002,7 @@ class TestDebugConsoleScreen:
             await pilot.click(snapshot_widget, offset=(10, 0))
             await pilot.pause()
 
-        assert "text" not in captured
+        assert captured["text"] == "thread-abc"
 
     async def test_click_line_ignored_when_click_to_copy_off_but_enter_copies(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1038,7 +1042,7 @@ class TestDebugConsoleScreen:
 
         assert "debug-console-click-off-marker" in captured["text"]
 
-    async def test_toggling_checkbox_propagates_to_child_widgets(self) -> None:
+    async def test_toggling_checkbox_propagates_to_log_view(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
             screen = DebugConsoleScreen(
@@ -1048,22 +1052,16 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             log = screen.query_one("#debug-log", _DebugLogView)
-            snapshot_view = screen.query_one(
-                ".debug-console-snapshot", debug_console_mod._SnapshotView
-            )
             assert log.click_to_copy is False
-            assert snapshot_view.click_to_copy is False
 
             screen.query_one("#debug-click-to-copy", Checkbox).value = True
             await pilot.pause()
             assert screen._click_to_copy is True
             assert log.click_to_copy is True
-            assert snapshot_view.click_to_copy is True
 
             screen.query_one("#debug-click-to-copy", Checkbox).value = False
             await pilot.pause()
             assert log.click_to_copy is False
-            assert snapshot_view.click_to_copy is False
 
     async def test_initial_click_to_copy_restores_checkbox_and_children(self) -> None:
         app = _Harness()

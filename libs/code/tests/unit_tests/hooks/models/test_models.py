@@ -293,6 +293,15 @@ def test_domain_models_reject_unknown_fields() -> None:
                 "unsupported": True,
             }
         )
+    with pytest.raises(ValidationError):
+        HookContext.model_validate(
+            {
+                "thread_id": "thread-1",
+                "cwd": Path("/workspace"),
+                "approval_mode": ApprovalMode.MANUAL,
+                "transcript_path": "/tmp/transcript.jsonl",
+            }
+        )
 
 
 def test_decision_union_selects_event_model() -> None:
@@ -343,30 +352,69 @@ def test_hooks_config_validates_event_keys_and_aliases() -> None:
     )
 
 
-def test_hooks_config_ignores_unknown_handler_fields() -> None:
-    payload = {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [
+def test_hooks_config_rejects_async_and_ignores_unknown_fields() -> None:
+    with pytest.raises(ValidationError, match="async"):
+        HOOKS_CONFIG_ADAPTER.validate_python(
+            {
+                "hooks": {
+                    "PreToolUse": [
                         {
-                            "type": "command",
-                            "command": "./check.sh",
-                            "async": True,
-                            "futureHandlerField": "keep-parsing",
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "./check.sh",
+                                    "async": True,
+                                }
+                            ],
                         }
-                    ],
+                    ]
                 }
-            ]
+            }
+        )
+
+    config = HOOKS_CONFIG_ADAPTER.validate_python(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "./check.sh",
+                                "futureHandlerField": "keep-parsing",
+                            }
+                        ],
+                    }
+                ]
+            }
         }
-    }
-
-    config = HOOKS_CONFIG_ADAPTER.validate_python(payload)
-
+    )
     handler = config.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0]
     assert handler.command == "./check.sh"
     assert handler.timeout is None
+    assert handler.async_ is None
+
+    normalized = HOOKS_CONFIG_ADAPTER.validate_python(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "./check.sh",
+                                "async": False,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    assert normalized.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0].async_ is None
 
 
 def test_hooks_config_rejects_unsupported_handler_type() -> None:
@@ -425,4 +473,6 @@ def test_transport_models_round_trip_typed_domain_payloads() -> None:
 
     assert HOOK_INVOCATION_REQUEST_ADAPTER.validate_json(request_json) == request
     assert HOOK_INVOCATION_RESPONSE_ADAPTER.validate_json(response_json) == response
+    assert b"transcript_path" not in request_json
+    assert b"agent_transcript_path" not in request_json
     assert UUID(str(response.invocation_id)) == invocation_id

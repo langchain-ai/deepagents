@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.loading import compute_snapshot_id
 from deepagents_code.hooks.models.domain import (
     HookDiagnostic,
     HookEvent,
@@ -30,20 +32,6 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import HookInvocation
 
 logger = logging.getLogger(__name__)
-
-# Events whose matcher filters a field on the invocation. `Stop` has no matcher.
-_MATCHABLE_EVENTS = frozenset(
-    {
-        HookEvent.SESSION_START,
-        HookEvent.SESSION_END,
-        HookEvent.PERMISSION_REQUEST,
-        HookEvent.NOTIFICATION,
-        HookEvent.PRE_TOOL_USE,
-        HookEvent.POST_TOOL_USE,
-        HookEvent.SUBAGENT_START,
-        HookEvent.SUBAGENT_STOP,
-    }
-)
 
 # Claude-compatible exact-match character set (letters, digits, _, -, spaces, ,, |).
 _EXACT_MATCHER = re.compile(r"^[\w\s,\-|]+$")
@@ -75,10 +63,17 @@ class HooksSnapshot:
     """Immutable, declaration-ordered Hooks v2 runtime configuration."""
 
     handlers: Mapping[HookEvent, tuple[HookHandler, ...]]
+    snapshot_id: str
     diagnostics: tuple[HookDiagnostic, ...] = ()
 
     @classmethod
-    def from_config(cls, config: HooksConfig) -> HooksSnapshot:
+    def from_config(
+        cls,
+        config: HooksConfig,
+        *,
+        diagnostics: tuple[HookDiagnostic, ...] = (),
+        snapshot_id: str | None = None,
+    ) -> HooksSnapshot:
         """Build an immutable runtime snapshot from validated configuration.
 
         Invalid matcher groups are rejected at compile time with a warning
@@ -86,22 +81,48 @@ class HooksSnapshot:
 
         Args:
             config: Validated Hooks v2 configuration.
+            diagnostics: Diagnostics retained from configuration loading.
+            snapshot_id: Optional precomputed canonical hash. When omitted, it
+                is derived from `config`.
 
         Returns:
-            A snapshot whose handler order and matchers cannot change in flight.
+            A snapshot whose handler order, matchers, and id cannot change.
+
+        Raises:
+            ValueError: If `snapshot_id` disagrees with the canonical config.
         """
+        canonical_id = compute_snapshot_id(config)
+        if snapshot_id is not None and snapshot_id != canonical_id:
+            msg = "Provided snapshot_id does not match canonical configuration"
+            raise ValueError(msg)
         expanded: dict[HookEvent, tuple[HookHandler, ...]] = {}
-        diagnostics: list[HookDiagnostic] = []
+        compile_diagnostics: list[HookDiagnostic] = list(diagnostics)
         for event, groups in config.hooks.items():
+            matcher_field = get_event_spec(event).matcher_field
             handlers: list[HookHandler] = []
             for group_index, group in enumerate(groups):
+                if matcher_field is None and group.matcher not in {None, "", "*"}:
+                    message = (
+                        f"Rejected hook group {event.value}:{group_index}: "
+                        f"{event.value} does not support matchers"
+                    )
+                    logger.warning(message)
+                    compile_diagnostics.append(
+                        HookDiagnostic(
+                            code="unsupported_matcher",
+                            severity="warning",
+                            message=message,
+                            field="matcher",
+                        )
+                    )
+                    continue
                 matcher, error = _compile_matcher(group.matcher)
                 if error is not None:
                     message = (
                         f"Rejected hook group {event.value}:{group_index}: {error}"
                     )
                     logger.warning(message)
-                    diagnostics.append(
+                    compile_diagnostics.append(
                         HookDiagnostic(
                             code="invalid_matcher",
                             severity="warning",
@@ -125,7 +146,8 @@ class HooksSnapshot:
             expanded[event] = tuple(handlers)
         return cls(
             handlers=MappingProxyType(expanded),
-            diagnostics=tuple(diagnostics),
+            snapshot_id=canonical_id,
+            diagnostics=tuple(compile_diagnostics),
         )
 
     def match(self, invocation: HookInvocation) -> HookMatch:
@@ -139,11 +161,12 @@ class HooksSnapshot:
             snapshot itself, not per invocation.
         """
         event = invocation.event.event
-        target = _match_target(invocation)
+        matcher_field = get_event_spec(event).matcher_field
+        target = _match_target(invocation, matcher_field)
         matched = tuple(
             handler
             for handler in self.handlers.get(event, ())
-            if _handler_matches(handler, event, target)
+            if _handler_matches(handler, matcher_field, target)
         )
         return HookMatch(handlers=matched)
 
@@ -180,10 +203,10 @@ def _compile_matcher(
 
 def _handler_matches(
     handler: HookHandler,
-    event: HookEvent,
+    matcher_field: str | None,
     target: str | None,
 ) -> bool:
-    if event not in _MATCHABLE_EVENTS or handler.matcher is None:
+    if matcher_field is None or handler.matcher is None:
         return True
     if target is None:
         return False
@@ -193,17 +216,23 @@ def _handler_matches(
     return matcher.search(target) is not None
 
 
-def _match_target(invocation: HookInvocation) -> str | None:
+def _match_target(
+    invocation: HookInvocation,
+    matcher_field: str | None,
+) -> str | None:
     event = invocation.event
-    if isinstance(
-        event,
-        PermissionRequestEvent | PreToolUseEvent | PostToolUseEvent,
+    if matcher_field == "tool_name" and isinstance(
+        event, PermissionRequestEvent | PreToolUseEvent | PostToolUseEvent
     ):
-        return to_wire_tool_name(event.call.name)
-    if isinstance(event, NotificationEvent):
+        return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
+    if matcher_field == "notification_type" and isinstance(event, NotificationEvent):
         return event.notification.type
-    if isinstance(event, SessionStartEvent | SessionEndEvent):
+    if matcher_field == "cause" and isinstance(
+        event, SessionStartEvent | SessionEndEvent
+    ):
         return event.cause.value
-    if isinstance(event, SubagentStartEvent | SubagentStopEvent):
+    if matcher_field == "agent_name" and isinstance(
+        event, SubagentStartEvent | SubagentStopEvent
+    ):
         return event.agent.name
     return None

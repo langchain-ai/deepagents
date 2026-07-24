@@ -149,16 +149,16 @@ def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
 ) -> list[Any]:
-    """Select external context tools from the normal agent tool list.
+    """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
 
     Returns:
-        External context tools available to criteria generation. MCP tools are
-        included only when their protocol annotations explicitly declare them
-        read-only.
+        External context tools available to criteria generation and grading.
+        MCP tools are included only when their protocol annotations explicitly
+        declare them read-only.
     """
     from deepagents_code.tools import fetch_url, web_search
 
@@ -223,6 +223,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
     result.apply_to_settings()
 
     tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
+    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -309,6 +310,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             auto_mode_enabled=auto_mode_enabled,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
+            fs_tools=config.allow_fs_tools,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
             memory_auto_save=is_memory_auto_save_enabled(),
@@ -317,11 +319,13 @@ async def _make_graph() -> Any:  # noqa: ANN401
             enable_interpreter=config.enable_interpreter,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
+            recursion_limit=config.recursion_limit,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
             project_context=project_context,
             async_subagents=async_subagents,
-            goal_criteria_tools=_criteria_context_tools(tools, mcp_tools),
+            goal_criteria_tools=read_only_context_tools,
+            rubric_grader_tools=read_only_context_tools,
         )
         return agent
 

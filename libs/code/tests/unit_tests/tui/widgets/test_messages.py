@@ -3657,6 +3657,24 @@ class TestUserMessageModeRendering:
         content = _render_content(UserMessage(""))
         assert content.plain == "> "
 
+    def test_detect_mode_false_renders_leading_slash_as_plain(self) -> None:
+        """A `-m` file-path prompt should render `'> '` plus the full path.
+
+        `-m`/`--message` text is always literal agent input, so a leading slash
+        (like a file path) must not be treated as a slash command.
+        """
+        content = _render_content(
+            UserMessage("/etc/hosts explain this", detect_mode=False)
+        )
+        assert content.plain == "> /etc/hosts explain this"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.primary in str(first_span.style)
+
+    def test_detect_mode_false_renders_leading_bang_as_plain(self) -> None:
+        """A leading `!` in literal agent text should not render as shell mode."""
+        content = _render_content(UserMessage("!important note", detect_mode=False))
+        assert content.plain == "> !important note"
+
 
 class TestModeColorsDrift:
     """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
@@ -3700,6 +3718,13 @@ class TestQueuedUserMessageModeRendering:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
         content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
+
+    def test_detect_mode_false_renders_leading_slash_as_plain(self) -> None:
+        """A queued `-m` file-path prompt should render dimmed `'> '` plus path."""
+        content = _render_content(
+            QueuedUserMessage("/etc/hosts explain this", detect_mode=False)
+        )
+        assert content.plain == "> /etc/hosts explain this"
 
 
 class TestStripPromptPrefix:

@@ -3677,6 +3677,17 @@ class TestSafeInstallExtraRecoveryCommand:
             == "fallback cmd"
         )
 
+    def test_falls_back_on_unexpected_error(self, monkeypatch) -> None:
+        """Unexpected recovery errors must not escape the helper."""
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=RuntimeError("metadata broken")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
 
 class TestEditableExtraHint:
     """`editable_extra_hint` is the shared editable-install action hint."""

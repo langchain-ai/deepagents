@@ -48,7 +48,7 @@ class TestCopyTextToClipboard:
 
         with (
             patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")) as copy,
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -66,7 +66,7 @@ class TestCopyTextToClipboard:
         with (
             patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
             patch("deepagents_code.clipboard._copy_osc52") as osc52,
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -87,7 +87,7 @@ class TestCopyTextToClipboard:
                 "deepagents_code.clipboard._copy_osc52",
                 side_effect=OSError("no tty"),
             ),
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "hello")
 
@@ -112,7 +112,7 @@ class TestCopyTextToClipboard:
         with (
             patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
             patch("deepagents_code.clipboard._copy_osc52", side_effect=boom),
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
         ):
             success, error = copy_text_to_clipboard(mock_app, "\ud800")
 
@@ -385,7 +385,7 @@ class TestCopySelectionToClipboard:
         mock_widget.get_selection.side_effect = AttributeError("No selection")
         mock_app.query.return_value = [mock_widget]
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             copy_selection_to_clipboard(mock_app)
 
         assert "Failed to get selection from widget" in caplog.text
@@ -439,7 +439,7 @@ class TestCopySelectionToClipboard:
         mock_app.query.return_value = [racy, sibling]
 
         with (
-            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code"),
             patch(
                 "deepagents_code.clipboard.copy_text_to_clipboard",
                 return_value=(True, None),

@@ -48,3 +48,36 @@ updates:
         patterns: ["*"]
         update-types:
           - "major"
+
+  # The WhatsApp bridge is a maintained npm package embedded in libs/talon.
+  - package-ecosystem: "npm"
+    directory: "/libs/talon/deepagents_talon/channels/whatsapp_bridge"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        patterns: ["*"]
+        update-types:
+          - "major"
+
+  # The Talon example Dockerfile is a maintained runnable topology. Dataset
+  # fixture Dockerfiles under libs/evals/datasets are intentionally unmanaged.
+  - package-ecosystem: "docker"
+    directory: "/examples/talon"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        patterns: ["*"]
+        update-types:
+          - "major"

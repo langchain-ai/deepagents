@@ -7,8 +7,8 @@ dependencies = [
     "deepagents>=0.6.12",
     "fastapi>=0.138.1",
     "uvicorn>=0.49.0",
-    "langchain-anthropic>=1.4.7",
-    "langgraph>=1.2.6",
+    "langchain-anthropic>=1.4.8",
+    "langgraph>=1.2.8",
     "langgraph-sdk>=0.4.2",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.2",
@@ -19,6 +19,5 @@ deepagents = { path = "../../libs/deepagents", editable = true }
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]

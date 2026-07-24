@@ -127,6 +127,22 @@ class TestToolsInstall:
         assert code == 1
         assert "SHA-256" in output
 
+    def test_install_unavailable_returns_specific_message(self, tmp_path: Path) -> None:
+        args = argparse.Namespace(tools_command="install", output_format="text")
+        error = managed_tools.ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="artifact_not_found",
+            message="Managed ripgrep artifact for linux/x86_64 was not found.",
+        )
+        with (
+            patch.object(managed_tools, "ensure_ripgrep", side_effect=error),
+            patch.object(managed_tools, "managed_rg_path", return_value=tmp_path / "x"),
+        ):
+            code, output = _run_text(args)
+        assert code == 1
+        assert "linux/x86_64" in output
+        assert "unexpectedly" not in output
+
     def test_install_unexpected_error_returns_nonzero(self, tmp_path: Path) -> None:
         """An unexpected exception degrades to a clean error, not a traceback."""
         args = argparse.Namespace(tools_command="install", output_format="text")
@@ -318,12 +334,13 @@ class TestToolsList:
         assert "showing built-in tools only" in output
 
     def test_list_forwards_runtime_options(self) -> None:
-        """`--no-mcp`, `--mcp-config`, and interpreter resolution reach the catalog."""
+        """Agent tool options reach the catalog."""
         args = argparse.Namespace(
             tools_command="list",
             output_format="json",
             interpreter=True,
             sandbox="none",
+            allow_fs_tools="ls,read_file",
             no_mcp=True,
             mcp_config="/tmp/mcp.json",
             trust_project_mcp=True,
@@ -339,13 +356,46 @@ class TestToolsList:
         collect.assert_called_once_with(
             assistant_id="agent",
             enable_interpreter=True,
+            fs_tools=["ls", "read_file"],
             include_mcp=False,
             mcp_config_path="/tmp/mcp.json",
             trust_project_mcp=True,
         )
 
-    def test_list_consults_persisted_project_mcp_trust_by_default(self) -> None:
-        """Absent `--trust-project-mcp` lets MCP discovery use stored trust."""
+    def test_list_invalid_allow_fs_tools_exits(self) -> None:
+        """A malformed `--allow-fs-tools` fails fast with exit 2, before catalog.
+
+        `_parse_allow_fs_tools_flag` is unit-tested exhaustively in isolation;
+        this pins the command-level contract that the bad value aborts the
+        `tools list` request rather than degrading to an unrestricted listing.
+        """
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            interpreter=False,
+            sandbox="none",
+            allow_fs_tools="bogus",
+            no_mcp=True,
+            mcp_config=None,
+            trust_project_mcp=False,
+        )
+        with (
+            patch(
+                "deepagents_code.tool_catalog.collect_catalog",
+                return_value=ToolCatalog(groups=()),
+            ) as collect,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            run_tools_command(args)
+        assert exc_info.value.code == 2
+        collect.assert_not_called()
+
+    def test_list_defaults_trust_project_mcp_to_none(self) -> None:
+        """Absent `--trust-project-mcp` forwards `None`.
+
+        Discovery then relies on the user's scoped approvals rather than
+        whole-config trust.
+        """
         args = argparse.Namespace(
             tools_command="list",
             output_format="json",
@@ -363,6 +413,7 @@ class TestToolsList:
         collect.assert_called_once_with(
             assistant_id="agent",
             enable_interpreter=False,
+            fs_tools=None,
             include_mcp=True,
             mcp_config_path=None,
             trust_project_mcp=None,
@@ -480,9 +531,30 @@ class TestToolsList:
         assert code == 0
         assert "Unavailable MCP servers" in output
         assert "offsvc" in output
-        assert "disabled" in output
+        assert "disabled by user" in output
         # Empty detail → status stands alone, no trailing `: `.
         assert "disabled:" not in output
+
+    def test_pending_reenable_renders_reconnect_guidance(self) -> None:
+        catalog = ToolCatalog(
+            groups=(),
+            unavailable=(
+                UnavailableServer(
+                    name="notion",
+                    status="disabled",
+                    detail="Re-enabled — press Ctrl+R to load.",
+                ),
+            ),
+        )
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+
+        assert code == 0
+        assert "Re-enabled — press Ctrl+R to load." in output
+        assert "disabled by user" not in output
 
     def test_list_end_to_end_offline_renders_real_built_ins(self) -> None:
         """Real `collect_catalog` compiles the agent offline and renders it."""

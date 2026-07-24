@@ -1,6 +1,5 @@
 """Tests for artifacts_root parameterization."""
 
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -22,17 +21,6 @@ def _make_composite_backend(*, artifacts_root: str = "/"):
         default=_make_store_backend(),
         routes={},
         artifacts_root=artifacts_root,
-    )
-
-
-def _runtime(tool_call_id: str = "tc"):
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tool_call_id,
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
     )
 
 
@@ -72,11 +60,10 @@ class TestFilesystemMiddlewareArtifactsRoot:
     def test_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")
         mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("evict_123")
 
         large_content = "x" * 5000
         msg = ToolMessage(content=large_content, tool_call_id="evict_123")
-        result = mw._intercept_large_tool_result(msg, runtime)
+        result = mw._intercept_large_tool_result(msg)
 
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/evict_123" in result.content
@@ -88,11 +75,10 @@ class TestFilesystemMiddlewareArtifactsRoot:
     def test_large_tool_result_eviction_default_root(self) -> None:
         backend = _make_store_backend()
         mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("evict_456")
 
         large_content = "x" * 5000
         msg = ToolMessage(content=large_content, tool_call_id="evict_456")
-        result = mw._intercept_large_tool_result(msg, runtime)
+        result = mw._intercept_large_tool_result(msg)
 
         assert isinstance(result, ToolMessage)
         assert "/large_tool_results/evict_456" in result.content
@@ -135,11 +121,10 @@ class TestCompositeBackendEvictionArtifactsRoot:
         """Large tool result eviction writes to the custom artifacts_root path."""
         backend = _make_composite_backend(artifacts_root="/workspace")
         mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("evict_ws")
 
         large_content = "x" * 5000
         msg = ToolMessage(content=large_content, tool_call_id="evict_ws")
-        result = mw._intercept_large_tool_result(msg, runtime)
+        result = mw._intercept_large_tool_result(msg)
 
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/evict_ws" in result.content
@@ -164,11 +149,10 @@ class TestAsyncEvictionArtifactsRoot:
     async def test_async_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")
         mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
-        runtime = _runtime("async_evict_123")
 
         large_content = "x" * 5000
         msg = ToolMessage(content=large_content, tool_call_id="async_evict_123")
-        result = await mw._aintercept_large_tool_result(msg, runtime)
+        result = await mw._aintercept_large_tool_result(msg)
 
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/async_evict_123" in result.content

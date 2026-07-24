@@ -1,10 +1,77 @@
 import shutil
 import textwrap
 from pathlib import Path
+from typing import cast
 
+import pytest
 from langchain_core.messages import ToolMessage
 
-from deepagents_code.file_ops import FileOpTracker, build_approval_preview
+from deepagents_code.file_ops import (
+    FileOpTracker,
+    build_approval_preview,
+    is_sensitive_file_path,
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".env",
+        ".env.local",
+        ".env.production",
+        "/home/user/project/.env",
+        "config/.ENV",
+        "credentials",
+        "~/.aws/credentials",
+        "credentials.json",
+        "TOKEN.JSON",
+        "~/.deepagents/.state/auth.json",
+        ".git-credentials",
+        ".netrc",
+        "_netrc",
+        ".pgpass",
+        ".npmrc",
+        ".pypirc",
+        ".htpasswd",
+        "id_rsa",
+        "id_ed25519",
+        "server.pem",
+        "private.KEY",
+        "cert.pfx",
+        "store.p12",
+        "app.keystore",
+        "release.jks",
+    ],
+)
+def test_is_sensitive_file_path_matches_credentials(path: str) -> None:
+    assert is_sensitive_file_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        None,
+        "main.py",
+        "README.md",
+        "src/app.ts",
+        "environment.py",
+        "keyboard.json",
+        ".envision",
+    ],
+)
+def test_is_sensitive_file_path_ignores_regular_files(path: str | None) -> None:
+    assert is_sensitive_file_path(path) is False
+
+
+def test_is_sensitive_file_path_fails_closed_on_unparseable_path() -> None:
+    """A path that cannot be parsed is treated as sensitive, not rendered.
+
+    The wrong runtime type is the point of the test: it drives the defensive
+    branch that keeps a malformed `file_path` from crashing `compose()` and
+    from leaking as a non-sensitive file.
+    """
+    assert is_sensitive_file_path(cast("str", 123)) is True
 
 
 def test_tracker_records_read_lines(tmp_path: Path) -> None:

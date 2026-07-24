@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.8...deepagents-acp==0.0.9) (2026-07-07)
+
+
+### Bug Fixes
+
+* **acp:** defer interrupt state reads until stream closes ([#4542](https://github.com/langchain-ai/deepagents/issues/4542)) ([35199ab](https://github.com/langchain-ai/deepagents/commit/35199ab22b2111474d1f46b3ad7cc677d82ed46b))
+
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.7...deepagents-acp==0.0.8) (2026-06-03)
 
 ### Bug Fixes

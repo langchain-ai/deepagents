@@ -1,4 +1,7 @@
-"""Enumerate the tools available to the agent for `dcode tools list`.
+"""Enumerate the tools available to the agent.
+
+Backs two entry points: the `dcode tools list` CLI command (`_run_tools_list`)
+and the interactive `/tools` slash command (`app._handle_tools_command`).
 
 The tool set is read from the *real* tool objects the agent binds rather than a
 hand-maintained catalog, so names and descriptions never drift from what the
@@ -9,25 +12,29 @@ tool node; MCP tools are discovered via the same path the app and server use.
 The collection functions here lazily import the heavy agent stack (agent
 compilation, MCP discovery) inside their bodies. Only the fake-model base is
 imported at module top, so importing this module is cheap relative to the agent
-stack — and this module is itself imported lazily inside `_run_tools_list`,
-never on the startup hot path. Those functions must only run on the
-`dcode tools list` command path.
+stack — and this module is itself imported lazily by both entry points
+(`_run_tools_list` and `_handle_tools_command`), never on the startup hot path.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from deepagents_code._constants import FS_TOOL_NAMES
 from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from deepagents import FsToolName
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from deepagents_code.mcp_tools import MCPServerStatus
+    from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,14 @@ Emitted verbatim in the `--json` output, so it is a public contract; keep it a
 
 BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
+
+_FILESYSTEM_TOOL_NAMES = FS_TOOL_NAMES
+"""Which enumerated tools the `fs_tools` allowlist governs.
+
+Aliased from the shared `_constants.FS_TOOL_NAMES` (see its docstring); the
+drift guard in `test_tool_catalog` pins it so a new or renamed SDK filesystem
+tool fails a test instead of silently escaping the leak check below.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +106,20 @@ class UnavailableServer:
     the same text the interactive `/mcp` viewer shows. See `collect_mcp_catalog`.
     """
 
+    def __post_init__(self) -> None:
+        """Enforce that an unavailable server is never `ok`.
+
+        An `ok` server exposes tools and belongs in a `ToolGroup`, never here;
+        rejecting it at construction keeps the documented non-`ok` invariant
+        from being silently violated by a future producer.
+
+        Raises:
+            ValueError: If `status` is `"ok"`.
+        """
+        if self.status == "ok":
+            msg = "UnavailableServer.status must be a non-'ok' MCPServerStatus"
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCatalog:
@@ -112,6 +141,28 @@ class ToolCatalog:
     Raw exception detail is logged at debug level, never embedded here, so no
     file paths or stack traces leak into CLI/JSON output.
     """
+
+
+def unavailable_server_display(server: UnavailableServer) -> tuple[str, str]:
+    """Return the `(status_label, detail)` display pair for an unavailable server.
+
+    Shared by the CLI (`client.commands.tools._print_unavailable_servers`) and
+    TUI (`app._render_tool_catalog`) renderers so both describe a server the same
+    way. A disabled server shows its reconnect guidance if present, else the
+    generic "disabled by user", with no separate detail; other statuses show the
+    status token plus discovery's reason string when present.
+
+    Args:
+        server: A server that loaded with no usable tools.
+
+    Returns:
+        `(status_label, detail)`: the primary status text and any secondary
+        detail (`""` when none). Each renderer lays these out itself, e.g. as
+        `status_label: detail`.
+    """
+    if server.status == "disabled":
+        return (server.detail or "disabled by user", "")
+    return (server.status, server.detail)
 
 
 class _CatalogModel(_ToolBindingFakeModel):
@@ -139,7 +190,10 @@ def _first_line(text: str | None) -> str:
 
 
 def collect_built_in_tools(
-    *, assistant_id: str = "agent", enable_interpreter: bool = False
+    *,
+    assistant_id: str = "agent",
+    enable_interpreter: bool = False,
+    fs_tools: list[FsToolName] | None = None,
 ) -> list[ToolEntry]:
     """Enumerate the built-in tools the agent binds by default.
 
@@ -157,9 +211,18 @@ def collect_built_in_tools(
             appears when the default agent would bind it. Callers should pass
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
             the list matches the tools the agent actually binds.
+        fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent so
+            it is built exactly like the runtime session. The SDK's
+            `FilesystemMiddleware` omits disallowed tools from the node
+            entirely, so forwarding alone narrows the enumeration; a defensive
+            check below verifies no disallowed tool leaked through and logs
+            loudly if one did (see the comment on that check).
 
     Returns:
         Built-in tools in bind order.
+
+    Raises:
+        RuntimeError: If the compiled graph does not expose its bound tools.
     """
     from deepagents_code.agent import create_cli_agent
     from deepagents_code.config import settings
@@ -179,18 +242,95 @@ def collect_built_in_tools(
         enable_skills=False,
         enable_shell=True,
         enable_interpreter=enable_interpreter,
+        fs_tools=fs_tools,
     )
-    # `agent.nodes["tools"].bound` reaches into langgraph's compiled graph; the
-    # "tools" node name and `ToolNode.tools_by_name` are langgraph conventions,
-    # not a documented contract. This real compile path is exercised by
-    # test_tool_catalog.py::TestCollectBuiltInTools, so a breaking langgraph
-    # change fails loudly there rather than silently emitting an empty list.
-    tool_node = cast("ToolNode", agent.nodes["tools"].bound)
-    tools_by_name = tool_node.tools_by_name
-    return [
-        ToolEntry(name=name, description=_first_line(tool.description))
-        for name, tool in tools_by_name.items()
-    ]
+    tools = collect_tools_from_agent(agent)
+    if tools is None:
+        msg = "Compiled agent does not expose a LangGraph tool node"
+        raise RuntimeError(msg)
+    # Defensive backstop against a change in SDK behavior. The SDK's
+    # `FilesystemMiddleware` omits disallowed tools from the bound node
+    # entirely, so `collect_tools_from_agent` should already return only
+    # allowlisted filesystem tools. If a disallowed tool *does* leak through,
+    # enforcement broke on the real agent (this enumeration is built from the
+    # same `create_cli_agent` the runtime uses). Return the *unfiltered* list
+    # and log loudly rather than scrubbing: scrubbing would hide the one signal
+    # that enforcement failed and make `/tools` report a restricted surface over
+    # an unrestricted agent. (`None` — the unrestricted default — skips this.)
+    if isinstance(fs_tools, list):
+        enabled = frozenset(fs_tools)
+        leaked = [
+            tool.name
+            for tool in tools
+            if tool.name in _FILESYSTEM_TOOL_NAMES and tool.name not in enabled
+        ]
+        if leaked:
+            logger.error(
+                "Filesystem tool allowlist backstop detected %s in the tool "
+                "listing: the enumerated agent exposed disallowed filesystem "
+                "tool(s) not in the allowlist %s. This indicates the allowlist "
+                "was not applied to the underlying agent; the listing reflects "
+                "the agent's actual (unrestricted) tools.",
+                leaked,
+                sorted(enabled),
+            )
+    return tools
+
+
+def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
+    """Read tools from a local compiled agent when its graph is inspectable.
+
+    LangGraph does not expose a public tool-enumeration API, so this reaches
+    through the compiled graph's conventional `nodes["tools"].bound` shape.
+    Returning `None` distinguishes an uninspectable graph (a remote agent, or a
+    local graph whose internals no longer match that convention) from a local
+    graph that validly binds zero tools (`[]`).
+
+    Args:
+        agent: Active local or remote agent object.
+
+    Returns:
+        Bound tools in graph order; `[]` for an inspectable local graph with no
+        tools; or `None` when the agent cannot be inspected locally.
+    """
+    nodes = getattr(agent, "nodes", None)
+    if not isinstance(nodes, Mapping):
+        # No conventional node map: a remote agent or a non-graph object. Expected
+        # for remote agents, so debug rather than warning.
+        logger.debug("Agent %r has no inspectable node map", type(agent))
+        return None
+    if "tools" not in nodes:
+        # LangChain omits the tool node when an otherwise valid local agent
+        # binds no tools. The graph is still inspectable; its tool set is empty.
+        return []
+    node = nodes.get("tools")
+    tool_node = cast("ToolNode | None", getattr(node, "bound", None))
+    tools_by_name = getattr(tool_node, "tools_by_name", None)
+    if not isinstance(tools_by_name, Mapping):
+        # A "tools" node exists but does not expose the expected
+        # `bound.tools_by_name` mapping — a LangGraph internal-shape change, not
+        # a remote agent. Warn so this drift is visible in logs even though the
+        # user-facing notice attributes it to an uninspectable agent.
+        logger.warning(
+            "Agent 'tools' node is not introspectable (bound=%r); "
+            "LangGraph internals may have changed",
+            type(tool_node),
+        )
+        return None
+    tools: list[ToolEntry] = []
+    for name, tool in tools_by_name.items():
+        if not isinstance(name, str):
+            continue
+        description = getattr(tool, "description", None)
+        tools.append(
+            ToolEntry(
+                name=name,
+                description=_first_line(
+                    description if isinstance(description, str) else None
+                ),
+            )
+        )
+    return tools
 
 
 def collect_mcp_catalog(
@@ -232,9 +372,34 @@ def collect_mcp_catalog(
         logger.warning("MCP tool discovery failed for `tools list`", exc_info=True)
         return [], [], "MCP discovery failed; showing built-in tools only."
 
+    groups, unavailable = split_mcp_server_info(server_info)
+    return groups, unavailable, None
+
+
+def split_mcp_server_info(
+    server_info: Sequence[MCPServerInfo],
+) -> tuple[list[ToolGroup], list[UnavailableServer]]:
+    """Split loaded MCP server metadata into tool groups and unavailable servers.
+
+    Pure function shared by the CLI discovery path (`collect_mcp_catalog`) and
+    the interactive `/tools` command, which passes the app's already-loaded
+    `MCPServerInfo` list rather than re-discovering (Textual's running event
+    loop forbids the `asyncio.run` discovery path).
+
+    Servers that loaded but expose no tools are reported as `UnavailableServer`s
+    (errored, needing login, or disabled) rather than silently dropped —
+    surfacing exactly what a user debugging a missing tool needs to see.
+
+    Args:
+        server_info: Loaded MCP server metadata.
+
+    Returns:
+        `(groups, unavailable)`: per-server tool groups (only servers exposing
+        tools) and servers discovered with no tools and a non-`ok` status.
+    """
     groups: list[ToolGroup] = []
     unavailable: list[UnavailableServer] = []
-    for server in server_info or []:
+    for server in server_info:
         if server.tools:
             entries = tuple(
                 ToolEntry(name=tool.name, description=_first_line(tool.description))
@@ -244,18 +409,54 @@ def collect_mcp_catalog(
         elif server.status != "ok":
             # A server that loaded but has no tools *and* is not "ok" is broken,
             # unauthenticated, or disabled — report it so the omission is
-            # explained. `server.error` is discovery's own reason string (the
-            # same text the interactive `/mcp` viewer shows); it is not a stack
-            # trace, but for config-load failures it can include the local
+            # explained. A plainly-disabled server drops discovery's reason so
+            # the renderers show the generic "disabled by user" label; a
+            # just-re-enabled one (`pending_reconnect`) keeps its reconnect
+            # guidance so the renderer can distinguish it from a server the user
+            # left disabled. Other statuses retain discovery's reason string —
+            # not a stack trace, but config-load failures can include the local
             # config file path — see `UnavailableServer.detail`.
+            detail = server.error or ""
+            if server.status == "disabled" and not server.pending_reconnect:
+                detail = ""
             unavailable.append(
                 UnavailableServer(
                     name=server.name,
                     status=server.status,
-                    detail=server.error or "",
+                    detail=detail,
                 )
             )
-    return groups, unavailable, None
+    return groups, unavailable
+
+
+def build_catalog_from_server_info(
+    built_in: Sequence[ToolEntry],
+    server_info: Sequence[MCPServerInfo],
+) -> ToolCatalog:
+    """Assemble a `ToolCatalog` from pre-collected built-in tools and live MCP info.
+
+    The interactive `/tools` command entry point: it avoids the `asyncio.run`
+    MCP discovery reached via `collect_catalog` (the `asyncio.run` call itself
+    lives in `collect_mcp_catalog`), which cannot run inside Textual's running
+    event loop, by reusing the MCP metadata the app already loaded. `mcp_error`
+    is always `None` here because discovery is not attempted — any load failures
+    are already reflected per-server in `server_info` as non-`ok` `MCPServerInfo`
+    entries, which `split_mcp_server_info` surfaces as `UnavailableServer`s.
+
+    Args:
+        built_in: Built-in tools in bind order (from `collect_built_in_tools`).
+        server_info: The app's already-loaded MCP server metadata.
+
+    Returns:
+        A `ToolCatalog` with the built-in group first, then any MCP groups, plus
+        unavailable servers.
+    """
+    groups: list[ToolGroup] = [
+        ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=tuple(built_in))
+    ]
+    mcp_groups, unavailable = split_mcp_server_info(server_info)
+    groups.extend(mcp_groups)
+    return ToolCatalog(groups=tuple(groups), unavailable=tuple(unavailable))
 
 
 async def _load_mcp_server_info(
@@ -273,6 +474,7 @@ async def _load_mcp_server_info(
         Discovered MCP server metadata, or an empty list when none load.
     """
     from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
     from deepagents_code.project_utils import ProjectContext
 
     try:
@@ -283,6 +485,11 @@ async def _load_mcp_server_info(
         # convention in `project_utils` and fall back to no project context.
         logger.warning("Could not determine working directory for MCP discovery")
         project_context = None
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
 
     session_manager = None
     try:
@@ -291,6 +498,7 @@ async def _load_mcp_server_info(
             no_mcp=False,
             trust_project_mcp=trust_project_mcp,
             project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
         return server_info or []
     finally:
@@ -305,6 +513,7 @@ def collect_catalog(
     *,
     assistant_id: str = "agent",
     enable_interpreter: bool = False,
+    fs_tools: list[FsToolName] | None = None,
     include_mcp: bool = True,
     mcp_config_path: str | None = None,
     trust_project_mcp: bool | None = None,
@@ -316,6 +525,9 @@ def collect_catalog(
             tools, including any agent-specific subagents.
         enable_interpreter: Whether the default agent binds `js_eval`; forwarded
             to `collect_built_in_tools`.
+        fs_tools: Filesystem tool allowlist; forwarded to
+            `collect_built_in_tools`, which filters the built-in enumeration so
+            it matches the configured session.
         include_mcp: When `True`, discover MCP servers and append their groups
             after the built-in group (best-effort). Pass `False` to mirror
             `--no-mcp`.
@@ -335,6 +547,7 @@ def collect_catalog(
                 collect_built_in_tools(
                     assistant_id=assistant_id,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=fs_tools,
                 )
             ),
         )

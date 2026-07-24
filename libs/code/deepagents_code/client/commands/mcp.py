@@ -91,11 +91,13 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     When `config_path` is omitted, auto-discovered MCP configs are merged in
     the same precedence order as the runtime loader, with matching trust
     gating: user-level configs are always included, but project-level configs
-    are only included when the trust store has a fingerprint match. An
-    untrusted project-level config (for example, a `.mcp.json` in a cloned
-    repo) is skipped so attacker-controlled `headers` entries cannot exfiltrate
-    local secrets during the OAuth handshake. When `config_path` is set, that
-    file alone is loaded and treated as explicitly trusted.
+    contribute only servers with matching scoped approvals (or the process-wide
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` allowlist) and no deny-list entry.
+    Untrusted project-level server entries (for example, from a `.mcp.json`
+    in a cloned repo) are skipped so attacker-controlled `headers` entries
+    cannot exfiltrate local secrets during the OAuth handshake. When
+    `config_path` is set, that file alone is loaded and treated as explicitly
+    trusted.
 
     Args:
         server: Target server name from `mcpServers`.
@@ -110,6 +112,11 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigErrorKind,
         ConfigResolution,
         ConfigResolutionError,
+        format_legacy_env_ignored_notice,
+        format_legacy_ignored_notice,
+        format_load_errors_notice,
+        format_malformed_approvals_notice,
+        format_policy_error_notice,
         format_untrusted_project_notice,
         resolve_mcp_config,
         select_server,
@@ -129,9 +136,31 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         )
         return 1
 
-    notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
-    if notice:
-        print(notice, file=sys.stderr)  # noqa: T201
+    # A policy read failure and an "untrusted project" skip are mutually
+    # exclusive reasons for the same dropped servers; surface the policy error
+    # (the real, actionable cause) instead of nudging the user to re-approve.
+    policy_notice = format_policy_error_notice(resolution.policy_error)
+    if policy_notice:
+        print(policy_notice, file=sys.stderr)  # noqa: T201
+    else:
+        notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
+    legacy_notice = format_legacy_ignored_notice(resolution.legacy_ignored)
+    if legacy_notice:
+        print(legacy_notice, file=sys.stderr)  # noqa: T201
+    legacy_env_notice = format_legacy_env_ignored_notice(resolution.legacy_env_ignored)
+    if legacy_env_notice:
+        print(legacy_env_notice, file=sys.stderr)  # noqa: T201
+    malformed_notice = format_malformed_approvals_notice(resolution.malformed_approvals)
+    if malformed_notice:
+        print(malformed_notice, file=sys.stderr)  # noqa: T201
+    # Report configs that failed to parse/validate but were dropped while
+    # another config still loaded — otherwise a broken .mcp.json is invisible on
+    # this surface (the runtime loader reports the same failures as error rows).
+    load_errors_notice = format_load_errors_notice(resolution.load_errors)
+    if load_errors_notice:
+        print(load_errors_notice, file=sys.stderr)  # noqa: T201
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -237,14 +266,35 @@ def run_mcp_config() -> int:
 
 
 def _print_resolution_error(error: ConfigResolutionError) -> None:
-    """Print the untrusted-paths notice (if any) then `error.message` to stderr.
+    """Print the trust/migration notices, then `error.message`.
 
-    Note: the untrusted-paths notice is also surfaced independently for
-    successful resolutions in `run_mcp_login`.
+    Prints the untrusted-paths notice (suppressed when `policy_error` already
+    explains the drop), then the legacy-key, legacy-env, and malformed-approval
+    notices. Per-path load errors are not printed here because `error.message`
+    already embeds them for `NO_USABLE_CONFIG`. These notices are also surfaced
+    independently for successful resolutions in `run_mcp_login`.
     """
-    from deepagents_code.mcp_login_service import format_untrusted_project_notice
+    from deepagents_code.mcp_login_service import (
+        format_legacy_env_ignored_notice,
+        format_legacy_ignored_notice,
+        format_malformed_approvals_notice,
+        format_untrusted_project_notice,
+    )
 
-    notice = format_untrusted_project_notice(error.untrusted_project_paths)
-    if notice:
-        print(notice, file=sys.stderr)  # noqa: T201
+    # On a policy read failure `error.message` already states the reason, so
+    # skip the untrusted-paths notice that would otherwise misattribute the
+    # dropped servers to "not yet approved."
+    if error.policy_error is None:
+        notice = format_untrusted_project_notice(error.untrusted_project_paths)
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
+    legacy_notice = format_legacy_ignored_notice(error.legacy_ignored)
+    if legacy_notice:
+        print(legacy_notice, file=sys.stderr)  # noqa: T201
+    legacy_env_notice = format_legacy_env_ignored_notice(error.legacy_env_ignored)
+    if legacy_env_notice:
+        print(legacy_env_notice, file=sys.stderr)  # noqa: T201
+    malformed_notice = format_malformed_approvals_notice(error.malformed_approvals)
+    if malformed_notice:
+        print(malformed_notice, file=sys.stderr)  # noqa: T201
     print(error.message, file=sys.stderr)  # noqa: T201

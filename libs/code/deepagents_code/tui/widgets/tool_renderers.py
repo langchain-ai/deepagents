@@ -10,6 +10,7 @@ from deepagents_code.tui.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
     WriteFileApprovalWidget,
+    format_display_content,
 )
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class WriteFileRenderer(ToolRenderer):
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         # Extract file extension for syntax highlighting
         file_path = tool_args.get("file_path", "")
-        content = tool_args.get("content", "")
+        content = format_display_content(tool_args.get("content", ""))
 
         # Get file extension
         file_extension = "text"
@@ -121,8 +122,8 @@ class EditFileRenderer(ToolRenderer):
         assistant_id: str | None = None,  # noqa: ARG004
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         file_path = tool_args.get("file_path", "")
-        old_string = tool_args.get("old_string", "")
-        new_string = tool_args.get("new_string", "")
+        old_string = format_display_content(tool_args.get("old_string", ""))
+        new_string = format_display_content(tool_args.get("new_string", ""))
 
         # Generate unified diff
         diff_lines = EditFileRenderer._generate_diff(old_string, new_string)

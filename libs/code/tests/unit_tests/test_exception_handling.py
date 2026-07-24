@@ -90,7 +90,7 @@ class TestFileOpsExceptionHandling:
 
         tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             tracker.start_operation(
                 "write_file",
                 {"file_path": "/test.txt", "content": "test"},
@@ -114,7 +114,7 @@ class TestFileOpsExceptionHandling:
 
         tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             tracker.start_operation(
                 "edit_file",
                 {"file_path": "/test.txt", "old_string": "a", "new_string": "b"},
@@ -141,7 +141,7 @@ class TestFileOpsExceptionHandling:
 
         tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             tracker.start_operation(
                 "write_file",
                 {"file_path": "/test.bin", "content": "test"},
@@ -161,7 +161,7 @@ class TestFileOpsExceptionHandling:
         # Test with non-existent file
         nonexistent = tmp_path / "does_not_exist.txt"
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             result = _safe_read(nonexistent)
 
         assert result is None
@@ -208,7 +208,7 @@ class TestMediaUtilsExceptionHandling:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="pngpaste", timeout=2)
             mock_osascript.return_value = None
 
-            with caplog.at_level(logging.DEBUG):
+            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
                 result = _get_macos_clipboard_image()
 
             assert result is None
@@ -227,7 +227,7 @@ class TestMediaUtilsExceptionHandling:
             mock_run.side_effect = FileNotFoundError("pngpaste")
             mock_osascript.return_value = None
 
-            with caplog.at_level(logging.DEBUG):
+            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
                 result = _get_macos_clipboard_image()
 
             assert result is None
@@ -245,7 +245,7 @@ class TestMediaUtilsExceptionHandling:
             mock_mkstemp.return_value = (5, "/tmp/test.png")
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="osascript", timeout=2)
 
-            with caplog.at_level(logging.DEBUG):
+            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
                 result = _get_clipboard_via_osascript()
 
             assert result is None

@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 # --- Canonical typed defaults ----------------------------------------------
-# These are the single source of truth for `[interpreter]` defaults. The
-# `Settings` dataclass references them so the default is defined once.
+# These are single sources of truth for defaults shared across the manifest and
+# their runtime consumers.
 
 INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
@@ -58,11 +58,42 @@ INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
+RECURSION_LIMIT_DEFAULT = 2000
+"""Default LangGraph `recursion_limit` for the main agent.
+
+Single source of truth shared by the `runtime.recursion_limit` option, the
+`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
+above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
+in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
+"""
+
+RECURSION_LIMIT_FLOOR = 25
+"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+
+A value below this would break otherwise-valid runs, so a resolved value under
+the floor is rejected and falls through to the next layer / default.
+"""
+
+RECURSION_LIMIT_CEILING = 100_000
+"""Largest accepted `recursion_limit`.
+
+Bounds the graph step budget so a mistyped or hostile override cannot request
+effectively unbounded traversal. A resolved value above the ceiling is rejected
+and falls through to the next layer / default.
+"""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
 Single source of truth shared by the `tracing.langsmith_project` option and
 `config.get_langsmith_project_name`."""
+
+CursorStyle = Literal["block", "underline"]
+"""Visual style for the chat input cursor (a block cell or an underline)."""
+
+CURSOR_STYLE_DEFAULT: CursorStyle = "block"
+VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
+"""Allowlist derived from `CursorStyle` so the two never drift."""
 
 
 class OptionKind(Enum):
@@ -70,13 +101,14 @@ class OptionKind(Enum):
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
-    `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
-    and `PTC_DELEGATE` defer to a bespoke parser (their semantics — colon-split
-    Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
-    do not compress into a generic coercion). `THEME_DELEGATE` is resolved
-    separately at the top of `resolve_scalar` and never reaches the inline
-    coercers. `STRUCTURED` marks user-defined tables that the scalar resolver
-    only passes through for display.
+    `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
+    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
+    allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
+    resolved separately at the top of `resolve_scalar` and never reaches the
+    inline coercers. `STRUCTURED` marks user-defined tables that the scalar
+    resolver only passes through for display.
     """
 
     BOOL = "bool"
@@ -92,6 +124,9 @@ class OptionKind(Enum):
 
     STR = "str"
 
+    LOG_LEVEL_DELEGATE = "log_level"
+    """Validates log levels and resolves the default from debug mode."""
+
     SHELL_LIST_DELEGATE = "shell_list"
     """Delegates to `config.parse_shell_allow_list`."""
 
@@ -100,6 +135,12 @@ class OptionKind(Enum):
 
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
+
+    CURSOR_STYLE_DELEGATE = "cursor_style"
+    """Validates the `[ui].cursor_style` display allowlist."""
+
+    STARTUP_MODE_DELEGATE = "startup_mode"
+    """Delegates to the `[startup].mode` runtime allowlist."""
 
     THEME_DELEGATE = "theme"
     """Delegates to the app theme-preference loader semantics."""
@@ -114,9 +155,12 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.INT: "int",
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
+    OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.CURSOR_STYLE_DELEGATE: "str",
+    OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
 }
@@ -137,6 +181,8 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.CURSOR_STYLE_DELEGATE: (str,),
+    OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
 
@@ -151,7 +197,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config`."""
 
     summary: str
     """One-line description of what the option controls."""
@@ -172,7 +218,7 @@ class ConfigOption:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
     mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
     `LANGSMITH_PROJECT`.
     """
@@ -187,7 +233,7 @@ class ConfigOption:
     """Representative CLI flag that sets the option, or `None`."""
 
     redacted: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value.
+    """Whether `config` reports only set/not-set, never the raw value.
 
     Named `redacted` rather than `secret` so the value (and the JSON field it
     populates) carries no credential-suggesting identifier — the flag is
@@ -216,9 +262,12 @@ class ConfigOption:
     Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
     where it is the key `/auth` stores the credential under and the name passed
     to `model_config.is_service`. Carrying it as a structured field lets
-    `config show`/`get` look up the stored credential without re-parsing it out
+    `config`/`config get` look up the stored credential without re-parsing it out
     of `key`. `None` for every other option.
     """
+
+    empty_env_is_false: bool = False
+    """Whether an explicitly present empty env value disables a bool option."""
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -232,8 +281,9 @@ class ConfigOption:
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
-                strings, `default` is mutable, a `STRUCTURED` option declares a
-                default, or a scalar option's default has the wrong type.
+                strings, `empty_env_is_false` is set on a non-bool option,
+                `default` is mutable, a `STRUCTURED` option declares a default,
+                or a scalar option's default has the wrong type.
         """
         # Guard `fallback_env_vars` independently of `default` (which has its own
         # early-return path below): like `default`, it is shared by reference
@@ -247,6 +297,9 @@ class ConfigOption:
                 f"{self.key}: fallback_env_vars must be a tuple of non-empty "
                 f"strings, got {self.fallback_env_vars!r}"
             )
+            raise TypeError(msg)
+        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+            msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
         default = self.default
@@ -367,7 +420,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config show` reports the real source
+            # malformed scalar, so `config` reports the real source
             # (config.toml/default) instead of crediting the env var with a
             # value it did not actually supply.
             logger.warning("Ignoring %s=%r (expected bool)", name, raw)
@@ -377,6 +430,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         return bool(raw)
     if kind is OptionKind.STR:
         return raw
+    if kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._debug import LOG_LEVELS
+
+        level = raw.strip().upper()
+        if level in LOG_LEVELS:
+            return level
+        valid = ", ".join(LOG_LEVELS)
+        logger.warning("Ignoring %s=%r (expected one of %s)", name, raw, valid)
+        return _INVALID
     if kind is OptionKind.INT:
         try:
             return int(raw.strip())
@@ -411,6 +473,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # Resolved upstream in `resolve_scalar` and never reaches here; the raw
         # passthrough is a defensive fallback only.
         return raw
+    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'block' or 'underline')",
+            name,
+            raw,
+        )
+        return _INVALID
     if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
         # Neither kind declares an `env_var`, so the `if option.env_var` guard in
         # `resolve_scalar` means this is unreachable today. If a future option
@@ -419,6 +490,17 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # field (e.g. `interpreter_ptc`) would bypass the delegate parser's
         # validation. Falling back to the validated default is the safe choice.
         logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
+        return _INVALID
+    if kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
+            name,
+            raw,
+        )
         return _INVALID
     assert_never(kind)
 
@@ -467,6 +549,26 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'block' or 'underline')",
+            label,
+            raw,
+        )
+        return _INVALID
+    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
@@ -546,10 +648,11 @@ def resolve_scalar(
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
-        treated as unset (mirroring `resolve_env_var`), so it falls through to
-        the next env var, then `config.toml`/`default`, rather than counting as
-        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
-        `config.toml [ui.*]` sources.
+        normally treated as unset (mirroring `resolve_env_var`), so it falls
+        through to the next env var, then `config.toml`/`default`, rather than
+        counting as set. Options declaring `empty_env_is_false` instead resolve
+        an explicitly present empty value to `False`. Theme resolution
+        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -561,15 +664,18 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string counts as unset, matching `resolve_env_var`, so it is
-        # skipped and the loop continues to the next name. This keeps
-        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
-        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
-        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
-        # tried in order, so the primary `env_var` wins over any fallback.
+        # An empty string normally counts as unset, matching `resolve_env_var`,
+        # so it is skipped and the loop continues to the next name. Options
+        # with an explicitly documented empty-value opt-out declare
+        # `empty_env_is_false`. Names are tried in order, so the primary
+        # `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
+            if raw is None:
+                continue
             if not raw:
+                if option.empty_env_is_false:
+                    return False, f"env ({name})"
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -581,6 +687,11 @@ def resolve_scalar(
             value = _coerce_toml(option, raw)
             if value is not _INVALID:
                 return value, "config.toml"
+
+    if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+
+        return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
 
     return option.default, "default"
 
@@ -613,6 +724,72 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_recursion_limit(value: object) -> bool:
+    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and RECURSION_LIMIT_FLOOR <= value <= RECURSION_LIMIT_CEILING
+    )
+
+
+def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
+    """Resolve the effective main-agent `recursion_limit`.
+
+    Resolves `runtime.recursion_limit` through the standard env → `config.toml`
+    → default precedence. An out-of-range value (below `RECURSION_LIMIT_FLOOR`
+    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning and
+    the next lower-precedence layer is tried, so a bad higher-precedence
+    override cannot mask a valid TOML setting (or the default).
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved recursion limit, guaranteed within
+            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("runtime.recursion_limit")
+    if option is None:
+        return RECURSION_LIMIT_DEFAULT
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_recursion_limit(value):
+        return value
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default. Hide the rejected env var (if any) and re-resolve
+    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_recursion_limit(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+            RECURSION_LIMIT_DEFAULT,
+        )
+    return RECURSION_LIMIT_DEFAULT
+
+
 # --- Option definitions -----------------------------------------------------
 
 # Search credentials that are not provider API keys live outside
@@ -637,6 +814,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "huggingface": ("langchain_huggingface", "huggingface"),
     "ibm": ("langchain_ibm", "ibm"),
     "litellm": ("langchain_litellm", "litellm"),
+    "meta": ("langchain_meta", "meta"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
     "ollama": ("langchain_ollama", "ollama"),
@@ -712,7 +890,8 @@ _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
 
 def _is_secret_env(name: str) -> bool:
     """Return whether a credential env var name carries secret material."""
-    return any(marker in name for marker in _SECRET_NAME_MARKERS)
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
 def _credential_options() -> tuple[ConfigOption, ...]:
@@ -781,6 +960,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "theme"),
     ),
     ConfigOption(
+        key="display.cursor_style",
+        group="Display",
+        summary="Chat input cursor style ('block' or 'underline').",
+        kind=OptionKind.CURSOR_STYLE_DELEGATE,
+        default=CURSOR_STYLE_DEFAULT,
+        env_var=_env_vars.CURSOR_STYLE,
+        toml_keys=("ui", "cursor_style"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",
@@ -819,6 +1007,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.SHOW_SCROLLBAR,
         toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
+        key="display.debug_console_click_to_copy",
+        group="Display",
+        summary="Copy on click in the Ctrl+\\ Debug Console (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_CONSOLE_CLICK_TO_COPY,
+        toml_keys=("ui", "debug_console_click_to_copy"),
     ),
     ConfigOption(
         key="display.collapse_pastes",
@@ -860,6 +1057,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
+    ),
+    ConfigOption(
+        key="display.hide_splash_tips",
+        group="Display",
+        summary="Hide the startup tip shown above the chat input.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.HIDE_SPLASH_TIPS,
     ),
     ConfigOption(
         key="display.hide_splash_version",
@@ -926,7 +1131,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Tracing",
         summary="Redact detected secrets from LangSmith agent traces before upload.",
         kind=OptionKind.BOOL,
-        default=True,
+        default=False,
         env_var=_env_vars.LANGSMITH_REDACT,
         toml_keys=("tracing", "langsmith_redact"),
     ),
@@ -982,6 +1187,41 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="models.openai_prompt_cache_key",
+        group="Tools",
+        summary=(
+            "Attach a per-thread prompt_cache_key to OpenAI-provider model calls "
+            "for reliable prompt-cache routing; disable for endpoints that reject "
+            "unknown request fields."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.OPENAI_PROMPT_CACHE_KEY,
+        empty_env_is_false=True,
+        toml_keys=("models", "openai_prompt_cache_key"),
+    ),
+    ConfigOption(
+        key="memory.auto_save",
+        group="Tools",
+        summary=(
+            "Let the agent proactively save learnings to memory (AGENTS.md); "
+            "disable to keep loading memory but stop auto-saving."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.MEMORY_AUTO_SAVE,
+        empty_env_is_false=True,
+        toml_keys=("memory", "auto_save"),
+    ),
+    ConfigOption(
+        key="features.experimental",
+        group="Tools",
+        summary="Opt into experimental, unstable dcode behavior.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",
@@ -995,6 +1235,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Override the default Unix-socket path for the event listener.",
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
+    ),
+    # --- Goals ----------------------------------------------------------
+    ConfigOption(
+        key="goals.auto_accept_criteria",
+        group="Goals",
+        summary="Apply generated goal criteria automatically in Auto mode.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.GOAL_AUTO_ACCEPT_CRITERIA,
+        toml_keys=("goals", "auto_accept_criteria"),
     ),
     # --- Interpreter (config.toml-only; defaults owned by this module) --
     ConfigOption(
@@ -1108,15 +1358,29 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
     # which reads them only from the user-level config.toml (never a project file),
     # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
-    # env overrides are named in the summaries instead of `env_var` because the
-    # scalar resolver rejects env-backed STRUCTURED options by design.
+    # related env settings are named in the summaries instead of `env_var` because
+    # the scalar resolver rejects env-backed STRUCTURED options by design.
+    ConfigOption(
+        key="mcp.enabled_project_server_approvals",
+        group="MCP",
+        summary=(
+            "Remote project MCP approvals with fixed URLs are shared across one "
+            "local Git repository's worktrees; local commands and interpolated "
+            "remote URLs use the exact worktree. All include the server name and "
+            "fingerprint, so edited commands/URLs or transport changes require "
+            "re-approval. Process-wide "
+            "name allowlist (bypasses project/fingerprint binding): "
+            "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_server_approvals"),
+    ),
     ConfigOption(
         key="mcp.enabled_project_servers",
         group="MCP",
         summary=(
-            "Project MCP server names to pre-approve by name from an untrusted "
-            ".mcp.json; command/URL changes under the same name still match "
-            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+            "Deprecated legacy flat project MCP server-name allowlist; ignored in "
+            "config.toml. Use enabled_project_server_approvals instead."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),
@@ -1165,6 +1429,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Runtime --------------------------------------------------------
     ConfigOption(
+        key="runtime.recursion_limit",
+        group="Runtime",
+        summary="Main agent LangGraph recursion_limit (graph step budget).",
+        kind=OptionKind.INT,
+        default=RECURSION_LIMIT_DEFAULT,
+        env_var=_env_vars.RECURSION_LIMIT,
+        toml_keys=("runtime", "recursion_limit"),
+        cli_flag="--recursion-limit",
+    ),
+    ConfigOption(
         key="runtime.offline",
         group="Runtime",
         summary="Disable managed binary downloads and use local fallbacks.",
@@ -1179,6 +1453,29 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         default="managed",
         env_var=_env_vars.RIPGREP_INSTALLER,
+    ),
+    # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.mode",
+        group="Startup",
+        summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
+        kind=OptionKind.STARTUP_MODE_DELEGATE,
+        default="manual",
+        toml_keys=("startup", "mode"),
+        cli_flag="--auto-approve",
+    ),
+    ConfigOption(
+        key="startup.yolo_switcher",
+        group="Startup",
+        summary=(
+            "Include YOLO in the Shift+Tab approval-mode cycle "
+            "(Manual → Auto → YOLO); disable to keep the cycle Manual/Auto only."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.YOLO_SWITCHER,
+        empty_env_is_false=True,
+        toml_keys=("startup", "yolo_switcher"),
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
@@ -1196,6 +1493,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+    ),
+    ConfigOption(
+        key="debug.log_level",
+        group="Debug",
+        summary=(
+            "Minimum runtime log level (DEBUG, INFO, WARNING, ERROR, or CRITICAL); "
+            "defaults to DEBUG in debug mode and INFO otherwise."
+        ),
+        kind=OptionKind.LOG_LEVEL_DELEGATE,
+        env_var=_env_vars.LOG_LEVEL,
     ),
     ConfigOption(
         key="debug.onboarding",
@@ -1245,8 +1552,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
-        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Detection-only migration sentinel; the removed env var is not an option.
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

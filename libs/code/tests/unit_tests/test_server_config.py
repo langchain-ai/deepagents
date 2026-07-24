@@ -207,6 +207,24 @@ class TestServerConfigPostInit:
         config = ServerConfig(sandbox_type=None)
         assert config.sandbox_type is None
 
+    def test_recursion_limit_none_allowed(self) -> None:
+        assert ServerConfig(recursion_limit=None).recursion_limit is None
+
+    def test_recursion_limit_positive_allowed(self) -> None:
+        assert ServerConfig(recursion_limit=2000).recursion_limit == 2000
+
+    def test_recursion_limit_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="recursion_limit"):
+            ServerConfig(recursion_limit=0)
+
+    def test_recursion_limit_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="recursion_limit"):
+            ServerConfig(recursion_limit=-1)
+
+    def test_recursion_limit_bool_rejected(self) -> None:
+        with pytest.raises(TypeError, match="recursion_limit"):
+            ServerConfig(recursion_limit=True)
+
 
 class TestServerConfigInterpreterDefault:
     """Tests for sandbox-aware interpreter default resolution."""
@@ -397,6 +415,18 @@ class TestServerConfigEdgeCases:
 
         assert restored.rubric_max_iterations == 7
 
+    def test_profile_overrides_round_trip_to_server(self) -> None:
+        """Profile metadata must reach server-side model construction."""
+        original = ServerConfig(profile_overrides={"max_input_tokens": 32000})
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.profile_overrides == {"max_input_tokens": 32000}
+
     def test_sandbox_type_none_string_round_trips(self) -> None:
         """sandbox_type='none' normalizes to None and survives round-trip."""
         original = ServerConfig(sandbox_type="none")
@@ -435,3 +465,39 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_snapshot_name is None
+
+    def test_recursion_limit_round_trips(self) -> None:
+        """An explicit recursion limit survives the server env boundary."""
+        original = ServerConfig(recursion_limit=3000)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit == 3000
+
+    def test_recursion_limit_unset_defaults_to_none(self) -> None:
+        """No recursion-limit env var restores as `None` (resolve at build time)."""
+        original = ServerConfig()
+        env_dict = original.to_env()
+        assert env_dict["RECURSION_LIMIT"] is None
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit is None
+
+    def test_malformed_recursion_limit_env_uses_none(self) -> None:
+        """A malformed recursion-limit env var falls back to `None`."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}RECURSION_LIMIT": "abc"},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit is None

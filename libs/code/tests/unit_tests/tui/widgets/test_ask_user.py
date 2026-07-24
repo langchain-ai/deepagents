@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Markdown, Static
@@ -20,6 +21,8 @@ from deepagents_code.tui.widgets.ask_user import (
 )
 
 if TYPE_CHECKING:
+    import pytest
+
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 
 
@@ -230,6 +233,38 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
+    async def test_text_answer_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in a text answer expands in the submitted value."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp([{"question": "Paste config?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            big = "key=value\n" * 5
+            await text_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert text_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
+
     async def test_text_input_soft_wraps_long_answers(self) -> None:
         """Soft-wrap is enabled so long answers wrap visually without newlines."""
         app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
@@ -367,6 +402,51 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["green"]}
+
+    async def test_multiple_choice_other_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in the "other" free-text answer expands on submit."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.focus()
+            big = "detail\n" * 5
+            await other_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
 
     async def test_enter_advances_sequentially_through_mc_questions(self) -> None:
         """Enter on a MC question should advance to the next, not skip."""
@@ -531,6 +611,263 @@ class TestAskUserMenu:
             assert qw0.has_class("ask-user-question-active")
             assert qw1.has_class("ask-user-question-inactive")
 
+    async def test_clicking_text_question_moves_active_highlight(self) -> None:
+        """Clicking a dimmed text question makes it the active/highlighted one."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+            qw1 = menu._question_widgets[1]
+            assert qw0.has_class("ask-user-question-active")
+
+            second_input = qw1.query_one(".ask-user-text-input", AskUserTextArea)
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            assert menu._current_question == 1
+            assert qw1.has_class("ask-user-question-active")
+            assert qw0.has_class("ask-user-question-inactive")
+            assert not qw0.has_class("ask-user-question-active")
+            assert second_input.has_focus
+
+    async def test_clicking_multiple_choice_question_moves_active_highlight(
+        self,
+    ) -> None:
+        """Clicking a dimmed multiple-choice question highlights it."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {
+                    "question": "Size?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "S"}, {"value": "M"}],
+                },
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+            qw1 = menu._question_widgets[1]
+            assert qw0.has_class("ask-user-question-active")
+
+            await pilot.click(qw1)
+            await pilot.pause()
+
+            assert menu._current_question == 1
+            assert qw1.has_focus
+            assert qw1.has_class("ask-user-question-active")
+            assert qw0.has_class("ask-user-question-inactive")
+
+    async def test_focus_sync_does_not_steal_focus_from_clicked_widget(self) -> None:
+        """Syncing the highlight must not move focus off the clicked question."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw1 = menu._question_widgets[1]
+            second_input = qw1.query_one(".ask-user-text-input", AskUserTextArea)
+
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            # Typing lands in the clicked question's input, not the first one.
+            await pilot.press("h", "i")
+            await pilot.pause()
+            assert second_input.text == "hi"
+            first_input = menu._question_widgets[0].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            assert first_input.text == ""
+
+    async def test_focus_sync_does_not_steal_focus_from_clicked_mc_question(
+        self,
+    ) -> None:
+        """Clicking a dimmed MC question keeps focus there for choice nav.
+
+        Multiple-choice questions take focus at the container level (their
+        `_ChoiceOption`s are not focusable), so this exercises the widget-level
+        focus path that the text-input focus-steal test does not.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {
+                    "question": "Size?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "S"}, {"value": "M"}],
+                },
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw1 = menu._question_widgets[1]
+
+            await pilot.click(qw1)
+            await pilot.pause()
+            assert qw1.has_focus
+
+            # Arrow keys drive the clicked question's choice list, not Q1's.
+            await pilot.press("down")
+            await pilot.pause()
+            assert qw1._selected_choice == 1
+            assert menu._question_widgets[0]._selected_choice == 0
+
+    async def test_clicking_already_active_question_is_noop(self) -> None:
+        """Clicking the currently active question leaves it active and focused."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+            first_input = qw0.query_one(".ask-user-text-input", AskUserTextArea)
+            assert qw0.has_class("ask-user-question-active")
+
+            # `node._index == _current_question`, so the handler short-circuits.
+            await pilot.click(first_input)
+            await pilot.pause()
+
+            assert menu._current_question == 0
+            assert qw0.has_class("ask-user-question-active")
+            assert not qw0.has_class("ask-user-question-inactive")
+            assert first_input.has_focus
+
+    async def test_click_highlight_preserves_confirmed_and_answers(self) -> None:
+        """Following focus on click must not confirm or clear existing answers."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            first_input = menu._question_widgets[0].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            await pilot.press("t", "y", "p", "e", "d")
+            await pilot.pause()
+            assert first_input.text == "typed"
+
+            second_input = menu._question_widgets[1].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            # The click only moved the highlight: no confirmation, no lost answer.
+            assert menu._current_question == 1
+            assert menu._confirmed == [False, False]
+            assert first_input.text == "typed"
+
+    async def test_other_input_focus_syncs_highlight(self) -> None:
+        """Focusing a question's Other input syncs the highlight to that question.
+
+        Covers the free-text `_other_input` focus path (a distinct descendant
+        from the plain text input) both when it stays within the active
+        question and when the user then clicks a different question.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+
+            # Select "Other" in Q1 (red -> blue -> Other), revealing its input.
+            await pilot.press("down", "down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            other_input = qw0.query_one(".ask-user-other-input", AskUserTextArea)
+            assert other_input.has_focus
+            # Focus is inside Q1, so the highlight stays on Q1 (no-op sync).
+            assert menu._current_question == 0
+            assert qw0.has_class("ask-user-question-active")
+
+            # Clicking Q2 moves the highlight off the active Other input.
+            second_input = menu._question_widgets[1].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            assert menu._current_question == 1
+            assert menu._question_widgets[1].has_class("ask-user-question-active")
+            assert qw0.has_class("ask-user-question-inactive")
+            assert second_input.has_focus
+
+    async def test_focus_outside_any_question_leaves_highlight_unchanged(self) -> None:
+        """Focus with no `_QuestionWidget` ancestor is a no-op for the highlight.
+
+        The walk-up in `on_descendant_focus` terminates at `None` when the
+        focused widget has no enclosing question. No focusable widget outside a
+        question exists in the normal layout, so drive the handler directly to
+        guard the walk-up termination and the `node is not None` check against
+        regression.
+        """
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            menu._set_active_question(1)
+            await pilot.pause()
+
+            # `event.widget` is the menu itself; the walk-up climbs its
+            # ancestors (none are `_QuestionWidget`s) and terminates at `None`.
+            menu.on_descendant_focus(events.DescendantFocus(menu))
+
+            assert menu._current_question == 1
+            assert menu._question_widgets[1].has_class("ask-user-question-active")
+            assert menu._question_widgets[0].has_class("ask-user-question-inactive")
+
     async def test_previous_question_clamps_at_first(self) -> None:
         """At first question: previous is a no-op."""
         app = _AskUserTestApp(
@@ -573,6 +910,23 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
             assert "Tab" not in str(help_text)
+
+    async def test_help_text_advertises_newline_shortcut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer advertises the terminal-aware newline shortcut."""
+        from deepagents_code import config as config_module
+
+        # `newline_hint` resolves `newline_shortcut` via a call-time import from
+        # config, so patch the name on the config module it looks up.
+        monkeypatch.setattr(config_module, "newline_shortcut", lambda: "Ctrl+J")
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+J newline" in str(help_text)
 
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
@@ -752,7 +1106,7 @@ class TestAskUserMenu:
             assert other_input.has_focus
 
     async def test_cancel_after_submit_does_not_override_answer(self) -> None:
-        """Cancel after submit should be ignored by the `_submitted` guard."""
+        """Cancel after submit is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:
@@ -776,7 +1130,7 @@ class TestAskUserMenu:
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
     async def test_submit_after_cancel_does_not_override_cancel(self) -> None:
-        """Submit after cancel should be ignored by the `_submitted` guard."""
+        """Submit after cancel is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:

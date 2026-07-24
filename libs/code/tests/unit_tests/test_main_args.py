@@ -118,6 +118,312 @@ def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> N
         assert parsed_args.auto_approve is True
 
 
+class TestAutoApproveArgument:
+    """Tests for -y / --auto-approve parsing and its config.toml default."""
+
+    def test_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing -y sets auto_approve to True."""
+        with mock_argv("-y"):
+            assert parse_args().auto_approve is True
+
+    def test_long_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing --auto-approve sets auto_approve to True."""
+        with mock_argv("--auto-approve"):
+            assert parse_args().auto_approve is True
+
+    def test_omitted_is_none(self, mock_argv: MockArgvType) -> None:
+        """Omitting the flag leaves auto_approve as None so config.toml decides."""
+        with mock_argv():
+            assert parse_args().auto_approve is None
+
+    def test_yolo_is_explicit_and_mutually_exclusive(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with mock_argv("--yolo"):
+            assert parse_args().yolo is True
+        with mock_argv("--yolo", "--auto-approve"), pytest.raises(SystemExit):
+            parse_args()
+
+
+class TestResolveAutoApprove:
+    """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
+
+    def test_explicit_flag_wins_without_consulting_config(self) -> None:
+        """An explicit -y (True) resolves True and never reads config."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=True)
+        with patch("deepagents_code.model_config.load_startup_mode") as mock_load:
+            assert _resolve_auto_approve(args) is True
+        mock_load.assert_not_called()
+
+    def test_omitted_flag_manual_config_resolves_false(self) -> None:
+        """No flag + `[startup].mode = manual` keeps approvals on (False)."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="manual",
+        ):
+            assert _resolve_auto_approve(args) is False
+
+    def test_omitted_flag_dangerously_auto_config_resolves_false(self) -> None:
+        """The removed `dangerously-auto` spelling fails closed."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="dangerously-auto",
+        ):
+            assert _resolve_auto_approve(args) is False
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (argparse.Namespace(auto_approve=True, yolo=False), "auto"),
+            (argparse.Namespace(auto_approve=None, yolo=True), "yolo"),
+        ],
+    )
+    def test_typed_mode_resolution(
+        self, args: argparse.Namespace, expected: str
+    ) -> None:
+        from deepagents_code.main import _resolve_approval_mode
+
+        assert _resolve_approval_mode(args).value == expected
+
+
+class TestYoloAcknowledgement:
+    """Tests for the versioned local unrestricted-mode acknowledgement."""
+
+    def test_existing_acknowledgement_skips_prompt(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=True,
+            ),
+            patch("deepagents_code.main._prompt_yolo_acknowledgement") as prompt,
+            patch("deepagents_code.approval_mode.save_yolo_acknowledgement") as save,
+        ):
+            assert _ensure_yolo_acknowledged(console)
+        prompt.assert_not_called()
+        save.assert_not_called()
+
+    def test_declined_acknowledgement_fails_closed(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.main._prompt_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch("deepagents_code.approval_mode.save_yolo_acknowledgement") as save,
+        ):
+            assert not _ensure_yolo_acknowledged(console)
+        save.assert_not_called()
+
+    def test_new_acknowledgement_must_persist(self) -> None:
+        from deepagents_code.main import _ensure_yolo_acknowledged
+
+        console = MagicMock()
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.main._prompt_yolo_acknowledgement",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.save_yolo_acknowledgement",
+                return_value=False,
+            ),
+        ):
+            assert not _ensure_yolo_acknowledged(console)
+        assert console.print.called
+
+
+class TestAutoApproveHeadlessValidation:
+    """Tests that headless mode rejects the interactive approval flag."""
+
+    def test_rejects_explicit_non_interactive_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`-n` must reject `--auto-approve` instead of silently ignoring it."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--auto-approve", "-n", "do the thing"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "--auto-approve is only supported in interactive mode" in stderr
+        assert "--shell-allow-list" in stderr
+
+    def test_rejects_piped_stdin_mode(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Piped stdin must reject the flag after selecting headless mode."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "do the thing"
+        with (
+            patch.object(sys, "argv", ["deepagents", "--auto-approve"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("os.open", side_effect=OSError("No controlling terminal")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "--auto-approve is only supported in interactive mode" in stderr
+        assert "--shell-allow-list" in stderr
+
+    def test_rejects_yolo_in_non_interactive_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--yolo", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--yolo is only supported in interactive mode" in capsys.readouterr().err
+
+    def test_accepts_auto_approve_in_interactive_mode(self) -> None:
+        """`--auto-approve` must still be honored on an interactive launch.
+
+        The guard rejects only when `args.non_interactive_message` is also set.
+        Without that conjunct it would wrongly reject `dcode -m ... -y`; this
+        pins the interactive path so a dropped conjunct fails loudly instead of
+        silently breaking the flag's primary use. Also asserts the resolved
+        value flows through to the TUI (`auto_approve=True`).
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "--auto-approve", "-m", "hello"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        await_args = run_tui.await_args
+        assert await_args is not None
+        from deepagents_code.approval_mode import ApprovalMode
+
+        assert await_args.kwargs["approval_mode"] is ApprovalMode.AUTO
+
+    def test_auto_approve_downgraded_to_manual_with_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--auto-approve` with a sandbox must downgrade to Manual and warn.
+
+        Auto's classifier runs only in the sandbox-free local TUI. When a
+        sandbox is requested the interactive launch path (`cli_main`) must
+        resolve Manual and surface the reason instead of silently dropping the
+        requested mode.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--auto-approve", "--sandbox", "daytona", "-m", "hi"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            # Skip the real provider dependency check; it exits before the
+            # approval-mode downgrade when `daytona` extras are absent.
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+                return_value=None,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        await_args = run_tui.await_args
+        assert await_args is not None
+        from deepagents_code.approval_mode import ApprovalMode
+
+        assert await_args.kwargs["approval_mode"] is ApprovalMode.MANUAL
+        assert "Auto is unavailable with a sandbox" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [
@@ -464,6 +770,46 @@ class TestSkillFlagValidation:
         ):
             cli_main()
         assert exc_info.value.code == 2
+
+    def test_skill_with_explicit_stdin_and_quiet_runs_headless(self) -> None:
+        """`--skill --stdin -q` clears the guard and forwards the skill headless.
+
+        Explicit `--stdin` routes the piped text to `non_interactive_message`
+        (not the interactive `-m` seed), which satisfies the `--skill` +
+        `--quiet` guard and reaches `run_non_interactive` with both the piped
+        message and `initial_skill`.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "review this repo"
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            # Skip the /dev/tty dance — os.open would fail in test sandboxes
+            # and the real code path already tolerates that failure.
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # ty: ignore
+        assert mock_run.await_args.kwargs["message"] == "review this repo"  # ty: ignore
 
 
 class TestMaxTurnsArgument:
@@ -1034,6 +1380,46 @@ class TestApplyStdinPipe:
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "diff contents\n\nreview this"
+        assert args.non_interactive_message is None
+
+    def test_explicit_stdin_with_skill_runs_headless(self) -> None:
+        """Explicit `--stdin` + `--skill` runs headless, not the seeded TUI."""
+        args = _make_args(initial_skill="code-review", stdin=True)
+        fake_stdin = io.StringIO("review this repo")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "review this repo"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_without_skill_sets_non_interactive(self) -> None:
+        """Explicit `--stdin` with no skill/`-n`/`-m` sets non_interactive_message."""
+        args = _make_args(stdin=True)
+        fake_stdin = io.StringIO("my prompt")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "my prompt"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_prepends_to_non_interactive(self) -> None:
+        """Explicit `--stdin` still prepends to an existing -n message."""
+        args = _make_args(non_interactive_message="do something", stdin=True)
+        fake_stdin = io.StringIO("context from pipe")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "context from pipe\n\ndo something"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_prepends_to_initial_prompt(self) -> None:
+        """Explicit `--stdin` still merges into an existing -m message."""
+        args = _make_args(initial_prompt="explain this", stdin=True)
+        fake_stdin = io.StringIO("error log contents")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.initial_prompt == "error log contents\n\nexplain this"
         assert args.non_interactive_message is None
 
     def test_non_interactive_takes_priority_over_initial_prompt(self) -> None:
@@ -1937,6 +2323,7 @@ class TestInstallExtraSubcommand:
         assert code == 0
         text = self._printed_text(console_mock)
         assert "Installed extra 'quickjs'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_failure_renders_log_path_and_manual_command(self) -> None:
         """A failed install surfaces both the log path and manual script command."""
@@ -2106,6 +2493,7 @@ class TestInstallPackageSubcommand:
         perform_mock.assert_awaited_once()
         text = self._printed_text(console_mock)
         assert "Installed package 'langchain-custom'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_package_non_interactive_without_yes_refuses(self) -> None:
         """Non-TTY stdin + no --yes must exit 2 without installing."""
@@ -2232,6 +2620,277 @@ class TestParseInterpreterToolsFlag:
         with pytest.raises(SystemExit) as exc_info:
             _parse_interpreter_tools_flag("   ")
         assert exc_info.value.code == 2
+
+
+class TestParseAllowFsToolsFlag:
+    """Tests for `_parse_allow_fs_tools_flag`."""
+
+    def test_none_returns_none(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag(None) is None
+
+    def test_all_collapses_to_none(self) -> None:
+        """`all` collapses to `None` (both mean "leave the SDK default")."""
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("all") is None
+
+    def test_explicit_list(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("ls,read_file,grep") == [
+            "ls",
+            "read_file",
+            "grep",
+        ]
+
+    def test_empty_value_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("   ")
+        assert exc_info.value.code == 2
+        # Distinct message, not one of the other exit paths.
+        assert "requires a value" in capsys.readouterr().err
+
+    def test_unknown_tool_name_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("read_file,bogus")
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "unknown tool name" in err
+        assert "bogus" in err
+
+    def test_missing_read_file_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("ls,grep")
+        assert exc_info.value.code == 2
+        assert "must include 'read_file'" in capsys.readouterr().err
+
+    def test_tool_names_are_case_insensitive(self) -> None:
+        """Tool names are matched case-insensitively (like the `all` sentinel)."""
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("LS,Read_File") == ["ls", "read_file"]
+
+    def test_all_inside_list_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("all,read_file")
+        assert exc_info.value.code == 2
+        # A dedicated message, not the generic "unknown tool name" path.
+        assert "cannot be combined" in capsys.readouterr().err
+
+    def test_all_is_case_insensitive(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("ALL") is None
+        assert _parse_allow_fs_tools_flag("All") is None
+
+    def test_list_trims_and_skips_blank_tokens(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag(" ls , read_file , ") == ["ls", "read_file"]
+        assert _parse_allow_fs_tools_flag("read_file,") == ["read_file"]
+
+    def test_blank_only_tokens_exit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A non-empty value that splits to zero tokens (e.g. ',') exits."""
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag(", ,")
+        assert exc_info.value.code == 2
+        assert "at least one" in capsys.readouterr().err
+
+    def test_fs_tool_names_match_sdk(self) -> None:
+        """`_FS_TOOL_NAMES` must not drift from the SDK's `FsToolName`."""
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        from deepagents_code.main import _FS_TOOL_NAMES
+
+        assert set(get_args(FsToolName)) == _FS_TOOL_NAMES
+
+
+class TestAllowFsToolsArgument:
+    """Tests for --allow-fs-tools argument parsing and forwarding."""
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.allow_fs_tools is None
+
+    def test_parses_raw_value(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--allow-fs-tools", "ls,read_file"):
+            parsed = parse_args()
+            assert parsed.allow_fs_tools == "ls,read_file"
+
+    def test_help_lists_every_fs_tool_name(self, mock_argv: MockArgvType) -> None:
+        """The `--allow-fs-tools` help text must name every SDK filesystem tool.
+
+        The help string hardcodes the tool-name list (`deepagents` must not be
+        imported on the arg-parsing path), so — unlike `_FS_TOOL_NAMES`, which a
+        drift test pins — it could silently go stale when the SDK adds a tool.
+        Spy the argparse registration to capture that specific help string and
+        guard it against `FsToolName`.
+        """
+        import argparse
+        from typing import Any, get_args
+
+        from deepagents import FsToolName
+
+        captured: dict[str, str] = {}
+        real_add_argument = argparse.ArgumentParser.add_argument
+
+        def spy(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            # args[0] is the bound ArgumentParser instance; the flag strings
+            # follow. Match the registration for `--allow-fs-tools`.
+            if "--allow-fs-tools" in args:
+                captured["help"] = str(kwargs.get("help", ""))
+            return real_add_argument(*args, **kwargs)
+
+        with (
+            patch.object(argparse.ArgumentParser, "add_argument", spy),
+            mock_argv("-n", "task"),
+        ):
+            parse_args()
+
+        assert "help" in captured, "--allow-fs-tools argument was not registered"
+        for name in get_args(FsToolName):
+            assert name in captured["help"], f"--allow-fs-tools help omits {name!r}"
+
+    def test_forwarded_to_run_non_interactive(self) -> None:
+        """--allow-fs-tools is parsed and forwarded as allow_fs_tools."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "do the thing",
+                    "--allow-fs-tools",
+                    "ls,read_file",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["allow_fs_tools"] == ["ls", "read_file"]  # ty: ignore
+
+    def test_invalid_value_exits_before_startup_side_effects(self) -> None:
+        """Malformed allowlists fail before migration, installs, or prompts."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-n", "task", "--allow-fs-tools", "bogus"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.state_migration.migrate_legacy_state") as migrate,
+            patch("deepagents_code.main.check_optional_tools") as check_tools,
+            patch("deepagents_code.main._run_startup_auto_update") as update,
+            patch("deepagents_code.main._check_mcp_project_trust") as trust,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        migrate.assert_not_called()
+        check_tools.assert_not_called()
+        update.assert_not_called()
+        trust.assert_not_called()
+
+    def test_not_forwarded_as_none_when_omitted(self) -> None:
+        """When --allow-fs-tools is omitted, allow_fs_tools=None is forwarded."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["allow_fs_tools"] is None  # ty: ignore
+
+    def test_forwarded_to_run_textual_cli(self) -> None:
+        """--allow-fs-tools is parsed and forwarded to the TUI launch path."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-m", "hello", "--allow-fs-tools", "ls,read_file"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        assert run_tui.await_args is not None
+        assert run_tui.await_args.kwargs["allow_fs_tools"] == ["ls", "read_file"]
 
 
 class TestInterpreterFlagParsing:

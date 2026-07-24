@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -12,23 +11,12 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     GlobResult,
     GrepResult,
+    LsResult,
     SandboxBackendProtocol,
     WriteResult,
 )
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
-
-
-def make_runtime(tid: str = "tc", *, store=None):
-    """Minimal ToolRuntime - only needed for _intercept_large_tool_result calls."""
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tid,
-        store=store or InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
 
 
 def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG001  # Pytest fixture
@@ -376,7 +364,7 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
 
     class TrackingRouteBackend(StoreBackend):
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(namespace=lambda _rt: ("tracking",))
             self.called = False
 
         def glob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -384,7 +372,10 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
             return GlobResult(matches=[])
 
     routed_backend = TrackingRouteBackend()
-    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+    comp = CompositeBackend(
+        default=ErrorDefaultBackend(namespace=lambda _rt: ("default",)),
+        routes={"/store/": routed_backend},
+    )
 
     result = comp.glob("*", path="/")
 
@@ -418,6 +409,30 @@ async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch:
     monkeypatch.setattr(routed, "aglob", _aglob_error)
     glob_result = await comp.aglob("*.txt", path="/")
     assert glob_result.error == "sandbox RPC failed"
+
+
+def test_composite_ls_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    comp, default, _routed = _merge_composite()
+    monkeypatch.setattr(default, "ls", lambda _path: LsResult(error="Error: connection to sandbox lost"))
+
+    result = comp.ls("/")
+
+    assert result.error == "Error: connection to sandbox lost"
+    assert result.entries is None
+
+
+async def test_composite_als_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    comp, default, _routed = _merge_composite()
+
+    async def _als_error(_path: str) -> LsResult:
+        return LsResult(error="Error: connection to sandbox lost")
+
+    monkeypatch.setattr(default, "als", _als_error)
+
+    result = await comp.als("/")
+
+    assert result.error == "Error: connection to sandbox lost"
+    assert result.entries is None
 
 
 def test_composite_backend_ls_nested_directories(tmp_path: Path):
@@ -575,48 +590,43 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_composite_backend_intercept_large_tool_result(file_format):
+def test_composite_backend_intercept_large_tool_result():
     mem_store = InMemoryStore()
-    rt = make_runtime("t10", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
             routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
         ),
         tool_token_limit_before_evict=1000,
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
     # Verify the file was written to the default store backend
     stored_item = mem_store.get(("default",), "/large_tool_results/test_789")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_composite_backend_intercept_large_tool_result_routed_to_store(file_format):
+def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
     mem_store = InMemoryStore()
-    rt = make_runtime("t11", store=mem_store)
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
-            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)},
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
         ),
         tool_token_limit_before_evict=1000,
     )
 
     large_content = "w" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_routed_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -624,8 +634,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store(file_form
 
     stored_item = mem_store.get(("filesystem",), "/test_routed_123")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
 # Mock sandbox backend for testing execute functionality
@@ -1206,10 +1215,10 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Invalid regex pattern error"
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
+            return GrepResult(error="Invalid regex pattern error")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1225,10 +1234,10 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Backend error occurred"
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
+            return GrepResult(error="Backend error occurred")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1244,10 +1253,10 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Default backend error"
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
+            return GrepResult(error="Default backend error")
 
-    error_default = ErrorDefaultBackend()
+    error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
     store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
@@ -1368,6 +1377,92 @@ def test_grep_path_stripping_matches_get_backend_and_key() -> None:
     # Search with nested path inside route
     matches2 = comp.grep("hello", path="/memories/readme.md").matches
     assert matches2 is not None
+
+
+def test_grep_max_count_enforced_across_routes() -> None:
+    """`max_count` caps total matches across the default and all routed backends."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=3)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_grep_max_count_short_circuits_routes() -> None:
+    """Once the default backend fills the cap, routed backends are not consulted."""
+    mem_store = InMemoryStore()
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    class _RaisingBackend(StoreBackend):
+        def grep(self, *_args: object, **_kwargs: object) -> GrepResult:
+            msg = "routed backend should not be queried once the cap is met"
+            raise AssertionError(msg)
+
+    route = _RaisingBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=state, routes={"/memories/": route})
+
+    comp.write("/root_a.txt", "hit\nhit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=2)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_grep_no_cap_returns_all_across_routes() -> None:
+    """`max_count=None` preserves prior behavior: every match across routes is returned."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/")
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 4
+
+
+def test_grep_supports_legacy_backends_across_routes() -> None:
+    """Composite grep preserves old child signatures and caps their results."""
+
+    class LegacyBackend(BackendProtocol):
+        def __init__(self, paths: list[str]) -> None:
+            self.paths = paths
+
+        def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+        ) -> GrepResult:
+            return GrepResult(matches=[{"path": item, "line": 1, "text": pattern} for item in self.paths])
+
+    comp = CompositeBackend(
+        default=LegacyBackend(["/default.txt"]),
+        routes={"/legacy/": LegacyBackend(["/one.txt", "/two.txt", "/three.txt"])},
+    )
+
+    uncapped = comp.grep("needle", path="/")
+    capped = comp.grep("needle", path="/", max_count=2)
+
+    assert uncapped.matches is not None
+    assert len(uncapped.matches) == 4
+    assert capped.matches is not None
+    assert len(capped.matches) == 2
+    assert capped.truncated is True
 
 
 def test_glob_path_stripping_matches_get_backend_and_key() -> None:

@@ -19,6 +19,7 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
+from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -3151,6 +3152,7 @@ class TestResumeThread:
         offer_cwd_switch.assert_awaited_once_with(
             "thread-123",
             restart_server=True,
+            abort="thread_switch",
         )
         assert len(mounted) == 1
         assert "Already on thread" in _get_widget_text(mounted[0])
@@ -3174,9 +3176,11 @@ class TestResumeThread:
             thread_id: str,
             *,
             restart_server: bool,
+            abort: CwdSwitchAbortMode | None,
         ) -> str:
             assert thread_id == "thread-123"
             assert restart_server is True
+            assert abort == "thread_switch"
             app._cwd = str(target)
             return "continue"
 
@@ -3217,11 +3221,10 @@ class TestResumeThread:
 
         await app._resume_thread("new-thread")
 
-        # In-session switches never offer abort — that is launch-time only.
-        # Exact-args match fails if `allow_abort=True` ever leaks in here.
         offer_cwd_switch.assert_awaited_once_with(
             "new-thread",
             restart_server=True,
+            abort="thread_switch",
         )
         assert app._lc_thread_id == "new-thread"
         assert app._session_state.thread_id == "new-thread"
@@ -3278,6 +3281,21 @@ class TestResumeThread:
         await app._resume_thread("new-thread")
 
         assert app._should_adopt_resumed_model is False
+
+    async def test_successful_switch_records_previous_thread(self) -> None:
+        """A successful switch records the outgoing thread as previous_thread_id.
+
+        Lets a follow-up bare `/threads -r` step back to the thread just left
+        rather than resolving `previous == current` and reporting "Already on
+        thread".
+        """
+        app = self._switch_app()
+
+        await app._resume_thread("new-thread")
+
+        session_state = app._session_state
+        assert session_state is not None
+        assert session_state.previous_thread_id == "old-thread"
 
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
@@ -4186,6 +4204,43 @@ class TestConvertMessagesToData:
 
         assert len(result) == 1
         assert result[0].content == "Real user message"
+
+    def test_known_internal_sources_are_skipped_without_prefix(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        messages = [
+            HumanMessage(
+                content=f"hidden {source}",
+                additional_kwargs={"lc_source": source},
+            )
+            for source in (
+                "goal_state",
+                "goal_control",
+                "rubric_grader",
+                "summarization",
+            )
+        ]
+        messages.append(HumanMessage(content="real user message"))
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert len(result) == 1
+        assert result[0].content == "real user message"
+
+    def test_unknown_source_remains_visible(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        result = DeepAgentsApp._convert_messages_to_data(
+            [
+                HumanMessage(
+                    content="connector user message",
+                    additional_kwargs={"lc_source": "slack"},
+                )
+            ]
+        )
+
+        assert len(result) == 1
+        assert result[0].content == "connector user message"
 
     def test_ai_message_text_content(self) -> None:
         """AIMessage with string content should become ASSISTANT MessageData."""

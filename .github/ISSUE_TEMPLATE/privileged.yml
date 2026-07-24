@@ -30,8 +30,7 @@ body:
         Please select area(s) that this issue is related to.
       options:
         - label: deepagents (SDK)
-        - label: cli
-        - label: code
+        - label: dcode
         - label: talon
         - label: acp
         - label: evals

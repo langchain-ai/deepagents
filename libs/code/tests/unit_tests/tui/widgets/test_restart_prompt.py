@@ -25,7 +25,9 @@ class TestRestartPromptScreen:
             def on_dismiss(result: str | None) -> None:
                 outcomes.append(result)
 
-            app.push_screen(RestartPromptScreen("fireworks"), on_dismiss)
+            app.push_screen(
+                RestartPromptScreen("fireworks", verb="Installed"), on_dismiss
+            )
             await pilot.pause()
 
             await pilot.press("enter")
@@ -42,7 +44,9 @@ class TestRestartPromptScreen:
             def on_dismiss(result: str | None) -> None:
                 outcomes.append(result)
 
-            app.push_screen(RestartPromptScreen("fireworks"), on_dismiss)
+            app.push_screen(
+                RestartPromptScreen("fireworks", verb="Installed"), on_dismiss
+            )
             await pilot.pause()
 
             await pilot.press("escape")
@@ -67,7 +71,7 @@ class TestRestartPromptScreen:
             def on_dismiss(result: str | None) -> None:
                 outcomes.append(result)
 
-            screen = RestartPromptScreen("fireworks")
+            screen = RestartPromptScreen("fireworks", verb="Installed")
             app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
@@ -80,9 +84,44 @@ class TestRestartPromptScreen:
         """The installed extra/package label is surfaced in the modal title."""
         app = _RestartTestApp()
         async with app.run_test() as pilot:
-            app.push_screen(RestartPromptScreen("langchain-custom"))
+            app.push_screen(RestartPromptScreen("langchain-custom", verb="Installed"))
             await pilot.pause()
 
             titles = app.screen.query(".restart-prompt-title")
             assert len(titles) == 1
             assert "langchain-custom" in str(titles.first().render())
+
+    async def test_renders_custom_verb(self) -> None:
+        """A caller-supplied `verb` replaces the install-flow default in the title."""
+        app = _RestartTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(RestartPromptScreen("Tavily API key", verb="Saved"))
+            await pilot.pause()
+
+            title = str(app.screen.query_one(".restart-prompt-title").render())
+            assert "Saved" in title
+            assert "Tavily API key" in title
+            assert "Installed" not in title
+
+    async def test_renders_default_body(self) -> None:
+        """With no `body` override, the generic restart copy is shown."""
+        app = _RestartTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(RestartPromptScreen("fireworks", verb="Installed"))
+            await pilot.pause()
+
+            body = str(app.screen.query_one(".restart-prompt-body").render())
+            assert body == RestartPromptScreen._DEFAULT_BODY
+
+    async def test_renders_body_override(self) -> None:
+        """A caller-supplied `body` replaces the default explanatory line."""
+        app = _RestartTestApp()
+        override = "Restart the server to enable web search, or defer with `/restart`."
+        async with app.run_test() as pilot:
+            app.push_screen(
+                RestartPromptScreen("Tavily API key", verb="Saved", body=override)
+            )
+            await pilot.pause()
+
+            body = str(app.screen.query_one(".restart-prompt-body").render())
+            assert body == override

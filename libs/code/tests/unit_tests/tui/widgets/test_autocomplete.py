@@ -1,6 +1,7 @@
 """Tests for autocomplete fuzzy search functionality."""
 
 import asyncio
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.tui.widgets import autocomplete as autocomplete_module
 from deepagents_code.tui.widgets.autocomplete import (
     MAX_SUGGESTIONS,
@@ -177,7 +178,7 @@ class TestSlashCommandController:
     @pytest.fixture
     def controller(self, mock_view):
         """Create a SlashCommandController with mock view."""
-        return SlashCommandController(SLASH_COMMANDS, mock_view)
+        return SlashCommandController(get_slash_commands(), mock_view)
 
     def test_can_handle_slash_prefix(self, controller):
         """Handles text starting with /."""
@@ -214,7 +215,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -245,7 +246,7 @@ class TestSlashCommandController:
         controller.on_text_changed("/", 1)
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_hidden_keyword_match_continue(self, controller, mock_view):
         """Typing 'continue' surfaces /threads via hidden keyword."""
@@ -286,6 +287,19 @@ class TestSlashCommandController:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/help" in s[0] for s in suggestions)
+
+    def test_prefix_ties_follow_registry_order_for_re_commands(self, mock_view) -> None:
+        """Equal-score prefixes keep registry order (`re`/`rel` disambiguation)."""
+        controller = SlashCommandController(get_slash_commands(), mock_view)
+        assert any(entry.name == "/reload" for entry in controller._commands)
+
+        controller.on_text_changed("/re", 3)
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0].startswith("/remember")
+
+        controller.on_text_changed("/rel", 4)
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0].startswith("/reload")
 
     def test_prefix_match_ranks_first(self, controller, mock_view):
         """Prefix matches on command name rank above description matches."""
@@ -490,7 +504,7 @@ class TestMultiCompletionManager:
     @pytest.fixture
     def manager(self, mock_view, tmp_path):
         """Create a MultiCompletionManager with both controllers."""
-        slash_ctrl = SlashCommandController(SLASH_COMMANDS, mock_view)
+        slash_ctrl = SlashCommandController(get_slash_commands(), mock_view)
         file_ctrl = FuzzyFileController(mock_view, cwd=tmp_path)
         # Cast needed: lists are invariant, so the inferred type
         # list[SlashCommandController | FuzzyFileController] won't match
@@ -599,6 +613,59 @@ class TestSlashCommandControllerUpdateCommands:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/skill:code-review" in s[0] for s in suggestions)
+
+
+class TestSlashCommandControllerDisplaySeparation:
+    """Popup shows the label but completion inserts the machine name."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view: MagicMock) -> SlashCommandController:
+        commands = [
+            CommandEntry(
+                name="/skill:my-plugin:review",
+                description="(my-plugin) Review code",
+                hidden_keywords="my-plugin review",
+                argument_hint="",
+                display_name="/skill:review",
+            ),
+        ]
+        return SlashCommandController(commands, mock_view)
+
+    def test_popup_shows_short_label(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """The suggestion popup renders the short display label."""
+        controller.on_text_changed("/skill:rev", 10)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
+
+    def test_completion_inserts_machine_name(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Applying the completion inserts the full namespaced name."""
+        controller.on_text_changed("/skill:rev", 10)
+        applied = controller._apply_selected_completion(10)
+
+        assert applied is True
+        mock_view.replace_completion_range.assert_called_once_with(
+            0, 10, "/skill:my-plugin:review"
+        )
+
+    def test_terminal_segment_fuzzy_matches_plugin_skill(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Typing just the terminal segment surfaces the plugin skill."""
+        controller.on_text_changed("/review", 7)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
 
 
 class TestFuzzyFileControllerSetCwd:
@@ -1032,6 +1099,106 @@ class TestGetProjectFiles:
         files = _get_project_files(tmp_path)
 
         assert "a/b/c/d/e/deep.py" in files
+
+    def test_git_stderr_uses_stable_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git diagnostics must use the English locale expected by log filtering."""
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        captured: dict[str, object] = {}
+
+        def fake_run(*_args: object, **kwargs: object) -> _Result:
+            captured.update(kwargs)
+            return _Result()
+
+        monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
+        monkeypatch.setenv("AUTOCOMPLETE_TEST_ENV", "preserved")
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        _run_git_ls_files("git", tmp_path, [])
+
+        env = cast("dict[str, str]", captured["env"])
+        assert env["LC_ALL"] == "C"
+        assert env["AUTOCOMPLETE_TEST_ENV"] == "preserved"
+
+    def test_non_repo_directory_is_quiet(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-Git directory (exit 128) must not emit a debug log.
+
+        Running `git ls-files` outside a work tree is the expected trigger for
+        the glob fallback, so the failure path stays silent.
+        """
+        git_path = _get_git_executable()
+        assert git_path is not None
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            ok, files = _run_git_ls_files(git_path, tmp_path, [])
+
+        assert ok is False
+        assert files == []
+        assert caplog.records == []
+
+    def test_genuine_failure_logs_details(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A real Git failure logs root/cwd, args, exit code, and stderr."""
+
+        class _Result:
+            returncode = 129
+            stdout = ""
+            stderr = "fatal: unknown option `--bogus'\n"
+
+        def fake_run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result()
+
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            ok, files = _run_git_ls_files("git", tmp_path, ["--bogus"])
+
+        assert ok is False
+        assert files == []
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert str(tmp_path) in message
+        assert "--bogus" in message
+        assert "exit=129" in message
+        assert "unknown option" in message
+
+    def test_failure_stderr_is_sanitized(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Control characters in git stderr are neutralized before logging."""
+
+        class _Result:
+            returncode = 1
+            stdout = ""
+            stderr = "fatal: broken\x1b[31mred\r\nsecond line\n"
+
+        def fake_run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result()
+
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            _run_git_ls_files("git", tmp_path, [])
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "\x1b" not in message
+        assert "\r" not in message
 
     def test_glob_fallback_when_git_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

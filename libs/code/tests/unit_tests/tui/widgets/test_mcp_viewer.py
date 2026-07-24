@@ -709,12 +709,10 @@ class TestMCPViewerScreen:
             assert "1 tool)" in text
 
     async def test_keyboard_navigation(self) -> None:
-        """Arrow / Tab navigation walks rows (headers + tools).
+        """Arrows walk every row while Tab moves between servers.
 
-        Up/Down step through every row including server headers. Tab /
-        Shift+Tab skip headers as a faster cross-tool nav. Vim-style
-        `j`/`k` bindings are absent so they can be typed into the filter
-        Input — see `test_letter_keys_type_into_filter`.
+        Vim-style `j`/`k` bindings are absent so they can be typed into the
+        filter Input — see `test_letter_keys_type_into_filter`.
         """
         from textual.widgets import Input
 
@@ -741,42 +739,40 @@ class TestMCPViewerScreen:
                 await pilot.pause()
                 assert screen._selected_index == expected
 
-            # No wrap-around at the end of the list.
+            # Down from the final row wraps to the first row.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 4
+            assert screen._selected_index == 0
 
-            # Up walks back row by row.
+            # Up from the first row wraps back to the final row, then walks
+            # backward row by row.
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 4
             await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 3
 
-            # Tab skips headers — from row 3 (remote-api header), next tool
-            # is row 4 (search).
+            # Tab wraps from the current row (3) to the first server header,
+            # then advances to the next server header.
             await pilot.press("tab")
             await pilot.pause()
-            assert screen._selected_index == 4
-
-            # Tab from search: no further tool → no-op.
+            assert screen._selected_index == 0
             await pilot.press("tab")
             await pilot.pause()
+            assert screen._selected_index == 3
+
+            # From a tool (4), Shift+Tab returns to its own server header (3),
+            # then moves to the previous server header (0).
+            await pilot.press("down")
+            await pilot.pause()
             assert screen._selected_index == 4
-
-            # Shift+Tab skip-header: search (4) → write_file (2).
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 2
-
-            # Shift+Tab again: write_file (2) → read_file (1).
+            assert screen._selected_index == 3
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 1
-
-            # Shift+Tab from read_file (1): no prior tool (only header
-            # before) → no-op.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 0
 
             # The filter Input exists and is the focused widget.
             filter_input = screen.query_one("#mcp-filter", Input)
@@ -1241,8 +1237,8 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 1
             assert scroll.scroll_offset.y < offset_before
 
-    async def test_no_wrap_around_at_list_ends(self) -> None:
-        """Down past the last row, or Up past the first, are no-ops."""
+    async def test_navigation_wraps_at_list_ends(self) -> None:
+        """Arrow and Tab navigation wrap in both directions."""
         # Rows: [0: filesystem header, 1: read_file, 2: write_file,
         #        3: remote-api header, 4: search]
         app = MCPViewerTestApp()
@@ -1252,33 +1248,28 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert screen._selected_index == 0
-            # Up from the first row (header) stays put.
+
+            # Up from the first row wraps to the final row; Down wraps back.
             await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 0
-            # Shift+Tab from a header with no prior tool is also a no-op.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 0
-
-            # Walk to the last row (search, row 4) via Down.
-            for _ in range(4):
-                await pilot.press("down")
-                await pilot.pause()
             assert screen._selected_index == 4
-
-            # Down past the last row stays put.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 4
+            assert screen._selected_index == 0
 
-            # Tab past the last tool also stays put.
+            # Shift+Tab from the first server wraps to the final server; Tab
+            # from there wraps back to the first server.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 3
             await pilot.press("tab")
             await pilot.pause()
-            assert screen._selected_index == 4
+            assert screen._selected_index == 0
 
     async def test_tab_always_jumps_even_inside_tall_tool(self) -> None:
-        """Tab / Shift+Tab unconditionally jump, ignoring viewport visibility."""
+        """Tab / Shift+Tab jump to headers despite tall expanded content."""
+        from textual.containers import VerticalScroll
+
         long_desc = "\n".join(f"line {i}" for i in range(40))
         info = [
             MCPServerInfo(
@@ -1289,30 +1280,104 @@ class TestMCPViewerScreen:
                     MCPToolInfo(name="next", description="short"),
                 ),
             ),
+            MCPServerInfo(
+                name="other",
+                transport="stdio",
+                tools=(MCPToolInfo(name="last", description="short"),),
+            ),
         ]
-        # Rows: [0: srv header, 1: big, 2: next]
+        # Rows: [0: srv header, 1: big, 2: next, 3: other header, 4: last]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=info)
             app.push_screen(screen)
             await pilot.pause()
 
-            # Step from header to big and expand it.
+            # Step from the header to big and expand it.
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
             assert screen._selected_index == 1
 
-            # One Tab must jump to "next" (row 2) even though Down would
-            # only scroll one row.
+            # Precondition: big is now taller than the viewport, so a plain
+            # Down would only line-scroll — the jump below must ignore that.
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            assert screen._row_widgets[1].region.height > scroll.region.height
+
+            # Tab jumps past the expanded body to the next server.
             await pilot.press("tab")
             await pilot.pause()
-            assert screen._selected_index == 2
+            assert screen._selected_index == 3
 
-            # Shift+Tab back to "big" (row 1).
+            # Return to big, then Shift+Tab jumps to its server header.
             await pilot.press("shift+tab")
+            await pilot.press("down")
             await pilot.pause()
             assert screen._selected_index == 1
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+    async def test_tab_single_server_returns_to_header(self) -> None:
+        """Tab/Shift+Tab return a tool to its sole header, else no-op.
+
+        With one server, jumping from the tool lands on that server's header.
+        Jumping again from the lone header has nowhere to go, so it must be a
+        true no-op that leaves the scroll offset untouched — even when an
+        expanded tool has scrolled the viewport.
+        """
+        from textual.containers import VerticalScroll
+
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(MCPToolInfo(name="only", description=long_desc),),
+            ),
+        ]
+        # Rows: [0: srv header, 1: only]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Tab and Shift+Tab from the tool both return to the sole header.
+            await pilot.press("down")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            await pilot.press("down")
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Expand the tool (taller than the viewport) and Tab back up to the
+            # header so a later scroll has room to move.
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            scroll.scroll_relative(y=10, animate=False)
+            await pilot.pause()
+            offset = scroll.scroll_offset
+
+            # On the lone header, Tab and Shift+Tab are no-ops: neither the
+            # selection nor the viewport moves.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            assert scroll.scroll_offset == offset
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            assert scroll.scroll_offset == offset
 
     async def test_server_header_rows_are_selectable(self) -> None:
         """Up/Down lands the cursor on server header rows too (R10)."""
@@ -1370,11 +1435,20 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 1
 
-            # No wrap; no tools to Tab to.
+            # Down wraps across header-only lists. Tab and Shift+Tab traverse
+            # those same rows even though there are no tools.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 0
             await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Up wraps from the first header back to the last.
+            await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 1
 

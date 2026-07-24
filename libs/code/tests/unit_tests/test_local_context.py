@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
@@ -309,6 +310,27 @@ class TestLocalContextMiddleware:
 
         handler.assert_called_once_with(overridden_request)
         assert result == "response"
+
+    @pytest.mark.parametrize("base_prompt", ["", None])
+    def test_blank_base_prompt_composition(self, base_prompt: str | None) -> None:
+        """A blank/None base prompt composes to exactly the joined context.
+
+        Guards the blank-delimiter join composition against dropping the
+        leading separator or duplicating it for empty/None input.
+        """
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(backend=backend)
+
+        request = Mock()
+        request.system_prompt = base_prompt
+        request.state = {"_local_context": SAMPLE_CONTEXT}
+        request.override.return_value = Mock()
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert prompt == "\n\n" + SAMPLE_CONTEXT
 
     def test_wrap_model_call_without_local_context(self) -> None:
         """Test that wrap_model_call passes through when no local context."""
@@ -979,6 +1001,26 @@ class TestSectionHeader:
         )
         assert "IN_GIT=true" in result.stdout
 
+    def test_in_git_true_inside_bare_repo(self, tmp_path: Path) -> None:
+        bare_repo = tmp_path / "repo.git"
+        subprocess.run(
+            ["git", "init", "--bare", bare_repo],
+            capture_output=True,
+            check=True,
+        )
+        # Delimit ROOT so the assertion fails if it is wrongly populated
+        # (a bare substring `ROOT=` would pass even for `ROOT=/foo`).
+        script = _section_header() + '\necho "IN_GIT=$IN_GIT ROOT=[$ROOT]"'
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=bare_repo,
+            check=False,
+        )
+
+        assert "IN_GIT=true ROOT=[]" in result.stdout
+
 
 class TestSectionProject:
     """Tests for _section_project."""
@@ -1068,6 +1110,110 @@ class TestSectionRuntimes:
         # python3 is available in CI and dev; just check format
         assert "**Detected Runtimes**:" in out
         assert "Python " in out
+
+    def test_python_runtime_version_remains_a_single_token(
+        self, tmp_path: Path
+    ) -> None:
+        """Extra implementation details in Python's banner are not surfaced."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        python = bin_dir / "python3"
+        python.write_text("#!/bin/sh\necho 'Python 3.11.9 (PyPy 7.3.15)'\n")
+        python.chmod(0o755)
+        node = bin_dir / "node"
+        node.write_text("#!/bin/sh\necho 'v22.4.0'\n")
+        node.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_runtimes()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "TMPDIR": str(tmp_path)},
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**Detected Runtimes**: Python 3.11.9, Node 22.4.0" in result.stdout
+        assert "PyPy" not in result.stdout
+
+    def test_node_only_has_no_leading_separator(self, tmp_path: Path) -> None:
+        """Node-only output must not start with the `, ` runtime separator."""
+        env = _runtime_stub_env(
+            tmp_path, python=None, node="#!/bin/sh\necho 'v20.11.1'\n"
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_runtimes()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**Detected Runtimes**: Node 20.11.1" in result.stdout
+        assert "Python" not in result.stdout
+
+    def test_no_runtimes_line_when_neither_present(self, tmp_path: Path) -> None:
+        """No runtimes line is emitted when neither python3 nor node exists."""
+        env = _runtime_stub_env(tmp_path, python=None, node=None)
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_runtimes()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**Detected Runtimes**" not in result.stdout
+
+    def test_empty_version_output_is_skipped(self, tmp_path: Path) -> None:
+        """A runtime that prints nothing is skipped, not surfaced as a bare label."""
+        env = _runtime_stub_env(
+            tmp_path,
+            python="#!/bin/sh\nexit 0\n",
+            node="#!/bin/sh\necho 'v18.20.0'\n",
+        )
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_runtimes()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**Detected Runtimes**: Node 18.20.0" in result.stdout
+        assert "Python" not in result.stdout
+
+
+def _runtime_stub_env(
+    tmp_path: Path, *, python: str | None, node: str | None
+) -> dict[str, str]:
+    """Build an isolated PATH exposing only coreutils plus optional runtime stubs.
+
+    `_section_runtimes` needs `mktemp`/`rm` from the real environment, but the
+    system `python3`/`node` must not leak in when a test asserts an absent
+    runtime. Symlink just the required coreutils into a private bin dir and add
+    only the runtime stubs the test asks for.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("mktemp", "rm"):
+        resolved = shutil.which(tool)
+        assert resolved, f"{tool} not found on PATH"
+        (bin_dir / tool).symlink_to(resolved)
+    for name, script in (("python3", python), ("node", node)):
+        if script is None:
+            continue
+        stub = bin_dir / name
+        stub.write_text(script)
+        stub.chmod(0o755)
+    return {"PATH": str(bin_dir), "TMPDIR": str(tmp_path)}
 
 
 def _git_env(tmp_path: Path) -> dict[str, str]:
@@ -1174,8 +1320,8 @@ class TestSectionGhCli:
             'if [ "$1" = search ] && [ "$3" = --help ]; then\n'
             "  cat <<'EOF'\n"
             "JSON FIELDS\n"
-            "  number, title, url,\n"
-            "  closedAt, updatedAt\n"
+            "    number, title, url,\n"
+            "    closedAt, updatedAt\n"
             "\n"
             "EXAMPLES\n"
             "EOF\n"
@@ -1203,6 +1349,41 @@ class TestSectionGhCli:
             in result.stdout
         )
         assert "does not expose `mergedAt`" in result.stdout
+
+    def test_mergedat_present_suppresses_fallback_note(self, tmp_path: Path) -> None:
+        """When `mergedAt` is already exposed, the fallback note is omitted."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = search ] && [ "$3" = --help ]; then\n'
+            "  cat <<'EOF'\n"
+            "JSON FIELDS\n"
+            "    number, title, url,\n"
+            "    mergedAt, updatedAt\n"
+            "\n"
+            "EXAMPLES\n"
+            "EOF\n"
+            "fi\n"
+        )
+        gh.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_gh_cli()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert (
+            "`gh search prs --json` fields: number, title, url, mergedAt, updatedAt"
+            in result.stdout
+        )
+        assert "does not expose `mergedAt`" not in result.stdout
 
 
 class TestSectionTestCommand:
@@ -1252,6 +1433,20 @@ class TestSectionFiles:
             (tmp_path / f"file{i:02d}.txt").write_text("")
         out = _run_section(_section_files(), tmp_path)
         assert "(showing 20 of 25)" in out
+
+    def test_exactly_20_shows_total_not_range(self, tmp_path: Path) -> None:
+        """At the cap boundary the header shows the plain total, not a range."""
+        for i in range(20):
+            (tmp_path / f"file{i:02d}.txt").write_text("")
+        out = _run_section(_section_files(), tmp_path)
+        assert "**Files** (20):" in out
+        assert "showing" not in out
+
+    def test_empty_directory_emits_no_section(self, tmp_path: Path) -> None:
+        """An empty directory produces no Files section and no stray bullet."""
+        out = _run_section(_section_files(), tmp_path)
+        assert "**Files**" not in out
+        assert "- " not in out
 
     def test_excludes_pycache(self, tmp_path: Path) -> None:
         (tmp_path / "__pycache__").mkdir()
@@ -1342,6 +1537,13 @@ class TestSectionMakefile:
         out = _run_section(_section_makefile(), tmp_path, with_header=True)
         assert "... (truncated)" in out
 
+    def test_preview_does_not_count_the_entire_makefile(self) -> None:
+        """The preview command exits after seeing the twenty-first line."""
+        script = _section_makefile()
+        assert "wc -l" not in script
+        assert "NR <= 20" in script
+        assert "exit" in script
+
     def test_no_output_without_makefile(self, tmp_path: Path) -> None:
         """No Makefile section is emitted when no Makefile exists."""
         out = _run_section(_section_makefile(), tmp_path, with_header=True)
@@ -1364,9 +1566,7 @@ class TestSectionMakefile:
         (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
         subdir = tmp_path / "packages" / "foo"
         subdir.mkdir(parents=True)
-        # Need _section_project() to set ROOT before _section_makefile()
-        script = _section_project() + "\n" + _section_makefile()
-        out = _run_section(script, subdir, with_header=True)
+        out = _run_section(_section_makefile(), subdir, with_header=True)
         assert f"`{tmp_path}/Makefile`" in out
         assert "pytest" in out
 

@@ -69,8 +69,9 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     `tool_catalog.collect_catalog`) so names and descriptions never drift from
     what the model sees. The same runtime options that shape the agent's tool
     set are honored: the resolved interpreter setting controls whether `js_eval`
-    is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
-    `--trust-project-mcp`) control MCP discovery. Those are top-level flags, so
+    is listed, `--allow-fs-tools` restricts filesystem tools, and the MCP options
+    (`--no-mcp`, `--mcp-config`, `--trust-project-mcp`) control MCP discovery.
+    Those are top-level flags, so
     they must precede the subcommand (e.g. `dcode --no-mcp tools list`).
 
     MCP discovery is best-effort: the built-in tools always render. Servers that
@@ -88,8 +89,8 @@ def _run_tools_list(args: argparse.Namespace) -> int:
 
     Args:
         args: Parsed CLI namespace. Reads `output_format`, `agent`,
-            `interpreter`, `sandbox`, `no_mcp`, `mcp_config`, and
-            `trust_project_mcp`.
+            `interpreter`, `sandbox`, `allow_fs_tools`, `no_mcp`, `mcp_config`,
+            and `trust_project_mcp`.
 
     Returns:
         `0` on success (including best-effort MCP degradation); `1` when an
@@ -97,7 +98,7 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
     from deepagents_code._server_config import _resolve_enable_interpreter
-    from deepagents_code.main import _resolve_agent_arg
+    from deepagents_code.main import _parse_allow_fs_tools_flag, _resolve_agent_arg
     from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
@@ -111,6 +112,7 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     catalog = collect_catalog(
         assistant_id=assistant_id,
         enable_interpreter=enable_interpreter,
+        fs_tools=_parse_allow_fs_tools_flag(getattr(args, "allow_fs_tools", None)),
         include_mcp=not getattr(args, "no_mcp", False),
         mcp_config_path=mcp_config_path,
         trust_project_mcp=_tools_list_project_mcp_trust(args),
@@ -161,7 +163,7 @@ def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
 
     Returns:
         `True` when project MCP trust was explicitly requested, otherwise
-        `None` so MCP discovery can consult persisted trust.
+        `None` so MCP discovery falls back to the user's per-server allow-list.
     """
     if getattr(args, "trust_project_mcp", False):
         return True
@@ -226,6 +228,7 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     if not servers:
         return
     from deepagents_code.config import console
+    from deepagents_code.tool_catalog import unavailable_server_display
 
     name_width = max(len(server.name) for server in servers)
     console.print()
@@ -234,11 +237,16 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     )
     for server in servers:
         padded = server.name.ljust(name_width)
-        # `status: detail` (ASCII-only, no em-dash) so legacy consoles don't hit
-        # an encoding error; detail is discovery's own curated reason string.
-        detail = f": {server.detail}" if server.detail else ""
+        # `status: detail`, where detail is discovery's own curated reason string
+        # (ASCII on this CLI path, so legacy consoles don't hit an encoding
+        # error). `unavailable_server_display` collapses a disabled server to
+        # "disabled by user" with no detail; other statuses keep discovery's
+        # reason string. (The TUI's em-dash reconnect guidance is never produced
+        # by CLI discovery, so it cannot reach this column here.)
+        status, detail_text = unavailable_server_display(server)
+        detail = f": {detail_text}" if detail_text else ""
         console.print(
-            f"  {padded}  {server.status}{detail}".rstrip(),
+            f"  {padded}  {status}{detail}".rstrip(),
             style="dim",
             markup=False,
             highlight=False,
@@ -283,6 +291,7 @@ def _run_tools_install(args: argparse.Namespace) -> int:
     from deepagents_code.managed_tools import (
         RIPGREP_VERSION,
         ChecksumMismatchError,
+        ManagedToolUnavailableError,
         ensure_ripgrep,
         is_offline,
         managed_rg_path,
@@ -306,6 +315,13 @@ def _run_tools_install(args: argparse.Namespace) -> int:
                 "ripgrep install aborted: the downloaded archive failed SHA-256 "
                 "verification. Refusing to install."
             ),
+        )
+    except ManagedToolUnavailableError as exc:
+        logger.info("ripgrep install unavailable: %s", exc.reason)
+        return _emit_install_result(
+            output_format,
+            status="error",
+            message=exc.message,
         )
     except Exception:
         # Backstop for a clean exit instead of a raw traceback.
@@ -359,8 +375,8 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         output_format,
         status="error",
         message=(
-            "Could not install ripgrep (unsupported platform or download failure). "
-            "See logs, or install ripgrep manually."
+            "Could not install ripgrep (download failure). See logs, or install "
+            "ripgrep manually."
         ),
     )
 

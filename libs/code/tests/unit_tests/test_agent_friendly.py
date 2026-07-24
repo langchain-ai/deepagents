@@ -66,7 +66,7 @@ class TestHelpScreenExamples:
         text = self._render(show_agents_help)
         assert "Examples:" in text
         assert "dcode agents list" in text
-        assert "dcode agents reset --agent coder" in text
+        assert "dcode agents reset --agent NAME" in text
 
     def test_update_help_has_examples(self) -> None:
         text = self._render(show_update_help)

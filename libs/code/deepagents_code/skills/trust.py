@@ -6,12 +6,11 @@ directory from reading arbitrary files. The static escape hatch is the
 `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` env var / `[skills].extra_allowed_dirs`
 config allowlist.
 
-This module adds an in-the-moment, persistent approval path (mirroring
-`deepagents_code.mcp_trust`): when a skill resolves outside the trusted roots,
-the user is asked once to allow the resolved target directory, and the decision
-is remembered. Trust is keyed by the approved target directory — the canonical
-path resolved and shown to the user at approval time, stored as-is and never
-re-resolved.
+This module adds an in-the-moment, persistent approval path: when a skill
+resolves outside the trusted roots, the user is asked once to allow the
+resolved target directory, and the decision is remembered. Trust is keyed by
+the approved target directory — the canonical path resolved and shown to the
+user at approval time, stored as-is and never re-resolved.
 
 Two distinct post-approval swaps are caught by two distinct layers, so neither
 grants access the user never approved:
@@ -92,7 +91,7 @@ def _default_store_path() -> Path:
 
     Resolved at call time (not import time) so tests can redirect storage by
     monkeypatching `deepagents_code.model_config.DEFAULT_STATE_DIR` — the same
-    pattern `deepagents_code.mcp_trust._default_store_path` uses.
+    pattern `auth_store.auth_path` uses.
     """
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 

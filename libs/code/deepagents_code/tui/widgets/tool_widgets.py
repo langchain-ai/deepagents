@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
@@ -9,15 +10,35 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code.file_ops import is_sensitive_file_path
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+_CREDENTIAL_NOTICE = "Contents hidden — file may contain credentials"
 
 # Constants for display limits
 _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
+
+
+def format_display_content(content: object) -> str:
+    """Coerce arbitrary tool-arg content into a displayable string.
+
+    Strings pass through unchanged; other values are JSON-formatted for
+    readability, falling back to `str()` when serialization fails.
+
+    Returns:
+        A string safe to render in an approval widget.
+    """
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError, RecursionError):
+        return str(content)
 
 
 def _format_stats(additions: int, deletions: int) -> Content:
@@ -142,26 +163,31 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
             Widgets displaying file path header and syntax-highlighted content.
         """
         file_path = self.data.get("file_path", "")
-        content = self.data.get("content", "")
+        content = format_display_content(self.data.get("content", ""))
         file_extension = self.data.get("file_extension", "text")
 
-        # Content with syntax highlighting via Markdown code block
-        lines = content.split("\n")
-        total_lines = len(lines)
-
-        # File header with line count
-        yield from _file_header(file_path, additions=total_lines if content else 0)
-
-        if total_lines > _MAX_LINES:
-            # Truncate for display
-            shown_lines = lines[:_MAX_LINES]
-            remaining = total_lines - _MAX_LINES
-            truncated_content = (
-                "\n".join(shown_lines) + f"\n... ({remaining} more lines)"
-            )
-            yield Markdown(f"```{file_extension}\n{truncated_content}\n```")
+        # Never render the contents of credential files (e.g. `.env`).
+        if is_sensitive_file_path(file_path):
+            yield from _file_header(file_path)
+            yield Static(Content.styled(_CREDENTIAL_NOTICE, "dim"))
         else:
-            yield Markdown(f"```{file_extension}\n{content}\n```")
+            # Content with syntax highlighting via Markdown code block
+            lines = content.split("\n")
+            total_lines = len(lines)
+
+            # File header with line count
+            yield from _file_header(file_path, additions=total_lines if content else 0)
+
+            if total_lines > _MAX_LINES:
+                # Truncate for display
+                shown_lines = lines[:_MAX_LINES]
+                remaining = total_lines - _MAX_LINES
+                truncated_content = (
+                    "\n".join(shown_lines) + f"\n... ({remaining} more lines)"
+                )
+                yield Markdown(f"```{file_extension}\n{truncated_content}\n```")
+            else:
+                yield Markdown(f"```{file_extension}\n{content}\n```")
 
 
 class EditFileApprovalWidget(ToolApprovalWidget):
@@ -175,13 +201,17 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         """
         file_path = self.data.get("file_path", "")
         diff_lines = self.data.get("diff_lines", [])
-        old_string = self.data.get("old_string", "")
-        new_string = self.data.get("new_string", "")
+        old_string = format_display_content(self.data.get("old_string", ""))
+        new_string = format_display_content(self.data.get("new_string", ""))
 
         additions, deletions = _count_diff_stats(diff_lines, old_string, new_string)
         yield from _file_header(file_path, additions, deletions)
 
-        if not diff_lines and not old_string and not new_string:
+        # Never render the diff of credential files (e.g. `.env`); the stats
+        # above still convey that a change happened without exposing content.
+        if is_sensitive_file_path(file_path):
+            yield Static(Content.styled(_CREDENTIAL_NOTICE, "dim"))
+        elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
             # Render content

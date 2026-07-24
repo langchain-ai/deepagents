@@ -18,8 +18,8 @@ Security notes:
     reading from stdin so the key never lands in shell history or argv, and it
     refuses an interactive TTY (use `--from-env` instead) so an accidental
     invocation cannot hang waiting on input.
-- `set` routes through `auth_store.set_stored_key`, so chmod warnings from the
-    same `WriteOutcome` path the TUI uses are surfaced on stderr.
+- `set` and `remove` route through `auth_store`, so chmod warnings from the
+    store rewrite (the same path the TUI uses) are surfaced on stderr.
 
 Help rendering for a bare `auth` invocation is served by `ui.show_auth_help`,
 which does not import this module. The heavy `model_config` imports here are
@@ -515,11 +515,14 @@ def _run_remove(provider: str) -> int:
     from deepagents_code import auth_store
 
     try:
-        removed = auth_store.delete_stored_key(provider)
+        result = auth_store.delete_stored_key(provider)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)  # noqa: T201
         return 1
-    if removed:
+    # Surface chmod warnings on the rewritten store, symmetric with `set`.
+    for warning in result.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)  # noqa: T201
+    if result.removed:
         print(f"Removed stored credential for {provider}.")  # noqa: T201
     else:
         print(f"No stored credential for {provider}.")  # noqa: T201

@@ -1,0 +1,10 @@
+# Local Harbor dataset for Deep Agents context-retrieval evals.
+# Run via: harbor run --path libs/evals/datasets/context-retrieval-evals ...
+# Not published to a registry, so tasks are discovered by scanning task dirs;
+# no per-task manifest entries are needed.
+
+[dataset]
+name = "langchain-ai/context-retrieval-evals"
+description = "Context retrieval evaluation tasks for Deep Agents."
+authors = []
+keywords = []

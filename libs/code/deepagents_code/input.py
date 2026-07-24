@@ -3,7 +3,7 @@
 import logging
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
@@ -201,6 +201,26 @@ class MediaTracker:
         self.videos.clear()
         self.next_image_id = 1
         self.next_video_id = 1
+
+    def snapshot(self) -> "MediaTracker":
+        """Return an independent copy of the currently tracked media."""
+        tracker = MediaTracker()
+        tracker.images = [replace(img) for img in self.images]
+        tracker.videos = [replace(vid) for vid in self.videos]
+        tracker.next_image_id = self.next_image_id
+        tracker.next_video_id = self.next_video_id
+        return tracker
+
+    def restore(self, snapshot: "MediaTracker") -> None:
+        """Replace current media state with an independent snapshot copy.
+
+        Args:
+            snapshot: Previously captured media state to restore.
+        """
+        self.images = [replace(img) for img in snapshot.images]
+        self.videos = [replace(vid) for vid in snapshot.videos]
+        self.next_image_id = snapshot.next_image_id
+        self.next_video_id = snapshot.next_video_id
 
     def sync_to_text(
         self,

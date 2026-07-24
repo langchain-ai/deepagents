@@ -11,6 +11,7 @@ from deepagents_code.resume_state import (
     ResumeState,
     ResumeStateMiddleware,
     _extract_context_tokens,
+    coerce_goal_proposal_kind,
     coerce_goal_status,
 )
 
@@ -44,6 +45,18 @@ class TestResumeState:
         metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
         assert PrivateStateAttr in metadata
 
+    def test_pending_goal_kind_is_private(self) -> None:
+        """Proposal mode should persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_pending_goal_kind"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_pending_goal_request_id_is_private(self) -> None:
+        """Proposal correlation must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_pending_goal_request_id"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState
@@ -54,6 +67,7 @@ class TestCoerceGoalStatus:
 
     def test_returns_known_statuses(self) -> None:
         assert coerce_goal_status("active") == "active"
+        assert coerce_goal_status("paused") == "paused"
         assert coerce_goal_status("blocked") == "blocked"
         assert coerce_goal_status("complete") == "complete"
 
@@ -65,6 +79,18 @@ class TestCoerceGoalStatus:
         assert coerce_goal_status(None) is None
         assert coerce_goal_status(123) is None
         assert coerce_goal_status(["active"]) is None
+
+
+class TestCoerceGoalProposalKind:
+    """Tests for persisted pending-review mode coercion."""
+
+    def test_returns_known_kinds(self) -> None:
+        assert coerce_goal_proposal_kind("create") == "create"
+        assert coerce_goal_proposal_kind("amend") == "amend"
+
+    def test_unknown_value_coerces_to_none(self) -> None:
+        assert coerce_goal_proposal_kind("replace") is None
+        assert coerce_goal_proposal_kind(None) is None
 
 
 class TestExtractContextTokens:

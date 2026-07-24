@@ -23,6 +23,7 @@ from deepagents_code.configurable_model import (
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
+    _is_openai_model,
 )
 
 
@@ -32,6 +33,7 @@ def _make_model(name: str) -> MagicMock:
     model.model_name = name
     model.model_dump.return_value = {"model_name": name}
     model._get_ls_params.return_value = {"ls_provider": "openai"}
+    model.root_client = SimpleNamespace(base_url="https://api.openai.com/v1")
     return model
 
 
@@ -90,7 +92,11 @@ def _make_model_result(
 
 _PATCH_CREATE = "deepagents_code.config.create_model"
 
-_mw = ConfigurableModelMiddleware()
+# The shared instance pins the OpenAI cache-key flag explicitly so it does not
+# read config at import time — that keeps it hermetic regardless of a
+# developer's env/config.toml. Tests that exercise flag *resolution* construct
+# their own instances after patching the config lookup.
+_mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 
 class TestCheckpointPersistence:
@@ -275,6 +281,26 @@ class TestModelSwap:
         assert captured[0].model is override
         assert request.model is original  # original unchanged
 
+    def test_profile_overrides_forwarded_to_swapped_model(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        profile_overrides = {"max_input_tokens": 180_000}
+        request = _make_request(
+            original,
+            context=CLIContext(
+                model="openai:gpt-5.5",
+                profile_overrides=profile_overrides,
+            ),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            _mw.wrap_model_call(request, lambda _: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            profile_overrides=profile_overrides,
+        )
+
     async def test_async_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
         override = _make_model("gpt-5.5")
@@ -306,6 +332,29 @@ class TestModelSwap:
 
         assert captured[0].model is override
         assert offloaded == [(create, ("openai:gpt-5.5",), {})]
+
+    async def test_async_profile_overrides_forwarded_to_swapped_model(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        profile_overrides = {"max_input_tokens": 180_000}
+        request = _make_request(
+            original,
+            context=CLIContext(
+                model="openai:gpt-5.5",
+                profile_overrides=profile_overrides,
+            ),
+        )
+
+        async def handler(_: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            return _make_response()
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            await _mw.awrap_model_call(request, handler)
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            profile_overrides=profile_overrides,
+        )
 
     def test_class_path_provider_swapped(self) -> None:
         """Config-defined class_path provider resolves through create_model."""
@@ -576,9 +625,11 @@ class TestFireworksSessionSettings:
             }
         }
 
-    def test_non_fireworks_model_unchanged_with_thread_id(self) -> None:
+    def test_non_fireworks_non_openai_model_unchanged_with_thread_id(self) -> None:
+        model = _make_model("gemini-3.6-flash")
+        model._get_ls_params.return_value = {"ls_provider": "google_genai"}
         request = _make_request(
-            _make_model("gpt-5.5"),
+            model,
             context=CLIContext(thread_id="thread-123"),
         )
         captured: list[ModelRequest] = []
@@ -718,6 +769,417 @@ class TestFireworksSessionSettings:
         assert model_settings == {"extra_headers": {"Authorization": "Bearer token"}}
         assert captured[0].model_settings["extra_headers"] is not original_headers
 
+    def test_openai_opt_out_does_not_affect_fireworks(self) -> None:
+        """The OpenAI opt-out gates only the OpenAI branch, not Fireworks."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"x-session-affinity": "thread-123"},
+        }
+
+
+class TestOpenAIPromptCacheKey:
+    """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
+
+    def test_openai_model_gets_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model is request.model
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_prompt_cache_key_merged_with_existing_settings(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"temperature": 0.5},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "temperature": 0.5,
+            "prompt_cache_key": "thread-123",
+        }
+
+    def test_existing_prompt_cache_key_not_overwritten(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"prompt_cache_key": "custom-cache"},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+        assert captured[0].model_settings == {"prompt_cache_key": "custom-cache"}
+
+    def test_model_prompt_cache_key_not_overwritten(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.model_kwargs = {"prompt_cache_key": "model-cache"}
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+        assert captured[0].model_settings == {}
+
+    def test_non_mapping_model_kwargs_still_injects(self) -> None:
+        """A non-mapping `model_kwargs` is treated as no key present."""
+        model = _make_model("gpt-5.6")
+        model.model_kwargs = ["not", "a", "mapping"]
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.openai.com/v1",
+            "https://eu.api.openai.com/v1",
+            "https://gateway.smith.langchain.com/openai/v1",
+            "https://proxy.example/v1",
+        ],
+    )
+    def test_any_openai_endpoint_gets_prompt_cache_key(self, base_url: str) -> None:
+        """The key is attempted for every OpenAI-provider endpoint.
+
+        Official, regional, the LangSmith gateway, and arbitrary OpenAI-compatible
+        base URLs all report `ls_provider == "openai"`, so the additive
+        `prompt_cache_key` is injected regardless of host. Endpoints that reject
+        it opt out via `models.openai_prompt_cache_key`.
+        """
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url=base_url)
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_default_config_injects_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no override, construction resolves the opt-out to on (default).
+
+        Exercises the real `models.openai_prompt_cache_key` resolution through
+        `__init__` (env cleared by conftest, `config.toml` stubbed empty),
+        pinning that the default is on end-to-end rather than only asserting the
+        config helper in isolation.
+        """
+        from deepagents_code import config_manifest
+
+        monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+        middleware = ConfigurableModelMiddleware()
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_opt_out_skips_prompt_cache_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `models.openai_prompt_cache_key` opt-out suppresses injection.
+
+        The opt-out is resolved once at construction, so patch the config lookup
+        before building the middleware.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            lambda: False,
+        )
+        middleware = ConfigurableModelMiddleware()
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_explicit_opt_out_param_skips(self) -> None:
+        """An explicit `openai_prompt_cache_key=False` bypasses config and skips."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    async def test_async_explicit_opt_out_param_skips(self) -> None:
+        """The async path honors the opt-out flag like the sync path.
+
+        `awrap_model_call` threads `self._openai_prompt_cache_key` through
+        `_apply_overrides_async` symmetrically with the sync path; this pins that
+        wiring so a future edit dropping the kwarg on only one path is caught.
+        """
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        await middleware.awrap_model_call(request, handler)
+
+        assert captured[0] is request
+
+    def test_opt_out_preserves_user_supplied_key(self) -> None:
+        """Disabling injection still forwards a user-supplied key untouched."""
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"prompt_cache_key": "custom-cache"},
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "custom-cache"}
+
+    def test_config_read_failure_defaults_to_injecting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed opt-out lookup falls back to injecting the key (fail-open).
+
+        The resolver's fail-open runs at construction, so the raising config
+        lookup must be patched before the middleware is built.
+        """
+
+        def _boom() -> bool:
+            msg = "config exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            _boom,
+        )
+        middleware = ConfigurableModelMiddleware()
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        middleware.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_blocking_error_propagates_not_fail_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `BlockingError` from the config read is re-raised, never masked.
+
+        Fail-open must not swallow a blocking-I/O-on-the-event-loop violation:
+        that would hide the regression and silently defeat the opt-out. The
+        resolver matches by class name (blockbuster is not a runtime dep), so a
+        stand-in exception named `BlockingError` reproduces the path.
+        """
+
+        class BlockingError(Exception):
+            """Stand-in matching the resolver's by-name check."""
+
+        def _boom() -> bool:
+            raise BlockingError
+
+        monkeypatch.setattr(
+            "deepagents_code.config.is_openai_prompt_cache_key_enabled",
+            _boom,
+        )
+        with pytest.raises(BlockingError):
+            ConfigurableModelMiddleware()
+
+    def test_empty_thread_id_skips_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id=""),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_no_prompt_cache_key_without_thread_id(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_openai_swap_gets_prompt_cache_key(self) -> None:
+        base = _make_model("claude-sonnet-4-6")
+        base._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        override = _make_model("gpt-5.6")
+        request = _make_request(
+            base,
+            context=CLIContext(model="openai:gpt-5.6", thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is override
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_swap_to_openai_injects_key_and_strips_cache_control(self) -> None:
+        """Anthropic→OpenAI swap injects the key and strips `cache_control`.
+
+        The real `/model` mid-thread scenario: a session running
+        `AnthropicPromptCachingMiddleware` (which sets `cache_control`) switches
+        to an OpenAI model. Injection and the Anthropic-only strip must both run
+        in the same pass, leaving only the cache key — otherwise `cache_control`
+        would reach the OpenAI SDK and raise `TypeError`.
+        """
+        base = _make_model("claude-sonnet-4-6")
+        base._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        override = _make_model("gpt-5.6")
+        request = _make_request(
+            base,
+            context=CLIContext(model="openai:gpt-5.6", thread_id="thread-123"),
+            model_settings={"cache_control": {"type": "ephemeral"}},
+        )
+        captured: list[ModelRequest] = []
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is override
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_prompt_cache_key_layered_over_model_params(self) -> None:
+        """The key is added on top of a `model_params` merge, not instead of it."""
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(
+                model_params={"temperature": 0.7}, thread_id="thread-123"
+            ),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "temperature": 0.7,
+            "prompt_cache_key": "thread-123",
+        }
+
+    async def test_async_openai_model_gets_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        await _mw.awrap_model_call(request, handler)
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_caller_model_settings_not_mutated(self) -> None:
+        """Injection copies the caller's dict instead of mutating in place."""
+        model_settings = {"temperature": 0.5}
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings=model_settings,
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert model_settings == {"temperature": 0.5}
+        assert captured[0].model_settings is not model_settings
+
 
 class TestIsFireworksModel:
     """Direct tests for the `_is_fireworks_model` helper."""
@@ -742,6 +1204,56 @@ class TestIsFireworksModel:
         model = MagicMock(spec=BaseChatModel)
         model._get_ls_params.return_value = {"ls_provider": 123}
         assert _is_fireworks_model(model) is False
+
+
+class TestIsOpenAIModel:
+    """Direct tests for the `_is_openai_model` helper."""
+
+    def test_returns_true_for_openai(self) -> None:
+        assert _is_openai_model(_make_model("gpt-5.6")) is True
+
+    def test_returns_true_for_official_openai_endpoint(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url="https://api.openai.com/v1")
+        assert _is_openai_model(model) is True
+
+    def test_returns_true_for_custom_openai_endpoint(self) -> None:
+        """A custom base URL still resolves the OpenAI provider, so it is eligible."""
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url="https://proxy.example/v1")
+        assert _is_openai_model(model) is True
+
+    def test_returns_true_for_gateway_endpoint(self) -> None:
+        """The LangSmith gateway is an OpenAI-provider endpoint and is eligible."""
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(
+            base_url="https://gateway.smith.langchain.com/openai/v1"
+        )
+        assert _is_openai_model(model) is True
+
+    def test_returns_true_without_endpoint_metadata(self) -> None:
+        """Eligibility depends only on the provider, not a discoverable base URL."""
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = {"ls_provider": "openai"}
+        assert _is_openai_model(model) is True
+
+    def test_returns_false_for_non_openai(self) -> None:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        assert _is_openai_model(model) is False
+
+    def test_returns_false_for_plain_object(self) -> None:
+        assert _is_openai_model(object()) is False
+
+    def test_returns_false_when_ls_params_returns_none(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = None
+        assert _is_openai_model(model) is False
+
+    def test_returns_false_when_ls_provider_not_str(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = {"ls_provider": object()}
+        assert _is_openai_model(model) is False
 
 
 class TestIsAnthropicModel:
@@ -788,6 +1300,31 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-sonnet-4-6",
             "_model_params": {"temperature": 0.7},
+        }
+
+    def test_reasoning_effort_reaches_model_settings(self) -> None:
+        """`reasoning_effort` from `/effort` must survive intact to the model.
+
+        Hermetic regression anchor for the effort-delivery path: a bug in the
+        override plumbing could silently drop or duplicate `reasoning_effort`
+        before it reaches the model constructor. Provider-specific translation
+        of the value is LangChain's responsibility; this pins the deepagents
+        contract that the resolved effort is carried into `model_settings`
+        (and checkpointed for resume) without mutation.
+        """
+        request = _make_request(
+            _make_model("claude-opus-4-5"),
+            context=CLIContext(model_params={"reasoning_effort": "high"}),
+        )
+        captured: list[ModelRequest] = []
+        result = _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"reasoning_effort": "high"}
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:claude-opus-4-5",
+            "_model_params": {"reasoning_effort": "high"},
         }
 
     def test_params_merge_preserves_existing(self) -> None:

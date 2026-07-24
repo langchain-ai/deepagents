@@ -26,13 +26,18 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from deepagents import FsToolName
+
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.mcp_tools import MCPSessionManager
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-from deepagents_code.client.launch.server import _EPHEMERAL_PORT
+from deepagents_code.client.launch.server import (
+    _EPHEMERAL_PORT,
+    emit_preserved_log_notices,
+)
 from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -292,6 +297,7 @@ async def start_server_and_get_agent(
     assistant_id: str,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -304,8 +310,10 @@ async def start_server_and_get_agent(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -319,6 +327,7 @@ async def start_server_and_get_agent(
         assistant_id: Agent identifier.
         model_name: Model spec string.
         model_params: Extra model kwargs.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -333,9 +342,14 @@ async def start_server_and_get_agent(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -369,6 +383,7 @@ async def start_server_and_get_agent(
         project_context=project_context,
         model_name=model_name,
         model_params=model_params,
+        profile_overrides=profile_overrides,
         assistant_id=assistant_id,
         auto_approve=auto_approve,
         interrupt_shell_only=interrupt_shell_only,
@@ -382,8 +397,10 @@ async def start_server_and_get_agent(
         enable_interpreter=enable_interpreter,
         interpreter_ptc=interpreter_ptc,
         interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+        allow_fs_tools=allow_fs_tools,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
+        recursion_limit=recursion_limit,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
@@ -401,19 +418,42 @@ async def start_server_and_get_agent(
         owns_config_dir=True,
         scaffold=_scaffold_workspace,
     )
+    started = False
     try:
         await server.start()
         await server.wait_for_graph_ready("agent")
-    except Exception:
-        server.stop()
-        raise
-
-    agent = RemoteAgent(
-        url=server.url,
-        graph_name="agent",
-    )
-
-    return agent, server, None
+        agent = RemoteAgent(
+            url=server.url,
+            graph_name="agent",
+        )
+        started = True
+        return agent, server, None
+    finally:
+        if not started:
+            # Startup failed or was cancelled before the server was handed off
+            # to the caller (which records the reference only on success). If
+            # `start()` itself failed it already reaped its own subprocess, so
+            # this `stop()` is then an idempotent no-op; this cleanup is the sole
+            # reaper only when `start()` succeeded but `wait_for_graph_ready()`
+            # (or `RemoteAgent()`) failed afterward. A `finally` rather than
+            # `except Exception` is deliberate: `asyncio.CancelledError` is a
+            # `BaseException`, so an `except Exception` guard would skip cleanup
+            # and orphan the process. The inner guard stops a `stop()` error
+            # from masking the exception already propagating.
+            #
+            # `stop()` only *queues* any debug-preserved log path; it is not
+            # announced here. This helper is awaited by callers that still own
+            # the terminal (the initial TUI startup worker and the in-session
+            # cwd-switch flow), where a stderr print would be swallowed by the
+            # alternate screen. The queue is process-global, so the outer
+            # terminal teardown (`run_textual_app` / `server_session` finally)
+            # drains this failed server's path once the terminal is restored.
+            try:
+                server.stop()
+            except Exception:
+                logger.exception(
+                    "Error stopping server during startup cleanup",
+                )
 
 
 # ------------------------------------------------------------------
@@ -427,6 +467,7 @@ async def server_session(
     assistant_id: str,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
@@ -439,8 +480,10 @@ async def server_session(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -457,6 +500,7 @@ async def server_session(
         assistant_id: Agent identifier.
         model_name: Model spec string.
         model_params: Extra model kwargs.
+        profile_overrides: Model profile metadata overrides.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
@@ -471,9 +515,14 @@ async def server_session(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param.
+
+            `None` leaves the SDK default (all tools).
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -493,6 +542,7 @@ async def server_session(
             assistant_id=assistant_id,
             model_name=model_name,
             model_params=model_params,
+            profile_overrides=profile_overrides,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
             shell_allow_list=shell_allow_list,
@@ -505,8 +555,10 @@ async def server_session(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
@@ -523,3 +575,8 @@ async def server_session(
                 logger.warning("MCP session cleanup failed", exc_info=True)
         if server_proc is not None:
             server_proc.stop()
+        # Drain unconditionally: when startup fails inside
+        # `start_server_and_get_agent`, `server_proc` is never assigned here,
+        # yet the failed server may have queued a debug-preserved log path.
+        # This runs with no TUI active, so the notice reaches the user.
+        emit_preserved_log_notices()

@@ -1,6 +1,7 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -64,12 +65,16 @@ class _FakeModelResult:
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings() -> Iterator[None]:
+def _restore_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
     """Save and restore global settings mutated by tests."""
     original_name = settings.model_name
     original_provider = settings.model_provider
     original_context_limit = settings.model_context_limit
     original_modalities = settings.model_unsupported_modalities
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
@@ -352,7 +357,7 @@ class TestModelSwitchNoOp:
         ):
             await app._switch_model(
                 "openai:gpt-5.5",
-                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+                extra_kwargs={"reasoning_effort": "low"},
             )
 
         app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
@@ -387,6 +392,50 @@ class TestModelSwitchNoOp:
 
         assert app._model_override == "anthropic:claude-opus-4-5"
         assert app._model_params_override is None
+
+    async def test_switch_restores_persisted_effort_for_model(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+        model_config.save_effort_for_model(
+            "anthropic:claude-opus-4-5",
+            "high",
+        )
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert app._model_params_override == {"reasoning_effort": "high"}
+
+    async def test_switch_model_params_effort_overrides_saved(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+        model_config.save_effort_for_model("openai:gpt-5.5", "high")
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
+            ),
+        ):
+            await app._switch_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning_effort": "low"},
+            )
+
+        # Explicit --model-params effort wins over the saved preference.
+        assert app._model_params_override == {"reasoning_effort": "low"}
 
 
 class TestModelSwitchErrorHandling:
@@ -1025,6 +1074,47 @@ class TestModelSwitchBareModelName:
         assert settings.model_name == "gpt-5.5"
         assert settings.model_provider == "openai"
         assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
+
+    async def test_fireworks_qualified_id_gets_provider_prefix(self) -> None:
+        """A Fireworks `accounts/...` ID resolves to a `fireworks:` prefix.
+
+        Without provider inference the raw ID would surface unprefixed in the
+        confirmation message and the status bar (which reads
+        `settings.model_provider`). `detect_provider` recognizes the
+        fully-qualified Fireworks ID so both reflect the `fireworks` provider.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-sonnet-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        model_id = "accounts/fireworks/models/kimi-k2p7-code"
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_model", return_value=True
+            ) as mock_save,
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(model_id)
+
+        mock_save.assert_called_once_with(f"fireworks:{model_id}")
+        assert app._model_override == f"fireworks:{model_id}"
+        assert settings.model_name == model_id
+        assert settings.model_provider == "fireworks"
+        assert any(f"Switched to fireworks:{model_id}" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""

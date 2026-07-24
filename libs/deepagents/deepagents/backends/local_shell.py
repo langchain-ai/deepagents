@@ -12,7 +12,6 @@ import subprocess
 import uuid
 from typing import TYPE_CHECKING
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
@@ -109,7 +108,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         self,
         root_dir: str | Path | None = None,
         *,
-        virtual_mode: bool | None = None,
+        virtual_mode: bool = True,
         timeout: int = DEFAULT_EXECUTE_TIMEOUT,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
@@ -122,10 +121,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
                 - If not provided, defaults to the current working directory.
                 - Shell commands execute with this as their working directory.
-                - When `virtual_mode=False` (default): Paths are used as-is.
+                - When `virtual_mode=False`: Paths are used as-is.
 
                     Agents can access any file using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=True` (default): Acts as a virtual root for filesystem operations.
 
                     Useful with `CompositeBackend` to support routing file
                     operations across different backend implementations.
@@ -134,7 +133,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             virtual_mode: Enable virtual path mode for filesystem operations.
 
-                When `True`, treats `root_dir` as a virtual root filesystem.
+                When `True` (default), treats `root_dir` as a virtual root filesystem.
                 All paths are interpreted relative to `root_dir`
                 (e.g., `/file.txt` maps to `{root_dir}/file.txt`).
                 Path traversal (`..`, `~`) is blocked.
@@ -181,28 +180,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         if timeout <= 0:
             msg = f"timeout must be positive, got {timeout}"
             raise ValueError(msg)
-
-        if virtual_mode is None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.6.0",
-                message=(
-                    "`LocalShellBackend` `virtual_mode` default will change "
-                    "in deepagents==0.6.0; please specify `virtual_mode` "
-                    "explicitly. Note: `virtual_mode` is for virtual path "
-                    "semantics (e.g., `CompositeBackend` routing) and "
-                    "optional path-based guardrails; it does not provide "
-                    "sandboxing or process isolation. Security note: leaving "
-                    "`virtual_mode=False` allows absolute paths and `'..'` "
-                    "to bypass `root_dir`, and `LocalShellBackend` provides "
-                    "no sandboxing (`execute()` runs commands on the host; "
-                    "`virtual_mode` does not restrict shell execution). See "
-                    "https://reference.langchain.com/python/deepagents/ for "
-                    "usage guidelines."
-                ),
-                package="deepagents",
-            )
-            virtual_mode = False
 
         # Initialize parent FilesystemBackend
         super().__init__(

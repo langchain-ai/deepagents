@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 DCA_TEST_WRITE_FILE_MARKER = "DCA_TEST_WRITE_FILE="
 DCA_TEST_DELEGATE_WRITE_MARKER = "DCA_TEST_DELEGATE_WRITE="
 DCA_SUBAGENT_WRITE_FILE_MARKER = "DCA_SUBAGENT_WRITE_FILE="
+DCA_TEST_GOAL_CRITERIA_MARKER = "DCA_TEST_GOAL_CRITERIA="
 
 # Distinct file contents per write path, so a test asserting on file content can
 # prove which branch executed — in particular that subagent mode delegated through
@@ -302,4 +303,44 @@ class ToolCallingIntegrationChatModel(DeterministicIntegrationChatModel):
                     "call_write_file",
                 ),
             ),
+        )
+
+
+class GoalCriteriaIntegrationChatModel(DeterministicIntegrationChatModel):
+    """Exercise nested criteria generation with a repository read."""
+
+    disable_streaming: bool = True
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        """Read the marked file, then return a structured goal proposal.
+
+        Returns:
+            A repository tool call followed by a `GoalProposal` tool call.
+        """
+        prompt = "\n".join(
+            text
+            for message in messages
+            if (text := self._stringify_message(message)).strip()
+        )
+        has_tool_result = any(message.type == "tool" for message in messages)
+        if DCA_TEST_GOAL_CRITERIA_MARKER in prompt and not has_tool_result:
+            path = _extract_marker_path(prompt, DCA_TEST_GOAL_CRITERIA_MARKER)
+            return _tool_call_result(
+                "read_file",
+                {"file_path": path, "limit": 20},
+                "call_goal_read",
+            )
+        return _tool_call_result(
+            "GoalProposal",
+            {
+                "objective": "verify server-side criteria generation",
+                "criteria": "- server repository context is available",
+            },
+            "call_goal_proposal",
         )

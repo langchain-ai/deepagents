@@ -25,6 +25,7 @@ from deepagents.middleware.skills import (
 )
 
 from deepagents_code._version import __version__ as _cli_version
+from deepagents_code.skills.merge import merge_skill
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class ExtendedSkillMetadata(SkillMetadata):
             or `'claude (experimental)'`.
     """
 
-    source: Literal["built-in", "user", "project", "claude (experimental)"]
+    source: Literal["built-in", "plugin", "user", "project", "claude (experimental)"]
 
 
 # Re-export for CLI commands
@@ -47,6 +48,7 @@ __all__ = ["SkillMetadata", "list_skills", "load_skill_content"]
 def list_skills(
     *,
     built_in_skills_dir: Path | None = None,
+    plugin_skill_sources: Sequence[tuple[Path, str]] = (),
     user_skills_dir: Path | None = None,
     project_skills_dir: Path | None = None,
     user_agent_skills_dir: Path | None = None,
@@ -61,17 +63,19 @@ def list_skills(
 
     Precedence order (lowest to highest):
     0. `built_in_skills_dir` (`<package>/built_in_skills/`)
-    1. `user_skills_dir` (`~/.deepagents/{agent}/skills/`)
-    2. `user_agent_skills_dir` (`~/.agents/skills/`)
-    3. `project_skills_dir` (`.deepagents/skills/`)
-    4. `project_agent_skills_dir` (`.agents/skills/`)
-    5. `user_claude_skills_dir` (`~/.claude/skills/`, experimental)
-    6. `project_claude_skills_dir` (`.claude/skills/`, experimental)
+    1. `plugin_skill_sources`
+    2. `user_skills_dir` (`~/.deepagents/{agent}/skills/`)
+    3. `user_agent_skills_dir` (`~/.agents/skills/`)
+    4. `project_skills_dir` (`.deepagents/skills/`)
+    5. `project_agent_skills_dir` (`.agents/skills/`)
+    6. `user_claude_skills_dir` (`~/.claude/skills/`, experimental)
+    7. `project_claude_skills_dir` (`.claude/skills/`, experimental)
 
     Skills from higher-precedence directories override those with the same name.
 
     Args:
         built_in_skills_dir: Path to built-in skills shipped with the package.
+        plugin_skill_sources: Plugin skill source directories with namespaces.
         user_skills_dir: Path to `~/.deepagents/{agent}/skills/`.
         project_skills_dir: Path to `.deepagents/skills/`.
         user_agent_skills_dir: Path to `~/.agents/skills/` (alias).
@@ -84,30 +88,47 @@ def list_skills(
             directories taking priority when names conflict.
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
+    merged_source_labels: dict[str, str | None] = {}
 
-    sources: list[tuple[Path | None, str, bool]] = [
-        (built_in_skills_dir, "built-in", False),
-        (user_skills_dir, "user", False),
-        (user_agent_skills_dir, "user", False),
-        (project_skills_dir, "project", False),
-        (project_agent_skills_dir, "project", False),
-        (user_claude_skills_dir, "claude (experimental)", True),
-        (project_claude_skills_dir, "claude (experimental)", True),
+    sources: list[tuple[Path | None, str, bool, str]] = [
+        (built_in_skills_dir, "built-in", False, ""),
+        *[
+            (path, "plugin", False, namespace)
+            for path, namespace in plugin_skill_sources
+        ],
+        (user_skills_dir, "user", False, ""),
+        (user_agent_skills_dir, "user", False, ""),
+        (project_skills_dir, "project", False, ""),
+        (project_agent_skills_dir, "project", False, ""),
+        (user_claude_skills_dir, "claude (experimental)", True, ""),
+        (project_claude_skills_dir, "claude (experimental)", True, ""),
     ]
     """Sources in precedence order (lowest to highest).
 
-    Each tuple: `(directory, source label, is_experimental)`.
+    Each tuple: `(directory, source label, is_experimental, namespace)`.
 
     Each source is individually try/except-guarded so a single inaccessible
     directory doesn't block the rest.
     """
 
-    for skill_dir, source_label, experimental in sources:
+    for skill_dir, source_label, experimental, namespace in sources:
         if not skill_dir or not skill_dir.exists():
             continue
         try:
             backend = FilesystemBackend(root_dir=str(skill_dir), virtual_mode=False)
-            skills = list_skills_from_backend(backend=backend, source_path=".")
+            if namespace:
+                # Plugin sources are walked recursively so nested skill
+                # directories are namespaced as `plugin:sub:skill`, matching
+                # both the runtime middleware and plugin conventions.
+                from deepagents_code.plugins.adapters.skills_middleware import (
+                    load_namespaced_skills,
+                )
+
+                skills = load_namespaced_skills(
+                    backend, str(skill_dir.resolve()), namespace
+                )
+            else:
+                skills = list_skills_from_backend(backend=backend, source_path=".")
             if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",
@@ -122,7 +143,12 @@ def list_skills(
                         "deepagents-code-version": _cli_version,
                     }
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
-                all_skills[skill["name"]] = extended
+                merge_skill(
+                    all_skills,
+                    merged_source_labels,
+                    extended,
+                    source_label=source_label,
+                )
         except Exception:
             # Degrade gracefully — one malformed/inaccessible source must not
             # block discovery of others, so catch broadly and log instead.

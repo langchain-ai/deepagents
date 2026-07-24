@@ -87,9 +87,23 @@ def test_expand_matrix_rejects_real_all_set_overflow(shard: ModuleType) -> None:
         shard.expand_matrix(_models(56), 5)
 
 
-@pytest.mark.parametrize("bad", [0, 65, -1])
+def test_expand_matrix_accepts_max_shards_boundary(shard: ModuleType) -> None:
+    """n_shards == MAX_SHARDS is accepted (boundary)."""
+    m = {"include": [{"model": "x"}]}
+    out = shard.expand_matrix(m, shard.MAX_SHARDS)
+    assert len(out["include"]) == shard.MAX_SHARDS
+
+
+def test_expand_matrix_rejects_over_max_shards(shard: ModuleType) -> None:
+    """n_shards == MAX_SHARDS + 1 is rejected (out of range)."""
+    m = {"include": [{"model": "x"}]}
+    with pytest.raises(shard.ShardConfigError, match=r"1\.\.200"):
+        shard.expand_matrix(m, shard.MAX_SHARDS + 1)
+
+
+@pytest.mark.parametrize("bad", [0, 201, -1])
 def test_expand_matrix_rejects_out_of_range_shards(shard: ModuleType, bad: int) -> None:
-    """n_shards must be an integer in 1..64."""
+    """n_shards must be an integer in 1..200."""
     with pytest.raises(shard.ShardConfigError, match="Invalid n_shards"):
         shard.expand_matrix(_models(2), bad)
 
@@ -427,3 +441,37 @@ def test_main_rejects_matrix_overflow_as_exit(
     with pytest.raises(SystemExit) as excinfo:
         shard.main()
     assert excinfo.value.code == 1
+
+
+# --------------------------------------------------------------------------- #
+# pack_tasks — split ordered task list into contiguous groups (comment #3)
+# --------------------------------------------------------------------------- #
+
+
+def test_pack_tasks_one_per_shard_under_cap(shard: ModuleType) -> None:
+    """When len(names) <= max_shards, one task per group (1-task shards)."""
+    names = [f"t{i}" for i in range(5)]
+    assert shard.pack_tasks(names, max_shards=200) == [["t0"], ["t1"], ["t2"], ["t3"], ["t4"]]
+
+
+def test_pack_tasks_packs_above_cap_contiguously(shard: ModuleType) -> None:
+    """Above the cap, pack ceil(n/max_shards) tasks per group contiguously.
+
+    cap 2 -> ceil(5/2)=3 per group -> [t0,t1,t2],[t3,t4]
+    """
+    names = [f"t{i}" for i in range(5)]
+    assert shard.pack_tasks(names, max_shards=2) == [["t0", "t1", "t2"], ["t3", "t4"]]
+
+
+def test_pack_tasks_covers_every_task_disjointly(shard: ModuleType) -> None:
+    """Order-preserving, no dupes, no drops (covers exactly the input set)."""
+    names = [f"t{i}" for i in range(203)]
+    groups = shard.pack_tasks(names, max_shards=200)
+    assert len(groups) <= 200
+    flat = [n for g in groups for n in g]
+    assert flat == names  # order-preserving, no dupes, no drops
+
+
+def test_pack_tasks_empty(shard: ModuleType) -> None:
+    """Empty input yields empty output."""
+    assert shard.pack_tasks([], max_shards=200) == []

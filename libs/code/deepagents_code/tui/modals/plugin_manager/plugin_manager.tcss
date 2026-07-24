@@ -1,0 +1,96 @@
+PluginManagerScreen {
+    align: center middle;
+}
+
+PluginManagerScreen > Vertical {
+    width: 88;
+    max-width: 94%;
+    /* The bordered search field adds four rows to list views. */
+    height: 90%;
+    min-height: 24;
+    max-height: 100%;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+PluginManagerScreen .plugin-manager-title {
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen .plugin-manager-tabs {
+    height: 1;
+    width: 100%;
+    margin-bottom: 0;
+}
+
+PluginManagerScreen .plugin-manager-tab {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+    text-align: center;
+    margin-right: 1;
+    pointer: pointer;
+}
+
+PluginManagerScreen .plugin-manager-tab:last-of-type {
+    margin-right: 0;
+}
+
+PluginManagerScreen .plugin-manager-tab.active {
+    color: $text;
+}
+
+PluginManagerScreen .plugin-manager-divider {
+    color: $text-muted;
+    margin: 0 0 1 0;
+    height: 1;
+}
+
+PluginManagerScreen .plugin-manager-status {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen .plugin-manager-error {
+    height: auto;
+    color: $error;
+    margin-bottom: 1;
+}
+
+PluginManagerScreen #plugin-manager-search {
+    margin-bottom: 1;
+    border: solid $primary-lighten-2;
+}
+
+PluginManagerScreen #plugin-manager-search:focus {
+    border: solid $primary;
+}
+
+PluginManagerScreen #plugin-manager-options {
+    height: 1fr;
+    min-height: 5;
+    background: $background;
+}
+
+PluginManagerScreen #plugin-marketplace-source {
+    margin-top: 1;
+    margin-bottom: 1;
+    border: solid $primary-lighten-2;
+}
+
+PluginManagerScreen #plugin-marketplace-source:focus {
+    border: solid $primary;
+}
+
+PluginManagerScreen .plugin-manager-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+    margin-top: 1;
+}

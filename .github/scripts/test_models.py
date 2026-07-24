@@ -220,6 +220,15 @@ def test_artifact_key_handles_disallowed_characters(
     assert models._artifact_key(spec) == expected
 
 
+def test_resolve_models_rejects_empty_preset(models: ModuleType) -> None:
+    """A manual eval must not silently succeed without running any models."""
+    with pytest.raises(
+        ValueError,
+        match="No models resolved from EVAL_MODELS preset 'nvidia'",
+    ):
+        models._resolve_models("eval", "nvidia")
+
+
 def test_resolve_models_dedupes_repeated_specs(models: ModuleType) -> None:
     """`_resolve_models` deduplicates so `artifact_key` cannot collide downstream.
 
@@ -439,16 +448,26 @@ def test_workflow_models_dropdown_matches_registry(
     triggers = workflow.get(True, workflow.get("on"))
     options = triggers["workflow_dispatch"]["inputs"]["models"]["options"]
     declared = {str(o) for o in options}
-    expected = _expected_dropdown_options(models)
+
+    if workflow_path == HARBOR_WORKFLOW:
+        # harbor.yml evaluates a SINGLE model, so its dropdown lists explicit
+        # specs only — no presets/providers/all/empty, which resolve to more than
+        # one model and are rejected at dispatch. It must still surface every
+        # registered spec so users can pick any one without typing an override.
+        expected = {m.spec for m in models.REGISTRY}
+        allow_empty: set[str] = set()
+        kind = "REGISTRY specs"
+    else:
+        expected = _expected_dropdown_options(models)
+        allow_empty = {""}  # empty sentinel handled by default
+        kind = "REGISTRY/presets/providers"
 
     orphan = declared - expected
-    missing = expected - declared - {""}  # empty sentinel handled by default
+    missing = expected - declared - allow_empty
 
     assert not orphan, (
-        f"{workflow_path.name}: dropdown contains options not in REGISTRY/presets/providers: "
-        f"{sorted(orphan)}"
+        f"{workflow_path.name}: dropdown contains options not in {kind}: {sorted(orphan)}"
     )
     assert not missing, (
-        f"{workflow_path.name}: REGISTRY/presets/providers missing from dropdown: "
-        f"{sorted(missing)}"
+        f"{workflow_path.name}: {kind} missing from dropdown: {sorted(missing)}"
     )

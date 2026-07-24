@@ -92,7 +92,7 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
             yield Static(
                 Content.from_markup(
                     "Installing [bold]$name[/bold] runs third-party code in "
-                    "the Deep Agents Code environment.",
+                    "the dcode environment.",
                     name=self._package,
                 ),
                 classes="install-confirm-body",
@@ -203,7 +203,7 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         )
         if self._model_spec is not None:
             body = Content.from_markup(
-                "To use [bold]$model[/bold], Deep Agents Code needs to "
+                "To use [bold]$model[/bold], dcode needs to "
                 "install the [bold]$extra[/bold] integration. This will add "
                 "the provider package to your dcode environment.",
                 model=self._model_spec,
@@ -211,7 +211,7 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
             )
         else:
             body = Content.from_markup(
-                "To add a key for [bold]$provider[/bold], Deep Agents Code "
+                "To add a key for [bold]$provider[/bold], dcode "
                 "needs to install the [bold]$extra[/bold] integration. This "
                 "will add the provider package to your dcode environment.",
                 provider=provider,

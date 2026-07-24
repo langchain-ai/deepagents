@@ -1,0 +1,3 @@
+Who has more vehicles: the person with the most credit cards among residents of the same state as the owner of pet 'Molly' (using total bank balance as tiebreaker if tied for most credit cards), OR the person with the most credit cards among residents of the same state as the owner of pet 'Charlotte' (using the same tiebreaker)?
+
+Use only the files under `/app/files`. Write your final answer (and nothing else) to `/app/answer.txt`.

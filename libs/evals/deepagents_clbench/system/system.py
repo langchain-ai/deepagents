@@ -1,33 +1,33 @@
 """Deep Agents system adapter for continual-learning-bench.
 
-Wraps a LangChain Deep Agent (``deepagents``) as a
+Wraps a LangChain Deep Agent (`deepagents`) as a
 :class:`ContinualLearningSystem`, using the agent's **own** memory mechanism as
 the continual-learning substrate:
 
-* ``MemoryMiddleware`` (enabled via ``create_deep_agent(memory=...)``) loads
-  ``/memory/AGENTS.md`` into the system prompt at the start of every turn,
-  wrapped in ``<agent_memory>`` boundary markers and treated as untrusted data.
+* `MemoryMiddleware` (enabled via `create_deep_agent(memory=...)`) loads
+    `/memory/AGENTS.md` into the system prompt at the start of every turn,
+    wrapped in `<agent_memory>` boundary markers and treated as untrusted data.
 * The agent itself distils and updates that file with its built-in
-  ``edit_file`` / ``write_file`` tools as it learns. There is no separate
-  reflection/extraction process — the agent owns its memory.
+    `edit_file` / `write_file` tools as it learns. There is no separate
+    reflection/extraction process — the agent owns its memory.
 
-The memory file lives in the in-state filesystem (``DeepAgentState["files"]``);
-this adapter threads it from one ``respond()`` call to the next, which is what
-carries learning across instances. ``reset()`` wipes it, so the framework's
-stateless baseline is genuinely stateless and ``mean_gain`` measures only what
+The memory file lives in the in-state filesystem (`DeepAgentState["files"]`);
+this adapter threads it from one `respond()` call to the next, which is what
+carries learning across instances. `reset()` wipes it, so the framework's
+stateless baseline is genuinely stateless and `mean_gain` measures only what
 the agent learned.
 
-Structured output uses ``create_deep_agent(response_format=...)``: the agent
-emits the task's per-turn schema natively (read from ``structured_response``),
+Structured output uses `create_deep_agent(response_format=...)`: the agent
+emits the task's per-turn schema natively (read from `structured_response`),
 so there is no separate extraction call either. One model interaction per turn.
 
-The default in-state ``StateBackend`` gives the agent no host shell/filesystem,
+The default in-state `StateBackend` gives the agent no host shell/filesystem,
 so there is no avenue to read provider credentials from the environment.
 
 NOTE: This module targets continual-learning-bench's package layout
-(``src.interface`` / ``src.registry`` / ``src.usage``) and runs only once
-deployed into a clbench checkout under ``src/systems/deepagents/``. See this
-directory's README and ``sync_to_clbench.sh``.
+(`src.interface` / `src.registry` / `src.usage`) and runs only once
+deployed into a clbench checkout under `src/systems/deepagents/`. See this
+directory's README and `sync_to_clbench.sh`.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _read_file_data(files: dict[str, Any], path: str) -> str:
 class DeepAgentsSystem(ContinualLearningSystem):
     """A Deep Agent evaluated as a continual-learning system.
 
-    The agent maintains its own memory (``/memory/AGENTS.md`` in the in-state
+    The agent maintains its own memory (`/memory/AGENTS.md` in the in-state
     filesystem); the adapter just threads that filesystem across instances.
     """
 
@@ -103,7 +103,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
     ) -> None:
         """
         Args:
-            model: ``provider:model`` string passed to ``init_chat_model``.
+            model: `provider:model` string passed to `init_chat_model`.
             name: System identifier surfaced in results and viewers.
         """
         self._name = name
@@ -123,7 +123,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
         self._files = {_AGENT_MEMORY_PATH: _file_data(_SEED_AGENTS_MD)}
 
     def _get_agent(self, schema: type[BaseModel]) -> Any:
-        """Return a deep agent that emits ``schema`` as its structured response."""
+        """Return a deep agent that emits `schema` as its structured response."""
         agent = self._agents.get(schema)
         if agent is None:
             agent = create_deep_agent(
@@ -136,7 +136,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
         return agent
 
     def _memory_snapshot(self) -> dict[str, str]:
-        """Current memory as a ``{path: content}`` dict (the shape clbench logs)."""
+        """Current memory as a `{path: content}` dict (the shape clbench logs)."""
         return {path: _read_file_data(self._files, path) for path in _MEMORY_SOURCES}
 
     def respond(self, query: Query) -> Response:
@@ -214,7 +214,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
     def get_run_artifacts(self) -> dict[str, Any]:
         """Export final memory so the viewer can show what the agent learned.
 
-        ``memory_files`` is the key clbench's trace storage reads (path -> content).
+        `memory_files` is the key clbench's trace storage reads (path -> content).
         """
         return {
             "artifact_type": "deepagents",
@@ -224,7 +224,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
         }
 
     def _record_usage(self, messages: list[Any]) -> None:
-        """Aggregate token usage from message ``usage_metadata`` into a UsageEvent."""
+        """Aggregate token usage from message `usage_metadata` into a UsageEvent."""
         input_tokens = 0
         output_tokens = 0
         seen = False

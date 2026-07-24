@@ -548,6 +548,29 @@ class TestRemove:
         assert code == 0
         assert "No stored credential for anthropic." in capsys.readouterr().out
 
+    def test_remove_surfaces_chmod_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A chmod failure on the delete rewrite is surfaced on stderr, like `set`."""
+        auth_store.set_stored_key("anthropic", "sk-ant")
+        original_chmod = Path.chmod
+
+        def _deny_chmod(self: Path, mode: int) -> None:
+            if self.name == "auth.json":
+                msg = "simulated chmod denial"
+                raise OSError(msg)
+            original_chmod(self, mode)
+
+        # Deny chmod only for the delete rewrite, not the seeding write above.
+        monkeypatch.setattr(Path, "chmod", _deny_chmod)
+        code = run_auth_command(_ns(auth_command="remove", provider="anthropic"))
+        assert code == 0
+        captured = capsys.readouterr()
+        assert auth_store.get_stored_key("anthropic") is None
+        assert "Warning:" in captured.err
+        assert "world-readable" in captured.err
+        assert "Removed stored credential for anthropic." in captured.out
+
     def test_remove_corrupt_store_errors(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

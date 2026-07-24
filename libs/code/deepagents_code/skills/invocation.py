@@ -27,11 +27,17 @@ class SkillInvocationEnvelope:
 
 def discover_skills_and_roots(
     assistant_id: str,
+    *,
+    plugin_skill_sources: tuple[tuple[Path, str], ...] = (),
+    plugin_skill_roots: tuple[Path, ...] = (),
 ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
     """Discover skills and build pre-resolved containment roots.
 
     Args:
         assistant_id: Agent identifier used to resolve user skill directories.
+        plugin_skill_sources: Plugin-owned skill directories and namespaces,
+            supplied by the plugin composition layer.
+        plugin_skill_roots: Plugin-owned roots allowed for content loading.
 
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
@@ -42,6 +48,7 @@ def discover_skills_and_roots(
 
     skills = list_skills(
         built_in_skills_dir=settings.get_built_in_skills_dir(),
+        plugin_skill_sources=plugin_skill_sources,
         user_skills_dir=settings.get_user_skills_dir(assistant_id),
         project_skills_dir=settings.get_project_skills_dir(),
         user_agent_skills_dir=settings.get_user_agent_skills_dir(),
@@ -53,6 +60,7 @@ def discover_skills_and_roots(
         path.resolve()
         for path in (
             settings.get_built_in_skills_dir(),
+            *plugin_skill_roots,
             settings.get_user_skills_dir(assistant_id),
             settings.get_project_skills_dir(),
             settings.get_user_agent_skills_dir(),

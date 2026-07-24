@@ -160,7 +160,7 @@ class RemoteAgent:
         *,
         stream_mode: list[str] | None = None,
         subgraphs: bool = False,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
         context: Any | None = None,  # noqa: ANN401
         durability: str | None = None,  # noqa: ARG002
     ) -> AsyncIterator[tuple[tuple[str, ...], str, Any]]:

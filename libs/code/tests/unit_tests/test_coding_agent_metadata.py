@@ -1,4 +1,4 @@
-"""Contract tests for the coding-agent-v1 trace-metadata standard (LSEN-277).
+"""Contract tests for the coding-agent-v1 trace-metadata standard.
 
 These load the machine-readable contract (`validator.json`, vendored under
 `data/`) and assert that the metadata Deep Agents Code stamps onto its
@@ -173,7 +173,7 @@ class TestContractValueSemantics:
             sandbox_type=None,
             user_id=None,
         )
-        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_agent_purpose"] == "coding"
         assert metadata["ls_integration"] == "deepagents-code"
         assert metadata["ls_agent_runtime"] == "Deep Agents Code"
         assert metadata["ls_trace_schema_version"] == "coding-agent-v1"
@@ -251,5 +251,5 @@ class TestUnknownKeysOmitted:
             "sandbox_type",
         ):
             assert absent not in metadata
-        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_agent_purpose"] == "coding"
         assert metadata["thread_id"] == "t1"

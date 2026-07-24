@@ -1,0 +1,1 @@
+"""Plugin subsystem adapters."""

@@ -15,7 +15,6 @@ from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -70,7 +69,6 @@ Derived from Google's multimodal API supported formats:
 """
 
 MAX_LINE_LENGTH = 5000
-LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
 
@@ -163,31 +161,23 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
 
 
 def _normalize_content(file_data: FileData) -> str:
-    """Normalize file_data content to a plain string.
-
-    This is the single backwards-compatibility conversion point for the
-    legacy `list[str]` file format.  New code stores `content` as a
-    plain `str`; old data may still contain a list of lines.
+    """Normalize current and legacy file data content to a plain string.
 
     Args:
         file_data: `FileData` dict with `content` key.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
-    content = file_data["content"]
-    if isinstance(content, list):
-        warn_deprecated(
-            since="0.5.0",
-            removal="0.7.0",
-            message=(
-                "`FileData` with `list[str]` content is deprecated and will "
-                "be removed in deepagents==0.7.0. Content should be stored "
-                "as a plain `str`."
-            ),
-            package="deepagents",
-        )
+    content: object = file_data["content"]
+    if isinstance(content, list) and all(isinstance(line, str) for line in content):
         return "\n".join(content)
+    if not isinstance(content, str):
+        msg = f"File content must be a string or a legacy list of strings, got {type(content).__name__}."
+        raise TypeError(msg)
     return content
 
 
@@ -203,10 +193,11 @@ def format_content_with_line_numbers(
     content: str | list[str],
     start_line: int = 1,
 ) -> str:
-    """Format file content with line numbers (`cat -n` style).
+    """Format file content with line numbers.
 
     Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
-    (e.g., `5.1`, `5.2`).
+    (e.g., `5.1`, `5.2`). Line markers are separated from source content
+    with two spaces so source tabs cannot be confused with a gutter separator.
 
     Args:
         content: File content as string or list of lines
@@ -222,28 +213,33 @@ def format_content_with_line_numbers(
     else:
         lines = content
 
-    result_lines = []
+    rows: list[tuple[str, str]] = []
+    marker_width = 0
     for i, line in enumerate(lines):
         line_num = i + start_line
+        # One slice per MAX_LINE_LENGTH chunk; short lines yield a single chunk.
+        # `or [line]` keeps a row for a blank line, whose empty range would
+        # otherwise drop it, so it still gets a gutter.
+        chunks = [line[s : s + MAX_LINE_LENGTH] for s in range(0, len(line), MAX_LINE_LENGTH)] or [line]
 
-        if len(line) <= MAX_LINE_LENGTH:
-            result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
-        else:
-            # Split long line into chunks with continuation markers
-            num_chunks = (len(line) + MAX_LINE_LENGTH - 1) // MAX_LINE_LENGTH
-            for chunk_idx in range(num_chunks):
-                start = chunk_idx * MAX_LINE_LENGTH
-                end = min(start + MAX_LINE_LENGTH, len(line))
-                chunk = line[start:end]
-                if chunk_idx == 0:
-                    # First chunk: use normal line number
-                    result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{chunk}")
-                else:
-                    # Continuation chunks: use decimal notation (e.g., 5.1, 5.2)
-                    continuation_marker = f"{line_num}.{chunk_idx}"
-                    result_lines.append(f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}")
+        for chunk_idx, chunk in enumerate(chunks):
+            marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
+            rows.append((marker, chunk))
+            marker_width = max(marker_width, len(marker))
 
-    return "\n".join(result_lines)
+    # The two-space marker/source separator is a load-bearing contract shared by
+    # two downstream parsers that must stay in sync with the separator emitted
+    # here:
+    #   - `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row`
+    #     (profiles/harness/_nvidia_nemotron_3_ultra.py) counts source rows to
+    #     decide whether to append the continuation notice.
+    #   - `ToolCallMessage._compact_line_gutter` (the deepagents-code TUI, in a
+    #     separate package: libs/code/.../tui/widgets/messages.py) re-justifies
+    #     the gutter for display.
+    # Both also tolerate the legacy `cat -n` tab. Shrinking this separator below
+    # two spaces (or otherwise diverging) would silently break them; the
+    # producer->consumer round-trip tests in both packages guard against that.
+    return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 
 def check_empty_content(content: str) -> str | None:
@@ -306,40 +302,17 @@ def _get_backend_read_file_type(path: str) -> FileType:
     return _get_file_type(path)
 
 
-def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
-    r"""Convert a `FileData` dict to the legacy (v1) storage format.
-
-    The v1 format stores content as `list[str]` (lines split on `\\n`)
-    and omits the `encoding` field.  Use this when `file_format="v1"`
-    on a backend to preserve backwards compatibility with consumers that
-    expect `list[str]` content.
-
-    Args:
-        file_data: Modern (v2) `FileData` with `content: str` and `encoding`.
-
-    Returns:
-        Dict with `content` as `list[str]`, plus `created_at` /
-            `modified_at` timestamps.  No `encoding` key.
-    """
-    content = file_data["content"]
-    result: dict[str, Any] = {
-        "content": content.split("\n"),
-    }
-    if "created_at" in file_data:
-        result["created_at"] = file_data["created_at"]
-    if "modified_at" in file_data:
-        result["modified_at"] = file_data["modified_at"]
-    return result
-
-
 def file_data_to_string(file_data: FileData) -> str:
-    """Convert `FileData` to plain string content.
+    """Convert current or legacy persisted file content to a string.
 
     Args:
-        file_data: `FileData` dict with 'content' key
+        file_data: File data whose content is a string or legacy list of strings.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
     return _normalize_content(file_data)
 
@@ -391,15 +364,41 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     return result
 
 
+def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
+    """Clone `file_data` with replaced content, preserving timestamps when present.
+
+    Unlike `update_file_data`, this carries `created_at`/`modified_at` through
+    verbatim rather than restamping `modified_at`, since slicing a read window
+    does not mutate the underlying file.
+
+    Args:
+        file_data: Source `FileData` whose encoding and timestamps are copied.
+        content: Replacement content for the returned copy.
+
+    Returns:
+        A new `FileData` with `content` set and metadata carried over.
+    """
+    sliced_fd = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        sliced_fd["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        sliced_fd["modified_at"] = file_data["modified_at"]
+    return sliced_fd
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
-) -> str | ReadResult:
+) -> ReadResult:
     """Slice file data to the requested line range without formatting.
 
-    Returns raw text for the requested window. Line-number formatting
-    is applied downstream by the middleware layer.
+    The returned `ReadResult` carries the raw (unformatted) window in
+    `file_data`; line-number formatting is applied downstream by the
+    middleware layer.
 
     Args:
         file_data: `FileData` dict.
@@ -407,13 +406,16 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content string on success, or `ReadResult` with
-            `error` set when the offset exceeds the file length.
+        `ReadResult` with the sliced raw content and pagination metadata
+            (`total_lines`, `start_line`, `end_line`, `next_offset`). The
+            pagination fields are left unset for empty or whitespace-only
+            content. `error` is set instead when the offset exceeds the file
+            length.
     """
     content = file_data_to_string(file_data)
 
     if not content or content.strip() == "":
-        return content
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
@@ -424,14 +426,23 @@ def slice_read_response(
     lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
+    total_lines = len(lines)
 
-    if start_idx >= len(lines):
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+    if start_idx >= total_lines:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    next_offset = end_idx if end_idx < total_lines else None
+    return ReadResult(
+        file_data=_copy_file_data_with_content(file_data, sliced),
+        total_lines=total_lines,
+        start_line=start_idx + 1,
+        end_line=end_idx,
+        next_offset=next_offset,
+    )
 
 
 def perform_string_replacement(
@@ -826,12 +837,17 @@ def grep_matches_from_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    *,
+    max_count: int | None = None,
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
     Performs literal text search (not regex).
 
-    Returns a `GrepResult` with matches on success.
+    Returns a `GrepResult` with matches on success. When `max_count` is set, at
+    most that many matches are returned; if more exist the scan stops and the
+    result is flagged `truncated=True`. Exactly `max_count` matches with none
+    dropped is reported complete (`truncated=False`).
 
     We deliberately do not raise here to keep backends non-throwing in tool
     contexts and preserve user-facing error messages.
@@ -852,6 +868,11 @@ def grep_matches_from_files(
         content_str = _normalize_content(file_data)
         for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
+                if max_count is not None and len(matches) >= max_count:
+                    # A further match beyond `max_count` proves more exist; stop
+                    # and flag truncation. Checked before appending so exactly
+                    # `max_count` matches is reported complete, not truncated.
+                    return GrepResult(matches=matches, truncated=True)
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return GrepResult(matches=matches)
 
@@ -871,7 +892,57 @@ def format_grep_matches(
     """Format structured grep matches using existing formatting logic."""
     if not matches:
         return "No matches found"
-    return _format_grep_results(build_grep_results_dict(matches), output_mode)
+
+    # Presence of the context keys signals "context mode" for the whole result;
+    # the producer sets both keys on every match or none. `_format_grep_with_context`
+    # still tolerates a hand-built mix of matches with and without context, because
+    # `format_grep_matches` is public and may be handed such input.
+    if output_mode != "content" or not any("context_before" in match or "context_after" in match for match in matches):
+        return _format_grep_results(build_grep_results_dict(matches), output_mode)
+    return _format_grep_with_context(matches)
+
+
+def _format_grep_with_context(matches: list[GrepMatch]) -> str:
+    """Render `content`-mode grep output including surrounding context lines.
+
+    Matched lines are marked with `:` and context lines with `-`. Non-adjacent
+    line groups within a file are separated by a `--` line, mirroring `grep -C`.
+    """
+    matches_by_path: dict[str, list[GrepMatch]] = {}
+    for match in matches:
+        matches_by_path.setdefault(match["path"], []).append(match)
+
+    lines: list[str] = []
+    for file_path in sorted(matches_by_path):
+        file_matches = matches_by_path[file_path]
+        matching_lines = {match["line"] for match in file_matches}
+        displayed_lines: dict[int, str] = {}
+        for match in file_matches:
+            for context_line in match.get("context_before", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+            displayed_lines[match["line"]] = match["text"]
+            for context_line in match.get("context_after", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+
+        lines.append(f"{file_path}:")
+        for group_index, group in enumerate(_group_adjacent_lines(displayed_lines)):
+            if group_index:
+                lines.append("  --")
+            for line_num, text in group:
+                separator = ":" if line_num in matching_lines else "-"
+                lines.append(f"  {line_num}{separator} {text}")
+    return "\n".join(lines)
+
+
+def _group_adjacent_lines(displayed_lines: dict[int, str]) -> list[list[tuple[int, str]]]:
+    """Split `{line_number: text}` into runs of consecutive line numbers."""
+    groups: list[list[tuple[int, str]]] = []
+    for item in sorted(displayed_lines.items()):
+        if not groups or item[0] > groups[-1][-1][0] + 1:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
+    return groups
 
 
 _REGEX_SIGNAL_RE = re.compile(

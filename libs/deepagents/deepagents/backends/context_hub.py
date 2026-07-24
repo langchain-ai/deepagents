@@ -18,7 +18,6 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
-    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -159,17 +158,7 @@ class ContextHubBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         file_data = create_file_data(content)
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
-        )
+        return slice_read_response(file_data, offset, limit)
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit `content` to `file_path`."""
@@ -275,8 +264,16 @@ class ContextHubBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
-        """Search contents for `pattern` (optional `path` / `glob` filters)."""
+        """Search contents for `pattern` (optional `path` / `glob` filters).
+
+        When `max_count` is set, at most that many matches are returned; if more
+        exist the search stops and the result is flagged `truncated=True`.
+        Exactly `max_count` matches with none dropped is reported complete
+        (`truncated=False`).
+        """
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
@@ -300,6 +297,11 @@ class ContextHubBackend(BackendProtocol):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):
+                    if max_count is not None and len(matches) >= max_count:
+                        # A further match beyond `max_count` proves more exist;
+                        # stop and flag truncation. Checked before appending so
+                        # exactly `max_count` matches is reported complete.
+                        return GrepResult(matches=matches, truncated=True)
                     matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
 
         return GrepResult(matches=matches)

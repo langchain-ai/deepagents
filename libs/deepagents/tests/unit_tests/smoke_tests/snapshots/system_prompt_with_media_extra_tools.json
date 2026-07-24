@@ -1,0 +1,279 @@
+[
+  {
+    "function": {
+      "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.\nYou should almost ALWAYS use this tool before using the read_file or edit_file tools.",
+      "name": "ls",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Absolute path to the directory to list. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- For text files, by default it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.\n- Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.\n- Always read a file before editing it.",
+      "name": "read_file",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to read. Must be absolute, not relative.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "description": "Maximum number of lines to read for text files. For videos, seconds of source to sample.",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.\n\nUsage:\n- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
+      "name": "write_file",
+      "parameters": {
+        "properties": {
+          "content": {
+            "description": "The text content to write to the file. This parameter is required.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Absolute path where the file should be written. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Performs exact string replacements in files.\n\nUsage:\n- You must read the file before editing; this tool errors otherwise.\n- Preserve the exact indentation from the read output, and never include line-number prefixes in old_string or new_string.\n- Prefer editing an existing file over creating a new one.\n- Only use emojis if the user explicitly requests it.",
+      "name": "edit_file",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to edit. Must be absolute, not relative.",
+            "type": "string"
+          },
+          "new_string": {
+            "description": "The text to replace old_string with. Must be different from old_string.",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "The exact text to find and replace. Must be unique in the file unless replace_all is True.",
+            "type": "string"
+          },
+          "replace_all": {
+            "default": false,
+            "description": "If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
+      "name": "delete",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to delete. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Find files matching a glob pattern, returning absolute paths.\n\nSupports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`.",
+      "name": "glob",
+      "parameters": {
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Base directory to search from. Defaults to the backend's default root."
+          },
+          "pattern": {
+            "description": "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Search for a LITERAL text pattern across files (NOT regex).\n\nThe pattern is matched verbatim: regex metacharacters are ordinary characters, not operators. To match any of several strings, run a separate grep for each; `grep(pattern=\"foo|bar\")` searches for the literal text \"foo|bar\", and `.*` or `\\.` match those characters literally.\n- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead.\n\nReturns matching files or content per `output_mode`. Offloaded large tool results live under the artifacts root (`/large_tool_results/` by default); grep that directory to search them when you do not know the exact path.",
+      "name": "grep",
+      "parameters": {
+        "properties": {
+          "glob": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', '*.ts'). A pattern without '/' matches the file name at any depth; a pattern containing '/' matches the search-root-relative path (e.g. 'src/**/*.py'). This is an in-tool file filter, not a call to the separate glob tool. Brace expansion (e.g. '*.{ts,tsx}') is not supported on all backends; run a separate search per extension for reliable results."
+          },
+          "max_count": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional cap on the total number of matches returned across all files. Leave unset to use the configured default. When the cap is hit, results are truncated and a note says so; narrow the pattern or path to see the rest."
+          },
+          "output_mode": {
+            "default": "files_with_matches",
+            "description": "Shape of the returned text. 'files_with_matches' (default): newline-separated matching file paths. 'content': matching lines grouped by file under a '<path>:' header, each line indented and formatted '<line_number>: <line text>' (only the matched line, no surrounding context). 'count': one '<path>: <match_count>' line per file.",
+            "enum": [
+              "files_with_matches",
+              "content",
+              "count"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Directory to search in. Defaults to current working directory."
+          },
+          "pattern": {
+            "description": "Text pattern to search for (literal string, not regex).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).\n\nUsage:\n- Quote paths containing spaces (e.g. cd \"/path/with spaces\").\n- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.\n- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).\n- You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. Use read_file rather than cat/head/tail.\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead\n\nOnly available on backends implementing SandboxBackendProtocol; otherwise it returns an error.",
+      "name": "execute",
+      "parameters": {
+        "properties": {
+          "command": {
+            "description": "Shell command to execute in the sandbox environment.",
+            "type": "string"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it."
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Launch an ephemeral subagent to handle a complex, multi-step task in an isolated context window.\n\nAvailable agent types and the tools they have access to:\n- general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.\n\nSpecify subagent_type to select the agent. Usage notes:\n- Launch multiple agents concurrently when their tasks are independent, using a single message with multiple tool calls.\n- Each invocation is stateless: the agent sees only the prompt you give it and returns a single final report. Put full detail in the prompt and state exactly what it should return.\n- The agent's report is not shown to the user; relay a summary yourself.\n- Tell the agent whether to create content, analyze, or only research, since it cannot see the user's intent.\n- If an agent's description says to use it proactively, do so without waiting to be asked.\n- When only general-purpose is available, use it for any complex, context-heavy task; it has the same capabilities as the main agent.",
+      "name": "task",
+      "parameters": {
+        "properties": {
+          "description": {
+            "description": "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",
+            "type": "string"
+          },
+          "subagent_type": {
+            "description": "The type of subagent to use. Must be one of the available agent types listed in the tool description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "subagent_type"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]

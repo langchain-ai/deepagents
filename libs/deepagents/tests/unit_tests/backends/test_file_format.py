@@ -1,42 +1,22 @@
-"""Tests for the new str-based file format with encoding support.
-
-Covers:
-- Text round-trip through create_file_data / file_data_to_string
-- Binary (base64) round-trip
-- Legacy list[str] backwards compatibility (with DeprecationWarning)
-- Store backend upload/download for binary and text
-- Store backend legacy read
-- Grep with new and legacy formats
-- Encoding inference via utf-8 decode attempt
-"""
+"""Tests for current file data storage format and helpers."""
 
 import base64
-import warnings
 
+import pytest
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import ReadResult
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
-    _to_legacy_file_data,
     compile_grep_include_glob,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 NS = lambda _rt: ("filesystem",)  # noqa: E731
 
-# ---------------------------------------------------------------------------
-# 1. Text round-trip
-# ---------------------------------------------------------------------------
 
-
-def test_text_round_trip():
+def test_text_round_trip() -> None:
     fd = create_file_data("hello\nworld")
     assert isinstance(fd["content"], str)
     assert fd["content"] == "hello\nworld"
@@ -44,12 +24,26 @@ def test_text_round_trip():
     assert file_data_to_string(fd) == "hello\nworld"
 
 
-# ---------------------------------------------------------------------------
-# 2. Binary round-trip
-# ---------------------------------------------------------------------------
+def test_legacy_list_content_is_readable() -> None:
+    fd = {"content": ["hello", "world", ""]}
+
+    assert file_data_to_string(fd) == "hello\nworld\n"  # type: ignore[arg-type]
 
 
-def test_binary_round_trip():
+def test_empty_legacy_list_content_is_readable() -> None:
+    fd = {"content": []}
+
+    assert file_data_to_string(fd) == ""  # type: ignore[arg-type]
+
+
+def test_legacy_list_content_rejects_non_string_items() -> None:
+    fd = {"content": ["hello", 1]}
+
+    with pytest.raises(TypeError, match="got list"):
+        file_data_to_string(fd)  # type: ignore[arg-type]
+
+
+def test_binary_round_trip() -> None:
     original = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
     b64_str = base64.standard_b64encode(original).decode("ascii")
     fd = create_file_data(b64_str, encoding="base64")
@@ -58,77 +52,24 @@ def test_binary_round_trip():
     assert base64.standard_b64decode(fd["content"]) == original
 
 
-# ---------------------------------------------------------------------------
-# 3. Legacy backwards compat — emits DeprecationWarning
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_list_content_emits_warning():
-    legacy_fd = {
-        "content": ["line1", "line2"],
-        "encoding": "utf-8",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "modified_at": "2025-01-01T00:00:00+00:00",
-    }
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = file_data_to_string(legacy_fd)
-        assert result == "line1\nline2"
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "list[str]" in str(w[0].message)
-
-
-# ---------------------------------------------------------------------------
-# 4. New format — no warning
-# ---------------------------------------------------------------------------
-
-
-def test_new_format_no_warning():
-    fd = {
-        "content": "hello",
-        "encoding": "utf-8",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "modified_at": "2025-01-01T00:00:00+00:00",
-    }
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = file_data_to_string(fd)
-        assert result == "hello"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) == 0
-
-
-# ---------------------------------------------------------------------------
-# 5. Store backend upload binary
-# ---------------------------------------------------------------------------
-
-
-def test_store_upload_binary():
+def test_store_upload_binary() -> None:
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
+    be = StoreBackend(store=mem_store, namespace=NS)
 
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
     responses = be.upload_files([("/images/test.png", png_bytes)])
 
     assert len(responses) == 1
     assert responses[0].error is None
-
-    # Verify stored with base64 encoding
     item = mem_store.get(("filesystem",), "/images/test.png")
     assert item is not None
     assert item.value["encoding"] == "base64"
     assert isinstance(item.value["content"], str)
 
 
-# ---------------------------------------------------------------------------
-# 6. Store backend download binary round-trip
-# ---------------------------------------------------------------------------
-
-
-def test_store_upload_download_binary_round_trip():
+def test_store_upload_download_binary_round_trip() -> None:
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
+    be = StoreBackend(store=mem_store, namespace=NS)
 
     original_bytes = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
     be.upload_files([("/images/photo.png", original_bytes)])
@@ -139,116 +80,22 @@ def test_store_upload_download_binary_round_trip():
     assert responses[0].content == original_bytes
 
 
-# ---------------------------------------------------------------------------
-# 7. Store backend upload text
-# ---------------------------------------------------------------------------
-
-
-def test_store_upload_text():
+def test_store_upload_text() -> None:
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
+    be = StoreBackend(store=mem_store, namespace=NS)
 
     text_bytes = b"Hello, world!\nLine 2"
     responses = be.upload_files([("/docs/readme.txt", text_bytes)])
 
     assert len(responses) == 1
     assert responses[0].error is None
-
     item = mem_store.get(("filesystem",), "/docs/readme.txt")
     assert item is not None
     assert item.value["encoding"] == "utf-8"
     assert item.value["content"] == "Hello, world!\nLine 2"
 
 
-# ---------------------------------------------------------------------------
-# 8. Store backend legacy read
-# ---------------------------------------------------------------------------
-
-
-def test_store_legacy_list_content_read():
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS)
-
-    # Manually put legacy list[str] item
-    mem_store.put(
-        ("filesystem",),
-        "/legacy/file.txt",
-        {
-            "content": ["line1", "line2", "line3"],
-            "encoding": "utf-8",
-            "created_at": "2025-01-01T00:00:00+00:00",
-            "modified_at": "2025-01-01T00:00:00+00:00",
-        },
-    )
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = be.read("/legacy/file.txt")
-        assert isinstance(result, ReadResult)
-        assert result.file_data is not None
-        assert "line1" in result.file_data["content"]
-        assert "line2" in result.file_data["content"]
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        responses = be.download_files(["/legacy/file.txt"])
-        assert responses[0].content == b"line1\nline2\nline3"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# 9. Store backend legacy read (v1 format, replaces StateBackend test)
-# ---------------------------------------------------------------------------
-
-
-def test_store_legacy_list_content_read_v1():
-    """Test reading legacy list[str] content through StoreBackend (v1 format).
-
-    This replaces the former StateBackend legacy read test, exercising the
-    same file_data_to_string deserialization path via StoreBackend.
-    """
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    # Seed store with legacy list[str] content
-    mem_store.put(
-        ("filesystem",),
-        "/old/file.txt",
-        {
-            "content": ["alpha", "beta"],
-            "encoding": "utf-8",
-            "created_at": "2025-01-01T00:00:00+00:00",
-            "modified_at": "2025-01-01T00:00:00+00:00",
-        },
-    )
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = be.read("/old/file.txt")
-        assert isinstance(result, ReadResult)
-        assert result.file_data is not None
-        assert "alpha" in result.file_data["content"]
-        assert "beta" in result.file_data["content"]
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        responses = be.download_files(["/old/file.txt"])
-        assert responses[0].content == b"alpha\nbeta"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# 10. Grep with new format
-# ---------------------------------------------------------------------------
-
-
-def test_grep_new_format():
+def test_grep_new_format() -> None:
     fd = create_file_data("import os\nprint('hello')\nimport sys")
     files = {"/src/main.py": fd}
     result = grep_matches_from_files(files, "import", path="/")
@@ -260,13 +107,7 @@ def test_grep_new_format():
     assert result.matches[1]["text"] == "import sys"
 
 
-# ---------------------------------------------------------------------------
-# 11. Grep with legacy format
-# ---------------------------------------------------------------------------
-
-
-def test_grep_glob_filters_by_filename():
-    """`grep_matches_from_files` honors the glob filter (cached compile path)."""
+def test_grep_glob_filters_by_filename() -> None:
     files = {
         "/src/main.py": create_file_data("import os"),
         "/src/notes.txt": create_file_data("import os"),
@@ -277,20 +118,19 @@ def test_grep_glob_filters_by_filename():
     assert result.matches[0]["path"] == "/src/main.py"
 
 
-def test_grep_glob_brace_expansion():
-    """Brace-expansion globs match either extension via the cached matcher."""
+def test_grep_glob_brace_expansion() -> None:
     files = {
         "/a.py": create_file_data("hit"),
         "/b.md": create_file_data("hit"),
         "/c.txt": create_file_data("hit"),
     }
     result = grep_matches_from_files(files, "hit", path="/", glob="*.{py,md}")
+    assert result.matches is not None
     paths = sorted(m["path"] for m in result.matches)
     assert paths == ["/a.py", "/b.md"]
 
 
-def test_grep_glob_matches_nothing():
-    """A glob matching no files yields an empty (not `None`) match list."""
+def test_grep_glob_matches_nothing() -> None:
     files = {
         "/a.py": create_file_data("hit"),
         "/b.md": create_file_data("hit"),
@@ -299,159 +139,42 @@ def test_grep_glob_matches_nothing():
     assert result.matches == []
 
 
-def test_compile_glob_is_cached():
-    """`compile_grep_include_glob` returns the identical matcher for a repeated pattern.
-
-    This is the optimization the change exists to provide: the compiled matcher
-    is reused across calls rather than recompiled per candidate file.
-    """
+def test_compile_glob_is_cached() -> None:
     assert compile_grep_include_glob("*.py") is compile_grep_include_glob("*.py")
-    # A distinct pattern produces a distinct matcher.
     assert compile_grep_include_glob("*.py") is not compile_grep_include_glob("*.md")
 
 
-def test_grep_glob_repeated_pattern_stays_correct():
-    """Repeated greps with the same glob return correct results each time.
-
-    Guards against a cached matcher being mutated or carrying state between
-    calls, which would corrupt the second invocation.
-    """
+def test_grep_glob_repeated_pattern_stays_correct() -> None:
     first = {"/x.py": create_file_data("hit"), "/x.md": create_file_data("hit")}
     second = {"/y.py": create_file_data("hit"), "/y.txt": create_file_data("hit")}
     r1 = grep_matches_from_files(first, "hit", path="/", glob="*.py")
     r2 = grep_matches_from_files(second, "hit", path="/", glob="*.py")
+    assert r1.matches is not None
+    assert r2.matches is not None
     assert [m["path"] for m in r1.matches] == ["/x.py"]
     assert [m["path"] for m in r2.matches] == ["/y.py"]
 
 
-def test_grep_legacy_format():
-    legacy_fd = {
-        "content": ["def foo():", "    return 42", "def bar():", "    return 0"],
-        "encoding": "utf-8",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "modified_at": "2025-01-01T00:00:00+00:00",
-    }
-    files = {"/src/funcs.py": legacy_fd}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = grep_matches_from_files(files, "def", path="/")
-        assert result.matches is not None
-        assert len(result.matches) == 2
-        assert result.matches[0]["text"] == "def foo():"
-        assert result.matches[1]["text"] == "def bar():"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# 12. Encoding inference — utf-8 attempt, fallback to base64
-# ---------------------------------------------------------------------------
-
-
-def test_store_upload_utf8_content_stored_as_text():
-    """Valid utf-8 bytes are stored with encoding='utf-8'."""
+def test_store_upload_utf8_content_stored_as_text() -> None:
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
+    be = StoreBackend(store=mem_store, namespace=NS)
 
     be.upload_files([("/docs/notes.txt", b"Hello, world!")])
 
     item = mem_store.get(("filesystem",), "/docs/notes.txt")
+    assert item is not None
     assert item.value["encoding"] == "utf-8"
     assert item.value["content"] == "Hello, world!"
 
 
-def test_store_upload_non_utf8_content_stored_as_base64():
-    """Non-utf-8 bytes are stored with encoding='base64'."""
+def test_store_upload_non_utf8_content_stored_as_base64() -> None:
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
+    be = StoreBackend(store=mem_store, namespace=NS)
 
     raw = b"\x89PNG\r\n\x1a\n" + b"\xff\xfe" + b"\x00" * 20
     be.upload_files([("/images/photo.png", raw)])
 
     item = mem_store.get(("filesystem",), "/images/photo.png")
+    assert item is not None
     assert item.value["encoding"] == "base64"
     assert base64.standard_b64decode(item.value["content"]) == raw
-
-
-# ---------------------------------------------------------------------------
-# 13. file_format="v1" flag — StoreBackend
-# ---------------------------------------------------------------------------
-
-
-def test_store_write_as_list():
-    """StoreBackend with file_format="v1" stores content as list[str]."""
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    be.write("/docs/readme.txt", "line1\nline2\nline3")
-
-    item = mem_store.get(("filesystem",), "/docs/readme.txt")
-    assert item is not None
-    assert item.value["content"] == ["line1", "line2", "line3"]
-    assert "encoding" not in item.value
-
-
-def test_store_edit_as_list():
-    """StoreBackend with file_format="v1" preserves list format after edit."""
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    be.write("/docs/readme.txt", "hello\nworld")
-    result = be.edit("/docs/readme.txt", "world", "there")
-
-    assert result.error is None
-    item = mem_store.get(("filesystem",), "/docs/readme.txt")
-    assert item.value["content"] == ["hello", "there"]
-    assert "encoding" not in item.value
-
-
-def test_store_write_as_list_readable():
-    """Files stored as list[str] are still readable via the same backend."""
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    be.write("/file.txt", "aaa\nbbb")
-    result = be.read("/file.txt")
-    assert isinstance(result, ReadResult)
-    assert result.file_data is not None
-    assert "aaa" in result.file_data["content"]
-    assert "bbb" in result.file_data["content"]
-
-
-# ---------------------------------------------------------------------------
-# 14. file_format="v1" flag — StoreBackend (replaces StateBackend tests)
-# ---------------------------------------------------------------------------
-
-
-def test_store_write_as_list_v1():
-    """StoreBackend with file_format="v1" stores content as list[str].
-
-    This replaces the former StateBackend v1 write test.
-    """
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    result = be.write("/docs/readme.txt", "alpha\nbeta")
-    assert result.error is None
-    item = mem_store.get(("filesystem",), "/docs/readme.txt")
-    assert item.value["content"] == ["alpha", "beta"]
-    assert "encoding" not in item.value
-
-
-def test_store_edit_as_list_v1():
-    """StoreBackend with file_format="v1" preserves list format after edit.
-
-    This replaces the former StateBackend v1 edit test.
-    """
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    # Seed with legacy content
-    legacy = _to_legacy_file_data(create_file_data("hello\nworld"))
-    mem_store.put(("filesystem",), "/file.txt", legacy)
-
-    result = be.edit("/file.txt", "world", "there")
-    assert result.error is None
-    item = mem_store.get(("filesystem",), "/file.txt")
-    assert item.value["content"] == ["hello", "there"]
-    assert "encoding" not in item.value

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
@@ -311,20 +310,17 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
         assert "modified content" in content.file_data["content"]
 
 
-class TestLocalShellVirtualModeDefaultDeprecation:
-    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+class TestLocalShellVirtualModeDefault:
+    """`virtual_mode` defaults to `True` and never emits a deprecation."""
 
-    def test_omitted_virtual_mode_warns(self) -> None:
+    def test_omitted_virtual_mode_defaults_true(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
             be = LocalShellBackend(root_dir=tmpdir)
 
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert deprecations[0].category is LangChainDeprecationWarning
-        assert "virtual_mode" in str(deprecations[0].message)
-        # Default falls back to `False` for backwards compatibility.
-        assert be.virtual_mode is False
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []
+        assert be.virtual_mode is True
 
     def test_explicit_virtual_mode_does_not_warn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings(record=True) as captured:

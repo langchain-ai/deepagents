@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from typing import Any
 
+import pytest
 from langchain.agents._subagent_transformer import (
     AsyncSubagentRunStream,
     SubagentRunStream,
@@ -25,6 +26,8 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field
 
 from deepagents import create_deep_agent
+
+pytestmark = pytest.mark.filterwarnings(r"ignore:The v3 streaming protocol on Pregel is experimental\.")
 
 
 class _Scripted(BaseChatModel):

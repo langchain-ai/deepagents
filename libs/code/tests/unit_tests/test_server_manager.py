@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,6 +38,7 @@ class TestServerConfigRoundTrip:
             auto_approve=True,
             interrupt_shell_only=True,
             shell_allow_list=["ls", "cat", "grep"],
+            allow_fs_tools=["ls", "read_file"],
             interactive=False,
             enable_shell=False,
             enable_ask_user=True,
@@ -71,6 +73,98 @@ class TestServerConfigRoundTrip:
             restored = ServerConfig.from_env()
 
         assert restored == original
+
+    def test_allow_fs_tools_list_round_trips(self) -> None:
+        """An explicit allowlist survives the env round trip as a JSON list."""
+        original = ServerConfig(allow_fs_tools=["ls", "read_file"])
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools == ["ls", "read_file"]
+
+    def test_rejects_allow_fs_tools_without_read_file(self) -> None:
+        """An explicit allowlist missing `read_file` fails at construction.
+
+        `ServerConfig.__post_init__` owns this invariant so a tampered env value
+        (which `_read_env_allow_fs_tools` intentionally does not check for
+        `read_file`) fails closed here rather than a process boundary away in
+        `FilesystemMiddleware`.
+        """
+        with pytest.raises(ValueError, match="allow_fs_tools must include"):
+            ServerConfig(allow_fs_tools=["ls"])
+
+    def test_rejects_empty_allow_fs_tools(self) -> None:
+        """An empty explicit allowlist is rejected at construction."""
+        with pytest.raises(ValueError, match="allow_fs_tools must be None"):
+            ServerConfig(allow_fs_tools=[])
+
+    def test_from_env_absent_allow_fs_tools_is_none(self) -> None:
+        """An absent `ALLOW_FS_TOOLS` var deserializes to `None` (unrestricted).
+
+        `None` is the "flag omitted" state (also what `--allow-fs-tools all`
+        collapses to); it leaves the SDK default in place. Guards the
+        absent-variable passthrough in `_read_env_allow_fs_tools`.
+        """
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop(f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS", None)
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools is None
+
+    def test_from_env_rejects_invalid_allow_fs_tools_shape(self) -> None:
+        """A tampered/skewed ALLOW_FS_TOOLS value fails closed rather than open.
+
+        Well-formed JSON of an unexpected type must raise instead of falling
+        through to an unrestricted filesystem — see `_read_env_allow_fs_tools`.
+        Covers non-list scalars/objects, a list containing non-strings (the
+        `all(isinstance(...))` guard), and the empty list (rejected directly so
+        the fail-closed guarantee is self-contained, not SDK-dependent).
+        """
+        bad_values = (
+            "null",  # explicit null is not the same as an absent variable
+            '"all"',  # the "all" sentinel is collapsed to None before serialize
+            '"read_file"',  # bare string, not a list
+            "42",  # number
+            "true",  # boolean
+            "{}",  # object
+            "[1, 2]",  # list of non-strings
+            '["ls", null]',  # list with a null element
+            "[]",  # empty list
+        )
+        for bad in bad_values:
+            with (
+                patch.dict(
+                    os.environ,
+                    {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": bad},
+                    clear=True,
+                ),
+                pytest.raises(ValueError, match="ALLOW_FS_TOOLS"),
+            ):
+                ServerConfig.from_env()
+
+    def test_from_env_rejects_unknown_allow_fs_tools_name(self) -> None:
+        """A well-shaped list with an unrecognized tool name fails closed.
+
+        The parent CLI (`_parse_allow_fs_tools_flag`) already rejects unknown
+        names, but the server subprocess re-validates independently: a tampered
+        value like `["read_file", "evil_tool"]` is a non-empty list of strings
+        (so it passes the shape guard) yet must still raise here rather than be
+        cast to `list[FsToolName]` and have the bogus name silently dropped
+        downstream. This keeps the `cast` in `_read_env_allow_fs_tools` honest.
+        """
+        with (
+            patch.dict(
+                os.environ,
+                {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": '["read_file", "evil_tool"]'},
+                clear=True,
+            ),
+            pytest.raises(ValueError, match="unknown filesystem tool name"),
+        ):
+            ServerConfig.from_env()
 
     def test_trust_project_mcp_none_round_trips(self) -> None:
         """None trust_project_mcp should survive a round trip."""
@@ -181,10 +275,11 @@ class TestStartServerAndGetAgent:
         assert agent is mock_agent
         assert server is mock_server
         assert manager is None
-        mock_server.wait_for_graph_ready.assert_awaited_once_with("agent")
+        assert mock_server.wait_for_graph_ready.await_args_list == [call("agent")]
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
         assert kwargs["graph_ref"] == "deepagents_code.server_graph:make_graph"
+        assert "additional_graphs" not in kwargs
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
         # The graph is imported as a package module, so the scaffold must not
@@ -235,6 +330,60 @@ class TestStartServerAndGetAgent:
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
 
+    async def test_forwards_allow_fs_tools_into_server_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`allow_fs_tools` reaches the `ServerConfig` written to the subprocess.
+
+        The higher-level TUI/non-interactive forwarding tests mock this function
+        out, so without this a dropped kwarg here would disable the feature for
+        every server-backed session with no failing test.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        captured: list[ServerConfig] = []
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server_manager._apply_server_config",
+                side_effect=captured.append,
+            ),
+            patch("deepagents_code.client.launch.server.generate_langgraph_json"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent",
+                return_value=object(),
+            ),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+                allow_fs_tools=["ls", "read_file"],
+            )
+
+        assert len(captured) == 1
+        assert captured[0].allow_fs_tools == ["ls", "read_file"]
+
     async def test_stops_server_when_graph_readiness_fails(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -279,6 +428,111 @@ class TestStartServerAndGetAgent:
         mock_server.stop.assert_called_once()
         mock_agent.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "interrupt",
+        [asyncio.CancelledError, KeyboardInterrupt, SystemExit],
+    )
+    async def test_stops_server_when_start_interrupted(
+        self, interrupt: type[BaseException], tmp_path: Path, monkeypatch
+    ) -> None:
+        """A quit during startup must still reap the half-started server.
+
+        The langgraph subprocess is spawned inside `ServerProcess.start()`
+        before this function returns, so the caller has not yet stored a
+        reference to it (`DeepAgentsApp._server_proc` is assigned only on
+        successful return). When the background startup worker is interrupted
+        mid-`start()` — e.g. the user presses Ctrl+D before the health check
+        completes — this `except` clause is the only thing that can stop the
+        orphaned subprocess. The interrupts covered here are all `BaseException`
+        subclasses rather than `Exception`, so an `except Exception` guard would
+        leak the process (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=interrupt)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent") as mock_agent,
+            pytest.raises(interrupt),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.start.assert_awaited_once()
+        mock_server.stop.assert_called_once()
+        # The interrupt must propagate: graph readiness is never reached, and
+        # no client is handed back to a caller that is being torn down.
+        mock_server.wait_for_graph_ready.assert_not_awaited()
+        mock_agent.assert_not_called()
+
+    async def test_start_cleanup_error_does_not_mask_interrupt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure inside `stop()` must not replace the in-flight interrupt.
+
+        Cleanup runs while a `BaseException` (here `CancelledError`) is
+        propagating. If `stop()` itself raises, that error is swallowed and
+        logged so the original cancellation stays the propagated exception,
+        preserving cancellation semantics instead of surfacing the teardown
+        error (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock(side_effect=RuntimeError("kill failed"))
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.stop.assert_called_once()
+
     def test_relative_paths_written_verbatim_to_langgraph_json(
         self, tmp_path: Path
     ) -> None:
@@ -312,15 +566,24 @@ class TestWritePyproject:
 
         assert dependency == f"deepagents-code @ {package_root.as_uri()}"
 
-    def test_runtime_dependency_default_uses_package_project_root(self) -> None:
+    def test_runtime_dependency_default_uses_package_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The default root should not depend on `server_manager.py` depth."""
         from pathlib import Path
+
+        import deepagents_code
 
         # Derive the expected project root independently, from this test file's
         # own location (libs/code/tests/unit_tests/ -> libs/code), rather than
         # reusing the implementation's package-anchored expression. Mirroring the
         # implementation would let a bug in that expression pass unnoticed.
         project_root = Path(__file__).resolve().parents[2]
+        monkeypatch.setattr(
+            deepagents_code,
+            "__file__",
+            str(project_root / "deepagents_code" / "__init__.py"),
+        )
 
         dependency = _runtime_package_dependency()
 

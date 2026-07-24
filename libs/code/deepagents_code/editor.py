@@ -27,6 +27,10 @@ VIM_EDITORS = {"vi", "vim", "nvim"}
 """Set of vim-family editor base names that receive the `-i NONE` flag."""
 
 
+class ExternalEditorError(RuntimeError):
+    """Raised when an external editor cannot be opened or read."""
+
+
 def resolve_editor() -> list[str] | None:
     """Resolve editor command from environment.
 
@@ -70,21 +74,37 @@ def _prepare_command(cmd: list[str], filepath: str) -> list[str]:
     return cmd
 
 
-def open_in_editor(current_text: str) -> str | None:
+def open_in_editor(
+    current_text: str,
+    *,
+    allow_empty: bool = False,
+    raise_on_error: bool = False,
+) -> str | None:
     """Open current_text in an external editor.
 
     Creates a temp .md file, launches the editor, and reads back the result.
 
     Args:
         current_text: The text to pre-populate in the editor.
+        allow_empty: Return an empty or whitespace-only edited result instead of
+            treating it as cancellation.
+        raise_on_error: Re-raise editor launch and file errors instead of treating
+            them as cancellation.
 
     Returns:
         The edited text with normalized line endings, or `None` if the editor
-            exited with a non-zero status, was not found, or the result was
-            empty/whitespace-only.
+            exited with a non-zero status, returned blank text while `allow_empty`
+            is false, or failed while `raise_on_error` is false.
+
+    Raises:
+        ExternalEditorError: If opening or reading the editor file fails while
+            `raise_on_error` is true.
     """
     cmd = resolve_editor()
     if cmd is None:
+        if raise_on_error:
+            msg = "Editor command resolved to no arguments"
+            raise ExternalEditorError(msg)
         return None
 
     tmp_path: str | None = None
@@ -125,14 +145,21 @@ def open_in_editor(current_text: str) -> str | None:
         # while preserving any intentional trailing newlines the user added.
         edited = edited.removesuffix("\n")
 
-        # Treat empty result as cancellation
-        if not edited.strip():
+        # Chat composition historically treats a blank result as cancellation;
+        # callers with their own submit-time validation may opt in to preserving it.
+        if not allow_empty and not edited.strip():
             return None
 
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if raise_on_error:
+            msg = "External editor executable or temporary file was not found"
+            raise ExternalEditorError(msg) from exc
         return None
-    except Exception:
+    except Exception as exc:
         logger.warning("Editor failed", exc_info=True)
+        if raise_on_error:
+            msg = "External editor failed"
+            raise ExternalEditorError(msg) from exc
         return None
     else:
         return edited

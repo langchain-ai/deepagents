@@ -91,7 +91,15 @@ def setup_config_parser(
         help="Show the effective value and source for one option",
         add_help=False,
     )
-    get_parser.add_argument("key", help="Option key (e.g. interpreter.memory_limit_mb)")
+    # Optional so a bare `config get` reaches our handler with a useful hint
+    # (available keys + examples) instead of argparse's terse "the following
+    # arguments are required: key".
+    get_parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help="Option key (e.g. interpreter.memory_limit_mb)",
+    )
     get_parser.add_argument(
         "-h",
         "--help",
@@ -512,12 +520,53 @@ def _print_config_verbose(
         console.print()
 
 
-def _run_get(key: str, output_format: OutputFormat) -> int:
+_GET_KEY_EXAMPLE = "interpreter.memory_limit_mb"
+"""Illustrative key shown in the missing-key hint.
+
+A unit test asserts this stays a real manifest key so the hint never points at a
+key that `config get` would reject.
+"""
+
+
+def _report_missing_get_key(output_format: OutputFormat) -> int:
+    """Explain that `config get` needs a key, and point at how to find one.
+
+    Reached when the user runs a bare `config get` (the `key` positional is
+    optional so this handler can render a useful hint instead of argparse's
+    terse usage error).
+
+    Returns:
+        Exit code `2`, matching argparse's convention for a usage error so
+        existing scripts see the same code they did before.
+    """
+    from deepagents_code.config_manifest import option_keys
+
+    if output_format == "json":
+        write_json(
+            "config get",
+            {"error": "missing key", "keys": list(option_keys())},
+        )
+        return 2
+
+    print(  # noqa: T201
+        f"`dcode config get` needs an option key, e.g. `dcode config get "
+        f"{_GET_KEY_EXAMPLE}`. Run `dcode config` to list options and their "
+        "effective values, or `dcode config --verbose` to see every key.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _run_get(key: str | None, output_format: OutputFormat) -> int:
     """Resolve and print a single option by key.
 
     Returns:
-        Process exit code (`0` on success, `1` for an unknown key).
+        Process exit code (`0` on success, `1` for an unknown key, `2` when no
+        key was given).
     """
+    if key is None:
+        return _report_missing_get_key(output_format)
+
     from deepagents_code.config_manifest import get_option
 
     option = get_option(key)

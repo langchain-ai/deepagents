@@ -152,8 +152,8 @@ class ApprovalMenu(Container):
                 file-operation previews.
             id: Optional widget ID. Defaults to 'approval-menu'.
             auto_mode_eligible: Whether Auto mode can be enabled in this session.
-                When `False` (e.g. the experimental opt-in is off), the "Enable
-                Auto for this thread" option is not offered.
+                When `False` (e.g. a sandbox is active), the "Enable Auto for this
+                thread" option is not offered.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
@@ -427,9 +427,8 @@ class ApprovalMenu(Container):
         """Build the visible options as `(label, decision_type)` pairs.
 
         The Auto option is omitted unless Auto can actually be enabled
-        (`_show_auto_option`), so it is never suggested outside the
-        experimental opt-in. Labels are unnumbered; `_update_options`
-        prefixes the display number.
+        (`_show_auto_option`), so it is never suggested outside the local TUI.
+        Labels are unnumbered; `_update_options` prefixes the display number.
 
         Returns:
             Ordered `(label, decision_type)` pairs for the visible options.

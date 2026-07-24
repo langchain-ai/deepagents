@@ -31,7 +31,6 @@ class EffortSelectorScreen(ModalScreen[str | None]):
     CSS = """
     EffortSelectorScreen {
         align: center middle;
-        background: transparent;
     }
 
     EffortSelectorScreen > Vertical {

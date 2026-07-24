@@ -98,6 +98,20 @@ _TEMP_ARTIFACT_PREFIX = "dcode-scratch-"
 _TEMP_ARTIFACT_SUFFIX_RE = re.compile(r"(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,31})?")
 
 
+class _ClassifierDeadlineExceededError(TimeoutError):
+    """Raised when dcode's local classifier wait budget expires.
+
+    Distinct from a provider-raised `TimeoutError` so agent/UI text can name
+    the app-imposed deadline without mislabeling socket-level failures.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"local classifier deadline exceeded after {timeout_seconds:g}s"
+        )
+
+
 class AutoDecisionCategory(StrEnum):
     """Classifier denial categories exposed to the agent and TUI."""
 
@@ -485,6 +499,30 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
             text = text.replace(secret, "[redacted]")
     text = " ".join(text.split())
     return text[:_REASON_LIMIT] or "The action was not authorized by the user request."
+
+
+def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float) -> str:
+    """Build a safe agent/UI reason for a failed auto classifier call.
+
+    Provider exception text stays out of the reason (it can carry secrets or
+    noisy HTML). Only real local deadline expiry
+    (`_ClassifierDeadlineExceededError`) gets app-timeout wording; a bare
+    provider `TimeoutError` stays type-only so we do not claim dcode
+    cancelled a call the model failed first.
+
+    Args:
+        exc: Failure raised while invoking or validating the classifier.
+        timeout_seconds: Configured local wait budget for one batch.
+
+    Returns:
+        Compact single-line reason for tool messages and TUI events.
+    """
+    if isinstance(exc, _ClassifierDeadlineExceededError):
+        return (
+            "dcode cancelled the authorization classifier after its local "
+            f"{timeout_seconds:g}s timeout (app-imposed, not a provider timeout)."
+        )
+    return f"The authorization classifier was unavailable ({type(exc).__name__})."
 
 
 def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
@@ -1940,9 +1978,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             },
             **request.model_settings,
         )
-        result = await asyncio.wait_for(
-            invoke, timeout=self._classifier_timeout_seconds
-        )
+        # `asyncio.timeout(...).expired()` distinguishes our wait budget from a
+        # provider that raises `TimeoutError` itself. `wait_for` cannot;
+        # both ends surface the same type.
+        timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
+        try:
+            async with timeout_cm:
+                result = await invoke
+        except TimeoutError:
+            if timeout_cm.expired():
+                raise _ClassifierDeadlineExceededError(
+                    self._classifier_timeout_seconds
+                ) from None
+            raise
         if isinstance(result, AutoDecisionBatch):
             return result
         return AutoDecisionBatch.model_validate(result)
@@ -2159,13 +2207,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             if not counters_saved:
                 plan["fallback_reason"] = "control_state_unavailable"
-            # Keep the agent/UI reason type-only; put the concrete failure in logs.
+            # Agent/UI reasons stay non-provider text (type, or our timeout
+            # budget). Concrete provider failure text belongs in logs only.
             error_detail = sanitize_auto_reason(
                 f"{type(exc).__name__}: {exc}",
                 known_secrets=self._known_secrets,
             )
             reason = sanitize_auto_reason(
-                f"The authorization classifier was unavailable ({type(exc).__name__}).",
+                classifier_unavailable_reason(
+                    exc, timeout_seconds=self._classifier_timeout_seconds
+                ),
                 known_secrets=self._known_secrets,
             )
             for call in review_calls:

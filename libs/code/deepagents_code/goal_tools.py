@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from pydantic import Field
 from typing_extensions import override
 
 # Runtime (not TYPE_CHECKING) imports. `GoalRubricChannels` supplies the shared
@@ -48,9 +49,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from langgraph.runtime import Runtime
-
-RubricSource = Literal["goal", "sticky", "invocation"]
-"""Where the active rubric criteria came from, as reported to the model."""
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
@@ -103,16 +101,16 @@ ResponseT = TypeVar("ResponseT")
 
 
 class RubricSnapshot(TypedDict):
-    """Read-only rubric view returned by the `get_rubric` tool to the model."""
+    """Read-only rubric view returned by the `get_rubric` tool to the model.
+
+    `active` is always `criteria is not None`; the two never disagree.
+    """
 
     active: bool
     """Whether acceptance criteria are currently available."""
 
     criteria: str | None
     """Current acceptance criteria, or `None` when no rubric is set."""
-
-    source: RubricSource | None
-    """Where the criteria came from: `goal`, `sticky`, `invocation`, or `None`."""
 
     grading_status: str | None
     """Latest `RubricMiddleware` grading status for the in-progress or
@@ -187,6 +185,11 @@ def _clean_state_text(state: dict[str, Any], key: str) -> str | None:
 def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     """Build the `get_rubric` response from graph state.
 
+    Criteria resolve in precedence order: public `rubric` input, else an
+    actionable goal rubric, else a standalone sticky rubric. Goal lifecycle and
+    sticky ownership stay in app state logic; this tool only exposes the current
+    criteria and grading status.
+
     Args:
         state: Current graph state injected by LangGraph.
 
@@ -201,23 +204,13 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     goal_is_actionable = objective is not None and status in {"active", "blocked"}
     sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
-    source: RubricSource | None = None
-    if criteria is not None:
-        if goal_is_actionable and goal_rubric == criteria:
-            source = "goal"
-        elif sticky_rubric == criteria and not sticky_is_goal_rubric:
-            source = "sticky"
-        else:
-            source = "invocation"
-    # Fallback branches below run only when there is no public `rubric` input,
-    # so `invocation` is unreachable here by construction — the criteria can
-    # only be attributed to an actionable `goal` or a standalone `sticky` rubric.
-    elif goal_is_actionable and goal_rubric is not None:
-        criteria = goal_rubric
-        source = "goal"
-    elif sticky_rubric is not None and not sticky_is_goal_rubric:
-        criteria = sticky_rubric
-        source = "sticky"
+    # Prefer the public `rubric` graph input when present; otherwise surface
+    # actionable goal criteria or a standalone sticky rubric.
+    if criteria is None:
+        if goal_is_actionable and goal_rubric is not None:
+            criteria = goal_rubric
+        elif sticky_rubric is not None and not sticky_is_goal_rubric:
+            criteria = sticky_rubric
 
     # `_rubric_status` is owned by the SDK's `RubricMiddleware`, co-composed into
     # this agent's graph; see the `grading_status` field docstring above.
@@ -225,7 +218,6 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     return {
         "active": criteria is not None,
         "criteria": criteria,
-        "source": source,
         "grading_status": grading_status,
     }
 
@@ -394,12 +386,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             """Read criteria when the latest state notice says a rubric is active.
 
             Use this only when the latest goal/rubric state notice reports an active
-            rubric. It returns whether the criteria came from a goal, a sticky
-            rubric, or the current invocation, plus the latest grading status.
+            rubric. Use `get_goal` when a goal is actionable; this tool only reports
+            whether criteria are active, the current criteria, and the latest grading
+            status.
 
             Returns:
-                Rubric snapshot with `active`, `criteria`, `source`, and
-                `grading_status` keys.
+                Rubric snapshot with `active`, `criteria`, and `grading_status` keys.
             """
             return _rubric_snapshot(state)
 
@@ -421,8 +413,24 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         @tool
         def update_goal(
-            status: Literal["complete", "blocked"],
-            note: str,
+            status: Annotated[
+                Literal["complete", "blocked"],
+                Field(
+                    description=(
+                        "`complete` to attach completion evidence, or `blocked` "
+                        "when you are stuck and need the user."
+                    )
+                ),
+            ],
+            note: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Evidence the criteria are satisfied, or the specific "
+                        "blocker. Required when calling this tool."
+                    )
+                ),
+            ],
             tool_call_id: Annotated[str, InjectedToolCallId],
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
@@ -432,14 +440,6 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             automatically after a satisfied goal-backed grading turn, so `complete`
             is optional and only stages its evidence for that result. Do not create,
             pause, resume, clear, or replace goals — those are user-controlled.
-
-            Args:
-                status: `complete` to attach completion evidence, or `blocked` when
-                    you are stuck and need the user.
-                note: Evidence the criteria are satisfied, or the specific
-                    blocker. Required when calling this tool.
-                tool_call_id: Injected tool call ID for the tool response.
-                state: Injected graph state holding the current goal.
 
             Returns:
                 Command that updates goal status and returns a tool message.

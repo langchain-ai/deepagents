@@ -556,7 +556,10 @@ def _create_rubric_grader_tools(
             return active.bound_text(name, result)
         return _RUBRIC_GRADER_NON_TEXT_MESSAGE
 
-    @tool(description=artifact_read_file.description)
+    @tool(
+        description=artifact_read_file.description,
+        args_schema=artifact_read_file.args_schema,
+    )
     def read_file(
         file_path: str,
         runtime: ToolRuntime[None, Any],
@@ -632,7 +635,10 @@ def _create_rubric_grader_tools(
         fs_ls = cast("StructuredTool", repository_tools["ls"])
         fs_ls_func = _fs_func(repository_tools, "ls")
 
-        @tool(description=fs_ls.description)
+        @tool(
+            description=fs_ls.description,
+            args_schema=fs_ls.args_schema,
+        )
         def ls(path: str, runtime: ToolRuntime[None, Any]) -> object:
             """List a working-directory path to verify criteria against files.
 
@@ -657,7 +663,10 @@ def _create_rubric_grader_tools(
         fs_glob = cast("StructuredTool", repository_tools["glob"])
         fs_glob_func = _fs_func(repository_tools, "glob")
 
-        @tool(description=fs_glob.description)
+        @tool(
+            description=fs_glob.description,
+            args_schema=fs_glob.args_schema,
+        )
         def glob(
             pattern: str,
             runtime: ToolRuntime[None, Any],
@@ -695,7 +704,10 @@ def _create_rubric_grader_tools(
         fs_grep = cast("StructuredTool", repository_tools["grep"])
         fs_grep_func = _fs_func(repository_tools, "grep")
 
-        @tool(description=fs_grep.description)
+        @tool(
+            description=fs_grep.description,
+            args_schema=fs_grep.args_schema,
+        )
         def grep(
             pattern: str,
             runtime: ToolRuntime[None, Any],

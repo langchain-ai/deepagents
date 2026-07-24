@@ -2324,6 +2324,81 @@ class TestLangsmithSecretRedaction:
         _, kwargs = client_cls.call_args
         assert kwargs["api_url"] == "https://eu.smith.example.com"
 
+    def test_does_not_forward_default_us_endpoint_as_api_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The SDK default US SaaS URL is not forwarded as a custom `api_url`."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", LANGSMITH_US_ENDPOINT)
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert "api_url" not in kwargs
+
+    def test_default_us_env_does_not_forward_profile_custom_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A populated default env endpoint wins over a profile custom `api_url`.
+
+        The SDK resolves `env_api_url or profile_config.api_url`, so an explicit
+        default US env value must not fall through to the profile when building
+        the redacting client.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", LANGSMITH_US_ENDPOINT)
+
+        profile = Mock()
+        profile.api_url = "https://eu.smith.example.com"
+        profile.api_key = None
+        profile.oauth_access_token = None
+        profile.oauth_refresh_token = None
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._load_langsmith_profile_config",
+                return_value=profile,
+            ),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert "api_url" not in kwargs
+
+    def test_skips_keyless_default_us_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keyless default US endpoint is not treated as an upload target."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", f"{LANGSMITH_US_ENDPOINT}/")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
     def test_configures_client_for_keyless_custom_endpoint(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2636,6 +2711,18 @@ class TestDisableOrphanedTracing:
             # Nothing was disabled, so no startup notice should be staged.
             assert consume_orphaned_tracing_disabled_notice() is None
 
+    def test_disables_tracing_when_only_default_us_endpoint_set(self) -> None:
+        """SDK default US endpoint alone is not a keyless custom upload target."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = LANGSMITH_US_ENDPOINT
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+
     def test_preserves_tracing_when_runs_endpoints_set(self) -> None:
         """Replica endpoints are trusted upload targets even without a top-level key."""
         env = self._clean_env()
@@ -2672,6 +2759,55 @@ class TestDisableOrphanedTracing:
             assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
             # Nothing was disabled, so no startup notice should be staged.
             assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_disables_tracing_when_profile_only_has_default_us_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile default US api_url alone does not count as a custom endpoint."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            f'"profiles":{{"default":{{"api_url":"{LANGSMITH_US_ENDPOINT}"}}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+
+    def test_disables_tracing_when_default_us_env_overrides_profile_custom(
+        self, tmp_path: Path
+    ) -> None:
+        """Populated default US env wins over profile custom for orphaned disable.
+
+        The SDK would still target keyless US in that case, so the profile's
+        custom api_url must not be trusted as a keyless upload target.
+        """
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = LANGSMITH_US_ENDPOINT
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
 
     def test_preserves_tracing_when_key_present(self) -> None:
         """Tracing stays enabled when a usable API key is set."""

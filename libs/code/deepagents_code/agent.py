@@ -2513,7 +2513,7 @@ def create_cli_agent(
     # is written by `ConfigurableModelMiddleware` from the actual completed model
     # request. The CLI reads them back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
-    # constrained `update_goal` tool, and injects goal guidance into the prompt.
+    # constrained `update_goal` tool, and maintains goal-state notices.
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 

@@ -20,7 +20,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
@@ -49,20 +49,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from langgraph.runtime import Runtime
-
-GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
-
-Consult the latest goal/rubric state notice in conversation history before using
-these tools. Later notices supersede earlier notices. If no notice exists, assume
-there is no actionable goal or rubric and do not call these tools.
-
-When the latest notice says a rubric is active, use `get_rubric` when its exact
-acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
-when its objective or current status is needed. Paused and completed goals must not
-drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
-`status="complete"` remains available for optional completion evidence but is not
-required. Private checkpoint state and the tools remain authoritative for details."""
-"""Static model-visible guidance injected by `GoalToolsMiddleware`."""
 
 GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric", "update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
@@ -368,9 +354,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     Besides registering `get_goal`/`get_rubric`/`update_goal`, this middleware
     keeps the model oriented at each model boundary: `before_model` persists a
     fresh goal-state notice into checkpointed history when the latest one no
-    longer matches authoritative state, and `wrap_model_call` both appends the
-    static goal guidance to the system prompt and re-pins the notice into the
-    (post-summarization) request when the persisted one is out of view.
+    longer matches authoritative state, and `wrap_model_call` re-pins the
+    notice into the (post-summarization) request when the persisted one is out
+    of view. Tool usage guidance lives in the tool docstrings and notices.
     """
 
     state_schema = GoalToolState
@@ -403,7 +389,8 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
             Use this only when the latest goal/rubric state notice reports an
             actionable goal. It returns the objective, criteria, lifecycle status,
-            and any prior note from authoritative checkpoint state.
+            and any prior note from authoritative checkpoint state. Paused and
+            completed goals report `active=False` and must not drive work.
 
             Returns:
                 Goal snapshot with `active`, `objective`, `status`, `criteria`,
@@ -502,38 +489,25 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return self._notice_update(state)
 
     @staticmethod
-    def _request_with_goal_system_prompt(
+    def _request_with_goal_notice(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Append static goal guidance and re-pin the notice into a request.
+        """Re-pin the current goal-state notice into a model request when needed.
 
-        The system prompt gains the static goal-tool guidance, and — when
-        checkpointed history no longer surfaces a current notice — a transient
-        goal-state notice is appended to the request messages only (not
-        persisted; `before_model` owns the durable write).
+        When checkpointed history no longer surfaces a current notice, a
+        transient goal-state notice is appended to the request messages only
+        (not persisted; `before_model` owns the durable write). The system
+        prompt is left unchanged.
 
         Returns:
-            Model request with goal guidance in the system prompt and, when
-            needed, a current goal-state notice appended to its messages.
+            The original request when no notice is needed, otherwise a request
+            with a current goal-state notice appended to its messages.
         """
-        if request.system_message is not None:
-            content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"},
-            ]
-        else:
-            content = [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
         values = cast("dict[str, Any]", request.state)
         notice = _goal_state_notice_for(values, request.messages)
-        messages = (
-            [*request.messages, notice] if notice is not None else request.messages
-        )
-        return request.override(
-            messages=messages,
-            system_message=SystemMessage(
-                content=cast("list[str | dict[str, str]]", content)
-            ),
-        )
+        if notice is None:
+            return request
+        return request.override(messages=[*request.messages, notice])
 
     @override
     def wrap_model_call(
@@ -541,12 +515,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT]:
-        """Inject goal-tool guidance into each model request.
+        """Re-pin the goal-state notice into each model request when needed.
 
         Returns:
             Model response from the wrapped handler.
         """
-        return handler(self._request_with_goal_system_prompt(request))
+        return handler(self._request_with_goal_notice(request))
 
     @override
     async def awrap_model_call(
@@ -556,9 +530,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
         ],
     ) -> ModelResponse[ResponseT]:
-        """Inject goal-tool guidance into each async model request.
+        """Re-pin the goal-state notice into each async model request when needed.
 
         Returns:
             Model response from the wrapped handler.
         """
-        return await handler(self._request_with_goal_system_prompt(request))
+        return await handler(self._request_with_goal_notice(request))

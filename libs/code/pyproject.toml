@@ -60,6 +60,9 @@ dependencies = [
     "tavily-python>=0.7.26,<1.0.0",
     "langchain-quickjs>=0.3.3,<0.4.0",
 
+    # Cost estimation (bundled offline pricing data)
+    "genai-prices>=0.0.72,<1.0.0",
+
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
 

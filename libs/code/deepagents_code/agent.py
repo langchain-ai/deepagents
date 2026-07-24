@@ -2417,11 +2417,16 @@ def create_cli_agent(
         *,
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+
         middleware: list[AgentMiddleware[Any, Any]] = []
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        # Nested model spend is written locally then returned into the parent
+        # additive cost channel. Reset first so parent totals are not re-added.
+        middleware.append(CostTrackingMiddleware(reset_on_start=True))
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
         # activates only for the measured Fireworks GLM-5.2 endpoint.
@@ -2511,13 +2516,17 @@ def create_cli_agent(
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
-    # request. The CLI reads them back from `state_values` on thread resume.
+    # request. `CostTrackingMiddleware` writes the separate cumulative thread cost.
+    # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and maintains goal-state notices.
+    from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+    agent_middleware.extend(
+        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
+    )
 
     # Add ask_user middleware (must be early so its tool is available)
     trusted_ask_user_tool: BaseTool | None = None

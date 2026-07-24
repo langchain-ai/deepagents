@@ -1864,13 +1864,19 @@ class TestProcessAiMessageStats:
                 "total_tokens": 150,
             },
         )
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
+        with (
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
+        ):
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
             _process_ai_message(message, state, console)
 
-        assert state.stats.per_model["openai", "gpt-5.5"].input_tokens == 100
-        assert state.stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+        model_stats = state.stats.per_model["openai", "gpt-5.5"]
+        assert model_stats.input_tokens == 100
+        assert model_stats.output_tokens == 50
+        assert model_stats.cost_usd == pytest.approx(0.42)
+        assert state.stats.total_cost_usd == pytest.approx(0.42)
 
     def test_records_provider_on_total_only_fallback(self, console: Console) -> None:
         """Total-only usage (no split) still forwards the provider."""

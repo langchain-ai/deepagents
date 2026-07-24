@@ -3,9 +3,11 @@
 from types import SimpleNamespace
 from typing import Any, get_type_hints
 
+import pytest
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_code._session_stats import SessionStats
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.resume_state import (
     ResumeState,
@@ -304,3 +306,109 @@ class TestTokenDisplayCallbacks:
 
         assert app._context_tokens == 0
         assert display_calls == [0]
+
+
+class TestCostDisplayCallbacks:
+    """Verify persisted thread cost is restored and accumulated in the TUI."""
+
+    def test_payload_restores_valid_session_cost(self) -> None:
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_session_cost_usd": 1.25},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        assert payload.session_cost_usd == pytest.approx(1.25)
+
+    def test_payload_rejects_invalid_session_cost(self) -> None:
+        for value in (-1, float("nan"), "1.25", True, 10**1000):
+            payload = DeepAgentsApp._goal_rubric_payload_from_state(
+                {"_session_cost_usd": value},
+                messages=[],
+                context_tokens=0,
+                model_spec="",
+            )
+            assert payload.session_cost_usd == pytest.approx(0.0)
+
+    def test_streamed_cost_accumulates_onto_restored_total(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_usd = 1.0
+
+        app._on_cost_update(0.25)
+
+        assert app._session_cost_usd == pytest.approx(1.25)
+
+    def test_zero_cost_does_not_change_running_total(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_usd = 1.0
+
+        app._on_cost_update(0.0)
+
+        assert app._session_cost_usd == pytest.approx(1.0)
+
+    def test_cost_summary_includes_total_and_per_model_breakdown(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.42,
+        )
+        process_stats = SessionStats()
+        process_stats.record_request(
+            "claude-sonnet-4-6",
+            1_000,
+            100,
+            provider="anthropic",
+            cost_usd=2.0,
+        )
+        app = DeepAgentsApp()
+        app._session_cost_usd = 0.42
+        app._thread_stats = stats
+        app._session_stats = process_stats
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.42" in summary
+        assert "openai:gpt-5.5: $0.42" in summary
+        assert "claude-sonnet-4-6" not in summary
+
+    def test_cost_summary_marks_restored_usage_outside_breakdown(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.42,
+        )
+        app = DeepAgentsApp()
+        app._reset_thread_usage(1.0)
+        app._thread_stats = stats
+        app._on_cost_update(0.42)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $1.42" in summary
+        assert "openai:gpt-5.5: $0.42" in summary
+        assert "Restored usage is included only in the total above." in summary
+
+    def test_cost_summary_distinguishes_zero_priced_and_unknown_requests(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "free-model",
+            100,
+            10,
+            provider="example",
+            cost_usd=0.0,
+        )
+        stats.record_request("unknown-model", 100, 10, provider="example")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.00" in summary
+        assert "example:free-model: $0.00" in summary
+        assert "Requests without known pricing are excluded." in summary

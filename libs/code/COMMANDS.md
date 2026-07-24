@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (34)
+## Public (35)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |
 | `/copy` |  | Copy the latest assistant message to clipboard |
+| `/cost` |  | Show estimated session cost |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/effort` |  | Set reasoning effort for the current model |

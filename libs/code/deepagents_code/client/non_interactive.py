@@ -447,6 +447,41 @@ def _process_interrupts(
             dispatch_hook_fire_and_forget("input.required", {})
 
 
+def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> None:
+    """Record model usage and estimated cost from a streamed AI message."""
+    usage = getattr(message_obj, "usage_metadata", None)
+    if not usage:
+        return
+
+    input_toks = usage.get("input_tokens", 0)
+    output_toks = usage.get("output_tokens", 0)
+    total_toks = usage.get("total_tokens", 0)
+    from deepagents_code.cost_tracking import estimate_cost, resolve_message_model
+
+    active_model, active_provider = resolve_message_model(
+        message_obj,
+        fallback_model=settings.model_name or "",
+        fallback_provider=settings.model_provider or "",
+    )
+    cost_usd = estimate_cost(usage, active_model, active_provider)
+    if input_toks or output_toks:
+        state.stats.record_request(
+            active_model,
+            input_toks,
+            output_toks,
+            active_provider,
+            cost_usd=cost_usd,
+        )
+    elif total_toks:
+        state.stats.record_request(
+            active_model,
+            total_toks,
+            0,
+            active_provider,
+            cost_usd=cost_usd,
+        )
+
+
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
@@ -464,21 +499,6 @@ def _process_ai_message(
         state: Stream state for accumulating response text and tool-call buffers.
         console: Rich console for formatted output.
     """
-    # Extract token usage for stats accumulation
-    usage = getattr(message_obj, "usage_metadata", None)
-    if usage:
-        input_toks = usage.get("input_tokens", 0)
-        output_toks = usage.get("output_tokens", 0)
-        total_toks = usage.get("total_tokens", 0)
-        active_model = settings.model_name or ""
-        active_provider = settings.model_provider or ""
-        if input_toks or output_toks:
-            state.stats.record_request(
-                active_model, input_toks, output_toks, active_provider
-            )
-        elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0, active_provider)
-
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
@@ -596,6 +616,10 @@ def _process_message_chunk(
         return
 
     message_obj, metadata = data
+
+    # Account cost/tokens even for internal model calls whose text is hidden.
+    if isinstance(message_obj, AIMessage):
+        _record_usage_from_message(message_obj, state)
 
     # The summarization middleware injects synthetic messages to compress
     # conversation history for the LLM. These are internal bookkeeping and
@@ -812,7 +836,16 @@ def _process_stream_chunk(
     namespace, stream_mode, data = chunk
     is_main_agent = not namespace
 
+    # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
+        if (
+            stream_mode == "messages"
+            and isinstance(data, tuple)
+            and len(data) == (_MESSAGE_DATA_LENGTH)
+        ):
+            message_obj, _metadata = data
+            if isinstance(message_obj, AIMessage):
+                _record_usage_from_message(message_obj, state)
         return
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:

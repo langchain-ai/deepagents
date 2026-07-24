@@ -502,6 +502,68 @@ class TestTokenDisplay:
             assert display.display is False
 
 
+class TestCostDisplay:
+    """Tests for cumulative cost rendered inline with context tokens."""
+
+    async def test_tokens_and_cost_share_one_slot(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(12_500)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "12.5K tokens" in rendered
+            assert "$0.42" in rendered
+
+    async def test_cost_displays_without_tokens(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "$1.25"
+            assert display.display is True
+
+    async def test_zero_cost_is_hidden(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(0.0)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert rendered == "5.0K tokens"
+            assert "$" not in rendered
+
+    async def test_sub_cent_cost_uses_display_floor(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.0045)
+            await pilot.pause()
+            assert str(pilot.app.query_one("#tokens-display").render()) == "<$0.01"
+
+    async def test_approximate_token_marker_survives_cost_update(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000, approximate=True)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "5.0K+ tokens" in rendered
+            assert "$0.42" in rendered
+
+    async def test_pending_tokens_keep_cost_visible(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "... tokens" in rendered
+            assert "$0.42" in rendered
+
+
 class TestStatusMessageVisibility:
     """The status-message slot hides when empty so its padding adds no gap."""
 

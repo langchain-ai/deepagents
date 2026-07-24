@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    class _CostUpdateCallback(Protocol):
+        """Callback signature for `_on_cost_update`."""
+
+        def __call__(self, cost_usd: float) -> None: ...
+
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext
@@ -463,6 +468,9 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+        self._on_cost_update: _CostUpdateCallback | None = None
+        """Called with each priceable request's estimated USD cost."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -1236,11 +1244,6 @@ async def execute_task_textual(
 
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":
-                    # Skip subagent outputs - only render main agent content in chat
-                    if not is_main_agent:
-                        logger.debug("Skipping subagent message ns=%s", ns_key)
-                        continue
-
                     if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
                         logger.debug(
                             "Skipping non-2-tuple message data: type=%s",
@@ -1256,6 +1259,68 @@ async def execute_task_textual(
                         hasattr(message, "content_blocks"),
                     )
 
+                    # Account cost/tokens before render filters. Subagent
+                    # namespaces and summarization/auto-classifier calls still
+                    # spend money even though their text stays out of the chat.
+                    if hasattr(message, "usage_metadata"):
+                        usage = message.usage_metadata
+                        if usage:
+                            input_toks = usage.get("input_tokens", 0)
+                            output_toks = usage.get("output_tokens", 0)
+                            total_toks = usage.get("total_tokens", 0)
+                            from deepagents_code.config import settings
+                            from deepagents_code.cost_tracking import (
+                                estimate_cost,
+                                resolve_message_model,
+                            )
+
+                            active_model, active_provider = resolve_message_model(
+                                message,
+                                fallback_model=settings.model_name or "",
+                                fallback_provider=settings.model_provider or "",
+                            )
+                            cost_usd = estimate_cost(
+                                usage, active_model, active_provider
+                            )
+                            recorded = False
+                            if input_toks or output_toks:
+                                # Model gives split counts — preferred path
+                                turn_stats.record_request(
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
+                                    cost_usd=cost_usd,
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, input_toks + output_toks
+                                )
+                                recorded = True
+                            elif total_toks:
+                                # Fallback: model gives only total (no split)
+                                turn_stats.record_request(
+                                    active_model,
+                                    total_toks,
+                                    0,
+                                    active_provider,
+                                    cost_usd=cost_usd,
+                                )
+                                captured_input_tokens = max(
+                                    captured_input_tokens, total_toks
+                                )
+                                recorded = True
+                            if (
+                                recorded
+                                and cost_usd is not None
+                                and adapter._on_cost_update
+                            ):
+                                adapter._on_cost_update(cost_usd)
+
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
+                        continue
+
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
                     # with lc_source="summarization" in the callback metadata.
@@ -1267,39 +1332,6 @@ async def execute_task_textual(
                             if adapter._set_spinner:
                                 await adapter._set_spinner("Offloading")
                         continue
-
-                    # Extract token usage before filtering hidden model output.
-                    # Usage may be attached to any message chunk, including the
-                    # internal Auto mode classifier response.
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
 
                     # The Auto mode authorization classifier is a nested model
                     # call. Its structured JSON is internal policy machinery,

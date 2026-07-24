@@ -159,6 +159,8 @@ class TestOffloadGuards:
 
             before = _state_values(_make_dict_messages(3))
             after = _state_values(_make_dict_messages(3))
+            after["_session_cost_usd"] = 0.75
+            app._session_cost_usd = 1.25
 
             with (
                 patch.object(
@@ -181,6 +183,7 @@ class TestOffloadGuards:
             assert any(
                 "the conversation is already compact" in str(w._content) for w in msgs
             )
+            assert app._session_cost_usd == pytest.approx(1.25)
 
     async def test_empty_state_shows_error(self) -> None:
         """Should show error when state has no values."""

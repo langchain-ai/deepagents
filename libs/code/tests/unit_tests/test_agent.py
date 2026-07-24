@@ -2789,6 +2789,10 @@ class TestMiddlewareStackConformance:
         """
         from langchain.agents.middleware.types import AgentMiddleware
 
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+        from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.resume_state import ResumeStateMiddleware
+
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -2847,6 +2851,14 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+        middleware_types = [type(middleware) for middleware in middleware_list]
+        assert middleware_types.count(CostTrackingMiddleware) == 1
+        assert (
+            middleware_types.index(ResumeStateMiddleware)
+            < middleware_types.index(CostTrackingMiddleware)
+            < middleware_types.index(GoalToolsMiddleware)
+        )
 
 
 class TestEnableAskUser:

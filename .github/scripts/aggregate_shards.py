@@ -60,6 +60,48 @@ from typing import NamedTuple
 PASS_THRESHOLD = 1.0
 
 
+def analysis_issue(
+    code: str, message: str, *, path: str | None = None
+) -> dict[str, str]:
+    """Build one structured warning from leaf aggregation."""
+    issue = {"stage": "leaf_aggregation", "code": code, "message": message}
+    if path is not None:
+        issue["path"] = path
+    return issue
+
+
+def _markdown_warning(value: object) -> str:
+    """Flatten and escape untrusted text for a Markdown warning bullet."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def read_download_issues(root: Path) -> list[dict[str, str]]:
+    """Read an artifact-download error left by the workflow."""
+    path = root / "artifact-download-error.log"
+    if not path.is_file():
+        return []
+    try:
+        message = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        message = f"Artifact download failed and its error log was unreadable: {exc}"
+    return [
+        analysis_issue(
+            "artifact_download_failed",
+            message or "Artifact download failed after three attempts.",
+            path=path.name,
+        )
+    ]
+
+
 class Aggregation(NamedTuple):
     """Result of one walk of the merged shard tree.
 
@@ -282,6 +324,7 @@ def make_summary(
     category: str | None,
     config: str | None,
     branch: str | None,
+    source_sha: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -291,6 +334,7 @@ def make_summary(
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    issues: list[dict[str, str]] | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
     cannot drift in schema. The metric keys are dynamic (``pass@{K}`` /
@@ -302,6 +346,7 @@ def make_summary(
         "category": category,
         "config": config,
         "branch": branch,
+        "source_sha": source_sha,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -311,6 +356,7 @@ def make_summary(
         "totals": totals,
         f"pass@{rollouts}": pass_at_k,
         f"avg@{rollouts}": avg_at_k,
+        "issues": list(issues or []),
     }
 
 
@@ -356,6 +402,14 @@ def render_step_summary(summary: dict) -> str:
     lines.append(
         f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
     )
+    issues = summary.get("issues") or []
+    if issues:
+        lines.extend(["", "## Analysis warnings", ""])
+        for issue in issues:
+            lines.append(
+                f"- `{_markdown_warning(issue['code'])}`: "
+                f"{_markdown_warning(issue['message'])}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -446,6 +500,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Git branch/ref the agent source came from; recorded into summary.json.",
     )
     parser.add_argument(
+        "--source-sha",
+        default=None,
+        help="Full immutable agent-source commit; recorded into summary.json.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -473,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out_dir or args.root
     agg = aggregate(args.root)
+    issues = read_download_issues(args.root)
     shards_found = len(agg.job_ids) + len(agg.empty_shards)
     # A shard actually failed only if the matrix job did not fully succeed. Empty
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
@@ -484,14 +544,76 @@ def main(argv: list[str] | None = None) -> int:
     # Files we found but couldn't trust: a lost result deflates the scores.
     data_loss = agg.skipped_files > 0 or agg.malformed_rewards > 0
 
-    if not agg.by_task:
-        incomplete = shard_failure or shard_shortfall or data_loss
+    if len(agg.models) > 1:
+        models = sorted(agg.models)
+        msg = (
+            f"Results contain multiple models ({models}); the leaf was quarantined "
+            "instead of mixing their scores."
+        )
+        emit_annotation(f"::warning::{msg}")
+        issues.append(analysis_issue("mixed_models", msg))
         summary = make_summary(
             dataset=args.dataset,
             model=args.model,
             category=args.category,
             config=args.config,
             branch=args.branch,
+            source_sha=args.source_sha,
+            rollouts=args.rollouts,
+            shards_found=shards_found,
+            expected_shards=args.expected_shards,
+            skipped_files=agg.skipped_files,
+            harbor_result=args.harbor_result,
+            incomplete=True,
+            totals={
+                "tasks": 0,
+                "trials": 0,
+                "expected_trials": 0,
+                "passed": 0,
+                "errored": 0,
+            },
+            pass_at_k=None,
+            avg_at_k=None,
+            issues=issues,
+        )
+        write_outputs(summary, [], out_dir)
+        return 0
+
+    if shard_failure:
+        issues.append(
+            analysis_issue("shard_failure", "At least one shard job did not succeed.")
+        )
+    if shard_shortfall:
+        issues.append(
+            analysis_issue(
+                "shard_shortfall",
+                f"Only {shards_found}/{args.expected_shards} expected shards reported.",
+            )
+        )
+    if agg.skipped_files:
+        issues.append(
+            analysis_issue(
+                "unreadable_results",
+                f"{agg.skipped_files} result file(s) could not be read.",
+            )
+        )
+    if agg.malformed_rewards:
+        issues.append(
+            analysis_issue(
+                "malformed_rewards",
+                f"{agg.malformed_rewards} reward value(s) were not numeric.",
+            )
+        )
+
+    if not agg.by_task:
+        incomplete = shard_failure or shard_shortfall or data_loss or bool(issues)
+        summary = make_summary(
+            dataset=args.dataset,
+            model=args.model,
+            category=args.category,
+            config=args.config,
+            branch=args.branch,
+            source_sha=args.source_sha,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
@@ -507,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            issues=issues,
         )
         write_outputs(summary, [], out_dir)
         if incomplete:
@@ -529,13 +652,6 @@ def main(argv: list[str] | None = None) -> int:
         print("No trial results found; wrote empty summary.", file=sys.stderr)
         return 0
 
-    if len(agg.models) > 1:
-        sys.exit(
-            "error: results contain multiple models "
-            f"({sorted(agg.models)}); per-model aggregation is not implemented. "
-            "Aggregate one model at a time."
-        )
-
     parts = build_summary(agg.by_task, args.rollouts)
     # Incomplete if a shard job failed, a shard is missing, a present task ran a
     # number of trials other than K (missing OR duplicated rollouts), or a result
@@ -543,13 +659,23 @@ def main(argv: list[str] | None = None) -> int:
     count_mismatch = any(
         stats["trials"] != args.rollouts for stats in agg.by_task.values()
     )
-    incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
+    if count_mismatch:
+        issues.append(
+            analysis_issue(
+                "rollout_count_mismatch",
+                "At least one task produced a rollout count different from K.",
+            )
+        )
+    incomplete = (
+        shard_failure or shard_shortfall or data_loss or count_mismatch or bool(issues)
+    )
     summary = make_summary(
         dataset=args.dataset,
         model=args.model or (next(iter(agg.models)) if agg.models else None),
         category=args.category,
         config=args.config,
         branch=args.branch,
+        source_sha=args.source_sha,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,
@@ -559,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        issues=issues,
     )
     if incomplete:
         emit_annotation(

@@ -254,26 +254,25 @@ class HarnessProfileConfig:
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` slot in the prompt assembly order — completely replaces
-    `BASE_AGENT_PROMPT` as the base prompt when set.
+    """`BASE` slot in the prompt assembly order.
 
-    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
+    When applied to a stack, this replaces its authored base prompt. `None`
+    (the default) leaves that base unchanged; the main agent has no authored
+    base prompt by default.
 
-    If both `base_system_prompt` and `system_prompt_suffix` are set, the
-    suffix is appended to this custom base. A caller-supplied
-    `system_prompt=` is still placed before this base — see
+    For the main agent, a caller-supplied `system_prompt=` (`USER`) is placed
+    before this `BASE`, and `system_prompt_suffix` (`SUFFIX`) follows it. See
     `create_deep_agent`'s `system_prompt` parameter or
     [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
     for the full assembly order.
     """
 
     system_prompt_suffix: str | None = None
-    """`SUFFIX` slot in the prompt assembly order — text appended to
-    the assembled base system prompt.
+    """`SUFFIX` slot in the prompt assembly order.
 
-    Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
-    lands closest to the conversation history. `None` (the default)
-    means no suffix.
+    This text is appended last — after `USER` and `BASE` for the main agent —
+    so model-tuning guidance lands closest to the conversation history. `None`
+    (the default) means no suffix.
     """
 
     tool_description_overrides: Mapping[str, str] = field(default_factory=dict)
@@ -543,36 +542,34 @@ class HarnessProfile:
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` slot in the prompt assembly order — completely replaces
-    `BASE_AGENT_PROMPT` as the base prompt when set.
+    """`BASE` slot in the prompt assembly order.
 
-    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
+    When applied to a stack, this replaces its authored base prompt. `None`
+    (the default) leaves that base unchanged; the main agent has no authored
+    base prompt by default.
 
-    If both `base_system_prompt` and `system_prompt_suffix` are set, the
-    suffix is appended to this custom base. A caller-supplied
-    `system_prompt=` is still placed before this base — see
+    For the main agent, a caller-supplied `system_prompt=` (`USER`) is placed
+    before this `BASE`, and `system_prompt_suffix` (`SUFFIX`) follows it. See
     `create_deep_agent`'s `system_prompt` parameter or
     [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
     for the full assembly order.
 
-    Most profiles only set `system_prompt_suffix` to layer model-tuning
-    guidance on top of the SDK base.
+    Most profiles only set `system_prompt_suffix`, so each stack retains its
+    own base prompt and the main agent's authored base remains empty.
     """
 
     system_prompt_suffix: str | None = None
-    """`SUFFIX` slot in the prompt assembly order — text appended to
-    the assembled base system prompt.
+    """`SUFFIX` slot in the prompt assembly order.
 
-    Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
-    lands closest to the conversation history. `None` (the default)
-    means no suffix.
+    This text is appended last — after `USER` and `BASE` for the main agent —
+    so model-tuning guidance lands closest to the conversation history. `None`
+    (the default) means no suffix.
 
     Applied uniformly to every assembled stack that consults this
     profile: the main agent, declarative subagents whose model resolves
     to this profile, and the auto-added general-purpose subagent. Each
-    stack receives the suffix on top of its own base prompt
-    (`BASE_AGENT_PROMPT`, the subagent's authored prompt, and the GP
-    base respectively).
+    stack receives the suffix on top of its own base prompt (no base for the
+    main agent, the subagent's authored prompt, and the GP base respectively).
 
     See `create_deep_agent`'s `system_prompt` parameter or
     [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
@@ -632,8 +629,8 @@ class HarnessProfile:
     Entries may be a middleware *class* (matched by exact type, not subclass —
     consistent with `extra_middleware` slot merging) or a *string* matching
     `AgentMiddleware.name` exactly. `.name` defaults to the class's
-    `__name__` but is overridable, so `{TodoListMiddleware}` (class form) and
-    `{"TodoListMiddleware"}` (name form) behave identically for stock
+    `__name__` but is overridable, so `{FilesystemMiddleware}` (class form) and
+    `{"FilesystemMiddleware"}` (name form) behave identically for stock
     middleware.
 
     Prefer class form when the class is importable: typos surface at import
@@ -789,7 +786,7 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     semantics — a profile that sets only the suffix layers it on top of
     whatever base the caller passes in.
 
-    Used uniformly across the main agent (`base_prompt=BASE_AGENT_PROMPT`),
+    Used uniformly across the main agent (which has no default base prompt),
     declarative subagents (`base_prompt=spec["system_prompt"]`), and the
     auto-added general-purpose subagent (`base_prompt=GP base prompt`), so a
     profile registered under a model spec applies the same overlay regardless
@@ -797,7 +794,7 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     """
     prompt = profile.base_system_prompt if profile.base_system_prompt is not None else base_prompt
     if profile.system_prompt_suffix is not None:
-        prompt = prompt + "\n\n" + profile.system_prompt_suffix
+        prompt = prompt + "\n\n" + profile.system_prompt_suffix if prompt else profile.system_prompt_suffix
     return prompt
 
 

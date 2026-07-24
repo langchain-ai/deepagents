@@ -26,6 +26,10 @@ on:
         options:
           - full
           - lite
+      include_tasks:
+        description: "Optional comma-separated exact task names. Filters the tasks resolved by the selected categories and profile; unknown names fail during prep before evals start."
+        type: string
+        default: ""
       rollouts:
         type: string
         default: "3"
@@ -72,6 +76,7 @@ jobs:
       configs: ${{ steps.p.outputs.configs }}
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
+      sources: ${{ steps.p.outputs.sources }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -179,6 +184,7 @@ jobs:
           UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
           UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
+          UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           # Set by the enumerate step above for the full profile only; empty
@@ -200,8 +206,10 @@ jobs:
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
           IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
           IN_BRANCHES: ${{ inputs.branches_to_compare }}
+          RESOLVED_SOURCES: ${{ steps.p.outputs.sources }}
           RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
+          IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
@@ -241,7 +249,9 @@ jobs:
             echo "| categories | \`${IN_CATEGORIES}\` |"
             echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
             echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
+            echo "| resolved branch commits | \`${RESOLVED_SOURCES:-(prep did not complete)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
+            echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
@@ -290,6 +300,9 @@ jobs:
       - prep
       - eval
     if: ${{ always() }}
+    # Aggregation and reporting happen after the paid eval work. Preserve their
+    # diagnostics without letting analysis failures fail the experiment workflow.
+    continue-on-error: true
     runs-on: ubuntu-latest
     # Every ref publishes to the same branch. Serialize the publishing jobs so
     # each one fetches the branch tip after the previous writer has pushed.
@@ -315,7 +328,13 @@ jobs:
           cache-suffix: unified-combine
           working-directory: libs/evals
 
+      - name: "🗂️ Prepare UV cache directory"
+        run: |
+          mkdir -p "$UV_CACHE_DIR"
+
       - name: "⬇️ Download leaf summaries"
+        id: download-leaves
+        continue-on-error: true
         run: |
           attempt=1
           while :; do
@@ -334,14 +353,19 @@ jobs:
             cat dl.log
             rm -rf "$attempt_dir"
             if [ "$attempt" -ge 3 ]; then
-              echo "::error::Leaf download failed after ${attempt} attempts (not an empty-artifact case)."
-              exit 1
+              echo "::warning::Leaf download failed after ${attempt} attempts; writing an incomplete diagnostic report."
+              mkdir -p _leaves
+              mv dl.log _leaves/artifact-download-error.log
+              break
             fi
             attempt=$((attempt + 1))
             sleep $((attempt * 5))
           done
 
       - name: "📊 Combine"
+        id: combine-results
+        if: ${{ always() }}
+        continue-on-error: true
         env:
           # Expected grid, so a leaf that never uploaded is shown and flagged
           # incomplete rather than silently ranking on fewer categories.
@@ -367,7 +391,9 @@ jobs:
             --title "Deep Agents Unified Evals"
 
       - name: "📤 Upload combined results"
+        id: upload-combined
         if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unified-combined
@@ -484,3 +510,54 @@ jobs:
               done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🔀 Compare active branches and configs"
+        id: compare-results
+        if: ${{ always() && needs.prep.result == 'success' }}
+        continue-on-error: true
+        env:
+          SOURCES: ${{ needs.prep.outputs.sources }}
+          EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+        run: |
+          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+            --sources-json "$SOURCES" \
+            --expected-leaves-json "$EXPECTED_LEAVES" \
+            --categories-json "$EXPECTED_CATEGORIES" \
+            --rollouts "$ROLLOUTS" \
+            --out-dir _comparison
+
+      - name: "📤 Upload deterministic comparisons"
+        id: upload-comparisons
+        if: ${{ always() && hashFiles('_comparison/comparison_summary.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-comparison
+          path: _comparison/
+
+      - name: "⚠️ Summarize analysis step failures"
+        if: ${{ always() }}
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-leaves.outcome }}
+          COMBINE_OUTCOME: ${{ steps.combine-results.outcome }}
+          COMBINED_UPLOAD_OUTCOME: ${{ steps.upload-combined.outcome }}
+          COMPARE_OUTCOME: ${{ steps.compare-results.outcome }}
+          COMPARISON_UPLOAD_OUTCOME: ${{ steps.upload-comparisons.outcome }}
+        run: |
+          warnings=()
+          [ "$DOWNLOAD_OUTCOME" = "failure" ] && warnings+=("leaf artifact download step failed unexpectedly")
+          [ "$COMBINE_OUTCOME" = "failure" ] && warnings+=("unified aggregation step failed unexpectedly")
+          [ "$COMBINED_UPLOAD_OUTCOME" = "failure" ] && warnings+=("combined result upload step failed unexpectedly")
+          [ "$COMPARE_OUTCOME" = "failure" ] && warnings+=("deterministic comparison step failed unexpectedly")
+          [ "$COMPARISON_UPLOAD_OUTCOME" = "failure" ] && warnings+=("comparison upload step failed unexpectedly")
+          if [ "${#warnings[@]}" -gt 0 ]; then
+            {
+              echo ""
+              echo "## Analysis warnings"
+              echo ""
+              for warning in "${warnings[@]}"; do
+                echo "- ${warning}; inspect this job's logs for the exact error."
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

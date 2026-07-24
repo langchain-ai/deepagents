@@ -36,7 +36,14 @@ def test_resolve_branch_sha_uses_ls_remote_argument_list(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert up._resolve_branch_sha("feature/x") == "a" * 40
-    assert calls == [(["git", "ls-remote", "origin", "feature/x"], True, True, True)]
+    assert calls == [
+        (
+            ["git", "ls-remote", "--exit-code", "origin", "refs/heads/feature/x"],
+            True,
+            True,
+            True,
+        )
+    ]
 
 
 def test_resolve_branch_sha_rejects_unsafe_refs():
@@ -64,9 +71,37 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
-    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "deepagent")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "nonexistent-graph")
     with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPLS entries must be in"):
         up.main()
+
+
+def test_category_map_guard_rejects_entry_missing_fan_out():
+    import pytest
+
+    malformed = {
+        "autonomous": {"agent_impl": "bare", "fan_out": True},
+        "broken": {"agent_impl": "bare"},  # missing "fan_out"
+    }
+    with pytest.raises(RuntimeError, match=r"'broken'.*agent_impl.*fan_out"):
+        up._validate_category_map_keys(malformed)
+
+
+def test_derive_impl_sets_new_graph_is_selectable():
+    cats = {
+        "autonomous": {"agent_impl": "bare", "fan_out": True},
+        "conversation": {"agent_impl": "tau3", "fan_out": False},
+        "context": {"agent_impl": "bare", "fan_out": True},
+    }
+    known, code = up.derive_impl_sets({"bare", "dcode", "tau3", "foo"}, cats)
+    assert known == {"bare", "dcode", "tau3", "foo"}
+    assert "foo" in code
+    assert "tau3" not in code
+
+
+def test_module_impl_sets_match_registry():
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
+    assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
@@ -96,6 +131,23 @@ def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):
     eval_matrix = _j.loads(lines["eval_matrix"])["include"]
     matrix = _j.loads(eval_matrix[0]["flat_matrix"])["include"]
     assert len(matrix) == len(lite_tasks.LITE_TASKS["context"])
+
+
+def test_context_lite_tasks_pin_the_recalibrated_candidate():
+    import lite_tasks
+
+    assert lite_tasks.LITE_TASKS["context"] == [
+        "cb-cloud-48",
+        "cb-cloud-1",
+        "cb-cloud-21",
+        "cb-cloud-49",
+        "cb-cloud-65",
+        "cb-cloud-69",
+        "cb-cloud-57",
+        "cb-cloud-9",
+        "cb-cloud-7",
+        "cb-cloud-4",
+    ]
 
 
 def test_main_rejects_invalid_concurrency(tmp_path, monkeypatch):
@@ -146,6 +198,39 @@ def test_main_rejects_empty_requested_category(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit, match=r"No tasks resolved.*context"):
         up.main([])
+
+
+def test_main_include_tasks_narrows_categories(tmp_path, monkeypatch):
+    # An explicit task selection drops categories that hold none of the requested
+    # tasks instead of failing the empty-category guard against the original
+    # selection. Requesting a single context task from the default category set
+    # must run only that task, not abort on the untouched autonomous/conversation
+    # categories.
+    import json as _j
+
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(
+        _j.dumps(
+            {
+                "autonomous": ["auto-1"],
+                "conversation": ["conv-1"],
+                "context": ["cb-cloud-5", "cb-cloud-26"],
+            }
+        )
+    )
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "full")
+    monkeypatch.setenv("UNIFIED_TASKS_JSON", str(tasks))
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-5")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    assert up.main([]) == 0
+
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    assert _j.loads(lines["categories"]) == ["context"]
+    leaf_categories = {leaf["category"] for leaf in _j.loads(lines["expected_leaves"])}
+    assert leaf_categories == {"context"}
 
 
 def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
@@ -285,8 +370,8 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     for entry in eval_matrix:
         assert set(entry) == {"model", "branch", "branch_sha", "flat_matrix"}
         flat = _j.loads(entry["flat_matrix"])["include"]
-        # lite totals 15+11+8 = 34 single-task shards per model
-        assert len(flat) == 34
+        # lite totals 15+11+10 = 36 single-task shards per model
+        assert len(flat) == 36
         assert {e["category"] for e in flat} == {
             "autonomous",
             "conversation",
@@ -297,6 +382,53 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "model_slugs" not in lines
     assert "model_0_matrix" not in lines
     assert "openai_matrix" not in lines
+
+
+def test_main_filters_lite_profile_to_exact_tasks(tmp_path, monkeypatch):
+    import json as _j
+
+    import lite_tasks
+
+    # Derive the selection from the live frontier (in a non-sorted order) so the
+    # test survives context-frontier recalibrations while still proving the filter
+    # restricts to the requested tasks and preserves request order.
+    context_tasks = lite_tasks.LITE_TASKS["context"]
+    selection = [context_tasks[2], context_tasks[0], context_tasks[5]]
+
+    monkeypatch.setattr(up, "_resolve_branch_sha", lambda branch: "a" * 40)
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare")
+    monkeypatch.setenv("UNIFIED_BRANCHES", "main,feature")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", ",".join(selection))
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    assert up.main([]) == 0
+
+    matrix = _j.loads(
+        next(
+            line for line in out.read_text().splitlines() if line.startswith("eval_matrix=")
+        ).split("=", 1)[1]
+    )["include"]
+    assert {entry["branch"] for entry in matrix} == {"main", "feature"}
+    for entry in matrix:
+        flat = _j.loads(entry["flat_matrix"])["include"]
+        assert [item["include_tasks"] for item in flat] == selection
+
+
+def test_main_rejects_unknown_included_task(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_INCLUDE_TASKS", "cb-cloud-does-not-exist")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+
+    with pytest.raises(SystemExit, match="UNIFIED_INCLUDE_TASKS"):
+        up.main([])
 
 
 def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
@@ -350,7 +482,7 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     pairs = {(e["model"], e["branch"]) for e in matrix["include"]}
     assert pairs == {("openai:gpt-5.6-luna", "main"), ("openai:gpt-5.6-luna", "feature")}
@@ -359,10 +491,20 @@ def test_main_emits_model_branch_matrix(tmp_path, monkeypatch):
     )
     assert {e["branch_sha"] for e in matrix["include"]} == {"a" * 40}
     leaves = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("expected_leaves=")).split("=", 1)[1]
+        next(
+            line for line in text.splitlines() if line.startswith("expected_leaves=")
+        ).split("=", 1)[1]
     )
-    assert {l["branch"] for l in leaves} == {"main", "feature"}
-    assert all({"model", "branch", "config", "category"} <= set(l) for l in leaves)
+    assert {leaf["branch"] for leaf in leaves} == {"main", "feature"}
+    assert all(
+        {"model", "branch", "source_sha", "config", "category"} <= set(leaf)
+        for leaf in leaves
+    )
+    outputs = dict(line.split("=", 1) for line in text.splitlines())
+    assert _j.loads(outputs["sources"]) == [
+        {"branch": "main", "sha": "a" * 40},
+        {"branch": "feature", "sha": "a" * 40},
+    ]
 
 
 def test_main_total_job_guard_counts_branches(tmp_path, monkeypatch):
@@ -411,7 +553,7 @@ def test_main_default_branch_is_current(tmp_path, monkeypatch):
     up.main()
     text = out.read_text()
     matrix = _j.loads(
-        next(l for l in text.splitlines() if l.startswith("eval_matrix=")).split("=", 1)[1]
+        next(line for line in text.splitlines() if line.startswith("eval_matrix=")).split("=", 1)[1]
     )
     assert {e["branch"] for e in matrix["include"]} == {"current"}
 
@@ -478,7 +620,7 @@ def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
     tasks = {
         "autonomous": [f"harbor-index/a{i}" for i in range(15)],
         "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
-        "context": [f"cb-cloud-{i}" for i in range(8)],
+        "context": [f"cb-cloud-{i}" for i in range(10)],
     }
     entries = up.build_flat_matrix(
         "openai:gpt",
@@ -486,7 +628,7 @@ def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
         tasks,
         code_impls=["dcode"],
     )
-    assert len(entries) == 15 + 11 + 8
+    assert len(entries) == 15 + 11 + 10
     assert all(len(e["include_tasks"].split()) == 1 for e in entries)
 
 

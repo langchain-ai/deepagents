@@ -12,10 +12,8 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
-from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
@@ -378,20 +376,11 @@ def test_filesystem_backend_rejects_oversized_mkv_before_read(tmp_path: Path, mo
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
     root = tmp_path
-    rt = ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id="test_fs",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -2415,20 +2404,17 @@ def test_file_operations_return_errors_for_symlink_loop_paths(tmp_path: Path) ->
     assert be.download_files(["loop"])[0].error == "invalid_path"
 
 
-class TestVirtualModeDefaultDeprecation:
-    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+class TestVirtualModeDefault:
+    """`virtual_mode` defaults to `True` and never emits a deprecation."""
 
-    def test_omitted_virtual_mode_warns(self, tmp_path: Path) -> None:
+    def test_omitted_virtual_mode_defaults_true(self, tmp_path: Path) -> None:
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
             be = FilesystemBackend(root_dir=str(tmp_path))
 
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert deprecations[0].category is LangChainDeprecationWarning
-        assert "virtual_mode" in str(deprecations[0].message)
-        # Default falls back to `False` for backwards compatibility.
-        assert be.virtual_mode is False
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []
+        assert be.virtual_mode is True
 
     def test_explicit_virtual_mode_does_not_warn(self, tmp_path: Path) -> None:
         with warnings.catch_warnings(record=True) as captured:

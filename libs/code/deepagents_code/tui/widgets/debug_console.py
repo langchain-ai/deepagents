@@ -19,12 +19,12 @@ from textual.binding import Binding, BindingType
 from textual.cache import LRUCache
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.style import Style as TStyle
-from textual.widgets import Select, Static
+from textual.widgets import Checkbox, Select, Static
 from textual.widgets._select import (  # noqa: PLC2701  # needed to keep Tab navigation inside the open Select overlay
     SelectCurrent,
     SelectOverlay,
@@ -74,6 +74,9 @@ class SnapshotField(NamedTuple):
 _SNAPSHOT_COPY_META = "snapshot_copy"
 """Meta key marking a snapshot span whose text is copied on click."""
 
+_SNAPSHOT_COPY_LABEL_META = "snapshot_copy_label"
+"""Meta key carrying the snapshot field label used in the copy toast."""
+
 
 _REFRESH_INTERVAL = 0.5
 """Seconds between log-tail refresh ticks."""
@@ -85,6 +88,12 @@ Matches the buffer's per-level `deque` bound so the console mirrors the buffer's
 level-partitioned retention instead of re-flattening it into a single window."""
 
 _FILTER_SELECT_ID = "debug-level-filter"
+_CLICK_TO_COPY_ID = "debug-click-to-copy"
+"""Id of the checkbox that opts click-to-copy in for the console."""
+_CLICK_TO_COPY_DEFAULT = False
+"""Whether click-to-copy is enabled before the user toggles the checkbox."""
+_FOCUS_CYCLE = f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
+"""Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
     "all",
     "min:DEBUG",
@@ -245,9 +254,12 @@ class _DebugLogView(ScrollView, can_focus=True):
         *,
         widget_id: str | None = None,
         classes: str | None = None,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
     ) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._on_copy_record = on_copy_record
+        self.click_to_copy = click_to_copy
+        """Whether clicking a log line copies it. Enter always copies."""
         self._records: list[InMemoryLogRecord] = []
         self._notice: Content | None = None
         self._contents: list[Content] = []
@@ -543,19 +555,19 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._copy_selected_record()
 
     def key_tab(self, event: events.Key) -> None:
-        """Move focus from the log to the level filter."""
+        """Move focus from the log to the next toolbar control."""
         event.prevent_default()
         event.stop()
-        self.screen.focus_next("#debug-level-filter, #debug-log")
+        self.screen.focus_next(_FOCUS_CYCLE)
 
     def key_shift_tab(self, event: events.Key) -> None:
-        """Move focus from the log to the level filter."""
+        """Move focus from the log to the previous toolbar control."""
         event.prevent_default()
         event.stop()
-        self.screen.focus_previous("#debug-level-filter, #debug-log")
+        self.screen.focus_previous(_FOCUS_CYCLE)
 
     def on_click(self, event: events.Click) -> None:
-        """Copy the clicked logical log record."""
+        """Select the clicked log record, copying it when click-to-copy is on."""
         _scroll_x, scroll_y = self.scroll_offset
         record = self._record_at_visual_y(scroll_y + event.y)
         if record is None:
@@ -564,23 +576,45 @@ class _DebugLogView(ScrollView, can_focus=True):
         if index is not None:
             self._select_record(index)
         event.stop()
-        self._on_copy_record(record)
+        if self.click_to_copy:
+            self._on_copy_record(record)
 
 
-def _snapshot_copy_text(style: object) -> str | None:
-    """Return the copy payload from a snapshot span style, if any.
+def _snapshot_copy_target(style: object) -> tuple[str, str] | None:
+    """Return the copy text and field label from a snapshot span style, if any.
 
     Args:
         style: The Textual event style under the pointer/click.
 
     Returns:
-        The text to copy when the span carries a copy marker, else `None`.
+        `(text, label)` when the span carries a copy marker, else `None`.
     """
     meta = getattr(style, "meta", None)
     if not isinstance(meta, dict):
         return None
     text = meta.get(_SNAPSHOT_COPY_META)
-    return text if isinstance(text, str) and text else None
+    if not isinstance(text, str) or not text:
+        return None
+    label = meta.get(_SNAPSHOT_COPY_LABEL_META)
+    if not isinstance(label, str) or not label:
+        return None
+    return text, label
+
+
+def _snapshot_copy_success_message(label: str) -> str:
+    """Build the toast shown after copying a snapshot field value.
+
+    Args:
+        label: The snapshot row label (e.g. `"Thread"`, `"Version"`).
+
+    Returns:
+        A short success toast for the copied field.
+    """
+    # The thread row is labeled "Thread" in the snapshot, but the value users
+    # copy is specifically the thread id — keep that wording for the toast.
+    if label == "Thread":
+        return "Thread ID copied"
+    return f"{label} copied"
 
 
 class _SnapshotView(Static):
@@ -591,31 +625,40 @@ class _SnapshotView(Static):
     auto_links = False
 
     def __init__(
-        self, on_copy: Callable[[str], None], *, classes: str | None = None
+        self,
+        on_copy: Callable[[str, str], None],
+        *,
+        classes: str | None = None,
     ) -> None:
         """Initialize with a callback used to copy a clicked span's text.
 
         Args:
-            on_copy: Called with the span text when a copyable span is clicked.
+            on_copy: Called with `(text, label)` when a copyable span is clicked.
             classes: Optional space-separated CSS classes.
         """
         super().__init__(classes=classes)
         self._on_copy = on_copy
 
     def on_click(self, event: events.Click) -> None:
-        """Copy a marked span or open a link span under the click."""
+        """Copy a marked span or open a link span under the click.
+
+        Copyable snapshot spans (e.g. the thread id) always copy on click; the
+        console's "Click to copy" checkbox governs only the log lines, never the
+        snapshot.
+        """
         if getattr(event.style, "link", None):
             open_style_link(event)
             return
-        text = _snapshot_copy_text(event.style)
-        if text is not None:
+        target = _snapshot_copy_target(event.style)
+        if target is not None:
             event.stop()
-            self._on_copy(text)
+            text, label = target
+            self._on_copy(text, label)
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Show a hand pointer over clickable spans and reset it elsewhere."""
         clickable = bool(getattr(event.style, "link", None)) or (
-            _snapshot_copy_text(event.style) is not None
+            _snapshot_copy_target(event.style) is not None
         )
         self.styles.pointer = "pointer" if clickable else "default"
 
@@ -683,6 +726,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         width: 18;
     }
 
+    DebugConsoleScreen .debug-console-click-to-copy {
+        margin-left: 2;
+        color: $text-muted;
+    }
+
     DebugConsoleScreen .debug-console-log {
         height: 1fr;
         min-height: 5;
@@ -712,6 +760,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         *,
         cleared_upto: int = 0,
         on_clear: Callable[[int], None] | None = None,
+        click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
+        on_click_to_copy_change: Callable[[bool], None] | None = None,
     ) -> None:
         """Initialize with a captured *snapshot* of session/runtime fields.
 
@@ -722,6 +772,10 @@ class DebugConsoleScreen(ModalScreen[None]):
                 close/reopen; records emitted after it still appear.
             on_clear: Invoked with the new clear cursor whenever `Ctrl+L` clears
                 the view, letting the owner persist it for the next open.
+            click_to_copy: Initial state of the "Click to copy" checkbox,
+                restored from the persisted preference.
+            on_click_to_copy_change: Called with the new value whenever the
+                checkbox is toggled, so the host can persist the preference.
         """
         super().__init__()
         self._snapshot = list(snapshot)
@@ -733,6 +787,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
+        self._click_to_copy = click_to_copy
+        self._on_click_to_copy_change = on_click_to_copy_change
         # Seed links resolved elsewhere in this process (normally the welcome
         # banner) so reopening the console does not briefly render without one.
         self._langsmith_urls = self._cached_langsmith_urls()
@@ -766,7 +822,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         with Vertical():
             yield Static("Debug Console", classes="debug-console-title")
             snapshot_view = _SnapshotView(
-                self._copy_snapshot_value, classes="debug-console-snapshot"
+                self._copy_snapshot_value,
+                classes="debug-console-snapshot",
             )
             snapshot_view.update(self._render_snapshot())
             yield snapshot_view
@@ -779,10 +836,18 @@ class DebugConsoleScreen(ModalScreen[None]):
                     id=_FILTER_SELECT_ID,
                     compact=True,
                 )
+                yield Checkbox(
+                    "Click to copy",
+                    value=self._click_to_copy,
+                    id=_CLICK_TO_COPY_ID,
+                    compact=True,
+                    classes="debug-console-click-to-copy",
+                )
             yield _DebugLogView(
                 self._copy_record,
                 widget_id="debug-log",
                 classes="debug-console-log",
+                click_to_copy=self._click_to_copy,
             )
             yield Static(self._render_help(), classes="debug-console-help")
 
@@ -860,20 +925,52 @@ class DebugConsoleScreen(ModalScreen[None]):
             logger.debug("Debug console snapshot refresh skipped (widget unavailable)")
 
     def key_tab(self, event: events.Key) -> None:
-        """Cycle focus between the level filter and log lines."""
+        """Cycle focus between the toolbar controls and log lines."""
         if self._level_select().expanded:
             return
         event.prevent_default()
         event.stop()
-        self.focus_next("#debug-level-filter, #debug-log")
+        self.focus_next(_FOCUS_CYCLE)
 
     def key_shift_tab(self, event: events.Key) -> None:
-        """Cycle focus between the log lines and level filter."""
+        """Cycle focus between the log lines and toolbar controls."""
         if self._level_select().expanded:
             return
         event.prevent_default()
         event.stop()
-        self.focus_previous("#debug-level-filter, #debug-log")
+        self.focus_previous(_FOCUS_CYCLE)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Dismiss transient control state when the user clicks outside it.
+
+        Clicking a focusable control already moves focus, but clicking a
+        non-focusable area (the snapshot, labels, help, or empty modal space)
+        does not. Mirror that outside-click behavior for the open level dropdown
+        and the focused "Click to copy" checkbox.
+        """
+        offset = event.screen_offset
+        select = self._level_select()
+        if select.expanded and not self._point_in_level_select(select, offset):
+            overlay = select.query_one(SelectOverlay)
+            select.expanded = False
+            # Re-focus the select only when focus is still trapped on the now
+            # hidden overlay; if the click already moved focus to another
+            # control, leave it there.
+            if self.focused is overlay:
+                select.focus()
+        checkbox = self.query_one(f"#{_CLICK_TO_COPY_ID}", Checkbox)
+        if self.focused is checkbox and not checkbox.region.contains(
+            offset.x, offset.y
+        ):
+            self.set_focus(None)
+
+    @staticmethod
+    def _point_in_level_select(select: Select[FilterValue], offset: Offset) -> bool:
+        """Return whether *offset* falls on the select box or its open overlay."""
+        if select.region.contains(offset.x, offset.y):
+            return True
+        overlay = select.query_one(SelectOverlay)
+        return overlay.display and overlay.region.contains(offset.x, offset.y)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""
@@ -890,6 +987,19 @@ class DebugConsoleScreen(ModalScreen[None]):
             return
         self._level_filter = cast("FilterValue", value)
         self._refresh_log_view(scroll_end=True)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Toggle click-to-copy for the log lines.
+
+        The checkbox governs only the log lines; copyable snapshot spans (e.g.
+        the thread id) always copy on click regardless of this setting.
+        """
+        if event.checkbox.id != _CLICK_TO_COPY_ID:
+            return
+        self._click_to_copy = event.value
+        self.query_one("#debug-log", _DebugLogView).click_to_copy = event.value
+        if self._on_click_to_copy_change is not None:
+            self._on_click_to_copy_change(event.value)
 
     def _render_snapshot(self) -> Content:
         """Build the right-aligned `label: value` snapshot block.
@@ -918,7 +1028,15 @@ class DebugConsoleScreen(ModalScreen[None]):
         ]
         if field.copyable and field.value:
             parts.append(
-                (field.value, TStyle.from_meta({_SNAPSHOT_COPY_META: field.value}))
+                (
+                    field.value,
+                    TStyle.from_meta(
+                        {
+                            _SNAPSHOT_COPY_META: field.value,
+                            _SNAPSHOT_COPY_LABEL_META: field.label,
+                        }
+                    ),
+                )
             )
         else:
             parts.append(field.value)
@@ -935,8 +1053,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · "
-            "click copy line/thread",
+            "Esc close · Ctrl+L clear view · c copy visible logs · Enter copy line",
             "dim italic",
         )
 
@@ -1060,12 +1177,17 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Copy a clicked logical log record to the clipboard."""
         self._copy_lines([record.plain_line], empty_message="No log line to copy")
 
-    def _copy_snapshot_value(self, text: str) -> None:
-        """Copy a clicked snapshot value (e.g. the thread ID) to the clipboard."""
+    def _copy_snapshot_value(self, text: str, label: str) -> None:
+        """Copy a clicked snapshot value to the clipboard.
+
+        Args:
+            text: The field value to put on the clipboard.
+            label: The snapshot row label used to word the success toast.
+        """
         self._copy_lines(
             [text],
             empty_message="Nothing to copy",
-            success_message="Thread ID copied",
+            success_message=_snapshot_copy_success_message(label),
         )
 
     def _level_select(self) -> Select[FilterValue]:

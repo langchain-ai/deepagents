@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,36 +54,100 @@ CATEGORY_MAP: dict[str, dict] = {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
         "agent_impl": "bare",
+        "fan_out": True,
     },
     "conversation": {
         "dataset": "tau3-subset",
         "dataset_path": "",
         "agent_impl": "tau3",
+        "fan_out": False,
     },
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
         "agent_impl": "bare",
+        "fan_out": True,
     },
 }
-
-# Harnesses selectable for the code categories (autonomous, context) via the
-# `agent_impls` input. Conversation is always tau3 and is never overridden.
-CODE_AGENT_IMPLS = {"dcode", "bare"}
 
 # Harness used when the `agent_impls` input (UNIFIED_AGENT_IMPLS) is unset or blank.
 DEFAULT_AGENT_IMPL = "bare"
 
-# Every harness a category may pin in CATEGORY_MAP (code harnesses plus tau3).
-KNOWN_AGENT_IMPLS = CODE_AGENT_IMPLS | {"tau3"}
+# langgraph.json is the single source of truth for which agent graphs exist. Its
+# path is resolved relative to this file so it holds regardless of the caller's
+# cwd (.github/scripts -> repo root is two parents up).
+_LANGGRAPH_JSON = (
+    Path(__file__).resolve().parents[2]
+    / "libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+)
 
-# A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
-# category ineligible for the override and route it to a nonexistent harness, so
-# validate at import. raise (not assert): asserts are stripped under `python -O`.
-if not all(cm["agent_impl"] in KNOWN_AGENT_IMPLS for cm in CATEGORY_MAP.values()):
-    raise RuntimeError(f"every CATEGORY_MAP agent_impl must be one of {sorted(KNOWN_AGENT_IMPLS)}")
+
+def _load_registry_graphs(path: Path) -> set[str]:
+    """Return the set of graph keys registered in a langgraph.json."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read agent registry {path}: {exc}") from exc
+    graphs = data.get("graphs")
+    if not isinstance(graphs, dict) or not graphs:
+        raise RuntimeError(f"agent registry {path} has no 'graphs' object")
+    return set(graphs)
+
+
+def derive_impl_sets(
+    all_graphs: set[str], category_map: dict[str, dict]
+) -> tuple[set[str], set[str]]:
+    """Derive (known, code) impl sets from the registry and category policy.
+
+    `known` is every registered graph. `code` is the graphs a user may select on
+    the code (fan-out) categories: every graph except one pinned by a non-fan-out
+    category (e.g. `tau3`, bound to conversation).
+    """
+    pinned_non_code = {
+        cm["agent_impl"] for cm in category_map.values() if not cm["fan_out"]
+    }
+    # Subtractive, not additive: a graph pinned by a non-fan-out category is
+    # excluded from the selectable code set even if a fan-out category also uses
+    # it. Not reachable with the current CATEGORY_MAP, but it is the defined
+    # invariant.
+    return all_graphs, all_graphs - pinned_non_code
+
+
+def _validate_category_map_keys(category_map: dict[str, dict]) -> None:
+    """Fail fast, naming the offending category, if a CATEGORY_MAP entry is
+    missing `agent_impl` or `fan_out`.
+
+    `derive_impl_sets` reads `cm["fan_out"]` for every entry unconditionally, so
+    a missing key would otherwise surface as a bare `KeyError('fan_out')`
+    instead of identifying which category is malformed.
+    """
+    for cat, cm in category_map.items():
+        if "agent_impl" not in cm or "fan_out" not in cm:
+            raise RuntimeError(
+                f"CATEGORY_MAP[{cat!r}] must define both 'agent_impl' and 'fan_out'"
+            )
+
+
+_validate_category_map_keys(CATEGORY_MAP)
+ALL_GRAPHS = _load_registry_graphs(_LANGGRAPH_JSON)
+KNOWN_AGENT_IMPLS, CODE_AGENT_IMPLS = derive_impl_sets(ALL_GRAPHS, CATEGORY_MAP)
+
+# A CATEGORY_MAP agent_impl that is not a registered graph would route a category
+# to a nonexistent harness. Validate at import; raise (not assert) so `python -O`
+# cannot strip it.
+_unknown = [
+    cm["agent_impl"] for cm in CATEGORY_MAP.values() if cm["agent_impl"] not in ALL_GRAPHS
+]
+if _unknown:
+    raise RuntimeError(
+        f"CATEGORY_MAP agent_impl(s) {_unknown} are not graphs in {_LANGGRAPH_JSON} "
+        f"(have {sorted(ALL_GRAPHS)})"
+    )
 if DEFAULT_AGENT_IMPL not in CODE_AGENT_IMPLS:
-    raise RuntimeError(f"DEFAULT_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}")
+    raise RuntimeError(
+        f"DEFAULT_AGENT_IMPL {DEFAULT_AGENT_IMPL!r} must be a selectable code "
+        f"harness, one of {sorted(CODE_AGENT_IMPLS)}"
+    )
 
 # Run profiles: "full" = every task in each category; "lite" = the frozen
 # high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
@@ -193,13 +258,50 @@ def _load_tasks_json(path: str) -> dict[str, list[str]]:
     return cast(dict[str, list[str]], raw)
 
 
+def filter_tasks(
+    tasks_by_category: dict[str, list[str]], selection: str
+) -> dict[str, list[str]]:
+    """Filter resolved profile tasks by an optional exact-name CSV selection.
+
+    Args:
+        tasks_by_category: Tasks resolved for each selected evaluation category.
+        selection: Comma-separated exact task names, or an empty string for all.
+
+    Returns:
+        Category task lists restricted to the requested names in request order.
+
+    Raises:
+        SystemExit: If a requested task is unavailable in the selected scope.
+    """
+    requested = list(
+        dict.fromkeys(task.strip() for task in selection.split(",") if task.strip())
+    )
+    if not requested:
+        return tasks_by_category
+
+    available = {
+        task for tasks in tasks_by_category.values() for task in tasks
+    }
+    unknown = [task for task in requested if task not in available]
+    if unknown:
+        raise SystemExit(
+            "UNIFIED_INCLUDE_TASKS contains tasks outside the selected categories/profile: "
+            f"{unknown}"
+        )
+
+    return {
+        category: [task for task in requested if task in set(tasks)]
+        for category, tasks in tasks_by_category.items()
+    }
+
+
 def _resolve_branch_sha(branch: str) -> str:
     """Resolve a validated remote ref to an immutable commit SHA."""
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith("-") or ".." in branch:
         raise SystemExit(f"Invalid branch ref: {branch!r}")
     try:
         result = subprocess.run(
-            ["git", "ls-remote", "origin", branch],
+            ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
             check=True,
             capture_output=True,
             text=True,
@@ -210,8 +312,8 @@ def _resolve_branch_sha(branch: str) -> str:
     line = result.stdout.splitlines()
     if not line:
         raise SystemExit(f"Branch ref {branch!r} was not found on origin.")
-    sha = line[0].split(maxsplit=1)[0]
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+    sha = line[0].split(maxsplit=1)[0].lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise SystemExit(f"Origin returned an invalid SHA for branch ref {branch!r}.")
     return sha
 
@@ -246,7 +348,7 @@ def build_flat_matrix(
 ) -> list[dict]:
     """One flat matrix of single-`harbor run` shards spanning categories x configs.
 
-    Code categories (their CATEGORY_MAP agent_impl is in CODE_AGENT_IMPLS) emit one
+    Fan-out categories (`CATEGORY_MAP` `fan_out=True`) emit one
     shard group per (category, config) across `code_impls`. A non-code category
     (conversation / tau3) emits one group with its pinned agent_impl and is never
     multiplied by configs. The per-model entry count is bounded by
@@ -267,7 +369,7 @@ def build_flat_matrix(
         tasks = tasks_by_cat.get(cat, [])
         if not tasks:
             continue
-        if cm["agent_impl"] in CODE_AGENT_IMPLS:
+        if cm["fan_out"]:
             for impl in code_impls:
                 groups.append((cat, impl, tasks))
         else:
@@ -381,9 +483,21 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
         tasks_by_cat = _load_tasks_json(tasks_json)
 
-    empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
-    if empty_categories:
-        raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
+    include_tasks = os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
+    tasks_by_cat = filter_tasks(tasks_by_cat, include_tasks)
+
+    if include_tasks:
+        # An explicit task selection narrows the active categories to those that
+        # actually contain a requested task. Unknown names already errored in
+        # filter_tasks, so a category emptied here simply wasn't targeted by the
+        # selection and is dropped rather than treated as unresolved.
+        categories = [category for category in categories if tasks_by_cat.get(category)]
+        if not categories:
+            raise SystemExit("UNIFIED_INCLUDE_TASKS matched no selected categories.")
+    else:
+        empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
+        if empty_categories:
+            raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
 
     n_models = len(model_specs)
 
@@ -442,7 +556,12 @@ def main(argv: list[str] | None = None) -> int:
         "categories": categories,
         "configs": code_impls,
         "branches": branches,
-        "expected_leaves": [key._asdict() for key in expected_keys],
+        "expected_leaves": [
+            {**key._asdict(), "source_sha": branch_shas[key.branch]} for key in expected_keys
+        ],
+        "sources": [
+            {"branch": branch, "sha": branch_shas[branch]} for branch in branches
+        ],
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
     }

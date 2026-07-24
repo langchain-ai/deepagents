@@ -25,12 +25,11 @@ AUTO_MODE_DOCS_URL = (
 """Canonical docs page for Manual / Auto / YOLO behavior."""
 
 AUTO_MODE_NOTICE_BODY = (
-    "You switched to **Auto**. In this mode, the agent can approve "
-    "**routine gated actions** without asking you first (for example ordinary "
-    "source edits and read-only Git commands).\n\n"
+    "You switched to **Auto**. The agent can approve **routine gated actions** "
+    "without asking first — for example ordinary source edits and read-only "
+    "Git commands.\n\n"
     "Anything uncertain is reviewed by the **active model** against your "
-    "**literal request** — not a separate security reviewer. After repeated "
-    "denials or review failures, you get the normal approval prompt.\n\n"
+    "**literal request**. If review keeps failing, you're asked to approve.\n\n"
     "This is **not a sandbox**. The agent still runs on this machine and can "
     "change files, run commands, and use tools when Auto allows them.\n\n"
     "This notice appears **once** on this machine after you continue.\n\n"

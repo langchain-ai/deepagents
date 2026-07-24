@@ -1,3 +1,7 @@
+
+
+
+
 ## Skills System
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.

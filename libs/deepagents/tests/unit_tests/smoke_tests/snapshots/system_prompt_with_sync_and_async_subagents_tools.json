@@ -1,6 +1,45 @@
 [
   {
     "function": {
+      "description": "Use this tool to create and manage a structured task list for your current work session. This helps you track progress and organize complex tasks.\n\nOnly use this tool if you think it will be helpful in staying organized. If the user's request is trivial and takes less than 3 steps, it is better to NOT use this tool and just do the task directly.\n\n## When to Use This Tool\n\nUse this tool in these scenarios:\n\n1. Complex multi-step tasks - When a task requires 3 or more distinct steps or actions\n2. Non-trivial and complex tasks - Tasks that require careful planning or multiple operations\n3. User explicitly requests todo list - When the user directly asks you to use the todo list\n4. User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)\n5. The plan may need future revisions or updates based on results from the first few steps\n\n## How to Use This Tool\n\n1. When you start working on a task - Mark it as in_progress BEFORE beginning work.\n2. After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation.\n3. You can also update future tasks, such as deleting them if they are no longer necessary, or adding new tasks that are necessary. Don't change previously completed tasks.\n4. You can make several updates to the todo list at once. For example, when you complete a task, you can mark the next task you need to start as in_progress.\n\n## When NOT to Use This Tool\n\nIt is important to skip using this tool when:\n1. There is only a single, straightforward task\n2. The task is trivial and tracking it provides no benefit\n3. The task can be completed in less than 3 trivial steps\n4. The task is purely conversational or informational\n\n## Task States and Management\n\n1. **Task States**: Use these states to track progress:\n    - pending: Task not yet started\n    - in_progress: Currently working on (you can have multiple tasks in_progress at a time if they are not related to each other and can be run in parallel)\n    - completed: Task finished successfully\n\n2. **Task Management**:\n    - Update task status in real-time as you work\n    - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)\n    - Complete current tasks before starting new ones\n    - Remove tasks that are no longer relevant from the list entirely\n    - IMPORTANT: When you write this todo list, you should mark your first task (or tasks) as in_progress immediately!.\n    - IMPORTANT: Unless all tasks are completed, you should always have at least one task in_progress.\n\n3. **Task Completion Requirements**:\n    - ONLY mark a task as completed when you have FULLY accomplished it\n    - If you encounter errors, blockers, or cannot finish, keep the task as in_progress\n    - When blocked, create a new task describing what needs to be resolved\n    - Never mark a task as completed if:\n        - There are unresolved issues or errors\n        - Work is partial or incomplete\n        - You encountered blockers that prevent completion\n        - You couldn't find necessary resources or dependencies\n        - Quality standards haven't been met\n\n4. **Task Breakdown**:\n    - Create specific, actionable items\n    - Break complex tasks into smaller, manageable steps\n    - Use clear, descriptive task names\n\nBeing proactive with task management ensures you complete all requirements successfully\nRemember: If you only need to make a few tool calls to complete a task, and it is clear what you need to do, it is better to just do the task directly and NOT call this tool at all.\n\n## When You Finish\n\n`write_todos` tracks your work; it does not deliver the answer. Whatever the user asked for \u2014 computations, summaries, comparisons, data \u2014 must appear as text content in a message after your final `write_todos` call. Marking the last todo complete is not itself an answer to the user.",
+      "name": "write_todos",
+      "parameters": {
+        "properties": {
+          "todos": {
+            "items": {
+              "description": "A single todo item with content and status.",
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.\nYou should almost ALWAYS use this tool before using the read_file or edit_file tools.",
       "name": "ls",
       "parameters": {

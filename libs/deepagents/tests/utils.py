@@ -8,7 +8,9 @@ from langgraph.types import Command
 
 
 def assert_all_deepagent_qualities(agent):
+    assert "todos" in agent.stream_channels
     assert "files" in agent.stream_channels
+    assert "write_todos" in agent.nodes["tools"].bound._tools_by_name
     assert "ls" in agent.nodes["tools"].bound._tools_by_name
     assert "read_file" in agent.nodes["tools"].bound._tools_by_name
     assert "write_file" in agent.nodes["tools"].bound._tools_by_name

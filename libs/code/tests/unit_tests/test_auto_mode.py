@@ -2697,6 +2697,43 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
     assert counters["total_denials"] == 0
 
 
+async def test_classifier_unavailable_logs_underlying_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model = _StructuredModel(error=RuntimeError("provider overloaded"))
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with caplog.at_level("INFO", logger="deepagents_code.auto_mode"):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    # Agent/UI stays type-only; logs include the concrete failure and traceback.
+    assert "RuntimeError" in plan["decisions"][0]["reason"]
+    assert "provider overloaded" not in plan["decisions"][0]["reason"]
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "deepagents_code.auto_mode"
+        and "decision=unavailable" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert "error=RuntimeError: provider overloaded" in records[0].getMessage()
+    assert records[0].exc_info is not None
+    assert records[0].exc_info[0] is RuntimeError
+
+
 async def test_classifier_failure_with_counter_store_failure_routes_human(
     tmp_path: Path,
 ) -> None:

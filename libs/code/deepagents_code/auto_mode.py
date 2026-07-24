@@ -2092,7 +2092,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         except asyncio.CancelledError:
             raise
         # Providers expose heterogeneous error types; all failures block review.
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
             counters["consecutive_unavailable"] += 1
             counters["last_batch_id"] = batch_id
@@ -2101,6 +2101,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             if not counters_saved:
                 plan["fallback_reason"] = "control_state_unavailable"
+            # Keep the agent/UI reason type-only; put the concrete failure in logs.
+            error_detail = sanitize_auto_reason(
+                f"{type(exc).__name__}: {exc}",
+                known_secrets=self._known_secrets,
+            )
             reason = sanitize_auto_reason(
                 f"The authorization classifier was unavailable ({type(exc).__name__}).",
                 known_secrets=self._known_secrets,
@@ -2129,10 +2134,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             plan["counters_applied"] = True
             logger.info(
                 "Auto decision mode=auto model=%s tools=%d path=classifier "
-                "decision=unavailable latency_ms=%d",
+                "decision=unavailable latency_ms=%d error=%s",
                 _extract_model_name(request.model),
                 len(review_calls),
                 latency_ms,
+                error_detail,
+                exc_info=True,
             )
             return ExtendedModelResponse(
                 model_response=response,

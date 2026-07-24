@@ -63,6 +63,45 @@ def coerce_approval_mode(value: object) -> ApprovalMode:
         return ApprovalMode.MANUAL
 
 
+def next_approval_mode(
+    current: ApprovalMode | str | object,
+    *,
+    auto_eligible: bool,
+    yolo_switcher_enabled: bool,
+) -> ApprovalMode | None:
+    """Return the next Shift+Tab approval mode for the active session.
+
+    The cycle is Manual → Auto → YOLO → Manual when both Auto and the YOLO
+    switcher entry are available. Auto is omitted when `auto_eligible` is false
+    (for example a remote sandbox). YOLO is omitted when orgs/users disable
+    `startup.yolo_switcher`. Launching with `--yolo` still leaves unrestricted
+    mode when the switcher entry is disabled; Shift+Tab only exits YOLO then.
+
+    Args:
+        current: Active approval mode (mode enum or raw value).
+        auto_eligible: Whether classifier-backed Auto can be selected.
+        yolo_switcher_enabled: Whether unrestricted YOLO appears in the cycle.
+
+    Returns:
+        The next mode, or `None` when no alternate mode is available.
+    """
+    mode = (
+        current if isinstance(current, ApprovalMode) else coerce_approval_mode(current)
+    )
+    if mode is ApprovalMode.MANUAL:
+        if auto_eligible:
+            return ApprovalMode.AUTO
+        if yolo_switcher_enabled:
+            return ApprovalMode.YOLO
+        return None
+    if mode is ApprovalMode.AUTO:
+        if yolo_switcher_enabled:
+            return ApprovalMode.YOLO
+        return ApprovalMode.MANUAL
+    # YOLO and any fail-closed unknown value leave unrestricted mode.
+    return ApprovalMode.MANUAL
+
+
 def approval_mode_key(thread_id: str) -> str:
     """Return the store key for a thread's live approval mode.
 

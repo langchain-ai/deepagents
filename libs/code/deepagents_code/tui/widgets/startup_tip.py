@@ -27,7 +27,7 @@ _TIPS: dict[str, int] = {
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Use /agents to browse and switch between your available agents": 2,
-    "Press Shift+Tab to toggle Manual and Auto modes": 2,
+    "Press Shift+Tab to cycle Manual, Auto, and YOLO modes": 2,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }

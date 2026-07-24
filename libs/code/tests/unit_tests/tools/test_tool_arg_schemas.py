@@ -80,8 +80,6 @@ def test_goal_tools_have_described_model_args() -> None:
     """Goal tools keep injected state hidden and describe model-facing fields."""
     middleware = GoalToolsMiddleware()
     by_name = {item.name: item for item in middleware.tools}
-    _assert_model_args_described(by_name["get_rubric"], expected=set())
-    _assert_model_args_described(by_name["get_goal"], expected=set())
     _assert_model_args_described(by_name["update_goal"], expected={"status", "note"})
 
 

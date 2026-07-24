@@ -191,10 +191,10 @@ def test_inactive_goal_status_skips_goal_tools(
 
 @pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
-def test_active_goal_requires_get_goal_and_follows_objective(
+def test_active_goal_followed_without_read_tools(
     model: BaseChatModel,
 ) -> None:
-    """An actionable notice permits the goal lookup needed to continue work."""
+    """An actionable goal is followed straight from the injected notice."""
     marker = "ACTIVE-GOAL-2A6D"
     objective = f"Answer 8 * 7 and include the exact marker {marker}."
     rubric = f"- The final response includes `{marker}` and the correct result."
@@ -214,27 +214,24 @@ def test_active_goal_requires_get_goal_and_follows_objective(
         model=model,
         query=messages,
         thread_id=thread_id,
-        scorer=TrajectoryScorer().success(
-            tool_called("get_goal"),
+        scorer=TrajectoryScorer()
+        .expect(tool_call_requests=0)
+        .success(
             final_text_contains("56"),
             final_text_contains(marker),
-            tool_not_called("update_goal"),
+            *_goal_tools_not_called(),
         ),
     )
 
 
 @pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
-def test_active_rubric_requires_get_rubric_and_marker(model: BaseChatModel) -> None:
-    """An active matching notice must lead to rubric retrieval and use."""
+def test_active_rubric_followed_without_read_tools(model: BaseChatModel) -> None:
+    """An active rubric is followed from the injected notice without a tool call."""
     marker = "ACTIVE-RUBRIC-7C91"
     rubric = f"- Include the exact marker `{marker}` in the final response."
     messages = [
-        HumanMessage(
-            content=(
-                "Read the active rubric, follow its exact criteria, and answer: What is 9 * 6?"
-            )
-        ),
+        HumanMessage(content=("Follow the active acceptance criteria and answer: What is 9 * 6?")),
     ]
 
     run_agent(
@@ -242,11 +239,11 @@ def test_active_rubric_requires_get_rubric_and_marker(model: BaseChatModel) -> N
         model=model,
         query=messages,
         extra_state={"rubric": rubric},
-        scorer=TrajectoryScorer().success(
-            tool_called("get_rubric"),
+        scorer=TrajectoryScorer()
+        .expect(tool_call_requests=0)
+        .success(
             final_text_contains("54"),
             final_text_contains(marker),
-            tool_not_called("get_goal"),
-            tool_not_called("update_goal"),
+            *_goal_tools_not_called(),
         ),
     )

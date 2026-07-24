@@ -2911,11 +2911,16 @@ def _project_mcp_picker_has_terminal() -> bool:
 
 def _run_project_mcp_trust_action_picker(
     console: "Console",
+    *,
+    remember_label: str = "Allow for this project — until changed",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
     """Show the inline project MCP trust action picker.
 
     Args:
         console: Console to print fallback notices to (stderr).
+        remember_label: Label for the persistent-trust option. Callers that
+            remember broader or narrower scope than MCP should override this so
+            the UI matches what is actually persisted.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -2948,7 +2953,7 @@ def _run_project_mcp_trust_action_picker(
     glyphs = get_glyphs()
     actions = [
         (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
-        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
+        (_ProjectMcpTrustAction.REMEMBER, remember_label),
         (_ProjectMcpTrustAction.DENY, "Deny"),
     ]
     selected_index = len(actions) - 1
@@ -3038,17 +3043,24 @@ def _run_project_mcp_trust_action_picker(
 
 def _select_project_mcp_trust_action(
     console: "Console",
+    *,
+    remember_label: str = "Allow for this project — until changed",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
     """Choose whether to allow once, remember selected servers, or deny.
 
     Args:
         console: Console used by the text fallback.
+        remember_label: Label for the persistent-trust option forwarded to the
+            inline picker.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
         Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
     """
-    selected = _run_project_mcp_trust_action_picker(console)
+    selected = _run_project_mcp_trust_action_picker(
+        console,
+        remember_label=remember_label,
+    )
     if selected is not None:
         return selected
 
@@ -3511,17 +3523,28 @@ def _check_mcp_project_trust(
     return True
 
 
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+
+
 def _check_project_hooks_trust(
     *,
     trust_flag: bool = False,
-) -> bool | Literal[_ProjectMcpTrustPromptOutcome.INTERRUPTED]:
+) -> (
+    bool
+    | Literal[
+        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
+        _ProjectMcpTrustPromptOutcome.CANCELLED,
+    ]
+):
     """Resolve interactive trust for project-scoped hook commands.
 
     Args:
         trust_flag: Whether the CLI explicitly trusted project hooks.
 
     Returns:
-        Whether project hooks may run, or an interrupted prompt outcome.
+        Whether project hooks may run, `INTERRUPTED` when the user presses
+        Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to abort
+        startup.
     """
     from rich.console import Console
     from rich.text import Text
@@ -3552,12 +3575,18 @@ def _check_project_hooks_trust(
     title.append(str(config_path))
     prompt_console.print(title, highlight=False)
     prompt_console.print(
-        "Only allow hooks for projects you trust.",
+        "Only allow hooks for projects you trust. Future edits to this file "
+        "will run without asking again if you always allow.",
         style="yellow",
         highlight=False,
     )
-    action = _select_project_mcp_trust_action(prompt_console)
+    action = _select_project_mcp_trust_action(
+        prompt_console,
+        remember_label=_PROJECT_HOOKS_REMEMBER_LABEL,
+    )
     if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+        return action
+    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
         return action
     if action is _ProjectMcpTrustAction.ALLOW_ONCE:
         prompt_console.print(
@@ -4743,6 +4772,14 @@ def cli_main() -> None:
             )
             if hooks_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
+            if hooks_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project hooks not loaded.[/dim]",
+                    highlight=False,
+                )
+                return
 
             # Run Textual TUI
             return_code = 0

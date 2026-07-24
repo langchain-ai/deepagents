@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.client import HookFulfillmentLedger
 from deepagents_code.hooks.engine import HookEngine
-from deepagents_code.hooks.loading import load_hooks_config, project_hooks_path
+from deepagents_code.hooks.loading import load_hooks_config
 from deepagents_code.hooks.models.domain import (
     HookDecision,
     HookEvent,
@@ -98,14 +98,13 @@ class HooksRuntime:
             else DEFAULT_CONFIG_DIR / "transcripts"
         )
         engine = HookEngine(snapshot)
-        project_path = project_hooks_path(project_root).resolve(strict=False)
         return cls(
             snapshot=snapshot,
             transcripts=store,
             engine=engine,
             cwd=project_context.user_cwd,
             workspace_trusted=workspace_trusted,
-            project_hooks_loaded=project_path in loaded.sources,
+            project_hooks_loaded=loaded.project_source_loaded,
             fulfillments=HookFulfillmentLedger(),
         )
 

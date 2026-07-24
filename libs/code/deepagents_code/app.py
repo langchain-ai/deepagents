@@ -9479,13 +9479,42 @@ class DeepAgentsApp(App):
             )
             return
         if not project_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing.",
-                ),
+            from deepagents_code.config import (
+                LangsmithShadowResult,
+                langsmith_key_shadowed_by_empty_override,
             )
+
+            await self._mount_message(UserMessage(command))
+            try:
+                shadow = await asyncio.to_thread(
+                    langsmith_key_shadowed_by_empty_override
+                )
+            except Exception:
+                # A best-effort diagnostic must never take down `/trace`; fall
+                # back to the generic hint if the shadow check itself fails.
+                logger.exception(
+                    "Failed to check for a shadowed LangSmith key for thread %s",
+                    thread_id,
+                )
+                shadow = LangsmithShadowResult()
+            if shadow.shadowing_var:
+                message = (
+                    f"A LangSmith key is available, but {shadow.shadowing_var} "
+                    "is set to an empty value and is shadowing it, so tracing is "
+                    f"off. Unset {shadow.shadowing_var} (and make sure LangSmith "
+                    "tracing is enabled) to start tracing."
+                )
+            elif shadow.store_unreadable:
+                message = (
+                    "Your stored LangSmith credential could not be read; the "
+                    "credential file may be corrupt. Re-add the key via `/auth`."
+                )
+            else:
+                message = (
+                    "LangSmith tracing is not configured. "
+                    "Run `/auth` and select LangSmith to enable tracing."
+                )
+            await self._mount_message(AppMessage(message))
             return
         try:
             project_url = await asyncio.to_thread(

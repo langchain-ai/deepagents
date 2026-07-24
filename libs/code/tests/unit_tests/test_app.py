@@ -26163,6 +26163,150 @@ class TestLiveApprovalModeWrites:
                 await app.action_toggle_auto_approve()
                 assert app._approval_mode is ApprovalMode.MANUAL
 
+    async def test_toggle_into_yolo_ack_save_failure_keeps_mode(self) -> None:
+        """A failed acknowledgement write must not enter YOLO."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.AUTO
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.AUTO
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement",
+                    return_value=False,
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            ):
+                await app.action_toggle_auto_approve()
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("enter")
+                await pilot.pause()
+                save_ack.assert_called_once_with()
+                # Ack failed: never persist the mode, stay in the previous one.
+                write_mode.assert_not_awaited()
+                assert app._approval_mode is ApprovalMode.AUTO
+                assert app._auto_approve is False
+                warn.assert_called_once()
+                assert "acknowledgement could not be saved" in str(
+                    warn.call_args.args[0]
+                )
+
+    async def test_set_approval_mode_yolo_persist_failure_returns_false(self) -> None:
+        """A failed live write for YOLO returns False without escalating."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.AUTO
+            app._auto_approve = False
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.AUTO
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(),
+                ) as accept_goal,
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            ):
+                result = await app._set_approval_mode(ApprovalMode.YOLO)
+                assert result is False
+                # No partial escalation: mode/flag/goal-rubric all untouched.
+                assert app._approval_mode is ApprovalMode.AUTO
+                assert app._auto_approve is False
+                accept_goal.assert_not_awaited()
+                warn.assert_called_once()
+                assert "YOLO could not be persisted" in str(warn.call_args.args[0])
+
+    async def test_prompt_yolo_push_failure_surfaces_and_allows_retry(self) -> None:
+        """A push_screen failure warns the user and never latches the guard."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            with (
+                patch.object(
+                    app, "push_screen", side_effect=RuntimeError("boom")
+                ) as push,
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement",
+                    return_value=True,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            ):
+                app._prompt_yolo_switcher_acknowledgement()
+                push.assert_called_once()
+                # Guard stays unset so a later Shift+Tab can retry the prompt.
+                assert app._yolo_mode_notice_pending is False
+                warn.assert_called_once()
+                assert "Could not open the YOLO confirmation" in str(
+                    warn.call_args.args[0]
+                )
+
+    async def test_prompt_yolo_reentrancy_guard_blocks_second_push(self) -> None:
+        """A pending notice makes a second prompt a no-op (no stacked modals)."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._yolo_mode_notice_pending = True
+            with patch.object(app, "push_screen") as push:
+                app._prompt_yolo_switcher_acknowledgement()
+                push.assert_not_called()
+
+    async def test_toggle_warns_when_auto_ineligible_and_switcher_disabled(
+        self,
+    ) -> None:
+        """Manual with no Auto and no YOLO leaves the mode and warns once."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = False
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            assert app._approval_mode is ApprovalMode.MANUAL
+            with (
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=False,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            ):
+                await app.action_toggle_auto_approve()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                warn.assert_called_once()
+                assert "Auto is unavailable with a sandbox" in str(
+                    warn.call_args.args[0]
+                )
+
     async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (

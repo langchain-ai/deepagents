@@ -97,8 +97,9 @@ class YoloModeNoticeScreen(ModalScreen[bool]):
     }
     """
 
-    # The screen must be the focus target for its own priority Enter/Esc
-    # bindings to fire (see `on_mount`); without this the keys reach no handler.
+    # The screen must be the focus target for its own priority Enter binding to
+    # fire (see `on_mount`). Esc does not depend on focus: the app owns a global
+    # priority `escape` binding that routes to `action_cancel` for active modals.
     can_focus = True
 
     def __init__(self, body: str | None = None) -> None:

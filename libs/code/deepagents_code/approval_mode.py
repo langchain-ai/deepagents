@@ -98,7 +98,8 @@ def next_approval_mode(
         if yolo_switcher_enabled:
             return ApprovalMode.YOLO
         return ApprovalMode.MANUAL
-    # YOLO and any fail-closed unknown value leave unrestricted mode.
+    # Only genuine YOLO reaches here; unknown/invalid values were normalized to
+    # Manual above and took that branch. Exiting YOLO always returns to Manual.
     return ApprovalMode.MANUAL
 
 

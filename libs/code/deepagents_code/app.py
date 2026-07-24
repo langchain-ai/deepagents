@@ -16986,15 +16986,13 @@ class DeepAgentsApp(App):
             yolo_switcher_enabled=yolo_switcher_enabled,
         )
         if target is None:
-            if not self._auto_mode_eligible and not yolo_switcher_enabled:
-                self._warn_live_approval_mode_unavailable(
-                    "Auto is unavailable with a sandbox, and YOLO is disabled "
-                    "in the approval switcher."
-                )
-            else:
-                self._warn_live_approval_mode_unavailable(
-                    "No other approval mode is available in this session."
-                )
+            # `next_approval_mode` returns None only from Manual when neither
+            # Auto (sandbox-ineligible) nor the YOLO switcher entry is available,
+            # so this is the only reachable case.
+            self._warn_live_approval_mode_unavailable(
+                "Auto is unavailable with a sandbox, and YOLO is disabled "
+                "in the approval switcher."
+            )
             return
 
         # Gate the first YOLO switcher entry on the same policy acknowledgement
@@ -17055,14 +17053,18 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            if should_persist_live:
-                await self._auto_accept_pending_goal_rubric()
+            # Warn before the await below. State is already committed above, so
+            # if goal-rubric auto-accept raises, YOLO is active and the "no
+            # review" warning must have fired first. AUTO notifies before its
+            # await for the same reason.
             self.notify(
                 "YOLO is active: gated actions run without review.",
                 severity="warning",
                 timeout=8,
                 markup=False,
             )
+            if should_persist_live:
+                await self._auto_accept_pending_goal_rubric()
         return True
 
     def _prompt_yolo_switcher_acknowledgement(self) -> None:
@@ -17102,9 +17104,15 @@ class DeepAgentsApp(App):
         try:
             self.push_screen(YoloModeNoticeScreen(), handle_result)
         except Exception:
-            # Cosmetically missing notice must not strand a pending enable.
+            # This modal *is* the YOLO gate (unlike Auto's post-hoc notice), so
+            # a failed push leaves the mode unchanged. Surface it, or Shift+Tab
+            # looks dead. Leaving `_yolo_mode_notice_pending` unset (it is set
+            # only below, after a successful push) lets a later Shift+Tab retry.
             logger.warning(
                 "Could not show YOLO switcher acknowledgement", exc_info=True
+            )
+            self._warn_live_approval_mode_unavailable(
+                "Could not open the YOLO confirmation; approval mode unchanged."
             )
             return
 

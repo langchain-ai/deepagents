@@ -1699,24 +1699,122 @@ class TestDriveServerSideCompaction:
             assert isinstance(astream_inputs[1], Command)
             resume = astream_inputs[1].resume
             assert "interrupt-1" in resume
-            assert astream_contexts == [
-                {
-                    "model": "provider:active-model",
-                    "model_params": {"temperature": 0},
-                    "profile_overrides": {"max_input_tokens": 4096},
-                    "model_context_limit": 4096,
-                    "thread_id": "test-thread",
-                    "offload_tool_call_id": tool_call["id"],
-                },
-                {
-                    "model": "provider:active-model",
-                    "model_params": {"temperature": 0},
-                    "profile_overrides": {"max_input_tokens": 4096},
-                    "model_context_limit": 4096,
-                    "thread_id": "test-thread",
-                    "offload_tool_call_id": tool_call["id"],
-                },
-            ]
+            expected = {
+                "model": "provider:active-model",
+                "model_params": {"temperature": 0},
+                "profile_overrides": {"max_input_tokens": 4096},
+                "model_context_limit": 4096,
+                "thread_id": "test-thread",
+                "offload_tool_call_id": tool_call["id"],
+            }
+            assert len(astream_contexts) == 2
+            for context in astream_contexts:
+                assert isinstance(context, dict)
+                normalized = {str(key): value for key, value in context.items()}
+                assert {key: normalized[key] for key in expected} == expected
+                assert isinstance(normalized["hooks_snapshot_id"], str)
+                assert normalized["hooks_server_events"] == []
+
+    async def test_fulfills_precompact_before_manual_approval(self) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from langchain_core.messages import ToolMessage
+        from langgraph.types import Command
+
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.hooks.interrupt import HOOK_INVOCATION_INTERRUPT_TYPE
+
+        astream_inputs: list[Any] = []
+        contexts: list[object] = []
+
+        async def _astream(stream_input: object, **kwargs: object):  # noqa: ANN202
+            await asyncio.sleep(0)
+            index = len(astream_inputs)
+            astream_inputs.append(stream_input)
+            contexts.append(kwargs.get("context"))
+            if index == 0:
+                yield (
+                    (),
+                    "updates",
+                    {
+                        "__interrupt__": [
+                            SimpleNamespace(
+                                id="hook-interrupt",
+                                value={"type": HOOK_INVOCATION_INTERRUPT_TYPE},
+                            )
+                        ]
+                    },
+                )
+            elif index == 1:
+                yield (
+                    (),
+                    "updates",
+                    {
+                        "__interrupt__": [
+                            SimpleNamespace(
+                                id="approval-interrupt",
+                                value={
+                                    "action_requests": [
+                                        {
+                                            "name": "compact_conversation",
+                                            "args": {"force": True},
+                                        }
+                                    ]
+                                },
+                            )
+                        ]
+                    },
+                )
+            else:
+                yield (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="Conversation compacted. Summarized 2 messages.",
+                            name="compact_conversation",
+                            tool_call_id="compact-call",
+                        ),
+                        {},
+                    ),
+                )
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            runtime = MagicMock()
+            runtime.snapshot_id = "snapshot"
+            runtime.configured_server_events.return_value = ("PreCompact",)
+            app._session_state.hooks_runtime = runtime
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+            fulfill = AsyncMock(return_value={"hook": "approved"})
+
+            with patch(
+                "deepagents_code.hooks.client.fulfill_hook_interrupt",
+                fulfill,
+            ):
+                result = await app._drive_server_side_compaction(  # ty: ignore
+                    {"configurable": {"thread_id": "test-thread"}}
+                )
+
+        assert result is None
+        fulfill.assert_awaited_once()
+        assert len(astream_inputs) == 3
+        assert isinstance(astream_inputs[1], Command)
+        assert astream_inputs[1].resume == {"hook-interrupt": {"hook": "approved"}}
+        assert isinstance(astream_inputs[2], Command)
+        assert "approval-interrupt" in astream_inputs[2].resume
+        for context in contexts:
+            assert isinstance(context, dict)
+            normalized = {str(key): value for key, value in context.items()}
+            assert normalized["hooks_server_events"] == ["PreCompact"]
 
     async def test_reports_tool_failure(self) -> None:
         """Returns the tool's error text when compaction fails."""
@@ -1766,18 +1864,20 @@ class TestDriveServerSideCompaction:
         seed_values = agent.aupdate_state.call_args.args[1]
         (seed_msg,) = seed_values["messages"]
         (tool_call,) = seed_msg.tool_calls
-        assert all(
-            context
-            == {
-                "model": "provider:startup-model",
-                "model_params": {},
-                "profile_overrides": {"max_input_tokens": 4096},
-                "model_context_limit": 4096,
-                "thread_id": "test-thread",
-                "offload_tool_call_id": tool_call["id"],
-            }
-            for context in contexts
-        )
+        expected = {
+            "model": "provider:startup-model",
+            "model_params": {},
+            "profile_overrides": {"max_input_tokens": 4096},
+            "model_context_limit": 4096,
+            "thread_id": "test-thread",
+            "offload_tool_call_id": tool_call["id"],
+        }
+        for context in contexts:
+            assert isinstance(context, dict)
+            normalized = {str(key): value for key, value in context.items()}
+            assert {key: normalized[key] for key in expected} == expected
+            assert isinstance(normalized["hooks_snapshot_id"], str)
+            assert normalized["hooks_server_events"] == []
 
     async def test_rejects_interrupt_without_identifiable_action(self) -> None:
         """Malformed interrupt payloads fail closed instead of being approved."""

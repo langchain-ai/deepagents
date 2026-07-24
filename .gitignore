@@ -228,9 +228,6 @@ __marimo__/
 # LangGraph
 .langgraph_api
 
-# Deep Agents local runtime state
-.deepagents/
-
 #claude
 .claude
 

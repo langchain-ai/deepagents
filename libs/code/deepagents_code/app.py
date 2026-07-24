@@ -598,7 +598,10 @@ if TYPE_CHECKING:
         ClientHookContext,
         ClientHookService,
     )
-    from deepagents_code.hooks.models.domain import SessionEndCause, SessionStartCause
+    from deepagents_code.hooks.models.domain import (
+        SessionEndCause,
+        SessionStartCause,
+    )
     from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -1829,6 +1832,9 @@ class _ThreadHistoryPayload:
 
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
+
+    transcript_messages: tuple[BaseMessage, ...] = ()
+    """Validated checkpoint messages for Hooks transcript materialization."""
 
     rubric: str | None = None
     """Legacy persisted rubric or graph rubric input, if any."""
@@ -3488,15 +3494,15 @@ class DeepAgentsApp(App):
         """
 
         self._initial_session_started = False
-        """Set on first entry into `_run_session_start_sequence` past gating.
+        """Set after the first client `SessionStart` succeeds.
 
         Server respawns (`/mcp reconnect`, `/restart`) post a fresh
         `ServerReady`; without this flag the sequence re-runs and
-        `_load_thread_history` bulk-mounts widgets whose IDs already exist in
-        the DOM, raising `DuplicateIds`. Set on entry (not on success) because
-        if `_load_thread_history` partially mounted before failing, retrying
-        would still hit the duplicate-ID path.
+        `_load_thread_history` bulk-mounts duplicate widgets.
         """
+
+        self._initial_session_start_stopped = False
+        """Keep a startup hook stop durable across later `ServerReady` events."""
 
         # Message queue & store
         self._pending_messages: deque[QueuedMessage] = deque()
@@ -8198,6 +8204,8 @@ class DeepAgentsApp(App):
             await self._auto_accept_pending_goal_rubric()
             await self._drain_startup_backlog()
             return
+        if self._initial_session_start_stopped or self._startup_sequence_running:
+            return
 
         if self._launch_init_requested:
             self._ensure_launch_init_task()
@@ -8212,7 +8220,6 @@ class DeepAgentsApp(App):
             # worker scheduling (the worker never progresses to set the Event).
             await self._init_session_state()
 
-        self._initial_session_started = True
         self._startup_sequence_running = True
         initial_submitted = False
         try:
@@ -8223,8 +8230,6 @@ class DeepAgentsApp(App):
                 if self._initial_resume_requested
                 else SessionStartCause.STARTUP
             )
-            if not await self._run_session_start_hook(start_cause):
-                return
             should_load_history = bool(self._lc_thread_id and self._agent) and (
                 self._resume_thread_intent is not None
                 or not self._has_initial_submission()
@@ -8249,6 +8254,11 @@ class DeepAgentsApp(App):
                         ),
                     )
                     return
+
+            if not await self._run_session_start_hook(start_cause):
+                self._initial_session_start_stopped = True
+                return
+            self._initial_session_started = True
 
             if self._startup_cmd:
                 cmd = self._startup_cmd
@@ -9188,10 +9198,6 @@ class DeepAgentsApp(App):
 
         # Reset quit pending state on any input
         self._quit_pending = False
-
-        from deepagents_code.hooks import dispatch_hook
-
-        await dispatch_hook("user.prompt", {})
 
         # A bare `exit` quits the app (REPL convention), mirroring `/quit`.
         # Gated to this interactive path only, so external/scripted callers
@@ -13464,6 +13470,8 @@ class DeepAgentsApp(App):
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
                 AppMessage("Nothing to offload \u2014 start a conversation first"),
@@ -13493,11 +13501,6 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while offload modifies state
         self._set_agent_running(True)
         try:
-            from deepagents_code.hooks import dispatch_hook
-
-            await dispatch_hook("context.offload", {})
-            # Keep old hook name for backward compatibility
-            await dispatch_hook("context.compact", {})
             await self._set_spinner("Offloading")
 
             prior_event = state_values.get("_summarization_event")
@@ -13515,6 +13518,8 @@ class DeepAgentsApp(App):
                 tool_error = await self._drive_server_side_compaction(
                     config, seed_tool_call_id
                 )
+            except ClientHookStopError:
+                return
             except Exception as stream_error:
                 # A server graph can checkpoint the tool-node update before a
                 # later stream transport failure reaches this client. Reconcile
@@ -13631,10 +13636,6 @@ class DeepAgentsApp(App):
                 f"Context: {before} → {after} tokens "
                 f"({pct}% decrease), {messages_kept} messages kept."
             )
-            from deepagents_code.hooks.models.domain import SessionStartCause
-
-            if not await self._run_session_start_hook(SessionStartCause.COMPACT):
-                return
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -13723,6 +13724,11 @@ class DeepAgentsApp(App):
         from langgraph.types import Command
 
         from deepagents_code.config import settings
+        from deepagents_code.hooks.client import fulfill_hook_interrupt
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.context import apply_hooks_context
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+        from deepagents_code.hooks.models.domain import SessionStartCause
         from deepagents_code.offload_middleware import (
             COMPACTION_FAILURE_PREFIX,
             _offload_seed_message_id,
@@ -13760,6 +13766,21 @@ class DeepAgentsApp(App):
         streaming_agent = cast("Any", agent)
 
         seeded_compaction_approved = False
+        compact_boundary_fired = False
+        stream_context = CLIContext(
+            model=self._effective_model_spec(),
+            model_params=self._model_params_override or {},
+            profile_overrides=self._profile_override or {},
+            model_context_limit=settings.model_context_limit,
+            thread_id=self._lc_thread_id,
+            offload_tool_call_id=tool_call_id,
+        )
+        state = self._session_state
+        apply_hooks_context(
+            stream_context,
+            state.hooks_runtime if state is not None else None,
+            prompt_id=state.turn_id if state is not None else None,
+        )
 
         def _decisions_for_interrupt(interrupt_obj: Any) -> list[Any]:  # noqa: ANN401
             """Approve the forced compaction; reject any other gated tool call.
@@ -13830,22 +13851,19 @@ class DeepAgentsApp(App):
             Returns:
                 `(interrupt_id, resume_value)` pairs for every interrupt
                     surfaced during this stream.
+
+            Raises:
+                ClientHookStopError: If compact-session startup is blocked.
+                RuntimeError: If a hook interrupt cannot be fulfilled.
             """
-            nonlocal tool_error
+            nonlocal compact_boundary_fired, tool_error
             pending: list[tuple[str, dict[str, Any]]] = []
             async for chunk in streaming_agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
-                context=CLIContext(
-                    model=self._effective_model_spec(),
-                    model_params=self._model_params_override or {},
-                    profile_overrides=self._profile_override or {},
-                    model_context_limit=settings.model_context_limit,
-                    thread_id=self._lc_thread_id,
-                    offload_tool_call_id=tool_call_id,
-                ),
+                context=stream_context,
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
@@ -13855,14 +13873,44 @@ class DeepAgentsApp(App):
                     for interrupt_obj in data.get("__interrupt__") or []:
                         iid = getattr(interrupt_obj, "id", None)
                         if iid:
+                            value = getattr(interrupt_obj, "value", None)
+                            if is_hook_interrupt_payload(value):
+                                if state is None or state.hooks_runtime is None:
+                                    msg = (
+                                        "Received hook invocation interrupt without "
+                                        "a HooksRuntime"
+                                    )
+                                    raise RuntimeError(msg)
+                                resume = await fulfill_hook_interrupt(
+                                    state.hooks_runtime,
+                                    value,
+                                )
+                                if resume is None:
+                                    msg = "Failed to parse hook interrupt"
+                                    raise RuntimeError(msg)
+                                pending.append((iid, resume))
+                                continue
                             decisions = _decisions_for_interrupt(interrupt_obj)
                             pending.append((iid, {"decisions": decisions}))
                 elif mode == "messages" and isinstance(data, tuple):
                     msg = data[0]
                     if _is_tool_message(msg):
                         text = _message_text(msg)
-                        if text.startswith(COMPACTION_FAILURE_PREFIX):
+                        if text.startswith(COMPACTION_FAILURE_PREFIX) or (
+                            getattr(msg, "name", None) == "compact_conversation"
+                            and getattr(msg, "status", None) == "error"
+                        ):
                             tool_error = text
+                        elif (
+                            text.startswith("Conversation compacted.")
+                            and not compact_boundary_fired
+                        ):
+                            compact_boundary_fired = True
+                            if not await self._run_session_start_hook(
+                                SessionStartCause.COMPACT
+                            ):
+                                msg = "Compact continuation stopped by hook"
+                                raise ClientHookStopError(msg)
             return pending
 
         # Bound the resume loop: after compaction the model runs again, and a
@@ -15108,7 +15156,16 @@ class DeepAgentsApp(App):
 
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        return replace(payload, messages=data)
+        from langchain_core.messages import BaseMessage
+
+        transcript_messages = tuple(
+            message for message in messages if isinstance(message, BaseMessage)
+        )
+        return replace(
+            payload,
+            messages=data,
+            transcript_messages=transcript_messages,
+        )
 
     async def _adopt_resumed_model_if_needed(
         self,
@@ -15258,6 +15315,16 @@ class DeepAgentsApp(App):
                 else await self._fetch_thread_history_data(history_thread_id)
             )
             self._restore_goal_rubric_state(payload)
+            state = self._session_state
+            if (
+                state is not None
+                and state.hooks_runtime is not None
+                and payload.transcript_messages
+            ):
+                state.hooks_runtime.append_messages(
+                    history_thread_id,
+                    payload.transcript_messages,
+                )
 
             # Adopt the resumed thread's model (session-only) so the session
             # continues on the model it was last using, not the global default.
@@ -22422,6 +22489,7 @@ class DeepAgentsApp(App):
             # choice for this session. Consumed by `_load_thread_history`.
             self._should_adopt_resumed_model = not self._model_explicitly_set
 
+            await self._refresh_client_hooks_runtime()
             # Load thread history
             await self._load_thread_history(
                 thread_id=thread_id,
@@ -22434,7 +22502,6 @@ class DeepAgentsApp(App):
             # thread". Set only after the last statement that can raise, so a
             # failed switch (handled below) never leaves a stale pointer.
             self._session_state.previous_thread_id = prev_session_thread
-            await self._refresh_client_hooks_runtime()
             if not await self._run_session_start_hook(SessionStartCause.RESUME):
                 return
         except Exception as exc:
@@ -22462,6 +22529,8 @@ class DeepAgentsApp(App):
             )
             await self._restore_cwd_after_failed_thread_switch(prev_cwd)
             rollback_restore_failed = False
+            if outgoing_ended:
+                await self._refresh_client_hooks_runtime()
             # Attempt to restore the previous thread's visible history
             try:
                 await self._clear_messages()
@@ -22474,7 +22543,6 @@ class DeepAgentsApp(App):
                 )
                 logger.warning(msg, thread_id, exc_info=True)
             if outgoing_ended:
-                await self._refresh_client_hooks_runtime()
                 await self._run_session_start_hook(SessionStartCause.RESUME)
             error_message = f"Failed to switch to thread {thread_id}: {exc}."
             if rollback_restore_failed:

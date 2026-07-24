@@ -184,7 +184,7 @@ def _project_notification(
         hook_event_name=HookEvent.NOTIFICATION,
         message=event.notification.message,
         title=event.notification.title,
-        notification_type=_notification_type(event.notification.type),
+        notification_type=to_wire_notification_type(event.notification.type),
     )
 
 
@@ -361,7 +361,18 @@ def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
     }[mode]
 
 
-def _notification_type(value: str) -> WireNotificationType:
+def to_wire_notification_type(value: str) -> WireNotificationType:
+    """Return the compatible notification matcher and wire value.
+
+    Args:
+        value: Domain or wire notification type.
+
+    Returns:
+        Canonical wire notification type.
+
+    Raises:
+        ValueError: If the notification type is unsupported.
+    """
     mappings: dict[str, WireNotificationType] = {
         DcodeNotificationKind.PERMISSION_REQUIRED: (
             WireNotificationType.PERMISSION_PROMPT

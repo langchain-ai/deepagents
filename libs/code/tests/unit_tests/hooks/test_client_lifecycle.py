@@ -20,6 +20,7 @@ from deepagents_code.hooks.client_lifecycle import (
     ClientHookStopError,
 )
 from deepagents_code.hooks.models.domain import (
+    CompactTrigger,
     DcodeNotificationKind,
     HookDecision,
     HookDiagnostic,
@@ -28,10 +29,12 @@ from deepagents_code.hooks.models.domain import (
     NotificationDecision,
     PermissionEffect,
     PermissionRequestDecision,
+    PreCompactDecision,
     SessionEndCause,
     SessionEndDecision,
     SessionStartCause,
     SessionStartDecision,
+    UserPromptSubmitDecision,
 )
 from deepagents_code.hooks.models.wire import NotificationWireInput
 from deepagents_code.hooks.projection import project_hook_input
@@ -48,6 +51,8 @@ if TYPE_CHECKING:
         EditDecision,
         RejectDecision,
     )
+
+    from deepagents_code.hooks.runtime import HooksRuntime
 
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
@@ -72,6 +77,7 @@ class _SessionState:
     approval_mode: ApprovalMode
     turn_id: str | None
     client_hooks: ClientHookService | None
+    hooks_runtime: HooksRuntime | None = None
 
 
 def _context() -> ClientHookContext:
@@ -188,6 +194,34 @@ async def test_session_end_discards_pending_context(tmp_path: Path) -> None:
         HookEvent.SESSION_START,
         HookEvent.SESSION_END,
     ]
+
+
+async def test_prompt_and_compact_services_preserve_typed_effects(
+    tmp_path: Path,
+) -> None:
+    runtime = _Runtime(
+        cwd=tmp_path,
+        decisions=deque(
+            [
+                UserPromptSubmitDecision(
+                    event=HookEvent.USER_PROMPT_SUBMIT,
+                    context=["prompt context"],
+                    suppress_original_prompt=True,
+                ),
+                PreCompactDecision(event=HookEvent.PRE_COMPACT),
+            ]
+        ),
+    )
+    service = ClientHookService(runtime)
+
+    prompt = await service.user_prompt_submit(_context(), "hello")
+    compact = await service.pre_compact(_context(), CompactTrigger.AUTO)
+
+    assert prompt.context == ["prompt context"]
+    assert prompt.suppress_original_prompt is True
+    assert compact.event is HookEvent.PRE_COMPACT
+    assert runtime.invocations[0].event.event is HookEvent.USER_PROMPT_SUBMIT
+    assert runtime.invocations[1].event.event is HookEvent.PRE_COMPACT
 
 
 async def test_notification_stop_interrupts_client_processing(tmp_path: Path) -> None:
@@ -318,3 +352,54 @@ async def test_headless_permission_decisions_precede_resolution(
     should_resolve = expected == {"type": "approve"} and len(runtime.invocations) == 2
     assert resolution_calls == int(should_resolve)
     assert runtime.invocations[0].event.event is HookEvent.PERMISSION_REQUEST
+
+
+async def test_headless_permission_uses_live_context(tmp_path: Path) -> None:
+    from uuid import uuid4
+
+    prompt_id = uuid4()
+    runtime = _Runtime(cwd=tmp_path, decisions=deque([_permission("allow")]))
+    context = ClientHookContext.create(
+        thread_id="thread-1",
+        approval_mode=ApprovalMode.AUTO,
+        prompt_id=prompt_id,
+    )
+    state = StreamState(
+        client_hooks=ClientHookService(runtime),
+        client_hook_context=context,
+    )
+    state.pending_interrupts["interrupt-1"] = {
+        "action_requests": [{"name": "read_file", "args": {"path": "README.md"}}],
+        "review_configs": [],
+    }
+
+    await _process_hitl_interrupts(state, Console(quiet=True), "thread-1")
+
+    invocation = runtime.invocations[0]
+    assert invocation.context.approval_mode is ApprovalMode.AUTO
+    assert invocation.context.prompt_id == prompt_id
+
+
+async def test_headless_compact_permission_does_not_redispatch_precompact(
+    tmp_path: Path,
+) -> None:
+    runtime = _Runtime(
+        cwd=tmp_path,
+        decisions=deque([_permission("allow")]),
+    )
+    state = StreamState(
+        client_hooks=ClientHookService(runtime),
+        client_hook_context=_context(),
+    )
+    state.pending_interrupts["interrupt-1"] = {
+        "action_requests": [
+            {"name": "compact_conversation", "args": {}},
+        ],
+        "review_configs": [],
+    }
+
+    await _process_hitl_interrupts(state, Console(quiet=True), "thread-1")
+
+    assert [invocation.event.event for invocation in runtime.invocations] == [
+        HookEvent.PERMISSION_REQUEST,
+    ]

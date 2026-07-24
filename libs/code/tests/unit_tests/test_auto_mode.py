@@ -2131,7 +2131,11 @@ async def test_real_agent_resume_forwards_ask_user_receipt_to_classifier(
     }
     assert len(model.classifier_payloads) == 1
     assert model.classifier_payloads[0]["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "answer": answer}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": "How should I integrate?",
+            "answer": answer,
+        }
     ]
     assert executed == ["git rebase origin/main"]
     assert result["messages"][-1].content == "done"
@@ -2141,7 +2145,7 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
     tmp_path: Path,
 ) -> None:
     selected_answer = "Rebase my commit onto origin/main, then push my branch"
-    question = "MODEL_AUTHORED_QUESTION_MUST_NOT_AUTHORIZE"
+    question = "Which integration approach should I use?"
     unselected_answer = "UNSELECTED_CHOICE_MUST_NOT_AUTHORIZE"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
@@ -2185,19 +2189,23 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "question": question,
             "answer": selected_answer,
         }
     ]
     assert payload["prior_tool_calls_for_current_request"] == []
     serialized_payload = json.dumps(payload)
-    assert question not in serialized_payload
+    # The bound proposal (the presented question) is surfaced so a short affirmative
+    # can attach to the action+target it names. An unselected choice still grants
+    # nothing and must be omitted.
+    assert question in serialized_payload
     assert unselected_answer not in serialized_payload
     assert selected_answer in serialized_payload
 
     policy_message = cast("SystemMessage", model.calls[0][0])
     policy = cast("str", policy_message.content)
     assert "Do not require the user to retype" in policy
-    assert "answer itself must unambiguously state" in policy
+    assert "together must unambiguously state" in policy
     assert "never a chained action" in policy
     assert "force-push escalation" in policy
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
@@ -2226,6 +2234,315 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
         )
     assert update is not None
     assert update["messages"] == [ai_message]
+
+
+async def test_short_affirmative_attaches_to_bound_ask_user_question(
+    tmp_path: Path,
+) -> None:
+    question = "Force-push feature-x to origin/main to fix the botched history?"
+    command = "git push --force origin feature-x"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up my botched history",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": command},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    # The bound proposal (question) is paired with the short affirmative so the
+    # classifier can attach "yes" to the exact action and target it names.
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_short_affirmative_without_bound_proposal_grants_nothing(
+    tmp_path: Path,
+) -> None:
+    command = "git push --force origin feature-x"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="yes",
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": command},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    # A bare affirmative with no same-turn ask_user proposal carries no bound
+    # action or target, so it must not become consent evidence.
+    assert payload["same_turn_user_answers"] == []
+    assert any(
+        row.get("literal_user_text") == "yes"
+        for row in payload["authorization_evidence"]
+    )
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
+    tmp_path: Path,
+) -> None:
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    delete_tool = _tool("delete")
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="bound-call",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            ),
+            AutoDecision(
+                tool_call_id="extra-call",
+                decision="deny",
+                category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                reason="The affirmative did not cover deleting the .env file.",
+            ),
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool, delete_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+    )
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "execute",
+                "args": {"command": "rm build/old.log"},
+                "id": "bound-call",
+                "type": "tool_call",
+            },
+            {
+                "name": "delete",
+                "args": {"file_path": str(tmp_path / ".env")},
+                "id": "extra-call",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    dispositions = {
+        decision["tool_call_id"]: decision["disposition"]
+        for decision in plan["decisions"]
+    }
+    assert dispositions["bound-call"] == "classifier_allow"
+    assert dispositions["extra-call"] == "policy_deny"
+
+
+async def test_bound_proposal_for_other_target_is_denied(tmp_path: Path) -> None:
+    question = "Delete build/old.log?"
+    other_file = str(tmp_path / "src" / "main.py")
+    ask_tool = _tool("ask_user")
+    delete_tool = _tool("delete")
+    model = _StructuredModel(
+        _deny_result(
+            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+            reason="The proposal named build/old.log, not src/main.py.",
+        )
+    )
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={},
+        tools=[ask_tool, delete_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": other_file},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    assert payload["current_actions"][0]["arguments"]["file_path"] == other_file
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_selected_choice_naming_action_and_target_needs_no_retype(
+    tmp_path: Path,
+) -> None:
+    selected = "Force-push feature-x to origin/main"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        answer=selected,
+        questions=[
+            {
+                "question": "How should I publish the branch?",
+                "type": "multiple_choice",
+                "choices": [
+                    {"value": selected},
+                    {"value": "Do nothing"},
+                ],
+            }
+        ],
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git push --force origin feature-x"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    row = payload["same_turn_user_answers"][0]
+    assert row["answer"] == selected
+    assert row["question"] == "How should I publish the branch?"
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_ambiguous_affirmative_does_not_grant_escalation(
+    tmp_path: Path,
+) -> None:
+    question = "Rebase feature-x onto origin/main?"
+    answer = "sure, and also push hard to main"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="bound-call",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            ),
+            AutoDecision(
+                tool_call_id="escalation-call",
+                decision="deny",
+                category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                reason="The bound proposal did not cover force-pushing main.",
+            ),
+        ]
+    )
+    model = _StructuredModel(result)
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        answer=answer,
+        questions=[{"question": question, "type": "text"}],
+    )
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "execute",
+                "args": {"command": "git rebase origin/main"},
+                "id": "bound-call",
+                "type": "tool_call",
+            },
+            {
+                "name": "execute",
+                "args": {"command": "git push --force origin main"},
+                "id": "escalation-call",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    # The full affirmative (including the smuggled escalation) is surfaced so the
+    # classifier can see that the extra request exceeds the bound proposal.
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": answer}
+    ]
+    dispositions = {
+        decision["tool_call_id"]: decision["disposition"]
+        for decision in plan["decisions"]
+    }
+    assert dispositions["bound-call"] == "classifier_allow"
+    assert dispositions["escalation-call"] == "policy_deny"
 
 
 @pytest.mark.parametrize(
@@ -2423,7 +2740,11 @@ async def test_only_latest_ask_user_exchange_is_classifier_evidence(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-2", "answer": latest_answer}
+        {
+            "ask_user_tool_call_id": "ask-2",
+            "question": "How should I integrate the remote branch?",
+            "answer": latest_answer,
+        }
     ]
     assert first_answer not in json.dumps(payload["same_turn_user_answers"])
 
@@ -2671,7 +2992,11 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     assert payload["authorization_evidence"] == []
     assert payload["active_user_directives"] == {}
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "answer": answer}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": "How should I integrate the remote branch?",
+            "answer": answer,
+        }
     ]
     assert action_plan["decisions"][0]["disposition"] == "classifier_allow"
 

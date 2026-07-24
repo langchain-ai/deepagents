@@ -91,7 +91,9 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-code {__version__}" in result.stdout
-    sdk_version = pkg_version("deepagents")
+    from deepagents_code.extras_info import collect_version_report
+
+    sdk_version = collect_version_report().display_sdk_version
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
     # Extras block is plain-text (no markdown table or headings).
     assert "Installed optional dependencies:" in result.stdout
@@ -103,9 +105,10 @@ def test_cli_version_flag() -> None:
 async def test_version_slash_command_message_format() -> None:
     """Verify the `/version` slash command outputs both CLI and SDK versions."""
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = pkg_version("deepagents")
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -222,9 +225,10 @@ async def test_version_slash_command_includes_release_age(tmp_path) -> None:
 async def test_version_slash_command_includes_sdk_release_age() -> None:
     """Verify `/version` appends the cached release age for the installed SDK."""
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = pkg_version("deepagents")
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -480,8 +484,8 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
     assert "Core dependencies:" not in text
 
 
-def _mismatch_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
-    """Build a report with editable installs, CLI drift, and an SDK mismatch."""
+def _editable_exact_pin_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
+    """Build a report with editable installs, CLI drift, and a newer SDK pin."""
     from packaging.requirements import Requirement
 
     from deepagents_code.extras_info import DistributionVersion, VersionReport
@@ -504,17 +508,17 @@ def _mismatch_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
             status="resolved",
         ),
         sdk_requirement=Requirement("deepagents==0.7.0a7"),
-        sdk_requirement_satisfied=False,
+        sdk_requirement_satisfied=True,
     )
 
 
-def test_build_version_text_reports_editable_drift_and_sdk_mismatch() -> None:
-    """`--version` surfaces CLI stale metadata and an SDK requirement mismatch."""
+def test_build_version_text_reports_editable_drift_and_newer_sdk_pin() -> None:
+    """`--version` surfaces CLI stale metadata and the effective SDK pin."""
     from deepagents_code.main import build_version_text
 
     with patch(
         "deepagents_code.extras_info.collect_version_report",
-        return_value=_mismatch_version_report(),
+        return_value=_editable_exact_pin_version_report(),
     ):
         text = build_version_text()
 
@@ -522,26 +526,33 @@ def test_build_version_text_reports_editable_drift_and_sdk_mismatch() -> None:
     # version line carries only the source/metadata drift, not `editable`.
     assert f"deepagents-code {__version__} (installed metadata: 0.1.40)" in text
     assert (
-        "deepagents (SDK) 0.6.12 "
-        "(editable; required by deepagents-code: 0.7.0a7 — mismatch)" in text
+        "deepagents (SDK) 0.7.0a7+editable "
+        "(workspace HEAD; source marker: 0.6.12)" in text
     )
 
 
-async def test_version_slash_command_reports_editable_drift_and_sdk_mismatch() -> None:
-    """`/version` renders the same drift/mismatch facts as `--version`."""
+async def test_version_slash_command_reports_editable_drift_and_newer_sdk_pin() -> None:
+    """`/version` renders the same editable pin facts as `--version`."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        with patch(
-            "deepagents_code.extras_info.collect_version_report",
-            return_value=_mismatch_version_report(),
+        with (
+            patch(
+                "deepagents_code.extras_info.collect_version_report",
+                return_value=_editable_exact_pin_version_report(),
+            ),
+            patch(
+                "deepagents_code.update_check.get_sdk_release_time",
+                return_value=None,
+            ) as get_sdk_release_time,
         ):
             await app._handle_command("/version")
         await pilot.pause()
 
+        get_sdk_release_time.assert_called_once_with("0.7.0a7")
         content = str(
             [m for m in app.query(AppMessage) if not m._is_markdown][-1]._content
         )
@@ -550,8 +561,8 @@ async def test_version_slash_command_reports_editable_drift_and_sdk_mismatch() -
             "(installed metadata: 0.1.40)" in content
         )
         assert (
-            "deepagents (SDK) version: 0.6.12 "
-            "(editable; required by deepagents-code: 0.7.0a7 — mismatch)" in content
+            "deepagents (SDK) version: 0.7.0a7+editable "
+            "(workspace HEAD; source marker: 0.6.12)" in content
         )
 
 

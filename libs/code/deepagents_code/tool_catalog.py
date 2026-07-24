@@ -25,11 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from deepagents_code._constants import FS_TOOL_NAMES
 from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from deepagents import FsToolName
     from langgraph.prebuilt.tool_node import ToolNode
 
     from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus
@@ -46,6 +48,14 @@ Emitted verbatim in the `--json` output, so it is a public contract; keep it a
 
 BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
+
+_FILESYSTEM_TOOL_NAMES = FS_TOOL_NAMES
+"""Which enumerated tools the `fs_tools` allowlist governs.
+
+Aliased from the shared `_constants.FS_TOOL_NAMES` (see its docstring); the
+drift guard in `test_tool_catalog` pins it so a new or renamed SDK filesystem
+tool fails a test instead of silently escaping the leak check below.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +190,10 @@ def _first_line(text: str | None) -> str:
 
 
 def collect_built_in_tools(
-    *, assistant_id: str = "agent", enable_interpreter: bool = False
+    *,
+    assistant_id: str = "agent",
+    enable_interpreter: bool = False,
+    fs_tools: list[FsToolName] | None = None,
 ) -> list[ToolEntry]:
     """Enumerate the built-in tools the agent binds by default.
 
@@ -198,6 +211,12 @@ def collect_built_in_tools(
             appears when the default agent would bind it. Callers should pass
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
             the list matches the tools the agent actually binds.
+        fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent so
+            it is built exactly like the runtime session. The SDK's
+            `FilesystemMiddleware` omits disallowed tools from the node
+            entirely, so forwarding alone narrows the enumeration; a defensive
+            check below verifies no disallowed tool leaked through and logs
+            loudly if one did (see the comment on that check).
 
     Returns:
         Built-in tools in bind order.
@@ -223,11 +242,38 @@ def collect_built_in_tools(
         enable_skills=False,
         enable_shell=True,
         enable_interpreter=enable_interpreter,
+        fs_tools=fs_tools,
     )
     tools = collect_tools_from_agent(agent)
     if tools is None:
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
+    # Defensive backstop against a change in SDK behavior. The SDK's
+    # `FilesystemMiddleware` omits disallowed tools from the bound node
+    # entirely, so `collect_tools_from_agent` should already return only
+    # allowlisted filesystem tools. If a disallowed tool *does* leak through,
+    # enforcement broke on the real agent (this enumeration is built from the
+    # same `create_cli_agent` the runtime uses). Return the *unfiltered* list
+    # and log loudly rather than scrubbing: scrubbing would hide the one signal
+    # that enforcement failed and make `/tools` report a restricted surface over
+    # an unrestricted agent. (`None` — the unrestricted default — skips this.)
+    if isinstance(fs_tools, list):
+        enabled = frozenset(fs_tools)
+        leaked = [
+            tool.name
+            for tool in tools
+            if tool.name in _FILESYSTEM_TOOL_NAMES and tool.name not in enabled
+        ]
+        if leaked:
+            logger.error(
+                "Filesystem tool allowlist backstop detected %s in the tool "
+                "listing: the enumerated agent exposed disallowed filesystem "
+                "tool(s) not in the allowlist %s. This indicates the allowlist "
+                "was not applied to the underlying agent; the listing reflects "
+                "the agent's actual (unrestricted) tools.",
+                leaked,
+                sorted(enabled),
+            )
     return tools
 
 
@@ -467,6 +513,7 @@ def collect_catalog(
     *,
     assistant_id: str = "agent",
     enable_interpreter: bool = False,
+    fs_tools: list[FsToolName] | None = None,
     include_mcp: bool = True,
     mcp_config_path: str | None = None,
     trust_project_mcp: bool | None = None,
@@ -478,6 +525,9 @@ def collect_catalog(
             tools, including any agent-specific subagents.
         enable_interpreter: Whether the default agent binds `js_eval`; forwarded
             to `collect_built_in_tools`.
+        fs_tools: Filesystem tool allowlist; forwarded to
+            `collect_built_in_tools`, which filters the built-in enumeration so
+            it matches the configured session.
         include_mcp: When `True`, discover MCP servers and append their groups
             after the built-in group (best-effort). Pass `False` to mirror
             `--no-mcp`.
@@ -497,6 +547,7 @@ def collect_catalog(
                 collect_built_in_tools(
                     assistant_id=assistant_id,
                     enable_interpreter=enable_interpreter,
+                    fs_tools=fs_tools,
                 )
             ),
         )

@@ -220,6 +220,15 @@ def test_artifact_key_handles_disallowed_characters(
     assert models._artifact_key(spec) == expected
 
 
+def test_resolve_models_rejects_empty_preset(models: ModuleType) -> None:
+    """A manual eval must not silently succeed without running any models."""
+    with pytest.raises(
+        ValueError,
+        match="No models resolved from EVAL_MODELS preset 'nvidia'",
+    ):
+        models._resolve_models("eval", "nvidia")
+
+
 def test_resolve_models_dedupes_repeated_specs(models: ModuleType) -> None:
     """`_resolve_models` deduplicates so `artifact_key` cannot collide downstream.
 

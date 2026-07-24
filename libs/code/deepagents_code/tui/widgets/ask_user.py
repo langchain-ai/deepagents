@@ -29,6 +29,7 @@ from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptOption,
     InlinePromptTextArea,
     apply_inline_prompt_border,
+    newline_hint,
     stop_inline_prompt_blur,
 )
 
@@ -174,6 +175,7 @@ class AskUserMenu(Container):
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
+            newline_hint(),
         ]
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")

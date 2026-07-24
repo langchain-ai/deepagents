@@ -82,7 +82,9 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
-from langchain.tools import ToolRuntime
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
+)
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -91,9 +93,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
-from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
@@ -121,27 +121,15 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileUploadResponse
+    from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
 
 class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
-
-
-SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
-
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.
-"""
 
 
 class SummarizationEvent(TypedDict):
@@ -521,7 +509,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -534,7 +522,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
+            backend: Backend instance for persisting conversation history.
             trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
                 a dict combines thresholds with AND semantics, and a list combines items
                 with OR semantics.
@@ -561,6 +549,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
 
+        Raises:
+            TypeError: If the removed `history_path_prefix` argument is provided.
+
         Example:
             ```python
             from deepagents.middleware.summarization import SummarizationMiddleware
@@ -574,19 +565,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
-        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
-        if _deprecated_history_prefix is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "The argument `history_path_prefix` is deprecated and "
-                    "will be removed in deepagents==0.7.0. Use "
-                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
-                    "instead."
-                ),
-                package="deepagents",
-            )
+        if "history_path_prefix" in deprecated_kwargs:
+            msg = "`history_path_prefix` was removed in deepagents 0.7. Configure `CompositeBackend.artifacts_root` instead."
+            raise TypeError(msg)
 
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
@@ -613,8 +594,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self._history_path_prefix = f"{_root}/conversation_history"
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
 
-        if _deprecated_history_prefix is not None:
-            self._history_path_prefix = _deprecated_history_prefix
         self._media_prefix = f"{self._history_path_prefix}/media"
 
         # Parse truncate_args_settings
@@ -667,38 +646,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
-
-    def _get_backend(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
-
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return _resolve_backend(self._backend, tool_runtime)
-        return self._backend
 
     def _get_thread_id(self) -> str:
         """Extract `thread_id` from langgraph config.
@@ -1444,7 +1391,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._backend
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
@@ -1578,7 +1525,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._backend
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
@@ -1653,7 +1600,7 @@ This is the name external callers should import and reference.
 
 def create_summarization_middleware(
     model: BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
@@ -1698,7 +1645,7 @@ def create_summarization_middleware(
         model: Resolved `BaseChatModel` instance.
 
             Use `resolve_model()` first if needed for model strings.
-        backend: Backend instance or factory for persisting conversation history.
+        backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
         trim_tokens_to_summarize: Max tokens to include when generating summary.
         token_counter: Function to count tokens in messages.
@@ -1730,9 +1677,9 @@ def create_summarization_middleware(
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
-    system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1748,7 +1695,6 @@ def create_summarization_tool_middleware(
     own. The agent gains:
 
     - A `compact_conversation` tool to compact its own context window
-    - A system-prompt nudge hinting when to call it
     - An eligibility gate at ~50% of the auto-summarization trigger so
         the tool refuses to compact too early
 
@@ -1763,7 +1709,7 @@ def create_summarization_tool_middleware(
     Args:
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
-        backend: Backend instance or factory for persisting conversation history.
+        backend: Backend instance for persisting conversation history.
         system_prompt: System-prompt fragment nudging the model to call
             `compact_conversation`. Pass `None` to skip appending the nudge.
 
@@ -1784,7 +1730,7 @@ def create_summarization_tool_middleware(
         agent = create_deep_agent(
             model=model,
             middleware=[
-                create_summarization_tool_middleware(model, StateBackend),
+                create_summarization_tool_middleware(model, StateBackend()),
             ],
         )
         ```
@@ -1860,7 +1806,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self,
         summarization: _DeepAgentsSummarizationMiddleware,
         *,
-        system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         """Initialize with a reference to the summarization middleware.
 
@@ -1882,20 +1828,6 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self._summarization = summarization
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
-
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        backend = self._summarization._backend
-        if callable(backend):
-            return _resolve_backend(backend, runtime)
-        return backend
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.
@@ -1919,7 +1851,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 "Compact the conversation by summarizing older messages "
                 "into a concise summary. Use this proactively when the "
                 "conversation is getting long to free up context window "
-                "space. This tool takes no arguments."
+                "space. Use it when moving on to a completely new, unrelated "
+                "task, or after finishing synthesis or extraction when the "
+                "previous working context is no longer needed. This tool "
+                "takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,
@@ -2101,8 +2036,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
-            file_path = s._offload_to_backend(backend, to_summarize)
+            file_path = s._offload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
@@ -2135,8 +2069,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
-            file_path = await s._aoffload_to_backend(backend, to_summarize)
+            file_path = await s._aoffload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)

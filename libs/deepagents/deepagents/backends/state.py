@@ -7,14 +7,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
-    FileFormat,
     FileInfo,
     FileUploadResponse,
     GlobResult,
@@ -24,9 +22,9 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _copy_file_data_with_content,
     _get_backend_read_file_type,
     _glob_search_files,
-    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -44,39 +42,12 @@ class StateBackend(BackendProtocol):
     checkpointed after each agent step.
 
     Reads and writes go through LangGraph's `CONFIG_KEY_READ` /
-    `CONFIG_KEY_SEND` so that state updates are queued as proper channel
-    writes rather than returned as `files_update` dicts.
+    `CONFIG_KEY_SEND` so that state updates are applied as channel writes
+    to the `files` state key.
     """
 
-    def __init__(
-        self,
-        runtime: object = None,
-        *,
-        file_format: FileFormat = "v2",
-    ) -> None:
-        r"""Initialize StateBackend.
-
-        Args:
-            runtime: Deprecated - accepted for backward compatibility but
-                ignored.  State is now read/written via `get_config()`.
-            file_format: Storage format version. `"v1"` stores
-                content as `list[str]` (lines split on `\\n`) without an
-                `encoding` field.  `"v2"` (default) stores content as a
-                plain `str` with an `encoding` field.
-        """
-        if runtime is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Passing `runtime` to `StateBackend` is deprecated and "
-                    "will be removed in deepagents==0.7.0. `StateBackend` now "
-                    "reads and writes state via `get_config()`. Use "
-                    "`StateBackend()` instead."
-                ),
-                package="deepagents",
-            )
-        self._file_format = file_format
+    def __init__(self) -> None:
+        """Initialize StateBackend."""
 
     # ------------------------------------------------------------------
     # Internal helpers for reading / writing state via config keys
@@ -147,12 +118,7 @@ class StateBackend(BackendProtocol):
         send([("files", update)])
 
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
-        """Convert FileData to the format used for state storage.
-
-        When `file_format="v1"`, returns the legacy format.
-        """
-        if self._file_format == "v1":
-            return _to_legacy_file_data(file_data)
+        """Convert FileData to the format used for state storage."""
         return {**file_data}
 
     def ls(self, path: str) -> LsResult:
@@ -189,9 +155,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-            raw = fd.get("content", "")
-            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            size = len(file_data_to_string(fd))
             infos.append(
                 {
                     "path": k,
@@ -232,7 +196,9 @@ class StateBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         if _get_backend_read_file_type(file_path) != "text":
-            return ReadResult(file_data=file_data)
+            # Normalize legacy `list[str]` content to a string without mutating
+            # the stored file; timestamps and encoding are carried through.
+            return ReadResult(file_data=_copy_file_data_with_content(file_data, file_data_to_string(file_data)))
 
         return slice_read_response(file_data, offset, limit)
 
@@ -328,12 +294,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            if fd:
-                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-                raw = fd.get("content", "")
-                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
-            else:
-                size = 0
+            size = len(file_data_to_string(fd)) if fd else 0
             infos.append(
                 {
                     "path": p,

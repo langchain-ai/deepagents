@@ -15,6 +15,7 @@ import signal
 import subprocess  # noqa: S404
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -533,6 +534,47 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Preserved server-log notices
+# ---------------------------------------------------------------------------
+
+# Debug-preserved server-log paths awaiting announcement. Recorded by
+# `_stop_process_locked` and drained by `emit_preserved_log_notices` once the
+# terminal is restored (a notice printed while Textual still owns the alternate
+# screen is discarded on exit).
+#
+# Process-global rather than per-`ServerProcess` on purpose: preserved logs
+# accumulate both across `/restart` (which reuses one instance) and across
+# throwaway instances that never become the app's tracked process — a server
+# whose startup fails, or the previous server replaced by a cwd switch. A
+# per-instance slot would strand every path but the tracked instance's last
+# one; a single queue lets the terminal teardown announce them all.
+_PENDING_PRESERVED_LOGS: list[Path] = []
+# Guards the queue independently of any instance's `_state_lock`, since
+# `_stop_process_locked` can append from a fallback worker thread.
+_PENDING_PRESERVED_LOGS_LOCK = threading.Lock()
+
+
+def emit_preserved_log_notices() -> None:
+    """Print every pending debug-preserved server-log path to stderr, once each.
+
+    Deferred out of `_stop_process_locked` so the interactive TUI can surface
+    the paths after Textual restores the terminal. Call this only from terminal
+    stop sites that run after the terminal is restored or with no TUI active
+    (`run_textual_app` finally, `server_session` finally, `ServerProcess`
+    `__aexit__`) — never from the hidden in-session teardown or `/restart`,
+    whose prints would be swallowed by the alternate screen.
+
+    Draining is atomic, so the interactive path's overlapping `stop()` calls
+    (and any other double teardown) still announce each path exactly once.
+    """
+    with _PENDING_PRESERVED_LOGS_LOCK:
+        paths = list(_PENDING_PRESERVED_LOGS)
+        _PENDING_PRESERVED_LOGS.clear()
+    for path in paths:
+        print(f"Server log preserved at: {path}", file=sys.stderr)  # noqa: T201
+
+
+# ---------------------------------------------------------------------------
 # ServerProcess
 # ---------------------------------------------------------------------------
 
@@ -584,6 +626,15 @@ class ServerProcess:
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
         self._persistent_env_overrides: dict[str, str] = {}
+        # Async lifecycle calls must be serialized by task, not by OS thread:
+        # every coroutine on an event loop runs on the same thread, so an
+        # RLock would let unrelated tasks enter while another task is awaiting.
+        self._lifecycle_lock = asyncio.Lock()
+        # Synchronous shutdown can also run from a fallback worker thread. Keep
+        # its critical sections short and never hold this lock across an await.
+        self._state_lock = threading.Lock()
+        self._stopped = False
+        self._stop_generation = 0
 
     @property
     def url(self) -> str:
@@ -593,6 +644,11 @@ class ServerProcess:
     @property
     def running(self) -> bool:
         """Whether the server process is running."""
+        with self._state_lock:
+            return self._running_locked()
+
+    def _running_locked(self) -> bool:
+        """Return whether the process is running while `_state_lock` is held."""
         return self._process is not None and self._process.poll() is None
 
     def _read_log_file(self) -> str:
@@ -601,20 +657,27 @@ class ServerProcess:
         Returns:
             Log file contents as a string (may be empty).
         """
-        if self._log_file is None:
-            return ""
-        try:
-            self._log_file.flush()
-            return Path(self._log_file.name).read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except OSError:
-            logger.warning(
-                "Failed to read server log file %s",
-                self._log_file.name,
-                exc_info=True,
-            )
-            return ""
+        with self._state_lock:
+            if self._log_file is None:
+                return ""
+            try:
+                self._log_file.flush()
+                return Path(self._log_file.name).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            # `ValueError` covers a flush/read on a closed handle ("I/O
+            # operation on closed file"): re-checking `is None` under
+            # `_state_lock` makes a closed-but-non-None handle nearly
+            # unreachable, so this is defensive. `read_text(errors="replace")`
+            # cannot raise `ValueError` for decoding, so the catch stays narrow
+            # in practice.
+            except (OSError, ValueError):
+                logger.warning(
+                    "Failed to read server log file %s",
+                    self._log_file.name,
+                    exc_info=True,
+                )
+                return ""
 
     async def start(
         self,
@@ -628,99 +691,35 @@ class ServerProcess:
 
         Raises:
             RuntimeError: If the server fails to start or become healthy.
+        """  # noqa: DOC502  # `RuntimeError` propagates from `_start`
+        async with self._lifecycle_lock:
+            await self._start(timeout=timeout)
+
+    async def _start(
+        self,
+        *,
+        timeout: float,  # noqa: ASYNC109
+        expected_stop_generation: int | None = None,
+    ) -> None:
+        """Start while the caller owns `_lifecycle_lock`.
+
+        Args:
+            timeout: Max seconds to wait for the server to become healthy.
+            expected_stop_generation: Generation captured before a restart's
+                stop phase. If synchronous terminal shutdown ran meanwhile,
+                abort instead of resurrecting the subprocess.
         """
-        if self.running:
+        process = self._spawn_process(
+            expected_stop_generation=expected_stop_generation,
+        )
+        if process is None:
             return
-
-        work_dir = self.config_dir
-        if work_dir is None:
-            self._temp_dir = tempfile.TemporaryDirectory(prefix="deepagents_server_")
-            work_dir = Path(self._temp_dir.name)
-
-        config_path = work_dir / "langgraph.json"
-        if not config_path.exists() and self._scaffold is not None:
-            # The config can vanish between the initial boot and a later
-            # `/restart` (e.g. the OS tmp reaper purging the temp work dir).
-            # Rebuild it rather than failing the restart.
-            logger.info("langgraph.json missing in %s; rescaffolding", work_dir)
-            try:
-                work_dir.mkdir(parents=True, exist_ok=True)
-                self._scaffold(work_dir)
-            except OSError as exc:
-                # Surface the failure with restart context instead of letting a
-                # bare OSError (e.g. ENOSPC/EACCES on a degraded temp fs) escape
-                # stripped of the recovery framing. Chained so the root cause
-                # stays in the traceback.
-                msg = f"Failed to rescaffold server workspace at {work_dir}: {exc}"
-                raise RuntimeError(msg) from exc
-        if not config_path.exists():
-            if self._scaffold is not None:
-                # The scaffold hook ran but produced no langgraph.json (a silent
-                # no-op or a write to the wrong path). The "call
-                # generate_langgraph_json() first" advice below would misdirect,
-                # since the scaffold is exactly that call run internally.
-                contents = sorted(p.name for p in work_dir.iterdir())
-                msg = (
-                    f"Rescaffolding {work_dir} did not produce langgraph.json "
-                    f"(directory contents: {contents})."
-                )
-            else:
-                msg = (
-                    f"langgraph.json not found in {work_dir}. "
-                    "Call generate_langgraph_json() first."
-                )
-            raise RuntimeError(msg)
-
-        if self.port == _EPHEMERAL_PORT:
-            self.port = _find_free_port(self.host)
-            logger.info("Using ephemeral port %d for langgraph dev server", self.port)
-        elif _port_in_use(self.host, self.port):
-            self.port = _find_free_port(self.host)
-            logger.info("Requested port in use, using port %d instead", self.port)
-
-        cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
-        env = _build_server_env()
-        # Persisted overrides are defaults; a one-shot override staged via
-        # `update_env()` for THIS restart must win over them. `_env_overrides`
-        # is already reflected in the `os.environ` copy above (applied by
-        # `_scoped_env_overrides`), but persisted values would otherwise shadow
-        # a freshly staged value, so re-apply the one-shot set last.
-        env.update(self._persistent_env_overrides)
-        env.update(self._env_overrides)
-
-        logger.info("Starting langgraph dev server: %s", " ".join(cmd))
-        self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
-            prefix="deepagents_server_log_",
-            suffix=".txt",
-            delete=False,
-            mode="w",
-            encoding="utf-8",
-        )
-        self._process = subprocess.Popen(  # noqa: S603, ASYNC220
-            cmd,
-            cwd=str(work_dir),
-            env=env,
-            stdout=self._log_file,
-            stderr=subprocess.STDOUT,
-            # Detach the server from dcode's controlling terminal and process
-            # group on POSIX. Without a new session the server inherits dcode's
-            # session/process group and receives the same terminal-generated
-            # signals as the TUI: the SIGTSTP job-control stop when the user
-            # suspends dcode (Ctrl+Z), and the SIGHUP hangup when the host
-            # terminal is closed — suspending or hanging up the server alongside
-            # dcode. `start_new_session=True` runs
-            # `setsid()` so the server leads its own session/process group
-            # instead. `start_new_session` is ignored on Windows, so it is left
-            # off there.
-            start_new_session=(sys.platform != "win32"),
-        )
-
         started = False
         try:
             await wait_for_server_healthy(
                 self.url,
                 timeout=timeout,
-                process=self._process,
+                process=process,
                 read_log=self._read_log_file,
                 local=True,
             )
@@ -732,16 +731,108 @@ class ServerProcess:
                 # the health check returns). A `finally` rather than `except
                 # Exception` is deliberate: `asyncio.CancelledError` is a
                 # `BaseException`, so an `except Exception` guard would skip this
-                # and orphan the process. The inner guard stops a `stop()` error
-                # from masking the exception already propagating; `stop()` is
-                # effectively non-raising today, so if it does fire it signals an
-                # unexpected leak — hence `error`, not `warning`.
+                # and orphan the process. Offload `stop()` because terminating a
+                # subprocess can block for several seconds; restart cancellation
+                # runs this path on Textual's event loop. The inner guard stops a
+                # `stop()` error from masking the exception already propagating;
+                # `stop()` is effectively non-raising today, so if it does fire it
+                # signals an unexpected leak — hence `error`, not `warning`.
                 try:
-                    self.stop()
+                    await asyncio.to_thread(self.stop)
                 except Exception:
                     logger.exception(
                         "Error stopping server during startup cleanup",
                     )
+
+    def _spawn_process(
+        self,
+        *,
+        expected_stop_generation: int | None,
+    ) -> subprocess.Popen | None:
+        """Synchronously prepare and spawn the subprocess under `_state_lock`.
+
+        Args:
+            expected_stop_generation: Optional shutdown generation required by
+                a restart.
+
+        Returns:
+            The new process, or `None` when one is already running.
+
+        Raises:
+            asyncio.CancelledError: If terminal shutdown preempted a restart.
+            RuntimeError: If the server workspace cannot be prepared.
+        """
+        with self._state_lock:
+            if (
+                expected_stop_generation is not None
+                and self._stop_generation != expected_stop_generation
+            ):
+                raise asyncio.CancelledError
+            if self._running_locked():
+                return None
+            self._stopped = False
+
+            work_dir = self.config_dir
+            if work_dir is None:
+                self._temp_dir = tempfile.TemporaryDirectory(
+                    prefix="deepagents_server_"
+                )
+                work_dir = Path(self._temp_dir.name)
+
+            config_path = work_dir / "langgraph.json"
+            if not config_path.exists() and self._scaffold is not None:
+                logger.info("langgraph.json missing in %s; rescaffolding", work_dir)
+                try:
+                    work_dir.mkdir(parents=True, exist_ok=True)
+                    self._scaffold(work_dir)
+                except OSError as exc:
+                    msg = f"Failed to rescaffold server workspace at {work_dir}: {exc}"
+                    raise RuntimeError(msg) from exc
+            if not config_path.exists():
+                if self._scaffold is not None:
+                    contents = sorted(p.name for p in work_dir.iterdir())
+                    msg = (
+                        f"Rescaffolding {work_dir} did not produce langgraph.json "
+                        f"(directory contents: {contents})."
+                    )
+                else:
+                    msg = (
+                        f"langgraph.json not found in {work_dir}. "
+                        "Call generate_langgraph_json() first."
+                    )
+                raise RuntimeError(msg)
+
+            if self.port == _EPHEMERAL_PORT:
+                self.port = _find_free_port(self.host)
+                logger.info(
+                    "Using ephemeral port %d for langgraph dev server", self.port
+                )
+            elif _port_in_use(self.host, self.port):
+                self.port = _find_free_port(self.host)
+                logger.info("Requested port in use, using port %d instead", self.port)
+
+            cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
+            env = _build_server_env()
+            env.update(self._persistent_env_overrides)
+            env.update(self._env_overrides)
+
+            logger.info("Starting langgraph dev server: %s", " ".join(cmd))
+            self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
+                prefix="deepagents_server_log_",
+                suffix=".txt",
+                delete=False,
+                mode="w",
+                encoding="utf-8",
+            )
+            self._process = subprocess.Popen(  # noqa: S603
+                cmd,
+                cwd=str(work_dir),
+                env=env,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=(sys.platform != "win32"),
+            )
+            return self._process
 
     async def wait_for_graph_ready(
         self,
@@ -827,6 +918,11 @@ class ServerProcess:
         Unlike `stop()`, this does NOT clean up the config directory or temp
         directory, so the server can be restarted with the same config.
         """
+        with self._state_lock:
+            self._stop_process_locked()
+
+    def _stop_process_locked(self) -> None:
+        """Stop the subprocess while `_state_lock` is held."""
         if self._process is None:
             return
 
@@ -856,10 +952,12 @@ class ServerProcess:
             from deepagents_code._env_vars import DEBUG, is_env_truthy
 
             if is_env_truthy(DEBUG):
-                print(  # noqa: T201
-                    f"Server log preserved at: {log_path}",
-                    file=sys.stderr,
-                )
+                # Queue the path rather than printing here: teardown can run
+                # while Textual still owns the terminal, so the notice is
+                # emitted later via `emit_preserved_log_notices`. Appending
+                # (not overwriting) keeps every restart's log announceable.
+                with _PENDING_PRESERVED_LOGS_LOCK:
+                    _PENDING_PRESERVED_LOGS.append(log_path)
             else:
                 try:
                     log_path.unlink()
@@ -868,26 +966,52 @@ class ServerProcess:
             self._log_file = None
 
     def stop(self) -> None:
-        """Stop the server process and clean up all resources."""
-        self._stop_process()
+        """Stop the server process and clean up all resources.
 
-        if self._temp_dir is not None:
-            try:
-                self._temp_dir.cleanup()
-            except OSError:
-                logger.debug("Failed to clean up temp dir", exc_info=True)
-            self._temp_dir = None
+        Idempotent and safe to call concurrently. The synchronous state lock
+        prevents process teardown and resource cleanup from interleaving, while
+        the generation counter prevents an in-flight async restart from
+        spawning a replacement after this terminal stop wins the race.
+        """
+        with self._state_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            self._stop_generation += 1
 
-        if self._owns_config_dir and self.config_dir is not None:
-            import shutil
+            self._stop_process_locked()
 
-            try:
-                shutil.rmtree(self.config_dir)
-            except OSError:
-                logger.debug(
-                    "Failed to clean up config dir %s", self.config_dir, exc_info=True
-                )
-            self._owns_config_dir = False
+            if self._temp_dir is not None:
+                try:
+                    self._temp_dir.cleanup()
+                except OSError:
+                    # Debug, not warning (unlike the config dir below): a
+                    # directory under the OS temp root is eventually reclaimed
+                    # by the OS temp reaper (systemd-tmpfiles / tmpwatch / the
+                    # macOS periodic cleanup), so a failure here is not the
+                    # unrecoverable, never-retried leak the config dir would be.
+                    # (`TemporaryDirectory.cleanup()` detaches its finalizer
+                    # before removal, so a failed explicit cleanup is not
+                    # retried at GC — the OS reaper is what reclaims it.)
+                    logger.debug("Failed to clean up temp dir", exc_info=True)
+                self._temp_dir = None
+
+            if self._owns_config_dir and self.config_dir is not None:
+                import shutil
+
+                try:
+                    shutil.rmtree(self.config_dir)
+                except OSError:
+                    # Warning, not debug: cleanup runs exactly once and is never
+                    # retried, and this is a process-owned dir that may hold
+                    # session state, so a persistent failure (a real leak) must
+                    # be visible to an operator.
+                    logger.warning(
+                        "Failed to clean up config dir %s",
+                        self.config_dir,
+                        exc_info=True,
+                    )
+                self._owns_config_dir = False
 
     def update_env(self, **overrides: str) -> None:
         """Stage env var overrides to apply on the next `restart()`.
@@ -930,18 +1054,40 @@ class ServerProcess:
 
         Args:
             timeout: Max seconds to wait for the server to become healthy.
-        """
+
+        Raises:
+            asyncio.CancelledError: Either if the restart task is cancelled
+                (the blocking subprocess cleanup is awaited to completion
+                first), or if a terminal `stop()` bumped the stop generation
+                during cleanup — in which case `_start` aborts rather than
+                resurrecting the subprocess the terminal stop just tore down.
+            RuntimeError: If workspace preparation, process startup, or the
+                server health check fails.
+        """  # noqa: DOC502  # RuntimeError propagates from _start().
         logger.info("Restarting langgraph dev server")
-        # Offload the synchronous subprocess shutdown (it blocks up to
-        # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so the
-        # caller's event loop — the Textual reactor for `/restart` — keeps
-        # processing input instead of freezing the TUI.
-        await asyncio.to_thread(self._stop_process)
+        async with self._lifecycle_lock:
+            with self._state_lock:
+                stop_generation = self._stop_generation
+            # Offload the synchronous subprocess shutdown (it blocks up to
+            # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so
+            # the caller's event loop — the Textual reactor for `/restart` —
+            # keeps processing input instead of freezing the TUI. Shield the
+            # thread and await it after cancellation so no later lifecycle call
+            # can mutate process state while cleanup is still running.
+            stop_task = asyncio.create_task(asyncio.to_thread(self._stop_process))
+            try:
+                await asyncio.shield(stop_task)
+            except asyncio.CancelledError:
+                await stop_task
+                raise
 
-        with _scoped_env_overrides(self._env_overrides):
-            await self.start(timeout=timeout)
+            with _scoped_env_overrides(self._env_overrides):
+                await self._start(
+                    timeout=timeout,
+                    expected_stop_generation=stop_generation,
+                )
 
-        self._env_overrides.clear()
+            self._env_overrides.clear()
 
     async def __aenter__(self) -> Self:
         """Async context manager entry.
@@ -955,3 +1101,4 @@ class ServerProcess:
     async def __aexit__(self, *args: object) -> None:
         """Async context manager exit."""
         self.stop()
+        emit_preserved_log_notices()

@@ -3647,7 +3647,7 @@ class TestBackslashEnterNewline:
         # Widen the gap so wall-clock timing between pilot.press calls on slow
         # CI runners cannot push the enter past the 150ms default and trip the
         # submit path.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3685,7 +3685,7 @@ class TestBackslashEnterNewline:
         `call_after_refresh(scroll_cursor_visible)` keeps the cursor visible.
         """
         # Widen the backslash+enter gap so the fallback test isn't racy on CI.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
@@ -3743,7 +3743,7 @@ class TestBackslashEnterNewline:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Backslash + enter on empty prompt should not submit."""
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3764,7 +3764,7 @@ class TestBackslashEnterNewline:
     ) -> None:
         """Backslash + enter beyond the timing gap should submit normally."""
         # Set gap to 0 so any real delay exceeds it.
-        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -3782,6 +3782,44 @@ class TestBackslashEnterNewline:
 
             # Should have submitted (backslash included in text)
             assert len(app.submitted) == 1
+
+    async def test_backslash_enter_suppressed_while_completion_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An open completion popup owns Enter, so the fallback must not fire.
+
+        `_on_key` passes `enabled=not self._completion_active` to the shared
+        `_consume_backslash_enter_newline`. While completion is active the
+        backslash+enter fallback must be suppressed (the popup consumes Enter to
+        accept a suggestion), yet the pending-backslash timestamp must still be
+        cleared so a *later* Enter can't retroactively trip the fallback.
+
+        Driving `_on_key` directly (as the sibling completion tests do) isolates
+        the text area's handling from the parent's completion bubbling, which is
+        what makes the assertions deterministic.
+        """
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            ta.set_completion_active(active=True)
+            await pilot.pause()
+
+            # Backslash arms the fallback; Enter arrives well within the gap.
+            await ta._on_key(events.Key("backslash", "\\"))
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # Fallback suppressed: backslash untouched, no newline, no submit.
+            assert ta.text == "hello\\"
+            # Pending state cleared even though the fallback was disabled.
+            assert ta._backslash_pending_time is None
+            assert len(app.submitted) == 0
 
 
 class TestVSCodeSpaceWorkaround:
@@ -4139,6 +4177,60 @@ class TestArgumentHints:
         chat = ChatInput()
         chat._rebuild_argument_hints(commands)
         assert chat._argument_hints == {}
+
+    async def test_runtime_override_updates_hint_and_survives_refresh(self) -> None:
+        """Session-specific hints remain active when skill commands are rebuilt."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("effort ")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == "[<level>|clear]"
+
+            dynamic_hint = "[minimal|turbo-v2|max|clear]"
+            chat.set_argument_hint_override("/effort", dynamic_hint)
+            assert chat._text_area.argument_hint == dynamic_hint
+
+            chat.update_slash_commands(
+                [
+                    *get_slash_commands(),
+                    CommandEntry("/skill:test", "Test skill", "test", ""),
+                ]
+            )
+            chat._update_argument_hint()
+            assert chat._text_area.argument_hint == dynamic_hint
+
+            chat.set_argument_hint_override("/effort", None)
+            assert chat._text_area.argument_hint == "[<level>|clear]"
+
+    async def test_empty_override_hides_registered_hint(self) -> None:
+        """An empty override suppresses the registered hint until restored."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("effort ")
+            await pilot.pause()
+
+            chat.set_argument_hint_override("/effort", "[custom|clear]")
+            assert chat._text_area.argument_hint == "[custom|clear]"
+
+            chat.set_argument_hint_override("/effort", "")
+            assert chat._argument_hint_overrides["effort"] == ""
+            assert chat._text_area.argument_hint == ""
+
+            chat.set_argument_hint_override("/effort", None)
+            assert "effort" not in chat._argument_hint_overrides
+            assert chat._text_area.argument_hint == "[<level>|clear]"
 
     async def test_hint_shown_after_command_and_space(self) -> None:
         """Ghost text appears when text is a known command + trailing space."""

@@ -8,11 +8,12 @@ import logging
 import socket
 import threading
 from html.parser import HTMLParser
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urljoin, urlparse
 
-from langchain_core.runnables import RunnableConfig  # noqa: TC002  # runtime hint
 from langchain_core.tools import tool
+from langgraph.config import get_config
+from pydantic import Field
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -303,53 +304,50 @@ def _get_tavily_client() -> TavilyClient | None:
 
 
 @tool
-def get_current_thread_id(config: RunnableConfig) -> str:
+def get_current_thread_id() -> str:
     """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
-
-    Args:
-        config: Runtime config injected by LangChain.
 
     Returns:
         The current `configurable.thread_id`, or an explanatory message if missing.
     """
-    thread_id = config.get("configurable", {}).get("thread_id")
+    thread_id = get_config().get("configurable", {}).get("thread_id")
     if isinstance(thread_id, str) and thread_id:
         return thread_id
     return "No current thread ID is available."
 
 
 def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configuration
-    query: str,
-    max_results: int = 5,
-    topic: Literal["general", "news", "finance"] = "general",
-    include_raw_content: bool = False,
+    query: Annotated[
+        str,
+        Field(description="The search query (be specific and detailed)."),
+    ],
+    max_results: Annotated[
+        int,
+        Field(description="Number of results to return."),
+    ] = 5,
+    topic: Annotated[
+        Literal["general", "news", "finance"],
+        Field(
+            description=(
+                'Search topic type: "general" for most queries, "news" for '
+                'current events, or "finance".'
+            )
+        ),
+    ] = "general",
+    include_raw_content: Annotated[
+        bool,
+        Field(
+            description=(
+                "Include full page content (uses more tokens). Prefer `fetch_url` "
+                "for a single URL."
+            )
+        ),
+    ] = False,
 ):
-    """Search the web using Tavily for current information and documentation.
-
-    This tool searches the web and returns relevant results. After receiving results,
-    you MUST synthesize the information into a natural, helpful response for the user.
-
-    Args:
-        query: The search query (be specific and detailed)
-        max_results: Number of results to return (default: 5)
-        topic: Search topic type - "general" for most queries, "news" for current events
-        include_raw_content: Include full page content (warning: uses more tokens)
+    """Search the web for current information.
 
     Returns:
-        Dictionary containing:
-        - results: List of search results, each with:
-            - title: Page title
-            - url: Page URL
-            - content: Relevant excerpt from the page
-            - score: Relevance score (0-1)
-        - query: The original search query
-
-    IMPORTANT: After using this tool:
-    1. Read through the 'content' field of each result
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. Cite sources by mentioning the page titles or URLs
-    5. NEVER show the raw JSON to the user - always provide a formatted response
+        Search hits with title, URL, snippet, and score.
     """
     try:
         import requests
@@ -393,30 +391,20 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         return {"error": f"Web search error: {e!s}", "query": query}
 
 
-def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
-    """Fetch content from a URL and convert HTML to markdown format.
-
-    This tool fetches web page content and converts it to clean markdown text,
-    making it easy to read and process HTML content. After receiving the markdown,
-    you MUST synthesize the information into a natural, helpful response for the user.
-
-    Args:
-        url: The URL to fetch (must be a valid HTTP/HTTPS URL)
-        timeout: Request timeout in seconds (default: 30)
+def fetch_url(
+    url: Annotated[
+        str,
+        Field(description="The URL to fetch (must be a valid HTTP/HTTPS URL)."),
+    ],
+    timeout: Annotated[
+        int,
+        Field(description="Request timeout in seconds."),
+    ] = 30,
+) -> dict[str, Any]:
+    """Fetch a URL and return the page content as markdown.
 
     Returns:
-        Dictionary containing:
-        - success: Whether the request succeeded
-        - url: The final URL after redirects
-        - markdown_content: The page content converted to markdown
-        - status_code: HTTP status code
-        - content_length: Length of the markdown content in characters
-
-    IMPORTANT: After using this tool:
-    1. Read through the markdown content
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. NEVER show the raw markdown to the user unless specifically requested
+        Fetched page markdown plus status metadata.
     """
     try:
         import requests

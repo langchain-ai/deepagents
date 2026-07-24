@@ -282,15 +282,31 @@ function overrideBody({ version, head, headingHash, fingerprint, section }) {
     '-->',
     'Review and edit the release notes between the content markers below. Keep the version heading intact.',
     '',
+    '---',
     CONTENT_START,
     canonical(section).trimEnd(),
     CONTENT_END,
+    '---',
     '',
-    `When the release changes are finalized, run \`${COMMAND_MENTION} apply\`. Merge only after the curated release-notes check passes.`,
+    'When the release changes are finalized, run:',
     '',
-    `If new relevant entries appear after applying, run \`${COMMAND_MENTION} draft\` and then \`${COMMAND_MENTION} apply\` again.`,
+    '```',
+    `${COMMAND_MENTION} apply`,
+    '```',
     '',
-    `The only bypass is the \`${BYPASS_LABEL}\` label.`,
+    'Merge only after the curated release-notes check passes.',
+    '',
+    'If new relevant entries appear after applying, draft again and then re-apply:',
+    '',
+    '```',
+    `${COMMAND_MENTION} draft`,
+    '```',
+    '',
+    '```',
+    `${COMMAND_MENTION} apply`,
+    '```',
+    '',
+    `To ship without curated notes, add the \`${BYPASS_LABEL}\` label. That is the only way to skip the curated-notes merge gate — use it only when you intentionally want the generated changelog as-is, without maintainer polish.`,
   ].join('\n');
 }
 
@@ -936,8 +952,10 @@ async function checkCuratedState({
       core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
       return { status: 'missing' };
     }
-    core.setFailed(`Review the curated release-note draft, then run ${COMMAND_MENTION} apply before merging`);
-    return { status: 'unapplied' };
+    const draftCommentUrl = override.comment.html_url
+      ?? `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${override.comment.id}`;
+    core.setFailed(`Review the curated release-note draft (${draftCommentUrl}), then run ${COMMAND_MENTION} apply before merging`);
+    return { status: 'unapplied', draftCommentUrl };
   }
 
   const appliedMetadata = applied.metadata;

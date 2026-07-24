@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
@@ -87,22 +86,6 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
     back to the full text via `submitted_value`.
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(
-            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
-            "insert_newline",
-            "New Line",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+backspace,alt+backspace",
-            "delete_word_left",
-            "Delete left to start of word",
-            show=False,
-        ),
-    ]
-
     class Submitted(Message):
         """Posted when the user presses Enter to submit text.
 
@@ -159,6 +142,18 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()
             event.stop()
+            return
+
+        # Some terminals (e.g. VSCode built-in) send a literal backslash followed
+        # by enter for shift+enter; treat that pair as a newline before the enter
+        # below would otherwise submit.
+        if self._consume_backslash_enter_newline(event, now):
+            return
+
+        self._track_backslash_pending(event, now)
+
+        # Modifier+Enter (and Ctrl+J) insert a newline rather than submitting.
+        if self._consume_modifier_newline(event):
             return
 
         if event.key == "enter":
@@ -236,6 +231,13 @@ class InlinePromptOption(Static):
         if self._selected_class is None:
             return
         self.set_class(self._highlighted, self._selected_class)
+
+
+def newline_hint() -> str:
+    """Return the newline-shortcut hint fragment (e.g. 'Ctrl+J newline')."""
+    from deepagents_code.config import newline_shortcut
+
+    return f"{newline_shortcut()} newline"
 
 
 def apply_inline_prompt_border(widget: Widget) -> None:

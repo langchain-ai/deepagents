@@ -336,29 +336,18 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     ] = "general",
     include_raw_content: Annotated[
         bool,
-        Field(description="Include full page content (uses more tokens)."),
+        Field(
+            description=(
+                "Include full page content (uses more tokens). Prefer `fetch_url` "
+                "for a single URL."
+            )
+        ),
     ] = False,
 ):
-    """Search the web using Tavily for current information and documentation.
-
-    This tool searches the web and returns relevant results. After receiving results,
-    you MUST synthesize the information into a natural, helpful response for the user.
+    """Search the web for current information.
 
     Returns:
-        Dictionary containing:
-        - results: List of search results, each with:
-            - title: Page title
-            - url: Page URL
-            - content: Relevant excerpt from the page
-            - score: Relevance score (0-1)
-        - query: The original search query
-
-    IMPORTANT: After using this tool:
-    1. Read through the 'content' field of each result
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. Cite sources by mentioning the page titles or URLs
-    5. NEVER show the raw JSON to the user - always provide a formatted response
+        Search hits with title, URL, snippet, and score.
     """
     try:
         import requests
@@ -412,25 +401,10 @@ def fetch_url(
         Field(description="Request timeout in seconds."),
     ] = 30,
 ) -> dict[str, Any]:
-    """Fetch content from a URL and convert HTML to markdown format.
-
-    This tool fetches web page content and converts it to clean markdown text,
-    making it easy to read and process HTML content. After receiving the markdown,
-    you MUST synthesize the information into a natural, helpful response for the user.
+    """Fetch a URL and return the page content as markdown.
 
     Returns:
-        Dictionary containing:
-        - success: Whether the request succeeded
-        - url: The final URL after redirects
-        - markdown_content: The page content converted to markdown
-        - status_code: HTTP status code
-        - content_length: Length of the markdown content in characters
-
-    IMPORTANT: After using this tool:
-    1. Read through the markdown content
-    2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. NEVER show the raw markdown to the user unless specifically requested
+        Fetched page markdown plus status metadata.
     """
     try:
         import requests

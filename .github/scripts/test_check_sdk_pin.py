@@ -262,11 +262,18 @@ def test_workflow_warning_comments_link_pin_release() -> None:
     )
 
 
-def test_workflow_prerelease_warning_has_release_dependency_tip() -> None:
-    """Prerelease warnings explain how to acknowledge intentional release ordering."""
+def test_workflow_prerelease_warning_requires_release_deps_acknowledgement() -> None:
+    """Prerelease pins fail closed until `release-deps: acknowledged` is present."""
     workflow = Path(__file__).parents[1] / "workflows" / "check_sdk_pin.yml"
     text = workflow.read_text()
 
     assert 'RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"' in text
     assert "${releaseDepsBypassLabel}" in text
-    assert "release dependency check fails" in text
+    assert "This is allowed" not in text
+    assert "Required:** add the" in text
+    assert "explicit merge acknowledgement" in text
+    assert "label before merging to acknowledge this pin" in text
+    assert "types: [opened, synchronize, reopened, labeled, unlabeled]" in text
+    assert "prereleaseAcknowledged" in text
+    assert "core.setFailed(warning)" in text
+    assert "else if (prerelease && !prereleaseAcknowledged)" in text

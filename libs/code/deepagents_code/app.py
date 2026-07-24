@@ -129,10 +129,6 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
-_AUTO_MODE_ENABLED_WARNING = (
-    "Auto enabled. It classifies gated actions but is not sandbox containment."
-)
-
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
@@ -3108,6 +3104,7 @@ class DeepAgentsApp(App):
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
         self._approval_mode_blocked = False
+        self._auto_mode_notice_pending = False
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
@@ -3846,12 +3843,7 @@ class DeepAgentsApp(App):
 
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
-            self.notify(
-                _AUTO_MODE_ENABLED_WARNING,
-                severity="warning",
-                timeout=10,
-                markup=False,
-            )
+            self._notify_auto_mode_enabled_once()
         elif self._approval_mode.value == "yolo":
             self.notify(
                 "YOLO is active: gated actions run without review.",
@@ -7511,6 +7503,96 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
+    def _notify_auto_mode_enabled_once(self) -> None:
+        """Show the Auto first-enable modal at most once per install.
+
+        Auto is already active when this runs. Enter keeps Auto and records the
+        notice; Esc (or a non-true dismiss) reverts to Manual without saving so
+        the notice can appear again. Save is best-effort on accept so a failed
+        write only re-shows on a later successful enable path.
+        """
+        from deepagents_code.approval_mode import (
+            has_auto_mode_notice,
+            save_auto_mode_notice,
+        )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
+            return
+
+        def handle_result(accepted: bool | None) -> None:
+            self._auto_mode_notice_pending = False
+            # Only an explicit continue persists "do not show again". Esc/None
+            # invert Auto back to Manual without recording the notice.
+            if accepted is True:
+                save_auto_mode_notice()
+                return
+            # `push_screen` callbacks are sync; schedule the Manual revert.
+            task = asyncio.create_task(self._revert_auto_mode_after_notice_cancel())
+            task.add_done_callback(_log_task_exception)
+
+        try:
+            self.push_screen(
+                AutoModeNoticeScreen(),
+                handle_result,
+            )
+        except Exception:
+            # Cosmetic notice must never break an already-applied Auto enable.
+            logger.warning("Could not show Auto first-enable notice", exc_info=True)
+            return
+
+        # Mark pending only after the push succeeds so a failed push can't
+        # strand the guard True and suppress the notice for the whole session.
+        self._auto_mode_notice_pending = True
+
+    async def _revert_auto_mode_after_notice_cancel(self) -> None:
+        """Leave Auto after the first-enable modal is cancelled with Esc.
+
+        Best-effort live Store write mirrors the Manual toggle path: local TUI
+        state always returns to Manual; a failed live write warns and blocks new
+        runs when a live session was already writing approval mode.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        # Already left Auto (e.g. a concurrent toggle) — nothing to undo.
+        if self._approval_mode is not ApprovalMode.AUTO:
+            return
+
+        should_persist_live = (
+            self._agent is not None and self._session_state is not None
+        )
+        if should_persist_live and not await self._write_live_approval_mode(
+            ApprovalMode.MANUAL
+        ):
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted after declining Auto; active work "
+                "was cancelled and new runs are blocked."
+            )
+            if self._agent_running:
+                self._force_interrupt_active_work()
+            # Still flip the UI so the user is not left trusting a declined Auto.
+            self._approval_mode = ApprovalMode.MANUAL
+            self._auto_approve = False
+            if self._session_state:
+                self._session_state.approval_mode = ApprovalMode.MANUAL
+            if self._status_bar:
+                self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+            return
+
+        self._approval_mode_blocked = False
+        self._approval_mode = ApprovalMode.MANUAL
+        self._auto_approve = False
+        if self._session_state:
+            self._session_state.approval_mode = ApprovalMode.MANUAL
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+        self.notify(
+            "Returned to Manual approval.",
+            severity="information",
+            markup=False,
+        )
+
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.
 
@@ -7535,12 +7617,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
-        self.notify(
-            _AUTO_MODE_ENABLED_WARNING,
-            severity="warning",
-            timeout=8,
-            markup=False,
-        )
+        self._notify_auto_mode_enabled_once()
         await self._auto_accept_pending_goal_rubric()
         return True
 
@@ -10144,6 +10221,26 @@ class DeepAgentsApp(App):
             and application.request_id == proposal.request_id
         )
 
+    def _has_clearable_goal_rubric_state(self) -> bool:
+        """Return whether `/rubric clear` would drop any correlated local state.
+
+        Pending proposals and accepted-but-queued applications can be live while
+        `_active_rubric` / `_next_rubric` are still empty, so the empty-check for
+        clear must look beyond those two user-visible fields.
+        """
+        return bool(
+            self._active_rubric
+            or self._next_rubric
+            or self._active_goal
+            or self._goal_status_note
+            or self._pending_goal_completion_note
+            or self._pending_goal_objective
+            or self._pending_goal_rubric
+            or self._queued_goal_application is not None
+            or self._last_consumed_next_rubric is not None
+            or self._last_consumed_next_previous_rubric is not None
+        )
+
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
@@ -11768,7 +11865,7 @@ class DeepAgentsApp(App):
         if subcommand == "set":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric set <criteria>"))
+                await self._mount_message(AppMessage(self._rubric_set_usage_text()))
                 return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
@@ -11787,7 +11884,7 @@ class DeepAgentsApp(App):
         if subcommand == "next":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric next <criteria>"))
+                await self._mount_message(AppMessage(self._rubric_next_usage_text()))
                 return
             self._next_rubric = arg
             self._sync_status_rubric()
@@ -11797,13 +11894,18 @@ class DeepAgentsApp(App):
         if subcommand == "file":
             await self._mount_message(UserMessage(command))
             if not arg:
-                await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+                await self._mount_message(AppMessage(self._rubric_file_usage_text()))
                 return
             await self._set_rubric_from_file(arg)
             return
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            if not self._has_clearable_goal_rubric_state():
+                await self._mount_message(
+                    AppMessage("No rubric set. Nothing to clear.")
+                )
+                return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
                 self._clear_all_goal_rubric_state()
@@ -11842,7 +11944,46 @@ class DeepAgentsApp(App):
             "  /rubric model [provider:model|clear]\n"
             "  /rubric max-iterations <N|clear>\n\n"
             "Use /rubric next for a one-turn quality gate. Use /rubric set "
-            "when you want explicit acceptance criteria to persist across turns."
+            "when you want explicit acceptance criteria to persist across turns.\n"
+            "Example: /rubric set tests pass; keep the diff minimal"
+        )
+
+    @staticmethod
+    def _rubric_set_usage_text() -> str:
+        """Return usage for bare `/rubric set`."""
+        return (
+            "Usage: /rubric set <criteria>\n\n"
+            "Keep these acceptance criteria across turns.\n"
+            "Graded after each agent response until you clear or replace them.\n"
+            "Example: /rubric set tests pass; keep the diff minimal"
+        )
+
+    @staticmethod
+    def _rubric_next_usage_text() -> str:
+        """Return usage for bare `/rubric next`."""
+        return (
+            "Usage: /rubric next <criteria>\n\n"
+            "Use these acceptance criteria for the next agent turn only.\n"
+            "Example: /rubric next tests pass; no unrelated changes"
+        )
+
+    @staticmethod
+    def _rubric_file_usage_text() -> str:
+        """Return usage for bare `/rubric file`."""
+        return (
+            "Usage: /rubric file <path>\n\n"
+            "Load acceptance criteria from a file (same as /rubric set).\n"
+            "Example: /rubric file ./rubric.md"
+        )
+
+    @staticmethod
+    def _rubric_empty_state_text() -> str:
+        """Return the empty-state message for `/rubric show`."""
+        return (
+            "No rubric set.\n\n"
+            "Set one with `/rubric set <criteria>`, or load a file:\n"
+            "  /rubric set tests pass; keep the diff minimal\n"
+            "  /rubric file ./rubric.md"
         )
 
     async def _show_rubric_usage(self) -> None:
@@ -11856,13 +11997,15 @@ class DeepAgentsApp(App):
         ):
             state: list[str] = []
             if self._active_rubric:
-                state.append("Sticky rubric is set.")
+                state.append("Rubric is set.")
             if self._next_rubric:
                 state.append("Next-turn rubric is set.")
             if self._rubric_model:
                 state.append(f"Rubric grader model: {self._rubric_model}")
             if self._rubric_max_iterations is not None:
                 state.append(f"Rubric max iterations: {self._rubric_max_iterations}")
+            if self._active_rubric or self._next_rubric:
+                state.append("Use /rubric show to view.")
             parts.append(
                 "Current state:\n" + "\n".join(f"  - {line}" for line in state)
             )
@@ -11875,8 +12018,24 @@ class DeepAgentsApp(App):
             lines.append(f"Rubric:\n{self._active_rubric}")
         if self._next_rubric:
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
-        if not lines and not self._rubric_model and self._rubric_max_iterations is None:
-            await self._mount_message(AppMessage("No rubric set."))
+        if not lines:
+            # Grader settings can exist without criteria; still teach how to set
+            # a rubric when nothing is grading yet.
+            if self._rubric_model or self._rubric_max_iterations is not None:
+                grader_model, grader_iterations = self._grader_display_values()
+                await self._mount_message(
+                    AppMessage(
+                        "\n\n".join(
+                            [
+                                self._rubric_empty_state_text(),
+                                f"Rubric grader model: {grader_model}",
+                                f"Rubric max iterations: {grader_iterations}",
+                            ]
+                        )
+                    )
+                )
+                return
+            await self._mount_message(AppMessage(self._rubric_empty_state_text()))
             return
         grader_model, grader_iterations = self._grader_display_values()
         lines.extend(
@@ -11895,7 +12054,7 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(f"Could not parse path: {exc}"))
             return
         if len(parts) != 1:
-            await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+            await self._mount_message(AppMessage(self._rubric_file_usage_text()))
             return
         try:
             path, text = await asyncio.to_thread(
@@ -16852,13 +17011,7 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
-            self.notify(
-                "Automated review is enabled. It checks approval-gated "
-                "actions, but may not catch every issue.",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
+            self._notify_auto_mode_enabled_once()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
 

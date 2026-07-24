@@ -59,6 +59,7 @@ from deepagents_code.auto_mode import (
     AutoModeHITLMiddleware,
     AutoModeState,
     HeadlessMCPGuardMiddleware,
+    _active_user_directives,
     _batch_id,
     _default_counters,
     _fixed_repo_command_allowed,
@@ -2666,10 +2667,207 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["authorization_evidence"] == []
+    assert payload["active_user_directives"] == {}
     assert payload["same_turn_user_answers"] == [
         {"ask_user_tool_call_id": "ask-1", "answer": answer}
     ]
     assert action_plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+def test_active_user_directives_include_sticky_rubric_and_actionable_goal() -> None:
+    assert _active_user_directives({"_sticky_rubric": "make sure tests pass"}) == {
+        "goal_objective": None,
+        "goal_criteria": None,
+        "rubric_criteria": "make sure tests pass",
+        "rubric_source": "sticky",
+    }
+    assert _active_user_directives(
+        {
+            "_goal_objective": "Ship the withdraw endpoint",
+            "_goal_status": "active",
+            "_goal_rubric": "- withdraw rejects negative amounts",
+            "_sticky_rubric": "- withdraw rejects negative amounts",
+            "_goal_status_note": "agent note must not authorize",
+        }
+    ) == {
+        "goal_objective": "Ship the withdraw endpoint",
+        "goal_criteria": "- withdraw rejects negative amounts",
+        "rubric_criteria": None,
+        "rubric_source": None,
+    }
+    assert (
+        _active_user_directives(
+            {
+                "_goal_objective": "paused work",
+                "_goal_status": "paused",
+                "_goal_rubric": "- do not drive work while paused",
+                "_sticky_rubric": "- do not drive work while paused",
+            }
+        )
+        == {}
+    )
+    assert _active_user_directives(
+        {
+            "rubric": "one-shot quality gate",
+            "_pending_goal_objective": "unaccepted",
+            "_pending_goal_rubric": "- must not authorize until accepted",
+        }
+    ) == {
+        "goal_objective": None,
+        "goal_criteria": None,
+        "rubric_criteria": "one-shot quality gate",
+        "rubric_source": "invocation",
+    }
+
+
+def test_active_user_directives_status_and_rubric_source_branches() -> None:
+    # `blocked` is actionable just like `active`: an actionable goal surfaces
+    # its objective and criteria regardless of which actionable status it holds.
+    assert _active_user_directives(
+        {
+            "_goal_objective": "Unblock the migration",
+            "_goal_status": "blocked",
+            "_goal_rubric": "- migration applies cleanly",
+        }
+    ) == {
+        "goal_objective": "Unblock the migration",
+        "goal_criteria": "- migration applies cleanly",
+        "rubric_criteria": None,
+        "rubric_source": None,
+    }
+    # An actionable goal with no rubric still authorizes via its objective; the
+    # dict is non-empty even though every rubric/criteria field is None.
+    assert _active_user_directives(
+        {"_goal_objective": "Refactor the parser", "_goal_status": "active"}
+    ) == {
+        "goal_objective": "Refactor the parser",
+        "goal_criteria": None,
+        "rubric_criteria": None,
+        "rubric_source": None,
+    }
+    # A one-shot invocation rubric distinct from the goal rubric surfaces
+    # alongside the goal directives: the maximal four-field payload.
+    assert _active_user_directives(
+        {
+            "_goal_objective": "Ship the export job",
+            "_goal_status": "active",
+            "_goal_rubric": "- export is idempotent",
+            "rubric": "no new lint warnings",
+        }
+    ) == {
+        "goal_objective": "Ship the export job",
+        "goal_criteria": "- export is idempotent",
+        "rubric_criteria": "no new lint warnings",
+        "rubric_source": "invocation",
+    }
+    # An independent sticky rubric is shadowed by an actionable goal's own
+    # rubric: `rubric_source` resolves to "goal", so the sticky text is dropped
+    # (neither duplicated into goal_criteria nor surfaced as rubric_criteria).
+    assert _active_user_directives(
+        {
+            "_goal_objective": "Ship the export job",
+            "_goal_status": "active",
+            "_goal_rubric": "- export is idempotent",
+            "_sticky_rubric": "unrelated sticky rule",
+        }
+    ) == {
+        "goal_objective": "Ship the export job",
+        "goal_criteria": "- export is idempotent",
+        "rubric_criteria": None,
+        "rubric_source": None,
+    }
+    # A completed goal is not actionable and grants nothing, mirroring paused.
+    assert (
+        _active_user_directives(
+            {
+                "_goal_objective": "done work",
+                "_goal_status": "complete",
+                "_goal_rubric": "- shipped",
+            }
+        )
+        == {}
+    )
+
+
+async def test_classifier_includes_sticky_rubric_on_greeting_turn(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={"command": "make test"},
+        raw_user_text="hi",
+        expanded_text="hi",
+    )
+    cast("dict[str, Any]", request.state)["_sticky_rubric"] = (
+        "make sure tests pass and no new warnings"
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "make test"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["authorization_evidence"][0]["literal_user_text"] == "hi"
+    assert payload["active_user_directives"] == {
+        "goal_objective": None,
+        "goal_criteria": None,
+        "rubric_criteria": "make sure tests pass and no new warnings",
+        "rubric_source": "sticky",
+    }
+    policy = cast("str", cast("SystemMessage", model.calls[0][0]).content)
+    assert "active_user_directives" in policy
+    assert "even if the latest chat prompt is only a greeting" in policy
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_classifier_includes_actionable_goal_directives(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={"command": "pytest"},
+        raw_user_text="continue",
+        expanded_text="continue",
+    )
+    state = cast("dict[str, Any]", request.state)
+    state["_goal_objective"] = "Finish the tax calculator refactor"
+    state["_goal_status"] = "active"
+    state["_goal_rubric"] = "- unit tests pass\n- no new warnings"
+    state["_goal_status_note"] = "still working on it"
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "pytest"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["active_user_directives"] == {
+        "goal_objective": "Finish the tax calculator refactor",
+        "goal_criteria": "- unit tests pass\n- no new warnings",
+        "rubric_criteria": None,
+        "rubric_source": None,
+    }
+    assert "still working on it" not in json.dumps(payload)
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
 async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable(
@@ -3178,6 +3376,75 @@ async def test_policy_denial_becomes_error_tool_message(tmp_path: Path) -> None:
     assert denial.status == "error"
     assert denial.tool_call_id == "call-1"
     assert "destructive_action" in denial.content
+
+
+async def test_classifier_unavailable_emits_single_event_for_batch(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    calls = [
+        {
+            "name": "delete",
+            "args": {"file_path": "old.py"},
+            "id": "call-1",
+            "type": "tool_call",
+        },
+        {
+            "name": "delete",
+            "args": {"file_path": "older.py"},
+            "id": "call-2",
+            "type": "tool_call",
+        },
+    ]
+    ai_message = AIMessage(content="", tool_calls=calls)
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+    reason = "The authorization classifier was unavailable (TimeoutError)."
+    plan = {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": ["call-1", "call-2"],
+        "decisions": [
+            {
+                "tool_call_id": call["id"],
+                "disposition": "classifier_unavailable",
+                "category": "other_policy",
+                "reason": reason,
+                "path": "classifier",
+            }
+            for call in calls
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+    state = {"messages": [ai_message], "_auto_decision_plan": plan}
+
+    update = await middleware.aafter_model(
+        cast("AgentState[Any]", state), cast("Runtime[Any]", runtime)
+    )
+
+    assert update is not None
+    denials = [
+        message for message in update["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert {message.tool_call_id for message in denials} == {"call-1", "call-2"}
+    assert all(message.status == "error" for message in denials)
+    unavailable_events = [
+        event for event in events if event.get("event") == "unavailable"
+    ]
+    assert len(unavailable_events) == 1
+    assert unavailable_events[0]["reason"] == reason
 
 
 async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:

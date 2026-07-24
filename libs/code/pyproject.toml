@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.45"
+version = "0.1.46"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.0b1",
+    "deepagents==0.7.0b2",
     "langchain>=1.3.14,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.0,<4.0.0",
 
@@ -37,9 +37,9 @@ dependencies = [
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.5.0,<2.0.0",
+    "langchain-anthropic>=1.5.1,<2.0.0",
     "langchain-google-genai>=4.3.1,<5.0.0",
-    "langchain-openai>=1.4.0,<2.0.0",
+    "langchain-openai>=1.4.1,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
@@ -94,12 +94,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.5.0,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.5.1,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.1,<1.0.0"]
 bedrock = ["langchain-aws>=1.6.3,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.5.0,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.5.1,<2.0.0"]
 google-genai = ["langchain-google-genai>=4.3.1,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
@@ -112,7 +112,7 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.4.0,<2.0.0"]
+openai = ["langchain-openai>=1.4.1,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.7,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.0,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
@@ -158,7 +158,7 @@ test = [
     "build>=1.5.0,<2.0.0",
     # Build backend; imported by tests that exercise the `hatch_build.py` hook.
     "hatchling>=1.31.0,<2.0.0",
-    "ruff>=0.15.22,<1.0.0",
+    "ruff>=0.16.0,<1.0.0",
     # ty 0.0.62+ panics during full-package `ty check` (dependency-graph cycle).
     "ty>=0.0.61,<0.0.62",
     "pytest>=9.1.1,<10.0.0",

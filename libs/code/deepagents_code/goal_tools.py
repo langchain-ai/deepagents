@@ -20,7 +20,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
@@ -49,23 +49,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from langgraph.runtime import Runtime
-
-RubricSource = Literal["goal", "sticky", "invocation"]
-"""Where the active rubric criteria came from, as reported to the model."""
-
-GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
-
-Consult the latest goal/rubric state notice in conversation history before using
-these tools. Later notices supersede earlier notices. If no notice exists, assume
-there is no actionable goal or rubric and do not call these tools.
-
-When the latest notice says a rubric is active, use `get_rubric` when its exact
-acceptance criteria are needed. When it says a goal is actionable, use `get_goal`
-when its objective or current status is needed. Paused and completed goals must not
-drive work. Use `update_goal` only for an actionable goal: report a blocker with it;
-`status="complete"` remains available for optional completion evidence but is not
-required. Private checkpoint state and the tools remain authoritative for details."""
-"""Static model-visible guidance injected by `GoalToolsMiddleware`."""
 
 GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric", "update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
@@ -104,16 +87,16 @@ ResponseT = TypeVar("ResponseT")
 
 
 class RubricSnapshot(TypedDict):
-    """Read-only rubric view returned by the `get_rubric` tool to the model."""
+    """Read-only rubric view returned by the `get_rubric` tool to the model.
+
+    `active` is always `criteria is not None`; the two never disagree.
+    """
 
     active: bool
     """Whether acceptance criteria are currently available."""
 
     criteria: str | None
     """Current acceptance criteria, or `None` when no rubric is set."""
-
-    source: RubricSource | None
-    """Where the criteria came from: `goal`, `sticky`, `invocation`, or `None`."""
 
     grading_status: str | None
     """Latest `RubricMiddleware` grading status for the in-progress or
@@ -188,6 +171,11 @@ def _clean_state_text(state: dict[str, Any], key: str) -> str | None:
 def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     """Build the `get_rubric` response from graph state.
 
+    Criteria resolve in precedence order: public `rubric` input, else an
+    actionable goal rubric, else a standalone sticky rubric. Goal lifecycle and
+    sticky ownership stay in app state logic; this tool only exposes the current
+    criteria and grading status.
+
     Args:
         state: Current graph state injected by LangGraph.
 
@@ -202,23 +190,13 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     goal_is_actionable = objective is not None and status in {"active", "blocked"}
     sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
-    source: RubricSource | None = None
-    if criteria is not None:
-        if goal_is_actionable and goal_rubric == criteria:
-            source = "goal"
-        elif sticky_rubric == criteria and not sticky_is_goal_rubric:
-            source = "sticky"
-        else:
-            source = "invocation"
-    # Fallback branches below run only when there is no public `rubric` input,
-    # so `invocation` is unreachable here by construction — the criteria can
-    # only be attributed to an actionable `goal` or a standalone `sticky` rubric.
-    elif goal_is_actionable and goal_rubric is not None:
-        criteria = goal_rubric
-        source = "goal"
-    elif sticky_rubric is not None and not sticky_is_goal_rubric:
-        criteria = sticky_rubric
-        source = "sticky"
+    # Prefer the public `rubric` graph input when present; otherwise surface
+    # actionable goal criteria or a standalone sticky rubric.
+    if criteria is None:
+        if goal_is_actionable and goal_rubric is not None:
+            criteria = goal_rubric
+        elif sticky_rubric is not None and not sticky_is_goal_rubric:
+            criteria = sticky_rubric
 
     # `_rubric_status` is owned by the SDK's `RubricMiddleware`, co-composed into
     # this agent's graph; see the `grading_status` field docstring above.
@@ -226,7 +204,6 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     return {
         "active": criteria is not None,
         "criteria": criteria,
-        "source": source,
         "grading_status": grading_status,
     }
 
@@ -377,9 +354,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     Besides registering `get_goal`/`get_rubric`/`update_goal`, this middleware
     keeps the model oriented at each model boundary: `before_model` persists a
     fresh goal-state notice into checkpointed history when the latest one no
-    longer matches authoritative state, and `wrap_model_call` both appends the
-    static goal guidance to the system prompt and re-pins the notice into the
-    (post-summarization) request when the persisted one is out of view.
+    longer matches authoritative state, and `wrap_model_call` re-pins the
+    notice into the (post-summarization) request when the persisted one is out
+    of view. Tool usage guidance lives in the tool docstrings and notices.
     """
 
     state_schema = GoalToolState
@@ -395,12 +372,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             """Read criteria when the latest state notice says a rubric is active.
 
             Use this only when the latest goal/rubric state notice reports an active
-            rubric. It returns whether the criteria came from a goal, a sticky
-            rubric, or the current invocation, plus the latest grading status.
+            rubric. Use `get_goal` when a goal is actionable; this tool only reports
+            whether criteria are active, the current criteria, and the latest grading
+            status.
 
             Returns:
-                Rubric snapshot with `active`, `criteria`, `source`, and
-                `grading_status` keys.
+                Rubric snapshot with `active`, `criteria`, and `grading_status` keys.
             """
             return _rubric_snapshot(state)
 
@@ -412,7 +389,8 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
             Use this only when the latest goal/rubric state notice reports an
             actionable goal. It returns the objective, criteria, lifecycle status,
-            and any prior note from authoritative checkpoint state.
+            and any prior note from authoritative checkpoint state. Paused and
+            completed goals report `active=False` and must not drive work.
 
             Returns:
                 Goal snapshot with `active`, `objective`, `status`, `criteria`,
@@ -511,38 +489,25 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return self._notice_update(state)
 
     @staticmethod
-    def _request_with_goal_system_prompt(
+    def _request_with_goal_notice(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Append static goal guidance and re-pin the notice into a request.
+        """Re-pin the current goal-state notice into a model request when needed.
 
-        The system prompt gains the static goal-tool guidance, and — when
-        checkpointed history no longer surfaces a current notice — a transient
-        goal-state notice is appended to the request messages only (not
-        persisted; `before_model` owns the durable write).
+        When checkpointed history no longer surfaces a current notice, a
+        transient goal-state notice is appended to the request messages only
+        (not persisted; `before_model` owns the durable write). The system
+        prompt is left unchanged.
 
         Returns:
-            Model request with goal guidance in the system prompt and, when
-            needed, a current goal-state notice appended to its messages.
+            The original request when no notice is needed, otherwise a request
+            with a current goal-state notice appended to its messages.
         """
-        if request.system_message is not None:
-            content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"},
-            ]
-        else:
-            content = [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
         values = cast("dict[str, Any]", request.state)
         notice = _goal_state_notice_for(values, request.messages)
-        messages = (
-            [*request.messages, notice] if notice is not None else request.messages
-        )
-        return request.override(
-            messages=messages,
-            system_message=SystemMessage(
-                content=cast("list[str | dict[str, str]]", content)
-            ),
-        )
+        if notice is None:
+            return request
+        return request.override(messages=[*request.messages, notice])
 
     @override
     def wrap_model_call(
@@ -550,12 +515,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT]:
-        """Inject goal-tool guidance into each model request.
+        """Re-pin the goal-state notice into each model request when needed.
 
         Returns:
             Model response from the wrapped handler.
         """
-        return handler(self._request_with_goal_system_prompt(request))
+        return handler(self._request_with_goal_notice(request))
 
     @override
     async def awrap_model_call(
@@ -565,9 +530,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
         ],
     ) -> ModelResponse[ResponseT]:
-        """Inject goal-tool guidance into each async model request.
+        """Re-pin the goal-state notice into each async model request when needed.
 
         Returns:
             Model response from the wrapped handler.
         """
-        return await handler(self._request_with_goal_system_prompt(request))
+        return await handler(self._request_with_goal_notice(request))

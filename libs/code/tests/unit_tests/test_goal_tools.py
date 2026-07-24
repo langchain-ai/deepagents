@@ -17,7 +17,6 @@ from deepagents_code.goal_state_notice import (
     goal_state_notice_info,
 )
 from deepagents_code.goal_tools import (
-    GOAL_TOOLS_SYSTEM_PROMPT,
     GoalToolsMiddleware,
     GoalToolState,
     _goal_snapshot,
@@ -31,7 +30,6 @@ def test_rubric_snapshot_without_rubric() -> None:
     assert _rubric_snapshot({}) == {
         "active": False,
         "criteria": None,
-        "source": None,
         "grading_status": None,
     }
 
@@ -49,23 +47,25 @@ def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
     ) == {
         "active": True,
         "criteria": "- one-shot criteria",
-        "source": "invocation",
         "grading_status": "needs_revision",
     }
 
 
-def test_rubric_snapshot_identifies_goal_rubric() -> None:
-    """A goal-backed rubric should be labeled as goal criteria."""
+@pytest.mark.parametrize("status", ["active", "blocked"])
+def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input(
+    status: str,
+) -> None:
+    """Actionable goal criteria are returned when no public rubric is set."""
     assert _rubric_snapshot(
         {
-            "rubric": "- tests pass",
             "_goal_objective": "ship it",
-            "_goal_rubric": "- tests pass",
+            "_goal_status": status,
+            "_goal_rubric": "- goal criteria",
+            "_sticky_rubric": "- sticky criteria",
         }
     ) == {
         "active": True,
-        "criteria": "- tests pass",
-        "source": "goal",
+        "criteria": "- goal criteria",
         "grading_status": None,
     }
 
@@ -83,7 +83,6 @@ def test_rubric_snapshot_suppresses_inactive_goal_rubric(status: str) -> None:
     ) == {
         "active": False,
         "criteria": None,
-        "source": None,
         "grading_status": None,
     }
 
@@ -100,7 +99,6 @@ def test_rubric_snapshot_keeps_standalone_sticky_rubric_for_paused_goal() -> Non
     ) == {
         "active": True,
         "criteria": "- standalone criteria",
-        "source": "sticky",
         "grading_status": None,
     }
 
@@ -110,7 +108,6 @@ def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
     assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {
         "active": True,
         "criteria": "- sticky criteria",
-        "source": "sticky",
         "grading_status": None,
     }
 
@@ -370,13 +367,20 @@ def _fake_request(
     messages: list[object] | None = None,
 ) -> SimpleNamespace:
     """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
-    return SimpleNamespace(
+    request = SimpleNamespace(
         system_message=system_message,
         runtime=SimpleNamespace(context=context or {}),
         state=state or {},
         messages=messages or [],
-        override=lambda **kw: SimpleNamespace(**kw),
     )
+
+    def override(**kw: object) -> SimpleNamespace:
+        updated = SimpleNamespace(**vars(request))
+        updated.__dict__.update(kw)
+        return updated
+
+    request.override = override
+    return request
 
 
 def test_before_model_persists_public_rubric_notice() -> None:
@@ -526,10 +530,11 @@ def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() ->
     assert captured["request"].messages == [fallback]
 
 
-def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
-    """Guidance should append to an existing system message's blocks."""
+def test_wrap_model_call_leaves_system_message_unchanged() -> None:
+    """Request wrapping must not mutate the system prompt."""
+    system = SystemMessage(content="base instructions")
     captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(SystemMessage(content="base instructions"))
+    request = _fake_request(system)
 
     result = GoalToolsMiddleware().wrap_model_call(
         request,  # ty: ignore[invalid-argument-type]
@@ -537,15 +542,12 @@ def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
     )
 
     assert result == "response"
-    new_system = captured["request"].system_message
-    assert isinstance(new_system, SystemMessage)
-    blocks = new_system.content
-    assert blocks[0]["text"] == "base instructions"
-    assert blocks[-1]["text"] == f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"
+    assert captured["request"] is request
+    assert captured["request"].system_message is system
 
 
-def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
-    """Guidance should seed a fresh system message when none exists."""
+def test_wrap_model_call_leaves_missing_system_message_none() -> None:
+    """Request wrapping must not invent a system message when none exists."""
     captured: dict[str, SimpleNamespace] = {}
     request = _fake_request(None)
 
@@ -554,13 +556,13 @@ def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
         _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
     )
 
-    new_system = captured["request"].system_message
-    text = new_system.content[0]["text"]
-    assert text == GOAL_TOOLS_SYSTEM_PROMPT
+    assert captured["request"] is request
+    assert captured["request"].system_message is None
 
 
 def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
     """Goal lifecycle state must not change cache-sensitive request prefixes."""
+    base_system = SystemMessage(content="base instructions")
     states: list[dict[str, object]] = [
         {},
         {
@@ -593,41 +595,55 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
             "_goal_status_note": None,
         },
     ]
-    system_bytes: list[bytes] = []
+    system_refs: list[object] = []
     schema_bytes: list[bytes] = []
+    notice_texts: list[str] = []
 
     for state in states:
         captured: dict[str, SimpleNamespace] = {}
         middleware = GoalToolsMiddleware()
-        request = _fake_request(None, state=state)
+        request = _fake_request(base_system, state=state)
         middleware.wrap_model_call(
             request,  # ty: ignore[invalid-argument-type]
             _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
         )
-        content = captured["request"].system_message.content
-        system_bytes.append(
-            json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+        system_refs.append(captured["request"].system_message)
+        notice_texts.append(
+            "".join(
+                message.content
+                for message in captured["request"].messages
+                if isinstance(getattr(message, "content", None), str)
+            )
         )
         schemas = [convert_to_openai_tool(tool) for tool in middleware.tools]
         schema_bytes.append(
             json.dumps(schemas, sort_keys=True, separators=(",", ":")).encode()
         )
 
-    assert len(set(system_bytes)) == 1
+    assert all(system is base_system for system in system_refs)
     assert len(set(schema_bytes)) == 1
-    assert b"Current Persisted Goal/Rubric State" not in system_bytes[0]
-    assert b"blocked_goal_retry_context" not in system_bytes[0]
+    # The appended goal-state notice is the only model-visible surface this
+    # middleware adds, so it must stay coarse: the private objective, status
+    # note, and rubric criteria must never leak into it, while an
+    # objective-bearing state still produces a notice.
+    for state, notice_text in zip(states, notice_texts, strict=True):
+        assert "ship it" not in notice_text
+        assert "tests pass" not in notice_text
+        assert "waiting" not in notice_text
+        if state.get("_goal_objective"):
+            assert "Goal status:" in notice_text
 
 
-async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:
-    """The async path should mirror the sync guidance injection."""
+async def test_awrap_model_call_leaves_system_message_unchanged() -> None:
+    """The async path should also leave the system prompt alone."""
+    system = SystemMessage(content="base instructions")
     captured: dict[str, SimpleNamespace] = {}
 
     async def handler(request: SimpleNamespace) -> str:  # noqa: RUF029
         captured["request"] = request
         return "response"
 
-    request = _fake_request(SystemMessage(content="base instructions"))
+    request = _fake_request(system)
 
     result = await GoalToolsMiddleware().awrap_model_call(
         request,  # ty: ignore[invalid-argument-type]
@@ -635,9 +651,8 @@ async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:
     )
 
     assert result == "response"
-    blocks = captured["request"].system_message.content
-    assert blocks[0]["text"] == "base instructions"
-    assert blocks[-1]["text"].strip().startswith(GOAL_TOOLS_SYSTEM_PROMPT)
+    assert captured["request"] is request
+    assert captured["request"].system_message is system
 
 
 def test_goal_tool_state_marks_goal_fields_private() -> None:

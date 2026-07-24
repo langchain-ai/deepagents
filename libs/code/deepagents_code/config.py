@@ -3255,6 +3255,27 @@ def is_memory_auto_save_enabled() -> bool:
     return bool(value)
 
 
+def is_yolo_switcher_enabled() -> bool:
+    """Return whether Shift+Tab may enter unrestricted YOLO mode.
+
+    Resolves the `startup.yolo_switcher` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the interactive cycle stays Manual /
+    Auto only (or Manual alone when Auto is ineligible). Sessions already in
+    YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("startup.yolo_switcher")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def is_openai_prompt_cache_key_enabled() -> bool:
     """Return whether OpenAI model calls should carry a per-thread cache key.
 

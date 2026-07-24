@@ -387,7 +387,11 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.deepEqual(calls.getByUsername, [{ username: BOT.login }]);
   assert.equal(calls.createComment.length, 1);
   assert.match(calls.createComment[0].body, /changelog-fingerprint:/);
-  assert.match(calls.createComment[0].body, /@dcode-release-bot apply/);
+  assert.match(calls.createComment[0].body, /---\n<!-- dcode-release-notes-content-start -->/);
+  assert.match(calls.createComment[0].body, /<!-- dcode-release-notes-content-end -->\n---/);
+  assert.match(calls.createComment[0].body, /```\n@dcode-release-bot apply\n```/);
+  assert.match(calls.createComment[0].body, /```\n@dcode-release-bot draft\n```/);
+  assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
 
   const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
   await assert.rejects(
@@ -756,6 +760,10 @@ test('required check waits for the first automatic draft before validating', asy
     sleep: async () => {},
   });
   assert.equal(result.status, 'unapplied');
+  assert.equal(
+    result.draftCommentUrl,
+    `https://github.com/langchain-ai/deepagents/pull/123#issuecomment-${comments[0].id}`,
+  );
   assert.match(core.failed, /Review the curated release-note draft.*apply/);
   assert.ok(core.infos.some(message => /Waiting for the automatic/.test(message)));
   assert.equal(run.calls.getContent.length, 1);

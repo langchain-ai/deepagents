@@ -1,0 +1,28 @@
+libs/evals/assets/lite-scorecard-categories-light.svg
+  s_11751c0079f29d::t_257200bb512c4b 16-22,25-35,37-38,41-42,44-49,51-52,55-56
+libs/evals/UNIFIED_SCORECARD.md
+  s_11751c0079f29d::t_09beebd7dbecf7 49,77,93,109,125,141
+  s_11751c0079f29d::t_891e04382bc03e 17-19,33,43-47,59-61,63,71,73-75,87-91,103-107,119-123,135,137-139
+libs/evals/assets/lite-scorecard-light.svg
+  s_11751c0079f29d::t_d73c6b93a15969 15-28,30-33,35-38,40-43
+libs/evals/assets/lite-scorecard-categories-dark.svg
+  s_11751c0079f29d::t_257200bb512c4b 16-22,25-35,37-38,41-42,44-49,51-52,55-56
+libs/evals/assets/lite-scorecard-dark.svg
+  s_11751c0079f29d::t_d73c6b93a15969 15-28,30-33,35-38,40-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d35e65588175a83b7e30b49a1afe90d4a27fcf55",
+  "prompts": {},
+  "sessions": {
+    "s_11751c0079f29d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8578-81c2-71e3-bb6c-c5a78e6b3f88",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

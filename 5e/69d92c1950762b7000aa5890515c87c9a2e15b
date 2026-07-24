@@ -1,0 +1,105 @@
+libs/evals/datasets/context-retrieval-evals/cb-cloud-49/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/harbor_adapters/contextbench/templates/test.sh
+  s_172bca4d3f2099::t_7c99650b37cd6d 1-4
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-38/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-36/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-7/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-32/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-26/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_172bca4d3f2099::t_31cbdc6d11d7b2 14-22
+libs/evals/datasets/context-retrieval-evals/cb-cloud-13/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/tests/unit_tests/test_contextbench_main.py
+  s_172bca4d3f2099::t_0fdebdd1189fce 57-60
+  s_172bca4d3f2099::t_46c945eb718cd7 98-99,104-106,124-128
+libs/evals/datasets/context-retrieval-evals/cb-cloud-10/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-47/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-16/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-42/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_172bca4d3f2099::t_3e737a82e984a7 244-259
+  s_172bca4d3f2099::t_2e27833b8556c4 26-30
+  s_172bca4d3f2099::t_1110a00cdaa8b2 130-137,139-141,169
+  s_172bca4d3f2099::t_0cd55bf99477c4 292-300,307-308
+  s_172bca4d3f2099::t_5fbfd38621603a 303-306
+  s_172bca4d3f2099::t_2901053bb9b0a5 218-220
+libs/evals/datasets/context-retrieval-evals/cb-cloud-56/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/.gitignore
+  s_172bca4d3f2099::t_d65e7b41e98601 4-11
+libs/evals/harbor_adapters/contextbench/templates/judge.py
+  s_172bca4d3f2099::t_3aeec5ac063317 1-11,16-98,100-147
+  s_172bca4d3f2099::t_514b6d6af35e9f 12-15
+  s_172bca4d3f2099::t_2ae4890d31a019 99
+libs/evals/datasets/context-retrieval-evals/cb-cloud-15/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-78/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-2/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-24/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-55/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-18/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/pyproject.toml
+  s_172bca4d3f2099::t_1502116f13ed87 189-193
+libs/evals/datasets/context-retrieval-evals/cb-cloud-48/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/tests/unit_tests/test_contextbench_adapter.py
+  s_172bca4d3f2099::t_cb7db9f53a6d06 81-82,85-86,88-96
+libs/evals/datasets/context-retrieval-evals/cb-cloud-41/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-0/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-31/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-35/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/datasets/context-retrieval-evals/cb-cloud-5/tests/case.json
+  s_172bca4d3f2099::t_a5036d75c64498 1
+libs/evals/harbor_adapters/contextbench/vendor/rubric.txt
+  s_172bca4d3f2099::t_6f9911e7a6a45e 1-39
+libs/evals/harbor_adapters/contextbench/vendor/README.md
+  s_172bca4d3f2099::t_9ac9330d1bae3a 9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5e69d92c1950762b7000aa5890515c87c9a2e15b",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

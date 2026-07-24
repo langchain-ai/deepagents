@@ -1,0 +1,38 @@
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265,296
+libs/deepagents/deepagents/middleware/subagents.py
+  s_427b8b2e2ce745::t_b40051948ae5e4 285,290-296
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265
+libs/deepagents/tests/unit_tests/test_middleware.py
+  s_427b8b2e2ce745::t_6abffc1d4264ef 2708
+  s_427b8b2e2ce745::t_62d33ea28ae164 2626
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_427b8b2e2ce745::t_b40051948ae5e4 944,947-953,955,982-984,1004,1006,1014,1016,1027,1030-1035
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265,296
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_media_extra_tools.json
+  s_427b8b2e2ce745::t_3621ca253fcc79 62,115,168,199,265,296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b2518a28e8e00dd1d74e338395aaeb4ad6ed0be2",
+  "prompts": {},
+  "sessions": {
+    "s_427b8b2e2ce745": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f9a7dd1-d2c2-4f68-a70e-6ee16c83d1bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

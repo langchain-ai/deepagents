@@ -1,0 +1,23 @@
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_31a9bb0229feef::t_1104dc95c6a753 20-22
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_31a9bb0229feef::t_23d3b1aa51a1fe 21-23
+libs/evals/CONTRIBUTING.md
+  s_31a9bb0229feef::t_e68f67e8d8f969 418,431,483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "ca65d0744b518589afc76193e82000ac7da85614",
+  "prompts": {},
+  "sessions": {
+    "s_31a9bb0229feef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53cb959b-b42a-4eee-bd82-4240177a9503",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

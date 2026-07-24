@@ -1,0 +1,21 @@
+libs/evals/pyproject.toml
+  s_11751c0079f29d::t_0fa885e9e6d0d8 32,36
+libs/evals/uv.lock
+  s_11751c0079f29d::t_7c4ce9a6851b19 653,657,1386,1393,1395,1463,1471,1473
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "ef08b9a0ec8310d15340bc0878dd5ef763c09822",
+  "prompts": {},
+  "sessions": {
+    "s_11751c0079f29d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8578-81c2-71e3-bb6c-c5a78e6b3f88",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

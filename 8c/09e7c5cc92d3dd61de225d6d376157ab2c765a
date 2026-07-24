@@ -1,0 +1,71 @@
+libs/evals/datasets/context-retrieval-evals/cb-cloud-79/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-8/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-81/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+.github/scripts/lite_tasks.py
+  s_172bca4d3f2099::t_16020fc6454140 59-64,66-73
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_172bca4d3f2099::t_155decfc50bf9a 9,11-16,35-38,40-42,44-47,49,51-52,56,58-87,89
+libs/evals/datasets/context-retrieval-evals/cb-cloud-45/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-42/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-83/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-9/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-57/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-3/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/calibration.json
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 3,5-6,9,12-13,18-19,24-25,30-31,36-37,39,42-50,54,56,60-61,66-67,72-73,78,84,90,96,98,100,102-104,106,108,110,112,114,116,118,120,122,124,126,128,130,132,134,136,138,140,142,144,146,148,150,156-158,160,162,168-170,172,174,176,178,180,182,184,186-187
+libs/evals/datasets/context-retrieval-evals/cb-cloud-15/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-41/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-49/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-6/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-4/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-66/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-69/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-73/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-62/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-13/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-47/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-67/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-24/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-68/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+libs/evals/datasets/context-retrieval-evals/cb-cloud-65/task.toml
+  s_172bca4d3f2099::t_bd02cc8a3ea1e2 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8c09e7c5cc92d3dd61de225d6d376157ab2c765a",
+  "prompts": {},
+  "sessions": {
+    "s_172bca4d3f2099": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b67d19f7-af40-487e-bd33-d661ac05a94e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

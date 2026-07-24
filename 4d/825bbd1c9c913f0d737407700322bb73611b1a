@@ -1,0 +1,25 @@
+libs/deepagents/deepagents/graph.py
+  s_14c0d7b2e61fc1::t_d12a6ce8459a9b 133,135-137,428-429,435,999,1005
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_14c0d7b2e61fc1::t_d12a6ce8459a9b 579,584,595,601,623
+libs/deepagents/deepagents/profiles/harness/harness_profiles.py
+  s_14c0d7b2e61fc1::t_d12a6ce8459a9b 257-258,260-261,547-548,550-551,575-576,793
+libs/deepagents/deepagents/middleware/summarization.py
+  s_14c0d7b2e61fc1::t_d12a6ce8459a9b 1911-1914
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "4d825bbd1c9c913f0d737407700322bb73611b1a",
+  "prompts": {},
+  "sessions": {
+    "s_14c0d7b2e61fc1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f858d-2d58-7630-bbef-439d4b057c9d",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

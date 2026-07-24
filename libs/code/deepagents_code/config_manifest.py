@@ -1187,6 +1187,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="models.openai_prompt_cache_key",
+        group="Tools",
+        summary=(
+            "Attach a per-thread prompt_cache_key to OpenAI-provider model calls "
+            "for reliable prompt-cache routing; disable for endpoints that reject "
+            "unknown request fields."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.OPENAI_PROMPT_CACHE_KEY,
+        empty_env_is_false=True,
+        toml_keys=("models", "openai_prompt_cache_key"),
+    ),
+    ConfigOption(
         key="memory.auto_save",
         group="Tools",
         summary=(

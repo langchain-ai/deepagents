@@ -159,8 +159,8 @@ EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 
 Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
-values). Currently gates the beta classifier-backed Auto approval mode.
-Behavior behind this flag may change or be removed without notice.
+values). Marks experimental runs in UI/trace metadata. Behavior behind this
+flag may change or be removed without notice.
 """
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
@@ -175,6 +175,16 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
+
+GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
+"""Apply generated goal criteria automatically in Auto mode.
+
+Disabled by default so Auto continues to show the goal review prompt unless the
+user opts in. Manual always reviews criteria and YOLO always applies them.
+Set to a recognized truthy or falsy value; unrecognized values are ignored and
+resolution falls through to `[goals].auto_accept_criteria` in config.toml, then
+the built-in default (disabled).
+"""
 
 HIDE_CWD = "DEEPAGENTS_CODE_HIDE_CWD"
 """Hide local path displays in the TUI footer and the editable-install path in

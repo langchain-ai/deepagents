@@ -42,9 +42,12 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, OptionList, Static
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -82,6 +85,7 @@ from deepagents_code.tui.widgets.goal_review import (
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
+    LaunchGoalCriteriaPreferenceScreen,
     LaunchNameScreen,
 )
 from deepagents_code.tui.widgets.message_store import (
@@ -504,6 +508,16 @@ class TestInitialPromptOnMount:
 class TestStartupSequence:
     """Tests for post-connect startup sequencing."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_goal_preference_prompt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keep legacy onboarding tests focused on the screens they exercise."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "false")
+
     async def test_session_start_sequence_is_idempotent_across_server_ready(
         self,
     ) -> None:
@@ -551,15 +565,18 @@ class TestStartupSequence:
         app._initial_session_started = True
         app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
         load_history = AsyncMock()
+        accept_goal = AsyncMock()
         drain_deferred = AsyncMock()
         process_next = AsyncMock()
         app._load_thread_history = load_history  # ty: ignore
+        app._auto_accept_pending_goal_rubric = accept_goal  # ty: ignore
         app._maybe_drain_deferred = drain_deferred  # ty: ignore
         app._process_next_from_queue = process_next  # ty: ignore
 
         await app._run_session_start_sequence()
 
         load_history.assert_not_awaited()
+        accept_goal.assert_awaited_once()
         drain_deferred.assert_awaited_once()
         process_next.assert_awaited_once()
 
@@ -900,6 +917,374 @@ class TestStartupSequence:
 
         assert order == ["init", "initial"]
         assert app._launch_init_requested is False
+
+    @staticmethod
+    def _clear_goal_auto_accept_prompt_marker() -> None:
+        """Undo the shared fixture marker so preference-prompt coverage can run."""
+        from deepagents_code.onboarding import goal_auto_accept_prompt_marker_path
+
+        goal_auto_accept_prompt_marker_path().unlink(missing_ok=True)
+
+    @staticmethod
+    def _force_auto_mode(app: DeepAgentsApp) -> None:
+        """Put the app into Auto mode so the goal preference prompt applies.
+
+        Tests that mock `run_worker` never start session init, so create the
+        session state when it is absent rather than assuming it exists.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        if app._session_state is None:
+            app._session_state = TextualSessionState()
+        app._approval_mode = ApprovalMode.AUTO
+        app._session_state.approval_mode = ApprovalMode.AUTO
+
+    async def test_goal_create_prompts_for_auto_accept_preference(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """First Auto-mode create/amend should ask before drafting criteria."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app._cancel_goal_proposal_worker = MagicMock()  # ty: ignore
+        app._cancel_pending_goal_review = AsyncMock()  # ty: ignore
+        app._clear_pending_goal_rubric = MagicMock()  # ty: ignore
+        app._persist_goal_rubric_state = AsyncMock()  # ty: ignore
+        app._goal_state_mutation_boundary = MagicMock(  # ty: ignore
+            return_value=contextlib.nullcontext(),
+        )
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            command_task = asyncio.create_task(
+                app._handle_goal_command("/goal ship passkeys"),
+            )
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            options = app.screen.query_one(OptionList)
+            assert options.has_focus
+            assert options.highlighted == 0
+
+            await pilot.press("escape")
+            await asyncio.wait_for(command_task, timeout=2)
+            await pilot.pause()
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+        assert app._goal_proposal_worker is not None
+
+    async def test_goal_create_skips_preference_prompt_when_decided(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit prefs should not interrupt goal drafting, even in Auto."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app._cancel_goal_proposal_worker = MagicMock()  # ty: ignore
+        app._cancel_pending_goal_review = AsyncMock()  # ty: ignore
+        app._clear_pending_goal_rubric = MagicMock()  # ty: ignore
+        app._persist_goal_rubric_state = AsyncMock()  # ty: ignore
+        app._goal_state_mutation_boundary = MagicMock(  # ty: ignore
+            return_value=contextlib.nullcontext(),
+        )
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            await app._handle_goal_command("/goal ship passkeys")
+            await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+        assert app._goal_proposal_worker is not None
+
+    async def test_launch_init_does_not_prompt_for_goal_preference(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Onboarding should not ask about goals before the user uses them."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+
+    def test_goal_preference_prompt_shows_without_an_explicit_decision(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Missing settings and markers should identify an unanswered preference."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.onboarding import mark_onboarding_complete
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+        assert mark_onboarding_complete() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "invalid")
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+    @pytest.mark.parametrize(
+        "decision",
+        [
+            "prompt-marker",
+            "env-true",
+            "env-false",
+            "toml-true",
+            "toml-false",
+        ],
+    )
+    def test_goal_preference_prompt_skips_existing_decisions(
+        self,
+        decision: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Any explicit preference or prior prompt answer should suppress it."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import mark_goal_auto_accept_prompt_shown
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        if decision == "prompt-marker":
+            assert mark_goal_auto_accept_prompt_shown() is True
+        elif decision.startswith("env-"):
+            monkeypatch.setenv(
+                GOAL_AUTO_ACCEPT_CRITERIA,
+                decision.removeprefix("env-"),
+            )
+        else:
+            enabled = decision == "toml-true"
+            DEFAULT_CONFIG_PATH.write_text(
+                f"[goals]\nauto_accept_criteria = {str(enabled).lower()}\n",
+                encoding="utf-8",
+            )
+
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    async def test_saving_goal_preference_marks_prompt_as_shown(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A saved choice should persist and suppress future prompts."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        await app._save_goal_auto_accept_preference(True)
+
+        assert "auto_accept_criteria = true" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    @pytest.mark.parametrize(
+        ("saved", "marked", "warning"),
+        [
+            (False, True, "Could not save the goal criteria preference"),
+            (True, False, "could not record that the prompt was shown"),
+            (False, False, "Could not save the goal criteria preference"),
+        ],
+    )
+    async def test_goal_preference_write_failures_warn_once_and_continue(
+        self,
+        saved: bool,
+        marked: bool,
+        warning: str,
+    ) -> None:
+        """Preference and marker failures should attempt both writes and warn once."""
+        app = DeepAgentsApp(agent=MagicMock())
+        with (
+            patch(
+                "deepagents_code.model_config.save_goal_auto_accept_criteria",
+                return_value=saved,
+            ) as save,
+            patch(
+                "deepagents_code.onboarding.mark_goal_auto_accept_prompt_shown",
+                return_value=marked,
+            ) as mark,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._save_goal_auto_accept_preference(True)
+
+        save.assert_called_once_with(True)
+        mark.assert_called_once_with()
+        notify.assert_called_once()
+        assert warning in notify.call_args.args[0]
+
+    @pytest.mark.parametrize("mode_name", ["manual", "yolo"])
+    async def test_goal_preference_prompt_skipped_outside_auto_mode(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-Auto modes never see the Auto-only preference prompt.
+
+        The choice has no effect in Manual (always reviews) or YOLO (always
+        applies), so it is left unanswered for Auto to ask about later.
+        """
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            mode = ApprovalMode(mode_name)
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
+            with patch.object(
+                app,
+                "_save_goal_auto_accept_preference",
+                new_callable=AsyncMock,
+            ) as save:
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            save.assert_not_awaited()
+
+        assert has_shown_goal_auto_accept_prompt() is False
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is True
+
+    async def test_goal_preference_prompt_times_out_and_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A wedged Auto prompt is bounded and defaults to review.
+
+        The one-time marker is still written so the timed-out prompt cannot loop.
+        """
+        from deepagents_code import app as app_module
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        async def _never(_self: object, _screen: object) -> None:
+            await asyncio.sleep(10)
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 0.01)
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            with patch.object(DeepAgentsApp, "_push_screen_wait", _never):
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+        assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+
+    async def test_goal_preference_prompt_mount_failure_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prompt that fails to mount defaults to review without looping."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            with patch.object(
+                DeepAgentsApp,
+                "_push_screen_wait",
+                MagicMock(side_effect=RuntimeError("boom")),
+            ):
+                await app._ensure_goal_auto_accept_preference()
+                await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+        assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
+            encoding="utf-8"
+        )
+        assert has_shown_goal_auto_accept_prompt() is True
+
+    async def test_dismiss_orphaned_screen_removes_current_modal(self) -> None:
+        """The orphan-cleanup helper pops the modal it is given when current."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = LaunchGoalCriteriaPreferenceScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert app.screen is screen
+
+            app._dismiss_orphaned_screen(screen)
+            await pilot.pause()
+
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+    async def test_dismiss_orphaned_screen_ignores_unmounted_screen(self) -> None:
+        """A prompt that never mounted is left alone, popping nothing."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            current = app.screen
+            never_pushed = LaunchGoalCriteriaPreferenceScreen()
+
+            app._dismiss_orphaned_screen(never_pushed)
+            await pilot.pause()
+
+            assert app.screen is current
 
     async def test_launch_init_name_screen_focuses_on_mount(self) -> None:
         """The first launch modal should be active and typeable immediately."""
@@ -5460,10 +5845,48 @@ class TestTraceCommand:
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
+        from deepagents_code.config import LangsmithShadowResult
+
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState()
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+                # Pin the shadow check so this branch is independent of whatever
+                # tracing vars the test runner happens to have exported.
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    return_value=LangsmithShadowResult(),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "/auth" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
+
+    async def test_trace_flags_key_shadowed_by_empty_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should name the empty override and how to fix it, not send to /auth."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            # Clear the sibling tracing vars so the real helper reaches the
+            # canonical-env shadow branch deterministically.
+            for var in ("LANGCHAIN_API_KEY", "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"):
+                monkeypatch.delenv(var, raising=False)
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
 
             with patch(
                 "deepagents_code.config.get_langsmith_project_name",
@@ -5474,8 +5897,71 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
+            assert "shadowing" in rendered
+            # The actionable remediation must be present...
+            assert "Unset DEEPAGENTS_CODE_LANGSMITH_API_KEY" in rendered
+            # ...and it must not send the user to /auth or mislabel an env key
+            # as a "stored" key.
+            assert "/auth" not in rendered
+            assert "stored key" not in rendered
+
+    async def test_trace_flags_unreadable_credential_store(self) -> None:
+        """A corrupt store surfaces a corruption hint, not the generic one."""
+        from deepagents_code.config import LangsmithShadowResult
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    return_value=LangsmithShadowResult(store_unreadable=True),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "corrupt" in rendered
             assert "/auth" in rendered
-            assert "LANGSMITH_API_KEY" not in rendered
+
+    async def test_trace_survives_shadow_check_failure(self) -> None:
+        """An unexpected error in the shadow check falls back to the generic hint.
+
+        The check is a best-effort diagnostic; a raise from it (e.g. a lazy
+        import failure) must not crash `/trace` or drop the command echo.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config.langsmith_key_shadowed_by_empty_override",
+                    side_effect=RuntimeError("boom"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "/auth" in rendered
+            user_msgs = app.query(UserMessage)
+            assert any("/trace" in str(w._content) for w in user_msgs)
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.
@@ -6342,6 +6828,79 @@ class TestWarnDiscardedGoalChannels:
 
         assert discarded == ["_pending_goal_request_id"]
 
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"_pending_goal_kind": "replace"},
+            {"_pending_goal_kind": 1},
+            {"_pending_goal_request_id": "  "},
+            {"_pending_goal_request_id": 1},
+        ],
+    )
+    def test_malformed_metadata_discards_entire_pending_proposal(
+        self,
+        malformed: dict[str, object],
+    ) -> None:
+        """Malformed metadata must not leave a proposal eligible for Auto."""
+        state: dict[str, object] = {
+            "_pending_goal_objective": "ship login",
+            "_pending_goal_rubric": "- tests pass",
+            "_pending_goal_kind": "create",
+            "_pending_goal_request_id": "request-1",
+        }
+        state.update(malformed)
+
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            state,
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        assert payload.pending_goal_objective is None
+        assert payload.pending_goal_rubric is None
+        assert payload.pending_goal_kind is None
+        assert payload.pending_goal_request_id is None
+
+    def test_legacy_pending_proposal_without_metadata_is_preserved(self) -> None:
+        """Legacy proposals may omit kind and request ID without being discarded."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "_pending_goal_objective": "ship login",
+                "_pending_goal_rubric": "- tests pass",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp()
+
+        app._restore_goal_rubric_state(payload)
+
+        assert app._pending_goal_objective == "ship login"
+        assert app._pending_goal_rubric == "- tests pass"
+        assert app._pending_goal_kind == "create"
+        assert app._pending_goal_request_id is None
+
+    def test_valid_pending_metadata_is_preserved(self) -> None:
+        """Well-formed metadata must pass through the fail-closed guard intact."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {
+                "_pending_goal_objective": "ship login",
+                "_pending_goal_rubric": "- tests pass",
+                "_pending_goal_kind": "amend",
+                "_pending_goal_request_id": "request-1",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        assert payload.pending_goal_objective == "ship login"
+        assert payload.pending_goal_rubric == "- tests pass"
+        assert payload.pending_goal_kind == "amend"
+        assert payload.pending_goal_request_id == "request-1"
+
 
 class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
@@ -6375,13 +6934,30 @@ class TestGoalCommand:
 
         return submit
 
-    async def test_yolo_goal_proposal_auto_accepts_without_review(self) -> None:
-        """Live YOLO mode should apply a new proposal through normal acceptance."""
-        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+    @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
+    async def test_configured_auto_or_yolo_goal_proposal_auto_accepts(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Auto opt-in and YOLO should apply a proposal without review."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            auto_approve=mode is ApprovalMode.YOLO,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = True
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
             handle = AsyncMock()
 
             with (
@@ -6420,12 +6996,6 @@ class TestGoalCommand:
             await app._show_goal_state()
             await pilot.pause()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                rendered.count(
-                    "Goal criteria automatically accepted because YOLO mode is enabled."
-                )
-                == 1
-            )
             assert "Goal accepted. It will stay active for this thread" in rendered
             assert "Goal:\nadd refresh tokens exactly" in rendered
             assert "Criteria:\n- tests pass\n- no unrelated files" in rendered
@@ -6434,16 +7004,31 @@ class TestGoalCommand:
                 not in (rendered)
             )
 
-    async def test_yolo_goal_generation_reconciles_through_queued_application(
+    @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
+    async def test_configured_auto_or_yolo_reconciles_queued_application(
         self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A generated proposal should queue and continue at the turn boundary."""
+        """Auto opt-in and YOLO should apply a proposal at the turn boundary."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
         request_id = "request-create"
-        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            auto_approve=mode is ApprovalMode.YOLO,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = True
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
             app._lc_thread_id = "thread-1"
             handle = AsyncMock()
             fetch = AsyncMock(
@@ -6729,13 +7314,60 @@ class TestGoalCommand:
             assert app._pending_goal_objective is None
             assert not any(app.query(GoalReviewMenu))
 
-    async def test_manual_goal_proposal_still_waits_for_review(self) -> None:
-        """Manual mode should keep the existing interactive review workflow."""
+    @pytest.mark.parametrize(
+        ("mode_name", "preference", "expected"),
+        [
+            ("manual", False, False),
+            ("manual", True, False),
+            ("auto", False, False),
+            ("auto", True, True),
+            ("yolo", False, True),
+            ("yolo", True, True),
+        ],
+    )
+    def test_live_goal_proposal_auto_accept_policy(
+        self,
+        mode_name: str,
+        preference: bool,
+        expected: bool,
+    ) -> None:
+        """Only opted-in Auto and all YOLO sessions should auto-accept."""
+        resolver = MagicMock(return_value=(preference, "test"))
+        app = DeepAgentsApp(agent=MagicMock())
+        app._session_state = TextualSessionState(approval_mode=mode_name)
+
+        with patch(
+            "deepagents_code.config.resolve_goal_auto_accept_criteria",
+            resolver,
+        ):
+            assert app._live_goal_proposal_auto_accept_enabled() is expected
+
+        if mode_name == "auto":
+            resolver.assert_called_once_with()
+        else:
+            resolver.assert_not_called()
+
+    @pytest.mark.parametrize("mode_name", ["manual", "auto"])
+    async def test_goal_proposal_waits_for_review_when_policy_requires_it(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Manual and default Auto should keep interactive goal review."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.MANUAL else "false",
+        )
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = False
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
             app._pending_goal_kind = "create"
@@ -6756,13 +7388,30 @@ class TestGoalCommand:
             assert not app._goal_review_task.done()
             await app._cancel_pending_goal_review(context="test cleanup")
 
-    async def test_yolo_goal_amendment_preserves_continuation_context(self) -> None:
-        """Auto-accepted amendments should continue without replaying completed work."""
-        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+    @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
+    async def test_configured_auto_or_yolo_amendment_preserves_context(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Automatically accepted amendments should preserve completed work."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            auto_approve=mode is ApprovalMode.YOLO,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = True
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
             app._active_goal = "ship login"
             app._goal_status = "active"
             app._active_rubric = "- password login works"
@@ -6785,12 +7434,15 @@ class TestGoalCommand:
             assert "Goal amended by the user" in control_message
             assert "Do not repeat completed work" in control_message
 
-    async def test_regenerated_goal_still_requires_review_if_auto_enabled(
+    async def test_regenerated_goal_auto_accepts_if_auto_enabled(
         self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Classifier-backed Auto does not bypass semantic goal review."""
+        """A regenerated proposal should use the live Auto-mode policy."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         started = asyncio.Event()
@@ -6844,19 +7496,35 @@ class TestGoalCommand:
                 release.set()
                 for _ in range(30):
                     await pilot.pause()
-                    if any(app.query(GoalReviewMenu)):
+                    if app._active_goal is not None:
                         break
 
             assert captured["feedback"] == "include migration coverage"
             assert captured["previous_criteria"] == "- old criteria"
-            assert app._active_goal is None
-            assert app._active_rubric is None
-            assert any(app.query(GoalReviewMenu))
-            handle.assert_not_awaited()
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- regenerated criteria"
+            assert not any(app.query(GoalReviewMenu))
+            handle.assert_awaited_once_with("created")
 
-    async def test_restored_pending_goal_auto_accepts_in_yolo_mode(self) -> None:
-        """Thread restoration should apply a complete persisted proposal in YOLO."""
-        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+    @pytest.mark.parametrize("mode_name", ["auto", "yolo"])
+    async def test_configured_auto_or_yolo_accepts_restored_proposal(
+        self,
+        mode_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Restoration should auto-apply in opted-in Auto and in YOLO."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = ApprovalMode(mode_name)
+        monkeypatch.setenv(
+            GOAL_AUTO_ACCEPT_CRITERIA,
+            "true" if mode is ApprovalMode.AUTO else "false",
+        )
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            auto_approve=mode is ApprovalMode.YOLO,
+        )
         history = MessageData(
             MessageType.USER,
             "earlier thread context",
@@ -6874,7 +7542,8 @@ class TestGoalCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            app._session_state.auto_approve = True
+            app._approval_mode = mode
+            app._session_state.approval_mode = mode
 
             def start_after_history(_transition: str) -> None:
                 assert (
@@ -6934,10 +7603,15 @@ class TestGoalCommand:
             assert not any(app.query(GoalReviewMenu))
             handle.assert_not_awaited()
 
-    async def test_enabling_auto_keeps_mounted_goal_review_pending(self) -> None:
-        """Auto changes action policy without deciding a goal proposal."""
+    async def test_enabling_configured_auto_accepts_mounted_goal_review(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switching to opted-in Auto should resolve an existing proposal."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
@@ -6957,25 +7631,42 @@ class TestGoalCommand:
             review_task = app._goal_review_task
             assert future is not None
             assert review_task is not None
-            with patch.object(
-                app,
-                "_write_live_approval_mode",
-                new=AsyncMock(return_value=True),
+            handle = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_continue_goal_work", handle),
             ):
                 await pilot.press("shift+tab")
-                await pilot.pause()
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._active_goal is not None:
+                        break
 
             assert app._session_state is not None
             assert app._session_state.approval_mode is ApprovalMode.AUTO
-            assert app._active_goal is None
-            assert app._pending_goal_review_widget is menu
-            assert not future.done()
-            assert not review_task.done()
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_review_widget is None
+            assert app._pending_goal_review_future is None
+            assert app._goal_review_task is None
+            assert future.done()
+            assert review_task.done()
+            assert menu not in app.query(GoalReviewMenu)
+            handle.assert_awaited_once_with("created")
 
-    async def test_enabling_auto_honors_already_submitted_cancel(self) -> None:
-        """A submitted goal cancellation stays authoritative when Auto starts."""
+    async def test_enabling_auto_honors_already_submitted_cancel(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A submitted cancellation stays authoritative when opted-in Auto starts."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.approval_mode import ApprovalMode
 
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
@@ -7106,12 +7797,12 @@ class TestGoalCommand:
             handle.assert_not_awaited()
             await app._cancel_pending_goal_review(context="test cleanup")
 
-    @pytest.mark.parametrize("live_value", [None, 1, "enabled"])
-    async def test_missing_or_malformed_live_yolo_state_fails_closed(
+    @pytest.mark.parametrize("live_value", [None, 1, "auto", "yolo", "enabled"])
+    async def test_missing_or_malformed_live_approval_mode_fails_closed(
         self,
         live_value: object,
     ) -> None:
-        """Only literal `True` in session state may bypass goal review."""
+        """Only validated Auto and YOLO modes may bypass goal review."""
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7120,7 +7811,7 @@ class TestGoalCommand:
             else:
                 assert app._session_state is not None
                 # Wrong runtime types exercise the defensive fail-closed boundary.
-                cast("Any", app._session_state).auto_approve = live_value
+                cast("Any", app._session_state).approval_mode = live_value
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
             app._pending_goal_kind = "create"
@@ -7389,8 +8080,26 @@ class TestGoalCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "No active goal to amend" in rendered
-            assert "/goal <objective>" in rendered
+            assert (
+                "No active goal to amend. Use `/goal <objective>` to create one."
+                in rendered
+            )
+
+    async def test_goal_amend_bare_without_active_goal_shows_guidance(self) -> None:
+        """Bare `/goal amend` without a goal should not dump amend usage."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/goal amend")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "No active goal to amend. Use `/goal <objective>` to create one."
+                in rendered
+            )
+            assert "Usage: /goal amend" not in rendered
 
     async def test_paused_goal_suppresses_rubric_for_next_turn(self) -> None:
         """Paused goals should remain saved without invoking rubric grading."""
@@ -7820,23 +8529,6 @@ class TestGoalCommand:
             panel = app.query_one("#goal-status-panel", GoalStatusPanel)
             assert "ship login safely and accessibly" in str(panel.content)
 
-    def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
-        """Goal help should explain drafting and that a goal persists once set."""
-        usage = DeepAgentsApp._goal_usage_text()
-
-        assert "Use /goal when you have a plain-language objective" in usage
-        assert "draft a checklist and ask before applying it" in usage
-        assert "the goal stays active for this thread" in usage
-        assert "when you want dcode to propose" not in usage
-
-    def test_goal_usage_text_mentions_grader_settings(self) -> None:
-        """Goal help should surface the grader settings without alias wording."""
-        usage = DeepAgentsApp._goal_usage_text()
-
-        assert "/goal model [provider:model|clear]" in usage
-        assert "/goal max-iterations <N|clear>" in usage
-        assert "aliases for /rubric model" not in usage
-
     async def test_goal_model_alias_dispatches_to_rubric_setter(self) -> None:
         """`/goal model <spec>` should route to the shared grader-model setter."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -7848,7 +8540,7 @@ class TestGoalCommand:
                 await app._handle_command("/goal model openai:gpt-5.1")
                 await pilot.pause()
 
-            setter.assert_awaited_once_with("openai:gpt-5.1")
+            setter.assert_awaited_once_with("openai:gpt-5.1", source="goal")
 
     async def test_goal_model_alias_bare_opens_selector(self) -> None:
         """Bare `/goal model` should open the shared grader-model picker."""
@@ -7861,7 +8553,7 @@ class TestGoalCommand:
                 await app._handle_command("/goal model")
                 await pilot.pause()
 
-            selector.assert_awaited_once()
+            selector.assert_awaited_once_with(source="goal")
 
     async def test_goal_model_alias_clears_grader_model(self) -> None:
         """`/goal model clear` should clear the shared grader model."""
@@ -7874,7 +8566,159 @@ class TestGoalCommand:
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
 
-            setter.assert_awaited_once_with(None)
+            setter.assert_awaited_once_with(None, source="goal")
+
+    async def test_goal_model_selector_uses_goal_copy(self) -> None:
+        """`/goal model` selector should brand itself for goals, not rubrics."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "push_screen") as push_screen:
+                await app._show_rubric_model_selector(source="goal")
+                await pilot.pause()
+
+            screen = push_screen.call_args.args[0]
+            assert screen._title == "Choose grader model for goal"
+            assert "/goal model clear" in screen._description
+            assert "startup chat model (openai:gpt-5.5)" in screen._description
+            assert "rubric" not in screen._title.lower()
+            assert "/rubric" not in screen._description
+
+    async def test_grader_model_selector_bare_default_without_startup_model(
+        self,
+    ) -> None:
+        """Selector copy uses the bare label when no startup model is known.
+
+        Covers both `/goal` and `/rubric` sources so a per-site interpolation typo
+        (rendering the `(<model>)` suffix without a model) is caught.
+        """
+        for source, clear_cmd in (
+            ("goal", "/goal model clear"),
+            ("rubric", "/rubric model clear"),
+        ):
+            app = DeepAgentsApp(agent=MagicMock())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._rubric_default_model is None
+                with patch.object(app, "push_screen") as push_screen:
+                    await app._show_rubric_model_selector(source=source)
+                    await pilot.pause()
+
+                screen = push_screen.call_args.args[0]
+                assert clear_cmd in screen._description
+                assert "reuse the startup chat model." in screen._description
+                assert "startup chat model (" not in screen._description
+
+    async def test_goal_model_selector_cancel_reports_unchanged(self) -> None:
+        """Escaping the goal grader picker should leave a short chat note."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            captured: dict[str, Callable[[tuple[str, str] | None], None]] = {}
+
+            def capture_push(
+                _screen: object,
+                callback: Callable[[tuple[str, str] | None], None],
+            ) -> None:
+                captured["callback"] = callback
+
+            with patch.object(app, "push_screen", side_effect=capture_push):
+                await app._show_rubric_model_selector(source="goal")
+                await pilot.pause()
+
+            captured["callback"](None)
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Model not changed." in rendered
+
+    async def test_goal_model_clear_already_default_short_circuits(self) -> None:
+        """`/goal model clear` should no-op when already on the startup chat model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = None
+            app._server_kwargs = {"model_name": "openai:gpt-5.5"}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+            ) as respawn:
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "Goal grader model already uses the startup chat model "
+                "(openai:gpt-5.5)." in rendered
+            )
+
+    async def test_goal_model_clear_already_default_uses_bare_label(self) -> None:
+        """The already-default no-op omits the suffix when no startup model is known."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._rubric_default_model is None
+            app._rubric_model = None
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+            ) as respawn:
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            respawn.assert_not_awaited()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal grader model already uses the startup chat model." in rendered
+            assert "startup chat model (" not in rendered
+
+    async def test_goal_model_clear_uses_goal_copy(self) -> None:
+        """A successful `/goal model clear` should use goal-branded confirmation."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"model_name": "openai:gpt-5.5"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = "openai:gpt-5.1"
+            app._server_kwargs = {
+                "model_name": "openai:gpt-5.5",
+                "rubric_model": "openai:gpt-5.1",
+            }
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "Goal grader model cleared; using the startup chat model "
+                "(openai:gpt-5.5)." in rendered
+            )
+            assert "Rubric grader model" not in rendered
 
     async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
         """`/goal max-iterations <n>` should route to the shared cap setter."""
@@ -7998,8 +8842,25 @@ class TestGoalCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Commands:" not in rendered
 
+    def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
+        """Goal help should explain drafting and that a goal persists once set."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "Use /goal when you have a plain-language objective" in usage
+        assert "draft a checklist for it" in usage
+        assert "the goal stays active for this thread" in usage
+        assert "when you want dcode to propose" not in usage
+
+    def test_goal_usage_text_mentions_grader_settings(self) -> None:
+        """Goal help should surface the grader settings without alias wording."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "/goal model [provider:model|clear]" in usage
+        assert "/goal max-iterations <N|clear>" in usage
+        assert "aliases for /rubric model" not in usage
+
     async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
-        """Bare `/goal max-iterations` shows goal-branded usage without setting."""
+        """Bare `/goal max-iterations` explains the grader iteration cap."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8012,6 +8873,9 @@ class TestGoalCommand:
             setter.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /goal max-iterations <N|clear>" in rendered
+            assert "grader iterations" in rendered
+            assert "goal acceptance criteria" in rendered
+            assert "SDK default" in rendered
 
     async def test_goal_max_iterations_alias_clears_cap(self) -> None:
         """`/goal max-iterations clear` should route to the setter with `None`."""
@@ -9715,6 +10579,19 @@ class TestGoalCommand:
                 str(w._content) == "Goal cleared." for w in app.query(AppMessage)
             )
 
+    async def test_goal_clear_without_goal_short_circuits(self) -> None:
+        """`/goal clear` with nothing set should not claim the goal was cleared."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/goal clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No goal set. Use `/goal <objective>` to set one." in rendered
+            assert "Goal cleared." not in rendered
+
     @pytest.mark.parametrize(
         "verb", ["show", "status", "accept", "edit", "clear", "pause", "resume"]
     )
@@ -9861,31 +10738,33 @@ class TestGoalCommand:
                 "will not survive" in str(w._content) for w in app.query(ErrorMessage)
             )
 
-    async def test_goal_accept_subcommand_redirects_to_review(self) -> None:
-        """Bare `/goal accept`/`/goal edit` should point back to the review prompt."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await app._handle_command("/goal accept")
-            await pilot.pause()
-
-            assert any(
-                "Goal proposals are reviewed in the review prompt." in str(w._content)
-                for w in app.query(AppMessage)
-            )
-
     async def test_goal_show_with_no_goal_reports_empty(self) -> None:
-        """`/goal show` with nothing set should report no goal plus usage."""
+        """`/goal show` with nothing set should say how to set one, not dump usage."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._handle_command("/goal show")
             await pilot.pause()
 
-            assert any(
-                str(w._content).startswith("No goal set.")
-                for w in app.query(AppMessage)
-            )
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No goal set. Use `/goal <objective>` to set one." in rendered
+            assert "Usage:" not in rendered
+            assert "/goal pause" not in rendered
+
+    async def test_bare_goal_without_goal_shows_usage_tips(self) -> None:
+        """Bare `/goal` should still dump the command help."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/goal")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert rendered.startswith("No goal set.")
+            assert "Usage:" in rendered
+            assert "/goal <objective>" in rendered
+            assert "/goal max-iterations <N|clear>" in rendered
+            assert "draft a checklist for it" in rendered
 
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
@@ -10705,7 +11584,7 @@ class TestRubricCommand:
             assert app._rubric_max_iterations == 21
             assert app._server_kwargs["rubric_max_iterations"] == 21
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations set to 21" in rendered
+            assert "Max iterations set to 21" in rendered
 
     async def test_rubric_max_iterations_command_rejects_non_positive(
         self,
@@ -10751,7 +11630,7 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations set to 12" in rendered
+            assert "Max iterations set to 12" in rendered
 
     async def test_set_rubric_max_iterations_rolls_back_on_failed_respawn(self) -> None:
         """A failed respawn should restore the previous cap."""
@@ -10834,7 +11713,105 @@ class TestRubricCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "already use the SDK default" in rendered
+            assert (
+                "already use the SDK default "
+                f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})." in rendered
+            )
+
+    async def test_set_rubric_max_iterations_noop_when_setting_sdk_default_value(
+        self,
+    ) -> None:
+        """Setting the concrete SDK default while unset should not respawn."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(SDK_DEFAULT_RUBRIC_MAX_ITERATIONS)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "already use the SDK default "
+                f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})." in rendered
+            )
+
+    async def test_set_rubric_max_iterations_explicit_default_is_not_unset(
+        self,
+    ) -> None:
+        """An explicit cap equal to the SDK default is distinct from unset.
+
+        The no-op guard fires only when the cap is unset (`None`). Re-issuing the
+        same explicit default value must fall through to the `== value` branch and
+        report "already set to N" rather than the "SDK default" no-op wording, so a
+        regression that dropped the `is None` precondition would be caught.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            app._server_kwargs = {
+                "rubric_max_iterations": SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            }
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(SDK_DEFAULT_RUBRIC_MAX_ITERATIONS)
+            await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert f"already set to {SDK_DEFAULT_RUBRIC_MAX_ITERATIONS}." in rendered
+            assert "SDK default" not in rendered
+
+    async def test_set_rubric_max_iterations_clear_from_explicit_default_respawns(
+        self,
+    ) -> None:
+        """Clearing an explicitly-set default cap must respawn, not short-circuit.
+
+        With the cap explicitly pinned to the SDK default value, clearing it
+        (`None`) is a real state change: the guard's `is None` precondition is
+        false, so the request must fall through to the respawn path.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            app._server_kwargs = {
+                "rubric_max_iterations": SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+            }
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as respawn:
+                await app._set_rubric_max_iterations(None)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            assert app._server_kwargs["rubric_max_iterations"] is None
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="",
+            )
+            app._server_proc.persist_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="",
+            )
+            assert respawn.await_count == 1
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Max iterations cleared; using the SDK default." in rendered
 
     async def test_rubric_max_iterations_command_clears_owned_server(self) -> None:
         """`/rubric max-iterations clear` resets the cap to the SDK default."""
@@ -11098,7 +12075,9 @@ class TestRubricCommand:
             )
             assert respawn.await_count == 1
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model cleared; using startup chat model." in rendered
+            assert (
+                "Rubric grader model cleared; using the startup chat model." in rendered
+            )
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""
@@ -24393,29 +25372,33 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
-    def test_auto_startup_requires_experimental_flag(
+    def test_auto_startup_enabled_without_sandbox(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Auto resolves at startup without a sandbox, even with EXPERIMENTAL off.
+
+        Auto is now generally available; the former experimental opt-in is gone.
+        Setting `DEEPAGENTS_CODE_EXPERIMENTAL` explicitly falsy proves the flag
+        no longer gates Auto, so this stays load-bearing rather than inert.
+        """
         from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.approval_mode import ApprovalMode
 
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
-
-        app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-
-        assert app._approval_mode is ApprovalMode.MANUAL
-
-    def test_auto_startup_enabled_by_experimental_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.approval_mode import ApprovalMode
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
+        monkeypatch.setenv(EXPERIMENTAL, "0")
 
         app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
 
         assert app._approval_mode is ApprovalMode.AUTO
+
+    def test_auto_startup_unavailable_with_sandbox(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            approval_mode=ApprovalMode.AUTO,
+            server_kwargs={"sandbox_type": "daytona"},
+        )
+
+        assert app._approval_mode is ApprovalMode.MANUAL
 
     async def test_write_live_approval_mode_records_key(self) -> None:
         from deepagents_code.approval_mode import (
@@ -24472,17 +25455,24 @@ class TestLiveApprovalModeWrites:
             await pilot.pause()
             app._connecting = True
             app._agent = None
+            accept_goal = AsyncMock()
             with (
                 patch.object(
                     app,
                     "_write_live_approval_mode",
                     new=AsyncMock(),
                 ) as write_mode,
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    accept_goal,
+                ),
                 patch.object(app, "notify") as notify,
             ):
                 await app.action_toggle_auto_approve()
 
         write_mode.assert_not_awaited()
+        accept_goal.assert_not_awaited()
         assert app._approval_mode is ApprovalMode.AUTO
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
@@ -24490,6 +25480,37 @@ class TestLiveApprovalModeWrites:
             "could not be persisted" in str(call.args[0])
             for call in notify.call_args_list
         )
+
+    async def test_toggle_on_while_live_accepts_pending_goal_proposal(self) -> None:
+        """A successful live Auto toggle should resolve a pending goal proposal."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._agent = object()
+            accept_goal = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_mode,
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    accept_goal,
+                ),
+                patch.object(app, "notify"),
+            ):
+                await app.action_toggle_auto_approve()
+
+        write_mode.assert_awaited_once()
+        accept_goal.assert_awaited_once_with()
+        assert app._approval_mode is ApprovalMode.AUTO
+        assert app._session_state.approval_mode is ApprovalMode.AUTO
 
     async def test_toggle_off_while_reconnecting_stages_manual(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
@@ -24635,11 +25656,17 @@ class TestLiveApprovalModeWrites:
             )
             app._agent = object()
             app._agent_running = True
+            accept_goal = AsyncMock()
             with (
                 patch.object(
                     app,
                     "_write_live_approval_mode",
                     new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    accept_goal,
                 ),
                 patch.object(app, "_force_interrupt_active_work") as force,
                 patch.object(app, "notify") as notify,
@@ -24648,9 +25675,41 @@ class TestLiveApprovalModeWrites:
 
         assert app._auto_approve is False
         assert app._session_state.auto_approve is False
+        accept_goal.assert_not_awaited()
         force.assert_not_called()
         notify.assert_called_once()
         assert "Auto could not be persisted" in notify.call_args.args[0]
+
+    async def test_auto_approve_all_accepts_pending_goal_proposal(self) -> None:
+        """Enabling Auto from an approval prompt should resolve a goal review."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(auto_approve=False)
+        app._auto_mode_eligible = True
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        accept_goal = AsyncMock(return_value=True)
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                app,
+                "_auto_accept_pending_goal_rubric",
+                accept_goal,
+            ),
+            patch.object(app, "notify"),
+        ):
+            enabled = await app._on_auto_approve_enabled()
+
+        assert enabled is True
+        assert app._approval_mode is ApprovalMode.AUTO
+        assert app._session_state.approval_mode is ApprovalMode.AUTO
+        accept_goal.assert_awaited_once_with()
 
     async def test_auto_approve_all_failed_write_warns(self) -> None:
         app = DeepAgentsApp(auto_approve=False)
@@ -24659,11 +25718,17 @@ class TestLiveApprovalModeWrites:
             thread_id="thread-1",
             auto_approve=False,
         )
+        accept_goal = AsyncMock()
         with (
             patch.object(
                 app,
                 "_write_live_approval_mode",
                 new=AsyncMock(return_value=False),
+            ),
+            patch.object(
+                app,
+                "_auto_accept_pending_goal_rubric",
+                accept_goal,
             ),
             patch.object(app, "notify") as notify,
         ):
@@ -24671,6 +25736,7 @@ class TestLiveApprovalModeWrites:
 
         assert app._auto_approve is False
         assert app._session_state.auto_approve is False
+        accept_goal.assert_not_awaited()
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
 

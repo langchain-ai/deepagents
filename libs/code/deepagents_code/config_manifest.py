@@ -1236,6 +1236,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
     ),
+    # --- Goals ----------------------------------------------------------
+    ConfigOption(
+        key="goals.auto_accept_criteria",
+        group="Goals",
+        summary="Apply generated goal criteria automatically in Auto mode.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.GOAL_AUTO_ACCEPT_CRITERIA,
+        toml_keys=("goals", "auto_accept_criteria"),
+    ),
     # --- Interpreter (config.toml-only; defaults owned by this module) --
     ConfigOption(
         key="interpreter.enable_interpreter",

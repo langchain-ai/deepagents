@@ -2240,6 +2240,52 @@ recent = "anthropic:claude-sonnet-4-5"
         assert 'default = "ollama:qwen3:4b"' in content
 
 
+class TestSaveGoalAutoAcceptCriteria:
+    """Tests for the first-run goal criteria preference writer."""
+
+    def test_writes_boolean_and_preserves_other_config(self, tmp_path) -> None:
+        """Saving the preference should preserve unrelated TOML tables."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "openai:gpt-5.5"\n',
+            encoding="utf-8",
+        )
+
+        assert model_config.save_goal_auto_accept_criteria(True, config_path) is True
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["goals"]["auto_accept_criteria"] is True
+        assert data["models"]["default"] == "openai:gpt-5.5"
+
+    def test_updates_existing_preference(self, tmp_path) -> None:
+        """Saving a new choice should replace the previous boolean."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[goals]\nauto_accept_criteria = true\n",
+            encoding="utf-8",
+        )
+
+        assert model_config.save_goal_auto_accept_criteria(False, config_path) is True
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["goals"]["auto_accept_criteria"] is False
+
+    def test_returns_false_when_config_cannot_be_written(self, tmp_path) -> None:
+        """An unwritable config path should preserve the boolean failure contract."""
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("blocked", encoding="utf-8")
+
+        assert (
+            model_config.save_goal_auto_accept_criteria(
+                True,
+                blocker / "config.toml",
+            )
+            is False
+        )
+
+
 class TestClearDefaultModel:
     """Tests for clear_default_model() function."""
 

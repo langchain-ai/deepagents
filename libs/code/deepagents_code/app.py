@@ -130,7 +130,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_MODE_ENABLED_WARNING = (
-    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+    "Auto enabled. It classifies gated actions but is not sandbox containment."
 )
 
 
@@ -3103,11 +3103,7 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        self._auto_mode_eligible = self._sandbox_type is None and is_env_truthy(
-            EXPERIMENTAL
-        )
+        self._auto_mode_eligible = self._sandbox_type is None
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
@@ -7525,7 +7521,7 @@ class DeepAgentsApp(App):
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
-                "Auto is available only in the opt-in local TUI beta."
+                "Auto is unavailable with a sandbox."
             )
             return False
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
@@ -7545,6 +7541,7 @@ class DeepAgentsApp(App):
             timeout=8,
             markup=False,
         )
+        await self._auto_accept_pending_goal_rubric()
         return True
 
     async def _switch_to_manual_from_fallback(self) -> bool:
@@ -7977,6 +7974,7 @@ class DeepAgentsApp(App):
                 "Skipping session start sequence; already initialized for thread %s",
                 self._lc_thread_id,
             )
+            await self._auto_accept_pending_goal_rubric()
             await self._drain_startup_backlog()
             return
 
@@ -8262,6 +8260,109 @@ class DeepAgentsApp(App):
 
         self.push_screen(screen, handle_result)
         return result_future
+
+    @staticmethod
+    def _should_prompt_goal_auto_accept_preference() -> bool:
+        """Return whether the first goal action should ask for the Auto policy.
+
+        The prompt is deferred until the user creates or amends a goal so setup
+        is not taxed for an unused preference. Existing explicit env/TOML values
+        and the one-time marker suppress it.
+        """
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+        from deepagents_code.onboarding import has_shown_goal_auto_accept_prompt
+
+        if has_shown_goal_auto_accept_prompt():
+            return False
+        _, source = resolve_goal_auto_accept_criteria()
+        return source == "default"
+
+    async def _save_goal_auto_accept_preference(self, enabled: bool) -> None:
+        """Persist the Auto goal policy and its one-time prompt marker."""
+        from deepagents_code.model_config import save_goal_auto_accept_criteria
+        from deepagents_code.onboarding import mark_goal_auto_accept_prompt_shown
+
+        saved = await asyncio.to_thread(save_goal_auto_accept_criteria, enabled)
+        marked = await asyncio.to_thread(mark_goal_auto_accept_prompt_shown)
+        if not saved:
+            self.notify(
+                "Could not save the goal criteria preference. Auto will keep "
+                "asking for review; edit ~/.deepagents/config.toml to change it.",
+                severity="warning",
+                markup=False,
+            )
+        elif not marked:
+            self.notify(
+                "Saved the goal criteria preference, but could not record that "
+                "the prompt was shown. The saved setting still applies.",
+                severity="warning",
+                markup=False,
+            )
+
+    def _dismiss_orphaned_screen(self, screen: ModalScreen[Any]) -> None:
+        """Dismiss a modal left on top after its watchdog await was cancelled.
+
+        `asyncio.wait_for` cancels the await but not the pushed screen, so a
+        timed-out prompt would otherwise linger over whatever runs next. Only
+        the still-current screen is dismissed: `dismiss()` pops whatever is on
+        top, so a prompt that never mounted (never pushed) must be left alone to
+        avoid popping an unrelated screen.
+
+        Args:
+            screen: The modal that was pushed before the await aborted.
+        """
+        with suppress(NoMatches, ScreenStackError):
+            if self.screen is screen:
+                screen.dismiss()
+
+    async def _ensure_goal_auto_accept_preference(self) -> None:
+        """Ask once, on the first Auto-mode goal, how to handle criteria.
+
+        Only prompts in Auto mode: the preference has no effect in Manual
+        (always reviews) or YOLO (always applies), so a Manual/YOLO user is
+        asked the first time they act on a goal after switching to Auto instead.
+
+        Fail closed to review when the modal times out or fails to mount. Saving
+        still records the one-time marker so a wedged prompt cannot loop, and the
+        orphaned modal is dismissed so it cannot linger over goal drafting.
+        """
+        if self._session_state is None:
+            return
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = getattr(self._session_state, "approval_mode", None)
+        if mode is not ApprovalMode.AUTO:
+            return
+        if not self._should_prompt_goal_auto_accept_preference():
+            return
+
+        from deepagents_code.tui.widgets.launch_init import (
+            LaunchGoalCriteriaPreferenceScreen,
+        )
+
+        screen = LaunchGoalCriteriaPreferenceScreen()
+        try:
+            result = await asyncio.wait_for(
+                self._push_screen_wait(screen),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Goal criteria preference prompt timed out; keeping review default",
+            )
+            self._dismiss_orphaned_screen(screen)
+            await self._save_goal_auto_accept_preference(False)
+            return
+        except Exception:
+            logger.exception(
+                "Failed to show goal criteria preference prompt; keeping review "
+                "default",
+            )
+            self._dismiss_orphaned_screen(screen)
+            await self._save_goal_auto_accept_preference(False)
+            return
+
+        await self._save_goal_auto_accept_preference(result is True)
 
     def _push_launch_name_result_future(
         self,
@@ -9374,13 +9475,42 @@ class DeepAgentsApp(App):
             )
             return
         if not project_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing.",
-                ),
+            from deepagents_code.config import (
+                LangsmithShadowResult,
+                langsmith_key_shadowed_by_empty_override,
             )
+
+            await self._mount_message(UserMessage(command))
+            try:
+                shadow = await asyncio.to_thread(
+                    langsmith_key_shadowed_by_empty_override
+                )
+            except Exception:
+                # A best-effort diagnostic must never take down `/trace`; fall
+                # back to the generic hint if the shadow check itself fails.
+                logger.exception(
+                    "Failed to check for a shadowed LangSmith key for thread %s",
+                    thread_id,
+                )
+                shadow = LangsmithShadowResult()
+            if shadow.shadowing_var:
+                message = (
+                    f"A LangSmith key is available, but {shadow.shadowing_var} "
+                    "is set to an empty value and is shadowing it, so tracing is "
+                    f"off. Unset {shadow.shadowing_var} (and make sure LangSmith "
+                    "tracing is enabled) to start tracing."
+                )
+            elif shadow.store_unreadable:
+                message = (
+                    "Your stored LangSmith credential could not be read; the "
+                    "credential file may be corrupt. Re-add the key via `/auth`."
+                )
+            else:
+                message = (
+                    "LangSmith tracing is not configured. "
+                    "Run `/auth` and select LangSmith to enable tracing."
+                )
+            await self._mount_message(AppMessage(message))
             return
         try:
             project_url = await asyncio.to_thread(
@@ -9951,12 +10081,22 @@ class DeepAgentsApp(App):
         self._pending_goal_kind = None
         self._pending_goal_request_id = None
 
-    def _live_goal_auto_approve_enabled(self) -> bool:
-        """Return whether the authoritative live mode is literal `True`."""
-        return (
-            self._session_state is not None
-            and getattr(self._session_state, "auto_approve", None) is True
-        )
+    def _live_goal_proposal_auto_accept_enabled(self) -> bool:
+        """Return whether the live mode accepts goal proposals automatically."""
+        if self._session_state is None:
+            return False
+        from deepagents_code.approval_mode import ApprovalMode
+
+        mode = getattr(self._session_state, "approval_mode", None)
+        if mode is ApprovalMode.YOLO:
+            return True
+        if mode is not ApprovalMode.AUTO:
+            return False
+
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+
+        enabled, _ = resolve_goal_auto_accept_criteria()
+        return enabled
 
     def _pending_goal_proposal(self) -> _PendingGoalProposal | None:
         """Return a complete, well-formed pending proposal if one exists."""
@@ -10056,6 +10196,28 @@ class DeepAgentsApp(App):
         def _as_nonblank_str(value: object) -> str | None:
             return value if isinstance(value, str) and value.strip() else None
 
+        raw_pending_kind = state_values.get("_pending_goal_kind")
+        pending_kind = coerce_goal_proposal_kind(raw_pending_kind)
+        raw_pending_request_id = state_values.get("_pending_goal_request_id")
+        pending_request_id = _as_nonblank_str(raw_pending_request_id)
+        pending_metadata_valid = (
+            raw_pending_kind is None or pending_kind is not None
+        ) and (raw_pending_request_id is None or pending_request_id is not None)
+        if not pending_metadata_valid and (
+            isinstance(state_values.get("_pending_goal_objective"), str)
+            or isinstance(state_values.get("_pending_goal_rubric"), str)
+        ):
+            # `_warn_discarded_goal_channels` only names the malformed metadata
+            # channel; record that an otherwise-valid objective/rubric was
+            # dropped alongside it so the coupled discard leaves a trace. Channel
+            # names only, never the persisted objective or criteria text.
+            logger.warning(
+                "Discarding complete pending goal proposal "
+                "(_pending_goal_objective/_pending_goal_rubric) because its "
+                "_pending_goal_kind/_pending_goal_request_id metadata was "
+                "malformed",
+            )
+
         return _ThreadHistoryPayload(
             messages,
             context_tokens,
@@ -10075,13 +10237,19 @@ class DeepAgentsApp(App):
             rubric_grading_run_id=_as_nonblank_str(
                 state_values.get("_current_grading_run_id")
             ),
-            pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
-            pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
-            pending_goal_kind=coerce_goal_proposal_kind(
-                state_values.get("_pending_goal_kind")
+            pending_goal_objective=(
+                _as_str(state_values.get("_pending_goal_objective"))
+                if pending_metadata_valid
+                else None
             ),
-            pending_goal_request_id=_as_nonblank_str(
-                state_values.get("_pending_goal_request_id")
+            pending_goal_rubric=(
+                _as_str(state_values.get("_pending_goal_rubric"))
+                if pending_metadata_valid
+                else None
+            ),
+            pending_goal_kind=pending_kind if pending_metadata_valid else None,
+            pending_goal_request_id=(
+                pending_request_id if pending_metadata_valid else None
             ),
             goal_criteria_request_active=(
                 state_values.get("goal_criteria_request") is not None
@@ -10530,19 +10698,25 @@ class DeepAgentsApp(App):
         """
         return len(arg.split()) <= 1
 
-    async def _dispatch_grader_model(self, command: str, arg: str) -> None:
+    async def _dispatch_grader_model(
+        self,
+        command: str,
+        arg: str,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
         """Route a grader-model argument to the shared setter or picker.
 
         Shared by `/rubric model` and the `/goal model` alias so both entry
-        points stay in lockstep.
+        points stay in lockstep. `source` only affects user-facing copy.
         """
         await self._mount_message(UserMessage(command))
         if not arg:
-            await self._show_rubric_model_selector()
+            await self._show_rubric_model_selector(source=source)
         elif arg.lower() == "clear":
-            await self._set_rubric_model(None)
+            await self._set_rubric_model(None, source=source)
         else:
-            await self._set_rubric_model(arg)
+            await self._set_rubric_model(arg, source=source)
 
     async def _dispatch_grader_max_iterations(
         self, command: str, arg: str, *, usage_prefix: str
@@ -10555,8 +10729,19 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
         if not arg:
+            target = (
+                "goal acceptance criteria"
+                if usage_prefix == "/goal"
+                else "rubric criteria"
+            )
             await self._mount_message(
-                AppMessage(f"Usage: {usage_prefix} max-iterations <N|clear>")
+                AppMessage(
+                    f"Usage: {usage_prefix} max-iterations <N|clear>\n\n"
+                    f"Sets how many grader iterations are allowed when checking "
+                    f"{target}. Use `{usage_prefix} max-iterations clear` to "
+                    f"restore the SDK default "
+                    f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})."
+                )
             )
             return
         value, error = _parse_rubric_max_iterations(arg)
@@ -10565,26 +10750,30 @@ class DeepAgentsApp(App):
             return
         await self._set_rubric_max_iterations(value)
 
+    def _startup_chat_model_label(self) -> str:
+        """Return the construction-time chat model label used as the grader default.
+
+        Uses `_rubric_default_model` (not per-turn `/model` overrides) because the
+        rubric middleware keeps the model chosen when the graph was built. A
+        failed-startup retry rebuilds the graph and re-captures this value; a
+        `/model` override on a live server does not touch it. Falls back to a bare
+        "startup chat model" when that value is unknown.
+        """
+        chat_model = self._rubric_default_model
+        if chat_model:
+            return f"startup chat model ({chat_model})"
+        return "startup chat model"
+
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
         When no explicit grader model is set, the model string reports the
-        rubric's construction-time chat model (`_rubric_default_model`, which
-        deliberately ignores per-turn `/model` overrides), falling back to a
-        bare "startup chat model" when that is unknown. An unset iteration cap
+        construction-time startup chat model label. An unset iteration cap
         reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
         rather than the word "default". Shared by `/goal show` and
         `/rubric show` so the default wording stays in sync.
         """
-        if self._rubric_model:
-            model = self._rubric_model
-        else:
-            chat_model = self._rubric_default_model
-            model = (
-                f"startup chat model ({chat_model})"
-                if chat_model
-                else "startup chat model"
-            )
+        model = self._rubric_model or self._startup_chat_model_label()
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
@@ -10609,7 +10798,7 @@ class DeepAgentsApp(App):
         grader_sub = grader_sub.lower()
         grader_arg = grader_arg.strip()
         if grader_sub == "model" and self._is_grader_alias_arg(grader_arg):
-            await self._dispatch_grader_model(command, grader_arg)
+            await self._dispatch_grader_model(command, grader_arg, source="goal")
             return
         if grader_sub in {"max-iterations", "max_iterations"} and (
             self._is_grader_alias_arg(grader_arg)
@@ -10619,7 +10808,14 @@ class DeepAgentsApp(App):
             )
             return
 
-        if not remainder or subcommand in {"show", "status"}:
+        if not remainder:
+            await self._mount_message(UserMessage(command))
+            await self._show_goal_state(
+                empty_message="No goal set.\n\n" + self._goal_usage_text()
+            )
+            return
+
+        if subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
             await self._show_goal_state()
             return
@@ -10633,9 +10829,6 @@ class DeepAgentsApp(App):
         # money` still creates a goal.
         if grader_sub == "amend":
             await self._mount_message(UserMessage(command))
-            if not grader_arg:
-                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
-                return
             if not self._active_goal or self._goal_status == "complete":
                 await self._mount_message(
                     AppMessage(
@@ -10644,6 +10837,10 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+            if not grader_arg:
+                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
+                return
+            await self._ensure_goal_auto_accept_preference()
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-amend cleanup")
             async with self._goal_state_mutation_boundary():
@@ -10665,18 +10862,17 @@ class DeepAgentsApp(App):
             await self._resume_goal()
             return
 
-        if subcommand in {"accept", "edit"}:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "Goal proposals are reviewed in the review prompt. "
-                    "Use `/goal <objective>` to draft criteria."
-                )
-            )
-            return
-
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            if not (
+                self._active_goal
+                or self._pending_goal_objective
+                or self._pending_goal_rubric
+            ):
+                await self._mount_message(
+                    AppMessage("No goal set. Use `/goal <objective>` to set one.")
+                )
+                return
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-clear cleanup")
             async with self._goal_state_mutation_boundary():
@@ -10695,6 +10891,7 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
+        await self._ensure_goal_auto_accept_preference()
         self._cancel_goal_proposal_worker()
         await self._cancel_pending_goal_review(context="goal replacement cleanup")
         async with self._goal_state_mutation_boundary():
@@ -10719,13 +10916,22 @@ class DeepAgentsApp(App):
             "  /goal model [provider:model|clear]\n"
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
-            "draft a checklist and ask before applying it. Once accepted, the "
-            "goal stays active for this thread until paused, completed, blocked, "
-            "or cleared. Follow-up prompts continue working toward that goal."
+            "draft a checklist for it. Once applied, the goal stays active for "
+            "this thread until paused, completed, blocked, or cleared. "
+            "Follow-up prompts continue working toward that goal."
         )
 
-    async def _show_goal_state(self) -> None:
-        """Render active or pending goal state."""
+    async def _show_goal_state(
+        self,
+        *,
+        empty_message: str | None = None,
+    ) -> None:
+        """Render active or pending goal state.
+
+        Args:
+            empty_message: Optional override for the no-goal message. Bare
+                `/goal` passes full usage tips; `/goal show` keeps a short nudge.
+        """
         lines: list[str] = []
         if self._active_goal:
             status = self._goal_status or "active"
@@ -10768,9 +10974,8 @@ class DeepAgentsApp(App):
                 )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
-        await self._mount_message(
-            AppMessage("No goal set.\n\n" + self._goal_usage_text())
-        )
+        message = empty_message or ("No goal set. Use `/goal <objective>` to set one.")
+        await self._mount_message(AppMessage(message))
 
     async def _run_goal_criteria_request(
         self,
@@ -10898,7 +11103,7 @@ class DeepAgentsApp(App):
         self,
         proposal: _PendingGoalProposal,
     ) -> bool:
-        """Keep a submitted review decision ahead of a live YOLO toggle.
+        """Keep a submitted review decision ahead of a live Auto/YOLO toggle.
 
         Returns:
             Whether a terminal review decision was already waiting.
@@ -10937,7 +11142,7 @@ class DeepAgentsApp(App):
         )
         if self._pending_goal_proposal() != proposal:
             return False
-        if not self._live_goal_auto_approve_enabled():
+        if not self._live_goal_proposal_auto_accept_enabled():
             await self._mount_goal_rubric_review(proposal)
             return False
 
@@ -10955,7 +11160,7 @@ class DeepAgentsApp(App):
         *,
         expected_request_id: str | None = None,
     ) -> bool:
-        """Accept the complete pending proposal when live YOLO mode allows it.
+        """Accept the complete pending proposal outside Manual mode.
 
         Args:
             expected_request_id: Correlation ID required for a freshly generated
@@ -10967,7 +11172,7 @@ class DeepAgentsApp(App):
         if self._startup_sequence_running:
             return False
         async with self._goal_review_resolution_lock:
-            if not self._live_goal_auto_approve_enabled():
+            if not self._live_goal_proposal_auto_accept_enabled():
                 return False
             proposal = self._pending_goal_proposal()
             if proposal is None:
@@ -10995,7 +11200,7 @@ class DeepAgentsApp(App):
                 and proposal.request_id != expected_request_id
             ):
                 return
-            if self._live_goal_auto_approve_enabled():
+            if self._live_goal_proposal_auto_accept_enabled():
                 await self._auto_accept_pending_goal_rubric_locked(proposal)
                 return
 
@@ -11228,12 +11433,6 @@ class DeepAgentsApp(App):
         )
         if self._queued_goal_application == application:
             return True
-        if automatic:
-            await self._mount_message(
-                AppMessage(
-                    "Goal criteria automatically accepted because YOLO mode is enabled."
-                )
-            )
         if self._agent_running or self._agent_reconciling:
             self._queued_goal_application = application
             if not automatic:
@@ -11731,8 +11930,12 @@ class DeepAgentsApp(App):
             f"Rubric set from {path}.", persisted=persisted
         )
 
-    async def _show_rubric_model_selector(self) -> None:
-        """Open the model selector for choosing a rubric grader model."""
+    async def _show_rubric_model_selector(
+        self,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
+        """Open the model selector for choosing a grader model."""
         from deepagents_code.config import settings
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
@@ -11747,6 +11950,11 @@ class DeepAgentsApp(App):
 
         def handle_result(result: tuple[str, str] | None) -> None:
             if result is None:
+                self.run_worker(
+                    self._mount_message(AppMessage("Model not changed.")),
+                    exclusive=False,
+                    group="rubric-model",
+                )
                 if self._chat_input:
                     self._chat_input.focus_input()
                 return
@@ -11756,21 +11964,31 @@ class DeepAgentsApp(App):
             async def apply_selection() -> None:
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
-                await self._set_rubric_model(model_spec)
+                await self._set_rubric_model(model_spec, source=source)
 
             self.run_worker(apply_selection(), exclusive=False, group="rubric-model")
             if self._chat_input:
                 self._chat_input.focus_input()
 
+        startup_model = self._startup_chat_model_label()
+        if source == "goal":
+            title = "Choose grader model for goal"
+            description = (
+                "Pick the model used to grade goal acceptance criteria. Clear it "
+                f"with `/goal model clear` to reuse the {startup_model}."
+            )
+        else:
+            title = "Choose grader model for rubric"
+            description = (
+                "Pick the model used to grade rubric criteria. Clear it with "
+                f"`/rubric model clear` to reuse the {startup_model}."
+            )
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
             cli_profile_override=self._profile_override,
-            title="Choose grader model for rubric",
-            description=(
-                "Pick the model used to grade rubric criteria. Clear it with "
-                "`/rubric model clear` to reuse the startup chat model."
-            ),
+            title=title,
+            description=description,
         )
         self.push_screen(screen, handle_result)
 
@@ -11787,27 +12005,34 @@ class DeepAgentsApp(App):
                     execute=partial(self._set_rubric_max_iterations, value),
                 ),
             )
-            self.notify(
-                "Rubric max iterations will change after current work finishes."
-            )
+            self.notify("Max iterations will change after current work finishes.")
             return
 
         if self._server_kwargs is None and self._server_proc is None:
             await self._mount_message(
                 ErrorMessage(
-                    "Rubric max-iterations switching is unavailable in this session "
+                    "Max-iterations switching is unavailable in this session "
                     "because it does not own a restartable server."
                 )
             )
             return
 
-        if self._rubric_max_iterations == value:
-            message = (
-                f"Rubric max iterations already set to {value}."
-                if value is not None
-                else "Rubric max iterations already use the SDK default."
+        # Unset (`None`) means the construction-time SDK default. Setting that
+        # concrete default number is therefore a no-op when no override is staged.
+        if self._rubric_max_iterations is None and (
+            value is None or value == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "Max iterations already use the SDK default "
+                    f"({SDK_DEFAULT_RUBRIC_MAX_ITERATIONS})."
+                )
             )
-            await self._mount_message(AppMessage(message))
+            return
+        if self._rubric_max_iterations == value:
+            await self._mount_message(
+                AppMessage(f"Max iterations already set to {value}.")
+            )
             return
 
         previous = self._rubric_max_iterations
@@ -11822,11 +12047,9 @@ class DeepAgentsApp(App):
                 **{env_key: env_value},
             )
             restarted = await self._respawn_server(
-                log_message=(
-                    "Server restart failed while changing rubric max iterations"
-                ),
+                log_message=("Server restart failed while changing max iterations"),
                 mcp_failure_log=(
-                    "MCP metadata preload after rubric max-iterations change failed"
+                    "MCP metadata preload after max-iterations change failed"
                 ),
                 mcp_failure_toast=(
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
@@ -11848,14 +12071,19 @@ class DeepAgentsApp(App):
 
         if value is None:
             await self._mount_message(
-                AppMessage("Rubric max iterations cleared; using the SDK default."),
+                AppMessage("Max iterations cleared; using the SDK default."),
             )
         else:
             await self._mount_message(
-                AppMessage(f"Rubric max iterations set to {value}."),
+                AppMessage(f"Max iterations set to {value}."),
             )
 
-    async def _set_rubric_model(self, model_spec: str | None) -> None:
+    async def _set_rubric_model(
+        self,
+        model_spec: str | None,
+        *,
+        source: Literal["goal", "rubric"] = "rubric",
+    ) -> None:
         """Set the grader model used by `RubricMiddleware`."""
         from functools import partial
 
@@ -11863,20 +12091,22 @@ class DeepAgentsApp(App):
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
+        label = "Goal grader" if source == "goal" else "Rubric grader"
+
         if self._agent_running or self._shell_running or self._connecting:
             self._defer_action(
                 DeferredAction(
                     kind="rubric_model_switch",
-                    execute=partial(self._set_rubric_model, model_spec),
+                    execute=partial(self._set_rubric_model, model_spec, source=source),
                 ),
             )
-            self.notify("Rubric grader model will switch after current work finishes.")
+            self.notify(f"{label} model will switch after current work finishes.")
             return
 
         if self._server_kwargs is None and self._server_proc is None:
             await self._mount_message(
                 ErrorMessage(
-                    "Rubric grader model switching is unavailable in this session "
+                    f"{label} model switching is unavailable in this session "
                     "because it does not own a restartable server."
                 )
             )
@@ -11888,6 +12118,14 @@ class DeepAgentsApp(App):
             parsed = ModelSpec.try_parse(model_spec)
             provider = parsed.provider if parsed else detect_provider(model_spec)
             model_name = parsed.model if parsed else model_spec
+            display = (
+                model_spec if parsed or not provider else f"{provider}:{model_name}"
+            )
+            if display == self._rubric_model:
+                await self._mount_message(
+                    AppMessage(f"{label} model already set to {display}.")
+                )
+                return
             auth_status = get_provider_auth_status(provider) if provider else None
             if auth_status is not None and auth_status.blocks_start:
                 await self._mount_message(
@@ -11898,9 +12136,6 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
             try:
                 await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -11908,11 +12143,23 @@ class DeepAgentsApp(App):
                     profile_overrides=self._profile_override,
                 )
             except Exception as exc:
-                logger.exception("Failed to resolve rubric grader model %s", display)
+                logger.exception(
+                    "Failed to resolve %s model %s",
+                    label.lower(),
+                    display,
+                )
                 await self._mount_message(
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
+        elif self._rubric_model is None:
+            await self._mount_message(
+                AppMessage(
+                    f"{label} model already uses the "
+                    f"{self._startup_chat_model_label()}."
+                )
+            )
+            return
 
         previous = self._rubric_model
         self._rubric_model = display
@@ -11926,8 +12173,12 @@ class DeepAgentsApp(App):
                 **{env_key: env_value},
             )
             restarted = await self._respawn_server(
-                log_message="Server restart failed while changing rubric model",
-                mcp_failure_log="MCP metadata preload after rubric model change failed",
+                log_message=(
+                    f"Server restart failed while changing {label.lower()} model"
+                ),
+                mcp_failure_log=(
+                    f"MCP metadata preload after {label.lower()} model change failed"
+                ),
                 mcp_failure_toast=(
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
@@ -11947,12 +12198,13 @@ class DeepAgentsApp(App):
             self._server_proc.persist_env(**{env_key: env_value})
 
         if display:
-            await self._mount_message(
-                AppMessage(f"Rubric grader model set to {display}.")
-            )
+            await self._mount_message(AppMessage(f"{label} model set to {display}."))
         else:
             await self._mount_message(
-                AppMessage("Rubric grader model cleared; using startup chat model."),
+                AppMessage(
+                    f"{label} model cleared; using the "
+                    f"{self._startup_chat_model_label()}."
+                ),
             )
 
     async def _handle_command(self, command: str) -> None:
@@ -16563,7 +16815,7 @@ class DeepAgentsApp(App):
         if self._approval_mode is ApprovalMode.MANUAL:
             if not self._auto_mode_eligible:
                 self._warn_live_approval_mode_unavailable(
-                    "Auto is available only in the opt-in local TUI beta."
+                    "Auto is unavailable with a sandbox."
                 )
                 return
             target = ApprovalMode.AUTO
@@ -16601,12 +16853,14 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self.notify(
-                "Automated review (beta) is enabled. It checks approval-gated "
+                "Automated review is enabled. It checks approval-gated "
                 "actions, but may not catch every issue.",
                 severity="warning",
                 timeout=8,
                 markup=False,
             )
+            if should_persist_live:
+                await self._auto_accept_pending_goal_rubric()
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""
@@ -18251,14 +18505,18 @@ class DeepAgentsApp(App):
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
-        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+        def _safe(
+            label: str, fn: Callable[[], str], *, copyable: bool = False
+        ) -> SnapshotField:
             try:
-                return SnapshotField(label=label, value=fn())
+                return SnapshotField(label=label, value=fn(), copyable=copyable)
             except Exception as exc:  # a diagnostic must still open on a bad field
                 # WARNING (not DEBUG) so the traceback lands in the always-on
                 # in-memory buffer and is visible in the console itself; the
                 # package logger sits at INFO by default, which drops DEBUG.
                 logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                # A failed field degrades to a non-copyable ``(unavailable: ...)``
+                # placeholder regardless of the requested `copyable` flag.
                 return SnapshotField(
                     label=label, value=f"(unavailable: {type(exc).__name__})"
                 )
@@ -18274,6 +18532,24 @@ class DeepAgentsApp(App):
             return (
                 f"{stats.input_tokens} in / {stats.output_tokens} out "
                 f"/ {stats.request_count} req"
+            )
+
+        def _model_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable metadata tracks
+            # whether a model is actually configured: the "(not configured)"
+            # placeholder is not worth copying. Degrades defensively like the
+            # other fields so the overlay still opens on a bad subsystem.
+            try:
+                model = self._effective_model_spec()
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Model' failed", exc_info=True)
+                return SnapshotField(
+                    label="Model", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Model",
+                value=model or "(not configured)",
+                copyable=bool(model),
             )
 
         def _thread_field() -> SnapshotField:
@@ -18307,10 +18583,10 @@ class DeepAgentsApp(App):
             return "in-memory only"
 
         return [
-            _safe("Version", lambda: __version__),
-            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Version", lambda: __version__, copyable=True),
+            _model_field(),
             _thread_field(),
-            _safe("CWD", lambda: self._cwd),
+            _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(
                 "Experimental",
@@ -22295,8 +22571,17 @@ async def run_textual_app(
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).
+        from deepagents_code.client.launch.server import emit_preserved_log_notices
+
         if app._server_proc is not None:
             app._server_proc.stop()
+        # Surface any debug-preserved server-log paths now that Textual has torn
+        # down the alternate screen; in-session teardown, `/restart`, and a
+        # server whose startup failed only queued them (a stderr print then
+        # would be discarded on exit). Unconditional — not gated on
+        # `_server_proc` — because a failed startup queues a path without ever
+        # producing a tracked process to hang the notice on.
+        emit_preserved_log_notices()
 
     return AppResult(
         return_code=app.return_code or 0,

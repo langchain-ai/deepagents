@@ -3103,6 +3103,95 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class LangsmithShadowResult:
+    """Why `/trace` found no LangSmith key, when an empty override is involved.
+
+    Distinguishes the three states the caller renders differently: a specific
+    empty override is suppressing an available key (`shadowing_var`), the
+    credential store could not be read so a stored key can't be ruled out
+    (`store_unreadable`), or neither (both fields falsy -- the generic "not
+    configured" hint applies).
+    """
+
+    shadowing_var: str | None = None
+    """Prefixed env var whose empty value is suppressing an available key."""
+
+    store_unreadable: bool = False
+    """`True` when the `/auth` credential store raised while being checked."""
+
+
+def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
+    """Report an empty prefixed override that is suppressing a LangSmith key.
+
+    `/trace` shows a generic "not configured" hint whenever no key resolves, but
+    a common footgun is exporting `DEEPAGENTS_CODE_LANGSMITH_API_KEY=` (empty).
+    A present-but-empty prefixed variable suppresses a key two ways: per
+    `resolve_env_var`'s precedence it shadows the canonical env variable
+    directly, and -- because `apply_stored_service_credentials` skips the `/auth`
+    bridge onto `LANGSMITH_API_KEY` whenever the prefixed var is present -- it
+    also keeps a `/auth`-stored key from ever reaching the environment. Either
+    way tracing silently stays off even though a key is available. Detecting this
+    lets callers name the offending variable instead of sending the user to
+    `/auth`.
+
+    Only an override that actually gates the *effective* key is reported. If a
+    key already resolves under the normal `LANGSMITH_API_KEY`-before-
+    `LANGCHAIN_API_KEY` precedence, tracing is off for some other reason (a
+    missing tracing flag), no override is to blame, and nothing is reported.
+    Otherwise each override is checked against the specific key it suppresses, so
+    the returned name is one that, once unset, actually lets a key resolve: its
+    canonical variant carries a value, or -- for `LANGSMITH_API_KEY`, the var
+    `/auth` bridges its stored key onto -- a stored key exists. When several
+    overrides qualify, the first in `_TRACING_API_KEY_ENV_VARS` order is
+    returned.
+
+    Returns:
+        A `LangsmithShadowResult`; see its fields for the three outcomes.
+    """
+    from deepagents_code import auth_store
+    from deepagents_code.model_config import (
+        LANGSMITH_SERVICE,
+        resolve_env_var,
+        resolved_env_var_name,
+    )
+
+    if resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY"):
+        # A key already resolves (matching `get_langsmith_project_name`'s key
+        # precedence), so no empty override is what's keeping tracing off, and
+        # unsetting one would change nothing. Defer to the generic hint.
+        return LangsmithShadowResult()
+
+    store_unreadable = False
+    for name in _TRACING_API_KEY_ENV_VARS:
+        resolved = resolved_env_var_name(name)
+        if resolved == name or os.environ.get(resolved):
+            # No prefixed override for this key, or the override carries a value:
+            # either way it is not an empty override suppressing this key.
+            continue
+        if (os.environ.get(name) or "").strip():
+            # The empty override is hiding a value on the canonical variable.
+            return LangsmithShadowResult(shadowing_var=resolved)
+        if name == "LANGSMITH_API_KEY":
+            # `/auth` bridges its stored key onto `LANGSMITH_API_KEY`, so an
+            # empty override for it also suppresses a stored key.
+            try:
+                if auth_store.get_stored_key(LANGSMITH_SERVICE):
+                    return LangsmithShadowResult(shadowing_var=resolved)
+            except RuntimeError as exc:
+                # Can't confirm a stored key, but keep scanning: a later
+                # override may still name a concrete shadow. Only if none does
+                # do we surface the unreadable store to the caller.
+                logger.warning(
+                    "Could not read the stored LangSmith credential while "
+                    "checking for an empty-override shadow: %s. The credential "
+                    "file may be corrupt; re-add the key via /auth.",
+                    exc,
+                )
+                store_unreadable = True
+    return LangsmithShadowResult(store_unreadable=store_unreadable)
+
+
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
     from deepagents_code.config_manifest import (
@@ -3158,6 +3247,31 @@ def is_openai_prompt_cache_key_enabled() -> bool:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
+
+
+def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
+    """Resolve whether Auto mode applies generated goal criteria without review.
+
+    Returns:
+        The effective preference and its config source. The preference fails closed
+        to disabled if the manifest entry is unavailable.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("goals.auto_accept_criteria")
+    if option is None:
+        logger.warning(
+            "Manifest option 'goals.auto_accept_criteria' is missing; goal "
+            "criteria auto-accept is disabled and any saved preference is "
+            "ignored.",
+        )
+        return False, "default"
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value), source
 
 
 def configure_langsmith_secret_redaction() -> bool:

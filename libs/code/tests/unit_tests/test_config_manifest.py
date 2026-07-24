@@ -200,6 +200,64 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
     assert is_openai_prompt_cache_key_enabled() is False
 
 
+def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
+    """Auto mode reviews generated goal criteria when no preference is set."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+
+    assert resolve_scalar(option, toml_data={}) == (False, "default")
+
+
+def test_goal_auto_accept_criteria_reads_toml(monkeypatch) -> None:
+    """The goals table can opt Auto into applying criteria automatically."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"goals": {"auto_accept_criteria": True}},
+    ) == (True, "config.toml")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("true", True), ("0", False)])
+def test_goal_auto_accept_criteria_env_overrides_toml(
+    monkeypatch,
+    raw: str,
+    expected: bool,
+) -> None:
+    """A recognized env value takes priority over config.toml."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raw)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"goals": {"auto_accept_criteria": not expected}},
+    ) == (expected, f"env ({_env_vars.GOAL_AUTO_ACCEPT_CRITERIA})")
+
+
+@pytest.mark.parametrize(
+    ("toml_data", "expected"),
+    [
+        ({"goals": {"auto_accept_criteria": True}}, (True, "config.toml")),
+        ({}, (False, "default")),
+    ],
+)
+def test_invalid_goal_auto_accept_env_falls_through(
+    monkeypatch,
+    toml_data: dict[str, object],
+    expected: tuple[bool, str],
+) -> None:
+    """An invalid env value should not mask TOML or the safe default."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, "maybe")
+
+    assert resolve_scalar(option, toml_data=toml_data) == expected
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")
@@ -1259,6 +1317,33 @@ def test_run_get_unknown_key_returns_error_code(capsys) -> None:
     err = capsys.readouterr().err
     assert "Unknown config option" in err
     assert "config --verbose" in err
+
+
+def test_run_get_missing_key_hints_available_keys(capsys) -> None:
+    """Bare `config get` explains it needs a key and where to find one."""
+    args = argparse.Namespace(config_command="get", key=None, output_format="text")
+    assert run_config_command(args) == 2
+    err = capsys.readouterr().err
+    assert "needs an option key" in err
+    assert "dcode config" in err
+
+
+def test_run_get_missing_key_json_lists_keys(capsys) -> None:
+    """JSON output for a bare `config get` returns the full key list for tools."""
+    import json
+
+    args = argparse.Namespace(config_command="get", key=None, output_format="json")
+    assert run_config_command(args) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["error"] == "missing key"
+    assert payload["data"]["keys"] == list(option_keys())
+
+
+def test_missing_key_example_is_a_real_option() -> None:
+    """The hint's example key must stay a resolvable manifest key."""
+    from deepagents_code.client.commands.config import _GET_KEY_EXAMPLE
+
+    assert get_option(_GET_KEY_EXAMPLE) is not None
 
 
 def test_config_registered_as_bare_action_group() -> None:

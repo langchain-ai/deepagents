@@ -336,17 +336,15 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     ] = "general",
     include_raw_content: Annotated[
         bool,
-        Field(description="Include full page content (uses more tokens)."),
+        Field(
+            description=(
+                "Include full page content (uses more tokens). Prefer `fetch_url` "
+                "for a single URL."
+            )
+        ),
     ] = False,
 ):
     """Search the web for current information.
-
-    Args:
-        query: Specific search query.
-        max_results: Number of results to return.
-        topic: `"general"`, `"news"`, or `"finance"`.
-        include_raw_content: Include full page text (large; prefer `fetch_url` for a
-            single URL).
 
     Returns:
         Search hits with title, URL, snippet, and score.
@@ -404,10 +402,6 @@ def fetch_url(
     ] = 30,
 ) -> dict[str, Any]:
     """Fetch a URL and return the page content as markdown.
-
-    Args:
-        url: HTTP or HTTPS URL to fetch.
-        timeout: Request timeout in seconds.
 
     Returns:
         Fetched page markdown plus status metadata.

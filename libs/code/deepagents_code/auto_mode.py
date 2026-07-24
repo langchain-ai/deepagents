@@ -487,6 +487,25 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
     return text[:_REASON_LIMIT] or "The action was not authorized by the user request."
 
 
+def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float) -> str:
+    """Build a safe agent/UI reason for a failed auto classifier call.
+
+    Provider exception text stays out of the reason (it can carry secrets or
+    noisy HTML). Timeouts are our own deadline, so reporting the configured
+    limit is safe and actionable.
+
+    Args:
+        exc: Failure raised while invoking or validating the classifier.
+        timeout_seconds: Configured `asyncio.wait_for` limit for one batch.
+
+    Returns:
+        Compact single-line reason for tool messages and TUI events.
+    """
+    if isinstance(exc, TimeoutError):
+        return f"The authorization classifier timed out after {timeout_seconds:g}s."
+    return f"The authorization classifier was unavailable ({type(exc).__name__})."
+
+
 def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
     return {
         "consecutive_denials": 0,
@@ -2159,13 +2178,16 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             if not counters_saved:
                 plan["fallback_reason"] = "control_state_unavailable"
-            # Keep the agent/UI reason type-only; put the concrete failure in logs.
+            # Agent/UI reasons stay non-provider text (type, or our timeout
+            # budget). Concrete provider failure text belongs in logs only.
             error_detail = sanitize_auto_reason(
                 f"{type(exc).__name__}: {exc}",
                 known_secrets=self._known_secrets,
             )
             reason = sanitize_auto_reason(
-                f"The authorization classifier was unavailable ({type(exc).__name__}).",
+                classifier_unavailable_reason(
+                    exc, timeout_seconds=self._classifier_timeout_seconds
+                ),
                 known_secrets=self._known_secrets,
             )
             for call in review_calls:

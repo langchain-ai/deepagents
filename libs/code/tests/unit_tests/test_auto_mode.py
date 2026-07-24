@@ -64,6 +64,7 @@ from deepagents_code.auto_mode import (
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
+    classifier_unavailable_reason,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
     sanitize_auto_reason,
@@ -2895,6 +2896,46 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
     assert counters["total_denials"] == 0
 
 
+def test_classifier_unavailable_reason_specializes_timeouts() -> None:
+    assert (
+        classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0)
+        == "The authorization classifier timed out after 20s."
+    )
+    assert (
+        classifier_unavailable_reason(TimeoutError(), timeout_seconds=1.5)
+        == "The authorization classifier timed out after 1.5s."
+    )
+    assert (
+        classifier_unavailable_reason(
+            RuntimeError("provider overloaded"), timeout_seconds=20.0
+        )
+        == "The authorization classifier was unavailable (RuntimeError)."
+    )
+
+
+async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> None:
+    model = _StructuredModel(error=TimeoutError())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert plan["decisions"][0]["reason"] == (
+        "The authorization classifier timed out after 1s."
+    )
+
+
 async def test_classifier_unavailable_logs_underlying_error(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -2917,8 +2958,10 @@ async def test_classifier_unavailable_logs_underlying_error(
         )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    # Agent/UI stays type-only; logs include the concrete failure and traceback.
-    assert "RuntimeError" in plan["decisions"][0]["reason"]
+    # Provider exception text stays out of agent/UI; logs keep the detail.
+    assert plan["decisions"][0]["reason"] == (
+        "The authorization classifier was unavailable (RuntimeError)."
+    )
     assert "provider overloaded" not in plan["decisions"][0]["reason"]
     records = [
         record
@@ -3406,7 +3449,7 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
         store=store,
         stream_writer=events.append,
     )
-    reason = "The authorization classifier was unavailable (TimeoutError)."
+    reason = "The authorization classifier timed out after 1s."
     plan = {
         "batch_id": _batch_id(ai_message.tool_calls),
         "thread_key": key,

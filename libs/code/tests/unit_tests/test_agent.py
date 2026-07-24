@@ -4765,29 +4765,25 @@ class TestCreateCliAgentInterpreterWiring:
         middleware = mock_create.call_args.kwargs["middleware"]
         assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
         assert "hitl_middleware" not in mock_create.call_args.kwargs
-        if expected:
-            from deepagents_code.ask_user import AskUserMiddleware
-            from deepagents_code.offload_middleware import CLICompactionMiddleware
+        from deepagents_code.ask_user import AskUserMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
 
-            auto_middleware = next(
-                item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-            )
-            ask_user_middleware = next(
-                item for item in middleware if isinstance(item, AskUserMiddleware)
-            )
-            compaction_middleware = next(
-                item for item in middleware if isinstance(item, CLICompactionMiddleware)
-            )
-            assert (
-                auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
-            )
-            assert (
-                auto_middleware._trusted_compaction_tool
-                is compaction_middleware.tools[0]
-            )
-            assert middleware.index(auto_middleware) < middleware.index(
-                compaction_middleware
-            )
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        ask_user_middleware = next(
+            item for item in middleware if isinstance(item, AskUserMiddleware)
+        )
+        compaction_middleware = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+        assert auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
+        assert (
+            auto_middleware._trusted_compaction_tool is compaction_middleware.tools[0]
+        )
+        assert middleware.index(auto_middleware) < middleware.index(
+            compaction_middleware
+        )
 
     def test_compiled_agent_preserves_canonical_compaction_tool_identity(
         self, tmp_path: Path

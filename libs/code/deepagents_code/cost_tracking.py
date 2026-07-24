@@ -56,6 +56,25 @@ def _token_count(value: object) -> int:
     )
 
 
+def _cache_write_tokens(details: Mapping[str, Any]) -> int:
+    """Return cache-write tokens from LangChain `input_token_details`.
+
+    LangChain Anthropic zeroes the generic `cache_creation` field when the
+    response includes a TTL breakdown (`ephemeral_5m_input_tokens` /
+    `ephemeral_1h_input_tokens`). Sum those detailed fields when present so
+    tokens are priced as cache writes rather than ordinary input. Fall back to
+    `cache_creation` or the `cache_write` alias used by some other providers.
+    `genai-prices` exposes a single cache-write rate, so 5-minute and 1-hour
+    writes share that catalog price.
+    """
+    detailed = _token_count(details.get("ephemeral_5m_input_tokens")) + _token_count(
+        details.get("ephemeral_1h_input_tokens")
+    )
+    if detailed:
+        return detailed
+    return _token_count(details.get("cache_creation") or details.get("cache_write"))
+
+
 def _coerce_cost_usd(value: object) -> float:
     """Coerce a cumulative cost to a finite non-negative float.
 
@@ -114,9 +133,7 @@ def estimate_cost(
     details = usage_metadata.get("input_token_details")
     if isinstance(details, Mapping):
         cache_read_tokens = _token_count(details.get("cache_read"))
-        cache_write_tokens = _token_count(
-            details.get("cache_creation") or details.get("cache_write")
-        )
+        cache_write_tokens = _cache_write_tokens(details)
     else:
         cache_read_tokens = 0
         cache_write_tokens = 0

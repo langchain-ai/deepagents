@@ -175,6 +175,27 @@ class TestEstimateCost:
         assert cached is not None
         assert cached > uncached
 
+    def test_anthropic_detailed_cache_writes_are_priced_separately(self) -> None:
+        """Anthropic zeroes `cache_creation` when TTL breakdown fields are set."""
+        uncached = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_creation": 0,
+            "ephemeral_5m_input_tokens": 600,
+            "ephemeral_1h_input_tokens": 300,
+        }
+        cached = estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert uncached is not None
+        assert cached is not None
+        assert cached > uncached
+        # Same total as pricing the sum through the generic cache-write field.
+        assert cached == estimate_cost(
+            _usage(cache_write=900),
+            KNOWN_MODEL,
+            KNOWN_PROVIDER,
+        )
+
     def test_cache_tokens_are_not_double_counted(self) -> None:
         uncached = estimate_cost(
             _usage(output_tokens=0),

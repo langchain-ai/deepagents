@@ -278,6 +278,7 @@ def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEEPAGENTS_CODE_EXPERIMENTAL",
         "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA",
         "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE",
+        "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 

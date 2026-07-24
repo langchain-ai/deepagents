@@ -59,7 +59,6 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
-from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
@@ -2325,12 +2324,6 @@ def create_cli_agent(
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
-    if auto_mode_enabled and not is_env_truthy(EXPERIMENTAL):
-        logger.warning(
-            "Classifier-backed Auto requires %s=1; using Manual HITL",
-            EXPERIMENTAL,
-        )
-        auto_mode_enabled = False
     if auto_mode_enabled and (not interactive or sandbox is not None):
         logger.warning(
             "Classifier-backed Auto is unavailable outside the local interactive "

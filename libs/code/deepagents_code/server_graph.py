@@ -280,13 +280,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
 
     def _create_cli_agent_sync() -> Any:  # noqa: ANN401
         async_subagents = load_async_subagents() or None
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        auto_mode_enabled = (
-            config.interactive
-            and sandbox_backend is None
-            and is_env_truthy(EXPERIMENTAL)
-        )
+        auto_mode_enabled = config.interactive and sandbox_backend is None
 
         # These process-global settings writes are safe here because `make_graph`
         # is lock-serialized and caches one graph for the server process lifetime.

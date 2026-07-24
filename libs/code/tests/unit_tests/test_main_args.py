@@ -341,7 +341,6 @@ class TestAutoApproveHeadlessValidation:
         with (
             patch.object(sys, "argv", ["deepagents", "--auto-approve", "-m", "hello"]),
             patch.object(sys, "stdin", mock_stdin),
-            patch.dict(os.environ, {"DEEPAGENTS_CODE_EXPERIMENTAL": "1"}),
             patch("deepagents_code.main.run_textual_cli_async", run_tui),
             patch("deepagents_code.main._run_startup_auto_update"),
             patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
@@ -364,6 +363,65 @@ class TestAutoApproveHeadlessValidation:
         from deepagents_code.approval_mode import ApprovalMode
 
         assert await_args.kwargs["approval_mode"] is ApprovalMode.AUTO
+
+    def test_auto_approve_downgraded_to_manual_with_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--auto-approve` with a sandbox must downgrade to Manual and warn.
+
+        Auto's classifier runs only in the sandbox-free local TUI. When a
+        sandbox is requested the interactive launch path (`cli_main`) must
+        resolve Manual and surface the reason instead of silently dropping the
+        requested mode.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--auto-approve", "--sandbox", "daytona", "-m", "hi"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            # Skip the real provider dependency check; it exits before the
+            # approval-mode downgrade when `daytona` extras are absent.
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+                return_value=None,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        await_args = run_tui.await_args
+        assert await_args is not None
+        from deepagents_code.approval_mode import ApprovalMode
+
+        assert await_args.kwargs["approval_mode"] is ApprovalMode.MANUAL
+        assert "Auto is unavailable with a sandbox" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

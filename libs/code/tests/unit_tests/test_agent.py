@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code.agent import (
     _MEMORY_READONLY_SYSTEM_PROMPT,
@@ -4423,9 +4422,8 @@ class TestAutoModeSubagentHITLWiring:
     """Auto-mode async HITL reaches every dcode subagent stack.
 
     These tests capture the `create_deep_agent` kwargs and assert that, in Auto
-    mode (gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`), the async approval
-    middleware reaches both custom subagents and the general-purpose subagent
-    that dcode auto-adds.
+    mode, the async approval middleware reaches both custom subagents and the
+    general-purpose subagent that dcode auto-adds.
     """
 
     @staticmethod
@@ -4512,10 +4510,8 @@ class TestAutoModeSubagentHITLWiring:
     async def test_async_hitl_covers_declarative_and_general_subagents_in_auto(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Both CLI subagent forms bypass stock HITL from the async Store."""
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         kwargs = self._capture_create_deep_agent_kwargs(
             tmp_path,
             auto_mode_enabled=True,
@@ -4543,10 +4539,8 @@ class TestAutoModeSubagentHITLWiring:
     async def test_async_hitl_covers_declarative_and_general_subagents_in_manual(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Both CLI subagent forms retain their stock Manual interrupt."""
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         kwargs = self._capture_create_deep_agent_kwargs(
             tmp_path,
             auto_mode_enabled=True,
@@ -4726,24 +4720,14 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
-    @pytest.mark.parametrize(
-        ("experimental", "expected"), [(False, False), (True, True)]
-    )
-    def test_auto_mode_requires_experimental_flag(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        experimental: bool,
-        expected: bool,
-    ) -> None:
-        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+    def _capture_middleware(self, tmp_path: Path, **kwargs: Any) -> list[Any]:
+        """Run `create_cli_agent` with mocked deps and return its middleware list.
 
-        if experimental:
-            monkeypatch.setenv(EXPERIMENTAL, "1")
-        else:
-            monkeypatch.delenv(EXPERIMENTAL, raising=False)
-
+        Keeps the Auto-mode wiring tests below to a single assertion apiece by
+        centralizing the identical patching/boilerplate. Extra keyword
+        arguments (e.g. `auto_mode_enabled`, `interactive`, `sandbox`) are
+        forwarded to `create_cli_agent`.
+        """
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4767,39 +4751,72 @@ class TestCreateCliAgentInterpreterWiring:
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=False,
-                auto_mode_enabled=True,
                 cwd=tmp_path,
+                **kwargs,
             )
+        return mock_create.call_args.kwargs["middleware"]
 
-        middleware = mock_create.call_args.kwargs["middleware"]
-        assert (
-            any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
-            is expected
+    def test_auto_mode_enabled_wires_middleware(self, tmp_path: Path) -> None:
+        """Auto wires `AutoModeHITLMiddleware` in the interactive, sandbox-free case.
+
+        Regression guard for GA: Auto no longer requires an experimental flag,
+        so an interactive local session with `auto_mode_enabled=True` must
+        install the middleware and bind the canonical ask-user/compaction tools,
+        ordered ahead of compaction.
+        """
+        from deepagents_code.ask_user import AskUserMiddleware
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
         )
-        assert "hitl_middleware" not in mock_create.call_args.kwargs
-        if expected:
-            from deepagents_code.ask_user import AskUserMiddleware
-            from deepagents_code.offload_middleware import CLICompactionMiddleware
+        ask_user_middleware = next(
+            item for item in middleware if isinstance(item, AskUserMiddleware)
+        )
+        compaction_middleware = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+        assert auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
+        assert (
+            auto_middleware._trusted_compaction_tool is compaction_middleware.tools[0]
+        )
+        assert middleware.index(auto_middleware) < middleware.index(
+            compaction_middleware
+        )
 
-            auto_middleware = next(
-                item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
-            )
-            ask_user_middleware = next(
-                item for item in middleware if isinstance(item, AskUserMiddleware)
-            )
-            compaction_middleware = next(
-                item for item in middleware if isinstance(item, CLICompactionMiddleware)
-            )
-            assert (
-                auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
-            )
-            assert (
-                auto_middleware._trusted_compaction_tool
-                is compaction_middleware.tools[0]
-            )
-            assert middleware.index(auto_middleware) < middleware.index(
-                compaction_middleware
-            )
+    def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
+        """Auto is refused (no middleware) in a non-interactive session."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=True, interactive=False
+        )
+
+        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+
+    def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
+        """Auto is refused (no middleware) when a sandbox backend is active.
+
+        This guard is the sole programmatic protection preventing
+        classifier-backed auto-approval from engaging in a sandboxed session,
+        so it is asserted directly rather than relying on upstream callers.
+        """
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        sandbox = cast(
+            "SandboxBackendProtocol",
+            FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        )
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=True, sandbox=sandbox
+        )
+
+        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
 
     def test_compiled_agent_preserves_canonical_compaction_tool_identity(
         self, tmp_path: Path

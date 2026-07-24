@@ -166,6 +166,13 @@ _TIMED_SUCCESS_TOOLS: set[str] = {
 }
 
 
+# CSS classes applied to a `ToolCallMessage` to tint the whole row by terminal
+# outcome (see its `DEFAULT_CSS`). Running/pending states carry none of these.
+_STATUS_CLASSES: frozenset[str] = frozenset(
+    {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
+)
+
+
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
@@ -1131,6 +1138,25 @@ class ToolCallMessage(Vertical):
         color: $text-muted;
     }
 
+    /* Terminal outcome tints the row: green success, red error, amber
+       rejected/skipped. A faint background keeps text readable across
+       light/dark/ansi themes while the border carries the primary signal. */
+    ToolCallMessage.-status-success {
+        border-left: wide $success;
+        background: $success 8%;
+    }
+
+    ToolCallMessage.-status-error {
+        border-left: wide $error;
+        background: $error 10%;
+    }
+
+    ToolCallMessage.-status-rejected,
+    ToolCallMessage.-status-skipped {
+        border-left: wide $warning;
+        background: $warning 8%;
+    }
+
     ToolCallMessage:hover {
         border-left: wide $tool-hover;
     }
@@ -1335,6 +1361,7 @@ class ToolCallMessage(Vertical):
                 self._status = "success"
                 self._output = output
                 self._duration = duration
+                self._apply_status_class("success")
                 if self._tool_name in _TIMED_SUCCESS_TOOLS and duration is not None:
                     self._show_timed_success_status(duration)
                 else:
@@ -1343,6 +1370,7 @@ class ToolCallMessage(Vertical):
             case "error":
                 self._status = "error"
                 self._output = output
+                self._apply_status_class("error")
                 if self._status_widget:
                     self._status_widget.add_class("error")
                     error_icon = get_glyphs().error
@@ -1353,6 +1381,7 @@ class ToolCallMessage(Vertical):
                 self._update_output_display()
             case "rejected":
                 self._status = "rejected"
+                self._apply_status_class("rejected")
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
                     error_icon = get_glyphs().error
@@ -1363,6 +1392,7 @@ class ToolCallMessage(Vertical):
                 self._update_reject_reason_display()
             case "skipped":
                 self._status = "skipped"
+                self._apply_status_class("skipped")
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
                     self._status_widget.update(Content.styled("- Skipped", "dim"))
@@ -1442,6 +1472,23 @@ class ToolCallMessage(Vertical):
             self._animation_timer.stop()
             self._animation_timer = None
 
+    def _apply_status_class(self, status: str) -> None:
+        """Tint the whole row to match a terminal outcome.
+
+        Swaps the `-status-*` CSS class so the row border and background
+        reflect success/error/rejected/skipped. Running and pending states keep
+        the default `$tool` accent, so they clear any prior status class.
+
+        Args:
+            status: Terminal status name (`success`, `error`, `rejected`,
+                `skipped`); any other value clears the tint.
+        """
+        for name in _STATUS_CLASSES:
+            self.remove_class(name)
+        class_name = f"-status-{status}"
+        if class_name in _STATUS_CLASSES:
+            self.add_class(class_name)
+
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
@@ -1470,6 +1517,7 @@ class ToolCallMessage(Vertical):
         )
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
+        self._apply_status_class("success")
         if self._duration is not None:
             self._show_timed_success_status(self._duration)
         else:
@@ -1530,6 +1578,7 @@ class ToolCallMessage(Vertical):
             return
         self._stop_animation()
         self._status = "error"
+        self._apply_status_class("error")
         # For shell commands, prepend the full command so users can see what failed
         command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
@@ -1558,6 +1607,7 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "rejected"
+        self._apply_status_class("rejected")
         if reason and reason.strip():
             self._reject_reason = reason.strip()
         if self._status_widget:
@@ -1589,6 +1639,7 @@ class ToolCallMessage(Vertical):
         """Mark the tool call as skipped (due to another rejection)."""
         self._stop_animation()
         self._status = "skipped"
+        self._apply_status_class("skipped")
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")  # Use same styling as rejected

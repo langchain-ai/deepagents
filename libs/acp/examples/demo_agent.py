@@ -129,7 +129,7 @@ async def _serve_example_agent() -> None:
         {"value": "baseten:zai-org/GLM-5.2", "name": "GLM-5.2"},
     ]
     anthropic_models = [
-        {"value": "anthropic:claude-opus-4-8", "name": "Claude Opus 4.8"},
+        {"value": "anthropic:claude-opus-5", "name": "Claude Opus 5"},
         {"value": "anthropic:claude-sonnet-5", "name": "Claude Sonnet 5"},
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]

@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+import json
+import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import START, StateGraph
+from langgraph.types import Command
+from pydantic import BaseModel
 
+from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
 from deepagents_code.hooks.context import apply_hooks_context
@@ -49,13 +58,20 @@ from deepagents_code.hooks.server_middleware import (
     _apply_subagent_stop,
     _ask_permission_via_hitl,
     _denied_tool_message,
+    _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
 
 if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
+
     from deepagents_code._cli_context import CLIContext
+
+
+class _ReplayState(BaseModel):
+    completed: bool
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:
@@ -116,6 +132,61 @@ def test_hook_resume_value_validates_identity() -> None:
             invocation_id=uuid4(),
             snapshot_id=request.snapshot_id,
         )
+
+
+def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
+    context = HookContext(
+        thread_id="thread-1",
+        cwd=Path("/tmp"),
+        approval_mode=ApprovalMode.MANUAL,
+    )
+    event = PreToolUseEvent(
+        event=HookEvent.PRE_TOOL_USE,
+        call=ToolCallData(id="call-1", name="execute", args={"command": "ls"}),
+    )
+    gate = _session_gate(
+        {
+            "hooks_snapshot_id": "snapshot-1",
+            "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
+        }
+    )
+    assert gate is not None
+
+    def invoke_hook(state: _ReplayState) -> dict[str, bool]:
+        assert state.completed is False
+        decision = _invoke_hook(
+            context,
+            event,
+            gate=gate,
+            config={"configurable": {"thread_id": "thread-1"}},
+            deadline=timedelta(minutes=1),
+        )
+        assert isinstance(decision, PreToolUseDecision)
+        return {"completed": decision.permission.behavior == "allow"}
+
+    builder = StateGraph(_ReplayState)
+    builder.add_node("hook", invoke_hook)
+    builder.add_edge(START, "hook")
+    graph = builder.compile(checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "thread-1"}}
+
+    interrupted = graph.invoke(_ReplayState(completed=False), config)
+    pending = interrupted["__interrupt__"][0]
+    request = parse_hook_interrupt_payload(pending.value)
+    assert request is not None
+    response = HookInvocationResponse(
+        protocol_version=1,
+        invocation_id=request.invocation_id,
+        snapshot_id=request.snapshot_id,
+        decision=PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="allow"),
+        ),
+    )
+
+    resumed = graph.invoke(Command(resume=build_hook_resume_value(response)), config)
+
+    assert resumed["completed"] is True
 
 
 def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
@@ -204,12 +275,256 @@ def test_apply_post_tool_use_appends_feedback_and_context() -> None:
     assert "note" in str(updated.content)
 
 
+def test_post_tool_use_updates_successful_command_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    result = Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content="ok",
+                    name="execute",
+                    tool_call_id="c1",
+                )
+            ]
+        }
+    )
+    invoke = MagicMock(
+        return_value=PostToolUseDecision(
+            event=HookEvent.POST_TOOL_USE,
+            context=["post context"],
+        )
+    )
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        invoke,
+    )
+
+    updated = middleware._maybe_post_tool_use(
+        ToolCallData(id="c1", name="execute", args={}),
+        HookContext(
+            thread_id="thread-1",
+            cwd=Path("/tmp"),
+            approval_mode=ApprovalMode.MANUAL,
+        ),
+        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
+        {"configurable": {"thread_id": "thread-1"}},
+        result,
+        5,
+    )
+
+    assert isinstance(updated, Command)
+    assert isinstance(updated.update, dict)
+    message = updated.update["messages"][0]
+    assert isinstance(message, ToolMessage)
+    assert "post context" in str(message.content)
+    invoke.assert_called_once()
+
+
+def test_post_tool_use_skips_failed_tool_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    result = ToolMessage(
+        content="failed",
+        name="execute",
+        tool_call_id="c1",
+        status="error",
+    )
+    invoke = MagicMock()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        invoke,
+    )
+
+    updated = middleware._maybe_post_tool_use(
+        ToolCallData(id="c1", name="execute", args={}),
+        HookContext(
+            thread_id="thread-1",
+            cwd=Path("/tmp"),
+            approval_mode=ApprovalMode.MANUAL,
+        ),
+        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
+        {"configurable": {"thread_id": "thread-1"}},
+        result,
+        5,
+    )
+
+    assert updated is result
+    invoke.assert_not_called()
+
+
 def test_append_pretool_context_to_result() -> None:
     result = ToolMessage(content="ran", tool_call_id="c1", name="execute")
     updated = _append_message_text(result, ("pre context",))
     assert isinstance(updated, ToolMessage)
     assert "ran" in str(updated.content)
     assert "pre context" in str(updated.content)
+
+
+def _pre_tool_runtime() -> MagicMock:
+    runtime = MagicMock()
+    runtime.context = {
+        "hooks_snapshot_id": "snap",
+        "hooks_server_events": ["PreToolUse"],
+        "thread_id": "thread-1",
+        "approval_mode": "manual",
+    }
+    return runtime
+
+
+def _pre_tool_state() -> ServerHooksState:
+    return {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute",
+                        "args": {"command": "ls"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        ]
+    }
+
+
+def _tool_request(state: ServerHooksState, runtime: MagicMock) -> MagicMock:
+    request = MagicMock()
+    request.state = state
+    request.runtime = runtime
+    request.tool = None
+    request.tool_call = {
+        "name": "execute",
+        "args": {"command": "ls"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    return request
+
+
+def test_pre_tool_allow_bypasses_hitl_and_preserves_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    runtime = _pre_tool_runtime()
+    state = _pre_tool_state()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        lambda *_args, **_kwargs: PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="allow"),
+            context=["hook context"],
+        ),
+    )
+
+    update = middleware._after_model(state, runtime)
+    state["_hooks_pre_tool_outcomes"] = update["_hooks_pre_tool_outcomes"]
+    request = _tool_request(state, runtime)
+    handler = MagicMock(
+        return_value=ToolMessage(
+            content="ran",
+            name="execute",
+            tool_call_id="call-1",
+        )
+    )
+
+    assert _should_interrupt_tool_call(request) is False
+    result = middleware.wrap_tool_call(request, handler)
+    assert isinstance(result, ToolMessage)
+    assert "hook context" in str(result.content)
+    handler.assert_called_once_with(request)
+
+
+def test_server_pre_tool_node_runs_before_stock_hitl(tmp_path: Path) -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+    model.profile = {"max_input_tokens": 200000}
+    graph, _backend = create_cli_agent(
+        model,
+        "hooks-order-test",
+        cwd=tmp_path,
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=False,
+    )
+    edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
+
+    assert ("model", "ServerHooksMiddleware.after_model") in edges
+    assert (
+        "ServerHooksMiddleware.after_model",
+        "HumanInTheLoopMiddleware.after_model",
+    ) in edges
+
+
+def test_pre_tool_ask_reaches_hitl_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    runtime = _pre_tool_runtime()
+    state = _pre_tool_state()
+    order: list[str] = []
+
+    def invoke(*_args: object, **_kwargs: object) -> PreToolUseDecision:
+        order.append("hook")
+        return PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="ask", reason="review"),
+        )
+
+    def ask(*_args: object, **_kwargs: object) -> None:
+        order.append("hitl")
+
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        invoke,
+    )
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._ask_permission_via_hitl",
+        ask,
+    )
+
+    update = middleware._after_model(state, runtime)
+    state["_hooks_pre_tool_outcomes"] = update["_hooks_pre_tool_outcomes"]
+    request = _tool_request(state, runtime)
+
+    assert order == ["hook", "hitl"]
+    assert _should_interrupt_tool_call(request) is False
+
+
+def test_pre_tool_deny_skips_hitl_and_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    runtime = _pre_tool_runtime()
+    state = _pre_tool_state()
+    ask = MagicMock()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        lambda *_args, **_kwargs: PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="deny", reason="blocked"),
+        ),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._ask_permission_via_hitl",
+        ask,
+    )
+
+    update = middleware._after_model(state, runtime)
+    state["_hooks_pre_tool_outcomes"] = update["_hooks_pre_tool_outcomes"]
+    request = _tool_request(state, runtime)
+    handler = MagicMock()
+
+    assert _should_interrupt_tool_call(request) is False
+    result = middleware.wrap_tool_call(request, handler)
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "blocked" in str(result.content)
+    ask.assert_not_called()
+    handler.assert_not_called()
 
 
 def test_ask_permission_via_hitl_approve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -345,6 +660,57 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     )
     assert isinstance(response.decision, PreToolUseDecision)
     assert response.decision.permission.behavior in {"allow", "none"}
+
+
+async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    marker = tmp_path / "marker.txt"
+    script = (
+        "import json,pathlib,time; "
+        f"pathlib.Path({str(marker)!r}).write_text('x'); "
+        "time.sleep(0.05); "
+        "print(json.dumps({'systemMessage':'once'}))"
+    )
+    (config_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": (
+                                        f"{sys.executable} -c {json.dumps(script)}"
+                                    ),
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    request = _request().model_copy(update={"snapshot_id": runtime.snapshot_id})
+
+    with caplog.at_level("WARNING", logger="deepagents_code.hooks.client"):
+        first, second = await asyncio.gather(
+            fulfill_hook_invocation(runtime, request),
+            fulfill_hook_invocation(runtime, request),
+        )
+        third = await fulfill_hook_invocation(runtime, request)
+
+    assert first == second == third
+    assert marker.read_text() == "x"
+    assert [record.message for record in caplog.records].count(
+        "Hook user notice: once"
+    ) == 1
 
 
 def test_snapshot_configured_server_events() -> None:

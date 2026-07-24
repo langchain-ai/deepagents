@@ -201,7 +201,7 @@ class PostToolUseEvent(_DomainModel):
 
     event: Literal[HookEvent.POST_TOOL_USE]
     call: ToolCallData
-    result: ToolMessage | Command[str]
+    result: Command[str] | ToolMessage
     duration_ms: int | None = None
 
 

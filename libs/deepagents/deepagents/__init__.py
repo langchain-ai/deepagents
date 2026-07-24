@@ -2,9 +2,7 @@
 
 from deepagents._version import __version__
 from deepagents.graph import (
-    BASE_AGENT_PROMPT,
     DeepAgentState,
-    SystemPromptConfig,
     create_deep_agent,
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -28,7 +26,6 @@ from deepagents.profiles.provider.provider_profiles import (
 )
 
 __all__ = [
-    "BASE_AGENT_PROMPT",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
@@ -44,7 +41,6 @@ __all__ = [
     "RubricMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
-    "SystemPromptConfig",
     "__version__",
     "create_deep_agent",
     "register_harness_profile",

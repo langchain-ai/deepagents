@@ -1988,6 +1988,15 @@ def parse_args() -> argparse.Namespace:
         help="Override grader iterations per rubric attempt before stopping "
         "(must be >= 1; defaults to the SDK setting).",
     )
+    parser.add_argument(
+        "--recursion-limit",
+        dest="recursion_limit",
+        type=positive_int,
+        metavar="N",
+        help="Override the main agent's LangGraph recursion_limit (graph step "
+        "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
+        "[runtime].recursion_limit; defaults to 2000.",
+    )
 
     parser.add_argument(
         "--stdin",
@@ -2003,10 +2012,7 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help=(
-            "Interactive local TUI only: enable beta classifier-backed Auto mode. "
-            "Requires DEEPAGENTS_CODE_EXPERIMENTAL=1."
-        ),
+        help="Interactive local TUI only: enable classifier-backed Auto mode.",
     )
     approval_group.add_argument(
         "--yolo",
@@ -2278,6 +2284,7 @@ async def run_textual_cli_async(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2344,6 +2351,8 @@ async def run_textual_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2428,6 +2437,7 @@ async def run_textual_cli_async(
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "recursion_limit": recursion_limit,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -2485,6 +2495,7 @@ async def _run_acp_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2503,6 +2514,8 @@ async def _run_acp_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env/`config.toml`/default at agent-build time.
 
     Returns:
         Exit code for ACP mode.
@@ -2599,6 +2612,7 @@ async def _run_acp_cli_async(
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
             fs_tools=allow_fs_tools,
+            recursion_limit=recursion_limit,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -3690,6 +3704,7 @@ def cli_main() -> None:
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
+                    recursion_limit=getattr(args, "recursion_limit", None),
                 )
             )
             sys.exit(exit_code)
@@ -4545,6 +4560,7 @@ def cli_main() -> None:
                             rubric_max_iterations=getattr(
                                 args, "rubric_max_iterations", None
                             ),
+                            recursion_limit=getattr(args, "recursion_limit", None),
                         ),
                         timeout=timeout,
                     )
@@ -4647,20 +4663,18 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
                 from deepagents_code.approval_mode import ApprovalMode
 
                 approval_mode = _resolve_approval_mode(args)
-                if approval_mode is ApprovalMode.AUTO and (
-                    not is_env_truthy(EXPERIMENTAL)
-                    or (args.sandbox and args.sandbox != "none")
+                if (
+                    approval_mode is ApprovalMode.AUTO
+                    and args.sandbox
+                    and args.sandbox != "none"
                 ):
-                    reason = (
-                        "Auto is unavailable with a sandbox"
-                        if args.sandbox and args.sandbox != "none"
-                        else f"Auto is an opt-in beta; set {EXPERIMENTAL}=1"
+                    console.print(
+                        "[yellow]Auto is unavailable with a sandbox. "
+                        "Using Manual.[/yellow]"
                     )
-                    console.print(f"[yellow]{reason}. Using Manual.[/yellow]")
                     approval_mode = ApprovalMode.MANUAL
                 if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
                     console
@@ -4694,6 +4708,7 @@ def cli_main() -> None:
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                         allow_fs_tools=allow_fs_tools,
+                        recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )
                 return_code = result.return_code

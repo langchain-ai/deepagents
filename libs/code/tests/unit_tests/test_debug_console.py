@@ -895,13 +895,40 @@ class TestDebugConsoleScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            screen._copy_snapshot_value("thread-abc")
+            screen._copy_snapshot_value("thread-abc", "Thread")
             await pilot.pause()
 
         assert captured["text"] == "thread-abc"
         latest = list(app._notifications)[-1]
         assert latest.severity == "information"
         assert latest.message == "Thread ID copied"
+
+    async def test_snapshot_copy_toast_uses_field_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Version", "1.2.3", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._copy_snapshot_value("1.2.3", "Version")
+            await pilot.pause()
+
+        assert captured["text"] == "1.2.3"
+        latest = list(app._notifications)[-1]
+        assert latest.severity == "information"
+        assert latest.message == "Version copied"
 
     async def test_langsmith_link_renders_after_resolution(self) -> None:
         app = _Harness()
@@ -1106,6 +1133,8 @@ class TestDebugConsoleScreen:
                 if isinstance(span.style, debug_console_mod.TStyle)
                 and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
                 == "thread-abc"
+                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_LABEL_META)
+                == "Thread"
             ]
             assert any(
                 content.plain[span.start : span.end] == "thread-abc"
@@ -1614,6 +1643,56 @@ class TestDebugConsoleToggle:
             assert thread_field.value.startswith("(unavailable:")
             assert thread_field.copyable is False
             assert thread_field.thread_id is None
+
+    async def test_build_snapshot_version_and_cwd_are_copyable(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            fields = {field.label: field for field in app._build_debug_snapshot()}
+            assert fields["Version"].copyable is True
+            assert fields["Version"].value
+            assert fields["CWD"].copyable is True
+            assert fields["CWD"].value
+
+    async def test_build_snapshot_model_field_is_copyable_when_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            monkeypatch.setattr(app, "_effective_model_spec", lambda: "openai:gpt-4o")
+            model_field = next(
+                field for field in app._build_debug_snapshot() if field.label == "Model"
+            )
+            assert model_field.value == "openai:gpt-4o"
+            assert model_field.copyable is True
+
+    async def test_build_snapshot_model_field_not_copyable_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            monkeypatch.setattr(app, "_effective_model_spec", lambda: "")
+            model_field = next(
+                field for field in app._build_debug_snapshot() if field.label == "Model"
+            )
+            assert model_field.value == "(not configured)"
+            assert model_field.copyable is False
+
+    async def test_build_snapshot_model_field_degrades_when_lookup_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+
+            def boom() -> str:
+                msg = "bad model"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(app, "_effective_model_spec", boom)
+            model_field = next(
+                field for field in app._build_debug_snapshot() if field.label == "Model"
+            )
+            assert model_field.value.startswith("(unavailable:")
+            assert model_field.copyable is False
 
     async def test_build_snapshot_formats_mcp_servers(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

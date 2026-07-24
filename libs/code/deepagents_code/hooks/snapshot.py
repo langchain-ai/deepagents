@@ -224,7 +224,7 @@ def _match_target(
     if matcher_field == "tool_name" and isinstance(
         event, PermissionRequestEvent | PreToolUseEvent | PostToolUseEvent
     ):
-        return to_wire_tool_name(event.call.name)
+        return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
     if matcher_field == "notification_type" and isinstance(event, NotificationEvent):
         return event.notification.type
     if matcher_field == "cause" and isinstance(

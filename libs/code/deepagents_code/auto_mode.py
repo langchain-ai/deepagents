@@ -48,7 +48,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command, interrupt
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict
 
 from deepagents_code._ask_user_types import (
@@ -1582,20 +1582,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         @tool
         def create_temp_artifact(
-            content: str,
+            content: Annotated[
+                str,
+                Field(description="UTF-8 text to write once to the scratch file."),
+            ],
             runtime: ToolRuntime[Any, AutoModeState],
-            suffix: str = "",
+            suffix: Annotated[
+                str,
+                Field(description="Optional short extension such as `.md`."),
+            ] = "",
         ) -> Command[Any]:
             """Create a private OS-temp text file for this request.
 
             Use this instead of `write_file` when a command needs a temporary input
             file, such as a pull-request body passed with `--body-file`. Dcode chooses
             and exclusively allocates the path; callers cannot select or overwrite one.
-
-            Args:
-                content: UTF-8 text to write once to the scratch file.
-                runtime: Trusted tool runtime injected by LangGraph.
-                suffix: Optional short extension such as `.md`.
 
             Returns:
                 A tool message containing the allocated absolute path.
@@ -1642,14 +1643,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         @tool
         def delete_temp_artifact(
-            file_path: str,
+            file_path: Annotated[
+                str,
+                Field(description="Exact path returned by `create_temp_artifact`."),
+            ],
             runtime: ToolRuntime[Any, AutoModeState],
         ) -> Command[Any]:
             """Delete one exact OS-temp artifact created for this request.
-
-            Args:
-                file_path: Exact path returned by `create_temp_artifact`.
-                runtime: Trusted tool runtime injected by LangGraph.
 
             Returns:
                 A tool message reporting exact cleanup or a fail-closed denial.

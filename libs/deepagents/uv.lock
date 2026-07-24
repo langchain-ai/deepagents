@@ -743,7 +743,7 @@ name = "importlib-metadata"
 version = "8.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp" },
+    { name = "zipp", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/49/3b30cad09e7771a4982d9975a8cbf64f00d4a1ececb53297f1d9a7be1b10/importlib_metadata-8.7.1.tar.gz", hash = "sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb", size = 57107, upload-time = "2025-12-21T10:00:19.278Z" }
 wheels = [
@@ -1944,14 +1944,14 @@ wheels = [
 
 [[package]]
 name = "quickjs-rs"
-version = "0.2.4"
+version = "0.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "wasmtime" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/34/1b63bc3db8d950139618d1d38eff5648e5aaa53b2982da5ec121fcf72c63/quickjs_rs-0.2.4.tar.gz", hash = "sha256:7226d18bfa05d97fd629348b7d71512dab4da12bfbe29bdd50486bfc10858cc9", size = 829056, upload-time = "2026-06-24T19:42:21.6Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/dc/177301106aede96a709d5577127aaa090364d4abb8b4c4cfb87b12ae2c30/quickjs_rs-0.2.5.tar.gz", hash = "sha256:3ceb30fba27013108fac92f0a716d6a16980131ce5b13f9912848df1f1f2cf09", size = 830147, upload-time = "2026-07-24T20:29:26.377Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/5f/38a30bdfc4fd0a369f1cfe394ea51fbb43a7e492ffe4006f212d24ab05c5/quickjs_rs-0.2.4-py3-none-any.whl", hash = "sha256:3b497b712c4e94401d5617a4c5808b290e2d6bac8e147b315e880306145ae734", size = 799749, upload-time = "2026-06-24T19:42:19.707Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/1d/e4406d13ce9b9443dbfa59e2a2d5b3e11278ebe322b54de38ae18faf5436/quickjs_rs-0.2.5-py3-none-any.whl", hash = "sha256:e82240af1f1dd1b2e12bcf169a22a8e0e451e356f0688f2fc3bba886d9b2bb20", size = 801138, upload-time = "2026-07-24T20:29:24.194Z" },
 ]
 
 [[package]]
@@ -2163,8 +2163,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "jeepney" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [

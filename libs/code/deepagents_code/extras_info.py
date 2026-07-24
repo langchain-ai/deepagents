@@ -1129,6 +1129,66 @@ def extra_for_package(
     return None
 
 
+@dataclass(frozen=True)
+class InstallHint:
+    """Resolved recovery action for a missing provider package.
+
+    Attributes:
+        extra: Preferred `deepagents-code` extra to install via `/install`, or
+            `None` when the package is not declared by an installable extra.
+        command: Ready-to-run install command for the raw package, or `None`
+            when one could not be derived. Only meaningful when `extra` is
+            `None`; if both are `None`, the caller should fall back to a
+            "install the package manually" phrasing.
+    """
+
+    extra: str | None
+    command: str | None
+
+
+def resolve_install_hint(
+    package: str,
+    distribution_name: str = "deepagents-code",
+) -> InstallHint:
+    """Resolve how to recover from a missing provider package.
+
+    Centralizes the `extra_for_package` -> `install_package_command` fallback so
+    the interactive TUI and headless CLI render consistent recovery hints without
+    each re-implementing the branching and error handling. Prefers the installable
+    extra; otherwise derives a raw package install command, degrading to a manual
+    hint (both fields `None`) when that cannot be determined.
+
+    Args:
+        package: Distribution package name that failed to import.
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        An `InstallHint` describing the recommended recovery action.
+    """
+    extra = extra_for_package(package, distribution_name)
+    if extra is not None:
+        return InstallHint(extra=extra, command=None)
+
+    from deepagents_code.update_check import (
+        ToolRequirementIntrospectionError,
+        install_package_command,
+    )
+
+    try:
+        command = install_package_command(package)
+    except (
+        ValueError,
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+    ) as exc:
+        logger.debug(
+            "install_package_command failed; falling back to manual hint: %s",
+            exc,
+        )
+        return InstallHint(extra=None, command=None)
+    return InstallHint(extra=None, command=command)
+
+
 def verify_interpreter_deps() -> None:
     """Check that `langchain-quickjs` is installed for the interpreter.
 

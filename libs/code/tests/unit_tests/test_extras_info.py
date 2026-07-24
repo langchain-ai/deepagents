@@ -16,6 +16,7 @@ from deepagents_code.extras_info import (
     STANDALONE_EXTRAS,
     DistributionMetadataStatus,
     DistributionVersion,
+    InstallHint,
     VersionReport,
     _display_sdk_version,
     _editable_sdk_is_cli_workspace_sibling,
@@ -34,6 +35,7 @@ from deepagents_code.extras_info import (
     format_sdk_version_annotation,
     get_extras_status,
     get_optional_dependency_status,
+    resolve_install_hint,
     resolve_sdk_version,
     sdk_requirement_from_cli,
     verify_interpreter_deps,
@@ -192,6 +194,42 @@ def test_extra_for_package_returns_none_for_unknown_package() -> None:
 
     with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
         assert extra_for_package("not-declared") is None
+
+
+def test_resolve_install_hint_prefers_declared_extra() -> None:
+    """A package declared by an extra resolves to that extra, no raw command."""
+    with patch("deepagents_code.extras_info.extra_for_package", return_value="vertex"):
+        hint = resolve_install_hint("langchain-google-vertexai")
+    assert hint == InstallHint(extra="vertex", command=None)
+
+
+def test_resolve_install_hint_falls_back_to_package_command() -> None:
+    """A package with no extra falls back to a raw install command."""
+    with (
+        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
+        patch(
+            "deepagents_code.update_check.install_package_command",
+            return_value="uv tool install --with langchain-custom deepagents-code",
+        ),
+    ):
+        hint = resolve_install_hint("langchain-custom")
+    assert hint == InstallHint(
+        extra=None,
+        command="uv tool install --with langchain-custom deepagents-code",
+    )
+
+
+def test_resolve_install_hint_degrades_to_manual_on_error() -> None:
+    """When neither an extra nor a command resolves, both fields are None."""
+    with (
+        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
+        patch(
+            "deepagents_code.update_check.install_package_command",
+            side_effect=ValueError("bad package"),
+        ),
+    ):
+        hint = resolve_install_hint("bad package")
+    assert hint == InstallHint(extra=None, command=None)
 
 
 def test_skips_composite_self_referencing_extras() -> None:

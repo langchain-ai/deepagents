@@ -282,6 +282,22 @@ Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
+"""Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
+
+When enabled, OpenAI-provider model calls receive the active thread ID as a
+top-level `prompt_cache_key`, giving more reliable prompt-cache prefix routing
+across turns. It is attempted for every model whose provider resolves to
+`openai` regardless of base URL (official API, the LangSmith gateway, and other
+OpenAI-compatible endpoints), because the field is optional and additive. Set to
+a falsy value (`0`, `false`, `no`, `off`) to opt out for endpoints that reject
+unknown request fields; an explicitly empty value also opts out because the
+option declares `empty_env_is_false`. Other tokens are parsed by
+`classify_env_bool`, and an unrecognized value falls through to
+`[models].openai_prompt_cache_key` in config.toml, then the default. A
+user-supplied key is always preserved.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 

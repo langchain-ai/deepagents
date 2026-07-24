@@ -147,6 +147,59 @@ def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
     assert is_memory_auto_save_enabled() is False
 
 
+def test_is_openai_prompt_cache_key_enabled_reads_env(monkeypatch) -> None:
+    """`is_openai_prompt_cache_key_enabled` honors the env override."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.delenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, raising=False)
+    assert is_openai_prompt_cache_key_enabled() is True
+
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "false")
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[models].openai_prompt_cache_key` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.delenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"openai_prompt_cache_key": False}},
+    )
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_empty_env_opts_out(monkeypatch) -> None:
+    """An explicitly empty env value opts out (via `empty_env_is_false`)."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "")
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
+    monkeypatch,
+) -> None:
+    """An unrecognized env token is ignored, so config.toml decides."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "banana")
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"openai_prompt_cache_key": False}},
+    )
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
     """Auto mode reviews generated goal criteria when no preference is set."""
     option = get_option("goals.auto_accept_criteria")

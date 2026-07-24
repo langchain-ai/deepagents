@@ -130,7 +130,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_MODE_ENABLED_WARNING = (
-    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+    "Auto enabled. It classifies gated actions but is not sandbox containment."
 )
 
 
@@ -3103,11 +3103,7 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        self._auto_mode_eligible = self._sandbox_type is None and is_env_truthy(
-            EXPERIMENTAL
-        )
+        self._auto_mode_eligible = self._sandbox_type is None
         if self._approval_mode is ApprovalMode.AUTO and not self._auto_mode_eligible:
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
@@ -7525,7 +7521,7 @@ class DeepAgentsApp(App):
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
-                "Auto is available only in the opt-in local TUI beta."
+                "Auto is unavailable with a sandbox."
             )
             return False
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
@@ -16819,7 +16815,7 @@ class DeepAgentsApp(App):
         if self._approval_mode is ApprovalMode.MANUAL:
             if not self._auto_mode_eligible:
                 self._warn_live_approval_mode_unavailable(
-                    "Auto is available only in the opt-in local TUI beta."
+                    "Auto is unavailable with a sandbox."
                 )
                 return
             target = ApprovalMode.AUTO
@@ -16857,7 +16853,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self.notify(
-                "Automated review (beta) is enabled. It checks approval-gated "
+                "Automated review is enabled. It checks approval-gated "
                 "actions, but may not catch every issue.",
                 severity="warning",
                 timeout=8,

@@ -25372,29 +25372,33 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
-    def test_auto_startup_requires_experimental_flag(
+    def test_auto_startup_enabled_without_sandbox(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Auto resolves at startup without a sandbox, even with EXPERIMENTAL off.
+
+        Auto is now generally available; the former experimental opt-in is gone.
+        Setting `DEEPAGENTS_CODE_EXPERIMENTAL` explicitly falsy proves the flag
+        no longer gates Auto, so this stays load-bearing rather than inert.
+        """
         from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.approval_mode import ApprovalMode
 
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
-
-        app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-
-        assert app._approval_mode is ApprovalMode.MANUAL
-
-    def test_auto_startup_enabled_by_experimental_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.approval_mode import ApprovalMode
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
+        monkeypatch.setenv(EXPERIMENTAL, "0")
 
         app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
 
         assert app._approval_mode is ApprovalMode.AUTO
+
+    def test_auto_startup_unavailable_with_sandbox(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            approval_mode=ApprovalMode.AUTO,
+            server_kwargs={"sandbox_type": "daytona"},
+        )
+
+        assert app._approval_mode is ApprovalMode.MANUAL
 
     async def test_write_live_approval_mode_records_key(self) -> None:
         from deepagents_code.approval_mode import (

@@ -270,7 +270,7 @@ class TestServerGraph:
             system_prompt=None,
             interactive=True,
             auto_approve=False,
-            auto_mode_enabled=False,
+            auto_mode_enabled=True,
             interrupt_shell_only=False,
             shell_allow_list=None,
             fs_tools=["ls", "read_file"],

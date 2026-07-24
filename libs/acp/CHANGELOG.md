@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.0.10](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.9...deepagents-acp==0.0.10) (2026-07-24)
+
+
+### Features
+
+* **code:** add Claude Opus 5 support ([#5049](https://github.com/langchain-ai/deepagents/issues/5049)) ([c0afec5](https://github.com/langchain-ai/deepagents/commit/c0afec5ab7e9860d1572002c1f689f95dd15cf8e))
+
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.8...deepagents-acp==0.0.9) (2026-07-07)
 
 

@@ -11856,7 +11856,8 @@ class DeepAgentsApp(App):
         """Return usage for bare `/rubric set`."""
         return (
             "Usage: /rubric set <criteria>\n\n"
-            "Set acceptance criteria checked after turns until cleared.\n"
+            "Keep these acceptance criteria across turns.\n"
+            "Graded after each agent response until you clear or replace them.\n"
             "Example: /rubric set tests pass; keep the diff minimal"
         )
 
@@ -11865,7 +11866,7 @@ class DeepAgentsApp(App):
         """Return usage for bare `/rubric next`."""
         return (
             "Usage: /rubric next <criteria>\n\n"
-            "One-turn quality gate for the next agent turn only.\n"
+            "Use these acceptance criteria for the next agent turn only.\n"
             "Example: /rubric next tests pass; no unrelated changes"
         )
 
@@ -11874,7 +11875,7 @@ class DeepAgentsApp(App):
         """Return usage for bare `/rubric file`."""
         return (
             "Usage: /rubric file <path>\n\n"
-            "Load acceptance criteria from a text file.\n"
+            "Load acceptance criteria from a file (same as /rubric set).\n"
             "Example: /rubric file ./rubric.md"
         )
 

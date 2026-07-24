@@ -10935,6 +10935,11 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /rubric set <criteria>" in rendered
+            assert "Keep these acceptance criteria across turns." in rendered
+            assert (
+                "Graded after each agent response until you clear or replace them."
+                in rendered
+            )
             assert "Example: /rubric set tests pass; keep the diff minimal" in rendered
             assert app._active_rubric is None
 
@@ -10948,7 +10953,10 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /rubric next <criteria>" in rendered
-            assert "next agent turn only" in rendered
+            assert (
+                "Use these acceptance criteria for the next agent turn only."
+                in rendered
+            )
             assert "Example: /rubric next tests pass; no unrelated changes" in rendered
             assert app._next_rubric is None
 
@@ -10962,6 +10970,10 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /rubric file <path>" in rendered
+            assert (
+                "Load acceptance criteria from a file (same as /rubric set)."
+                in rendered
+            )
             assert "Example: /rubric file ./rubric.md" in rendered
             assert app._active_rubric is None
 

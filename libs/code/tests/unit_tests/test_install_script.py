@@ -32,7 +32,9 @@ def _write_fake_tools(
     installed_version: str | None = "0.0.1",
     latest_version: str | None = None,
     curl_fails: bool = False,
+    curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    mktemp_fails: bool = False,
 ) -> tuple[Path, Path, Path]:
     """Stage fake `uv`, `curl`, and (optionally) `dcode` binaries on `PATH`.
 
@@ -53,19 +55,29 @@ def _write_fake_tools(
     # Raw f-string: the embedded bash must keep `\n` as the two literal
     # characters (an f-string would otherwise turn `\n` into a newline). `{{ }}`
     # still escape to literal braces; the `{...!r}` slots interpolate paths.
+    default_tool_bin = bin_dir if installed_version is not None else home / ".local/bin"
     uv = bin_dir / "uv"
     uv.write_text(
         rf"""#!/usr/bin/env bash
 set -euo pipefail
+default_tool_bin={str(default_tool_bin)!r}
 if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "dir" ]; then
-  printf '%s\n' {str(tools)!r}
+  if [ "${{3:-}}" = "--bin" ]; then
+    if [ "${{FAKE_UV_TOOL_DIR_BIN_UNSUPPORTED:-}}" = "1" ]; then
+      exit 2
+    fi
+    printf '%s\n' "${{FAKE_UV_TOOL_BIN_DIR:-$default_tool_bin}}"
+  else
+    printf '%s\n' {str(tools)!r}
+  fi
   exit 0
 fi
 if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "install" ]; then
   printf '%s\n' "$@" > {str(tmp_path / "uv-args.txt")!r}
   if [ "${{FAKE_UV_CREATE_LOCAL_DCODE:-}}" = "1" ]; then
-    mkdir -p "$HOME/.local/bin"
-    cat > "$HOME/.local/bin/dcode" <<'DCODE'
+    tool_bin="${{FAKE_UV_TOOL_BIN_DIR:-$default_tool_bin}}"
+    mkdir -p "$tool_bin"
+    cat > "$tool_bin/dcode" <<'DCODE'
 #!/usr/bin/env bash
 if [ "${{1:-}}" = "-v" ]; then
   printf 'deepagents-code %s\n' "${{FAKE_LOCAL_DCODE_VERSION:-0.2.0}}"
@@ -73,7 +85,7 @@ if [ "${{1:-}}" = "-v" ]; then
 fi
 exit 0
 DCODE
-    chmod +x "$HOME/.local/bin/dcode"
+    chmod +x "$tool_bin/dcode"
   fi
   if [ -n "${{FAKE_UV_INSTALL_STDERR:-}}" ]; then
     printf '%s\n' "$FAKE_UV_INSTALL_STDERR" >&2
@@ -90,10 +102,36 @@ exit 1
     curl = bin_dir / "curl"
     if curl_fails or latest_version is None:
         curl.write_text("#!/usr/bin/env bash\nexit 1\n")
+    elif curl_failures_before_success:
+        payload = f'{{"info":{{"version":"{latest_version}"}}}}'
+        attempts = tmp_path / "curl-attempts.txt"
+        curl.write_text(
+            f"""#!/usr/bin/env bash
+count=0
+if [ -f {str(attempts)!r} ]; then
+  read -r count < {str(attempts)!r}
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > {str(attempts)!r}
+if [ "$count" -le {curl_failures_before_success} ]; then
+  exit 7
+fi
+printf '%s' '{payload}'
+"""
+        )
     else:
         payload = f'{{"info":{{"version":"{latest_version}"}}}}'
         curl.write_text(f"#!/usr/bin/env bash\nprintf '%s' '{payload}'\n")
     _make_executable(curl)
+
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(sleep)
+
+    if mktemp_fails:
+        mktemp = bin_dir / "mktemp"
+        mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
+        _make_executable(mktemp)
 
     if installed_version is not None:
         dcode = bin_dir / "dcode"
@@ -124,14 +162,18 @@ def _env(
     installed_version: str | None = "0.0.1",
     latest_version: str | None = None,
     curl_fails: bool = False,
+    curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    mktemp_fails: bool = False,
 ) -> dict[str, str]:
     bin_dir, home, uv = _write_fake_tools(
         tmp_path,
         installed_version=installed_version,
         latest_version=latest_version,
         curl_fails=curl_fails,
+        curl_failures_before_success=curl_failures_before_success,
         dcode_verify_fails=dcode_verify_fails,
+        mktemp_fails=mktemp_fails,
     )
     return {
         **os.environ,
@@ -151,7 +193,9 @@ def _invoke(
     installed_version: str | None = "0.0.1",
     latest_version: str | None = None,
     curl_fails: bool = False,
+    curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    mktemp_fails: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run `install.sh` non-interactively with the fake tools on `PATH`.
 
@@ -166,7 +210,9 @@ def _invoke(
         installed_version=installed_version,
         latest_version=latest_version,
         curl_fails=curl_fails,
+        curl_failures_before_success=curl_failures_before_success,
         dcode_verify_fails=dcode_verify_fails,
+        mktemp_fails=mktemp_fails,
     )
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -633,6 +679,42 @@ def test_install_script_unreachable_pypi_falls_back_to_upgrade(tmp_path: Path) -
 
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
+
+
+def test_install_script_retries_transient_pypi_failure(tmp_path: Path) -> None:
+    """Two transient metadata failures are retried before updating."""
+    proc, args_path = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        curl_failures_before_success=2,
+    )
+
+    assert proc.returncode == 0
+    assert (tmp_path / "curl-attempts.txt").read_text().strip() == "3"
+    assert "Could not determine the latest version" not in proc.stderr
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_requires_secure_temp_file_for_uv_output(
+    tmp_path: Path,
+) -> None:
+    """The main install fails closed instead of using a predictable `/tmp` file."""
+    proc, args_path = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        mktemp_fails=True,
+    )
+
+    assert proc.returncode != 0
+    assert "mktemp is required to create a secure temp file" in proc.stderr
+    assert not args_path.exists()
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "/tmp/deepagents-install.$$" not in script
+    assert "/tmp/deepagents-ripgrep-setup.$$" not in script
 
 
 def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> None:
@@ -1841,6 +1923,7 @@ def _run_install_uv(
     mktemp_fails: bool = False,
     no_shebang: bool = False,
     download_fails: bool = False,
+    download_failures_before_success: int = 0,
     use_wget: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
@@ -1875,6 +1958,19 @@ def _run_install_uv(
         write_body = (
             "printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\nexit 7\n"
         )
+    elif download_failures_before_success:
+        attempts = tmp_path / "uv-download-attempts.txt"
+        write_body = (
+            "count=0\n"
+            f"if [ -f {str(attempts)!r} ]; then read -r count < {str(attempts)!r}; fi\n"
+            "count=$((count + 1))\n"
+            f"printf '%s\\n' \"$count\" > {str(attempts)!r}\n"
+            f'if [ "$count" -le {download_failures_before_success} ]; then\n'
+            "  printf 'DOWNLOADER_ERROR: transient failure\\n' >&2\n"
+            "  exit 7\n"
+            "fi\n"
+            f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
+        )
     else:
         write_body = f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
     downloader = bin_dir / downloader_name
@@ -1889,6 +1985,9 @@ def _run_install_uv(
         "done\n" + write_body
     )
     _make_executable(downloader)
+    sleep = bin_dir / "sleep"
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(sleep)
     if mktemp_fails:
         mktemp = bin_dir / "mktemp"
         mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -1994,6 +2093,22 @@ def test_install_uv_surfaces_download_failure(tmp_path: Path) -> None:
     assert "DOWNLOADER_ERROR: could not resolve host" in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+@pytest.mark.parametrize("use_wget", [False, True])
+def test_install_uv_retries_transient_download_failure(
+    tmp_path: Path, *, use_wget: bool
+) -> None:
+    """The uv bootstrap retries two transient failures before succeeding."""
+    proc = _run_install_uv(
+        tmp_path,
+        verbose=False,
+        download_failures_before_success=2,
+        use_wget=use_wget,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "uv-download-attempts.txt").read_text().strip() == "3"
 
 
 def test_install_uv_downloads_via_wget(tmp_path: Path) -> None:
@@ -2173,7 +2288,10 @@ def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
 
 
 def _invoke_with_local_uv_not_on_path(
-    tmp_path: Path, *, env_file_content: str | None = None
+    tmp_path: Path,
+    *,
+    env_file_content: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run with uv present only in ~/.local/bin, absent from PATH."""
     bin_dir, home, uv = _write_fake_tools(
@@ -2200,6 +2318,7 @@ def _invoke_with_local_uv_not_on_path(
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{path_without_uv}",
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        **(extra_env or {}),
     }
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -2236,6 +2355,33 @@ def test_install_script_sources_uv_env_file_defensively(tmp_path: Path) -> None:
     assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
+def test_install_script_custom_bin_from_sourced_uv_persists_path(
+    tmp_path: Path,
+) -> None:
+    """Sourcing uv's env cannot hide that its custom tool bin needs PATH setup."""
+    tool_bin = tmp_path / "home/custom-bin"
+    proc, uv_args = _invoke_with_local_uv_not_on_path(
+        tmp_path,
+        env_file_content='export PATH="$HOME/.local/bin:$PATH"\n',
+        extra_env={
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_UV_TOOL_BIN_DIR": str(tool_bin),
+            "SHELL": "/bin/zsh",
+        },
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert uv_args.exists()
+    installed = tool_bin / "dcode"
+    exposed = tmp_path / "home/.local/bin/dcode"
+    assert installed.is_file()
+    assert exposed.is_symlink()
+    assert exposed.resolve() == installed.resolve()
+    profile = tmp_path / "home/.zshrc"
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in profile.read_text()
+    assert "Added ~/.local/bin to PATH" in proc.stdout
+
+
 def test_install_script_rejects_invalid_uv_bin_without_installing(
     tmp_path: Path,
 ) -> None:
@@ -2256,6 +2402,161 @@ def test_install_script_rejects_invalid_uv_bin_without_installing(
             f"UV_BIN is set but does not point to an executable uv: {uv_bin}"
             in proc.stderr
         )
+
+
+def test_install_script_honors_uv_tool_bin_dir(tmp_path: Path) -> None:
+    """A custom uv tool bin is found, verified, and exposed on `PATH`."""
+    tool_bin = tmp_path / "home" / "custom-bin"
+    extra_env = {
+        "UV_TOOL_BIN_DIR": str(tool_bin),
+        "FAKE_UV_TOOL_BIN_DIR": str(tool_bin),
+        "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+        "PATH": f"{tmp_path / 'bin'}{os.pathsep}{_path_without_dcode()}",
+        "SHELL": "/bin/zsh",
+    }
+
+    proc, uv_args = _invoke(tmp_path, extra_env, installed_version=None)
+
+    assert proc.returncode == 0, proc.stderr
+    assert uv_args.exists()
+    installed = tool_bin / "dcode"
+    exposed = tmp_path / "home/.local/bin/dcode"
+    assert installed.is_file()
+    assert exposed.is_symlink()
+    assert exposed.resolve() == installed.resolve()
+    assert "deepagents-code 0.2.0 installed" in proc.stdout
+    assert "command not found in PATH" not in proc.stderr
+
+
+def test_install_script_old_uv_ignores_unsupported_tool_bin_override(
+    tmp_path: Path,
+) -> None:
+    """An old uv falls back to its legacy bin instead of a newer-only override."""
+    custom_bin = tmp_path / "home" / "custom-bin"
+    legacy_bin = tmp_path / "home/.local/bin"
+    proc, uv_args = _invoke(
+        tmp_path,
+        {
+            "UV_TOOL_BIN_DIR": str(custom_bin),
+            "XDG_BIN_HOME": "",
+            "XDG_DATA_HOME": "",
+            "FAKE_UV_TOOL_BIN_DIR": str(legacy_bin),
+            "FAKE_UV_TOOL_DIR_BIN_UNSUPPORTED": "1",
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{_path_without_dcode()}",
+            "SHELL": "/bin/zsh",
+        },
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert uv_args.exists()
+    assert (legacy_bin / "dcode").is_file()
+    assert not (legacy_bin / "dcode").is_symlink()
+    assert not custom_bin.exists()
+
+
+def test_install_script_does_not_replace_tool_bin_path_alias_with_symlink(
+    tmp_path: Path,
+) -> None:
+    """Equivalent uv bin spellings cannot turn `dcode` into a symlink loop."""
+    home = tmp_path / "home"
+    alias_bin = home / ".local/share/../bin"
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_TOOL_BIN_DIR": str(alias_bin),
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{_path_without_dcode()}",
+            "SHELL": "/bin/zsh",
+        },
+        installed_version=None,
+    )
+
+    installed = home / ".local/bin/dcode"
+    assert proc.returncode == 0, proc.stderr
+    assert installed.is_file()
+    assert not installed.is_symlink()
+    assert "deepagents-code 0.2.0 installed" in proc.stdout
+
+
+def test_install_script_root_custom_bin_leaves_path_to_mdm(tmp_path: Path) -> None:
+    """A root custom-bin install does not write through user-controlled PATH files."""
+    home = tmp_path / "home"
+    tool_bin = home / "custom-bin"
+    tool_bin.mkdir(parents=True)
+    dcode = tool_bin / "dcode"
+    dcode.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(dcode)
+    harness = tmp_path / "root_path_setup.sh"
+    harness.write_text(
+        f"HOME={str(home)!r}\n"
+        f"TOOL_BIN_DIR_DISPLAY={str(tool_bin)!r}\n"
+        "VERBOSE=0\n"
+        "id() { printf '0\\n'; }\n"
+        "log_warn() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('paths_are_same_file')}\n"
+        f"{_extract_shell_function('ensure_path_setup')}\n"
+        "set +e\n"
+        f"ensure_path_setup dcode {str(dcode)!r}\n"
+        "rc=$?\n"
+        "printf '%s\\n' \"$rc\"\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "3"
+    assert "MDM policy" in proc.stderr
+    assert not (home / ".local").exists()
+    assert not (home / ".zshrc").exists()
+
+
+def test_install_script_root_does_not_execute_existing_dcode_before_install(
+    tmp_path: Path,
+) -> None:
+    """A root install does not run a user-controlled pre-install executable."""
+    env = _env(
+        tmp_path,
+        {"FAKE_UV_CREATE_LOCAL_DCODE": "1", "SUDO_USER": "target"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    bin_dir = tmp_path / "bin"
+    marker = tmp_path / "pre-install-dcode-ran"
+    dcode = bin_dir / "dcode"
+    dcode.write_text(
+        f"#!/usr/bin/env bash\nprintf 'ran\\n' > {str(marker)!r}\nexit 0\n"
+    )
+    _make_executable(dcode)
+    for name, body in {
+        "id": "printf '0\\n'\n",
+        "uname": "printf 'Linux\\n'\n",
+        "chown": "exit 0\n",
+    }.items():
+        tool = bin_dir / name
+        tool.write_text(f"#!/usr/bin/env bash\n{body}")
+        _make_executable(tool)
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "uv-args.txt").exists()
+    assert not marker.exists()
 
 
 def _invoke_with_local_dcode_not_on_path(
@@ -2467,6 +2768,7 @@ def test_install_script_warns_when_original_path_shadows_uv_tool(
     proc, _ = _invoke(
         tmp_path,
         {
+            "FAKE_UV_TOOL_BIN_DIR": str(tmp_path / "home/.local/bin"),
             "FAKE_UV_CREATE_LOCAL_DCODE": "1",
             "FAKE_LOCAL_DCODE_VERSION": "0.2.0",
         },
@@ -2478,6 +2780,58 @@ def test_install_script_warns_when_original_path_shadows_uv_tool(
     assert "deepagents-code updated: 0.1.0 → 0.2.0" in proc.stdout
     assert "Detected existing dcode" in proc.stderr
     assert "PATH order may run that binary instead of the uv tool" in proc.stderr
+
+
+def test_install_script_current_shadow_does_not_skip_uv_install(tmp_path: Path) -> None:
+    """A current non-uv `dcode` cannot suppress installation into uv's bin."""
+    proc, uv_args = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_TOOL_BIN_DIR": str(tmp_path / "home/.local/bin"),
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.2.0",
+        },
+        installed_version="0.2.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert uv_args.exists()
+    assert "outside uv's configured tool bin" in proc.stdout
+    assert "Already up to date" not in proc.stdout
+
+
+def test_install_script_current_uv_tool_repairs_shadowed_path(tmp_path: Path) -> None:
+    """A current uv tool still continues when another binary wins on `PATH`."""
+    tool_bin = tmp_path / "home/.local/bin"
+    env = _env(
+        tmp_path,
+        {"FAKE_UV_TOOL_BIN_DIR": str(tool_bin)},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    tool_bin.mkdir(parents=True)
+    dcode = tool_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.2.0\\n"; fi\n'
+    )
+    _make_executable(dcode)
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "uv-args.txt").exists()
+    assert "not selected on PATH" in proc.stdout
+    assert "Detected existing dcode" in proc.stderr
 
 
 def _run_detect_shadowing_install(
@@ -2517,6 +2871,7 @@ def _run_detect_shadowing_install(
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
         'OS="linux"\n'
         f"HOME={str(home)!r}\n"
+        f"TOOL_BIN_DIR={str(local_bin)!r}\n"
         f"ORIGINAL_PATH={original_path!r}\n"
         f"{_extract_shell_function('classify_shadowing_command')}\n"
         f"{_extract_shell_function('detect_shadowing_install')}\n"

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from harbor_adapters.contextbench import adapter
 from harbor_adapters.contextbench.main import main
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
 
 _FIXTURE_RECORDS = [
@@ -50,10 +49,61 @@ _FIXTURE_RECORDS = [
 ]
 
 
+def test_checked_in_contextbench_dataset_matches_representative_calibration() -> None:
+    """Keep the frozen Context-Bench sample aligned with its paired calibration."""
+    expected_tasks = {
+        "cb-cloud-1",
+        "cb-cloud-4",
+        "cb-cloud-6",
+        "cb-cloud-7",
+        "cb-cloud-9",
+        "cb-cloud-10",
+        "cb-cloud-21",
+        "cb-cloud-22",
+        "cb-cloud-33",
+        "cb-cloud-35",
+        "cb-cloud-38",
+        "cb-cloud-48",
+        "cb-cloud-49",
+        "cb-cloud-53",
+        "cb-cloud-54",
+        "cb-cloud-55",
+        "cb-cloud-56",
+        "cb-cloud-57",
+        "cb-cloud-62",
+        "cb-cloud-65",
+        "cb-cloud-67",
+        "cb-cloud-68",
+        "cb-cloud-69",
+        "cb-cloud-70",
+        "cb-cloud-73",
+        "cb-cloud-78",
+        "cb-cloud-79",
+        "cb-cloud-81",
+        "cb-cloud-83",
+        "cb-cloud-88",
+    }
+    evals_dir = Path(__file__).resolve().parents[2]
+    dataset_dir = evals_dir / "datasets" / "context-retrieval-evals"
+    calibration = json.loads((dataset_dir / "calibration.json").read_text())
+    dataset_tasks = {
+        task_dir.name
+        for task_dir in dataset_dir.glob("cb-cloud-*")
+        if (task_dir / "task.toml").is_file()
+    }
+
+    assert dataset_tasks == expected_tasks
+    assert set(calibration["tasks"]) == expected_tasks
+
+
 def _write_vendor_fixture(vendor_dir: Path) -> None:
     vendor_dir.mkdir(parents=True)
     lines = [json.dumps(record) for record in _FIXTURE_RECORDS]
     (vendor_dir / "filesystem_cloud.jsonl").write_text("\n".join(lines) + "\n")
+    # The verifier ships the upstream grading rubric into each task.
+    (vendor_dir / "rubric.txt").write_text(
+        "Question: {input}\nExpected: {ground_truth}\nSubmission: {submission}\n"
+    )
     files_dir = vendor_dir / "files"
     files_dir.mkdir()
     for filename in (
@@ -91,11 +141,15 @@ def test_populate_restores_corpus_from_vendor(
     output_dir = tmp_path / "dataset"
     main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
 
-    # Simulate the git-ignored corpus being absent (fresh checkout).
+    # Simulate the git-ignored corpus AND single-sourced verifier files being
+    # absent (fresh checkout): only the committed tests/case.json survives.
     files_dir = output_dir / "cb-cloud-1" / "environment" / "files"
     for corpus_file in files_dir.iterdir():
         corpus_file.unlink()
     files_dir.rmdir()
+    tests_dir = output_dir / "cb-cloud-1" / "tests"
+    for invariant in ("test.sh", "judge.py", "rubric.txt"):
+        (tests_dir / invariant).unlink()
 
     # A non-contextbench sibling dir must be left untouched.
     other = output_dir / "not-a-cb-task"
@@ -113,6 +167,11 @@ def test_populate_restores_corpus_from_vendor(
         "vehicles.txt",
     ]
     assert (files_dir / "people.txt").read_text() == "people.txt source data\n"
+    # The invariant verifier files are restored; the committed case.json stays.
+    assert (tests_dir / "test.sh").read_text().endswith("python3 /tests/judge.py\n")
+    assert (tests_dir / "judge.py").is_file()
+    assert "{submission}" in (tests_dir / "rubric.txt").read_text()
+    assert json.loads((tests_dir / "case.json").read_text())["ground_truth"] == "Tammy Roberts"
     assert not (other / "environment").exists()
 
 

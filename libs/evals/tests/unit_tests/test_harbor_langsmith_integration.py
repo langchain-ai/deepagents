@@ -96,10 +96,17 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
     # Results are written under a jobs dir the aggregate job later collects.
     assert "--jobs-dir harbor-jobs/" in run_step
-    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
-    assert "--plugin langsmith" in run_step
+    # LangSmith is driven by the comparison plugin, which pins one stable
+    # experiment per leaf (no job-id suffix) so the usage collector can find the
+    # rollouts by the experiment name recorded in summary.json.
+    assert (
+        "--plugin deepagents_harbor.unified_langsmith_plugin:UnifiedComparisonLangSmithPlugin"
+        in run_step
+    )
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
+    assert '--plugin-kwarg source_branch="$HARBOR_BRANCH"' in run_step
+    assert '--plugin-kwarg category="$HARBOR_CATEGORY"' in run_step
 
 
 def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:

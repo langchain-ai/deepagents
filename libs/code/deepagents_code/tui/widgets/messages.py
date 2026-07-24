@@ -289,6 +289,7 @@ class UserMessage(Static):
         content: str,
         *,
         media_snapshot: MediaTracker | None = None,
+        detect_mode: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a user message.
@@ -296,11 +297,18 @@ class UserMessage(Static):
         Args:
             content: The message content
             media_snapshot: Optional media tracker state captured at submission.
+            detect_mode: When `True` (default), a leading mode trigger (`/`,
+                `!`, `!!`) is rendered with its shell/command glyph, border, and
+                highlight. Set to `False` for text submitted as literal agent
+                input (e.g. via `-m`/`--message`), which never triggers a
+                shell/command mode, so a leading slash (like a file path) must
+                render as a plain user message rather than a slash command.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
         self._media_snapshot = media_snapshot
+        self._detect_mode = detect_mode
 
     @property
     def raw_text(self) -> str:
@@ -350,7 +358,7 @@ class UserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode_match = detect_mode_prefix(content)
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
         if mode_match:
             prefix_text, mode = mode_match
             glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
@@ -375,7 +383,7 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        mode_match = detect_mode_prefix(self._content)
+        mode_match = detect_mode_prefix(self._content) if self._detect_mode else None
         if mode_match:
             _prefix, mode = mode_match
             self.add_class(f"-mode-{mode.replace('_', '-')}")
@@ -418,8 +426,13 @@ class UserMessage(Static):
 
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
-                # /command at start
-                parts.append((token, f"bold {colors.warning}"))
+                # A leading `/command` is only highlighted when mode detection
+                # is on; otherwise it is literal text (e.g. a file path passed
+                # via `-m`) and must render plain so the token is not dropped.
+                if self._detect_mode:
+                    parts.append((token, f"bold {colors.warning}"))
+                else:
+                    parts.append(token)
             elif token.startswith("@"):
                 # @file mention
                 parts.append((token, f"bold {colors.primary}"))
@@ -451,15 +464,23 @@ class QueuedUserMessage(Static):
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self, content: str, *, detect_mode: bool = True, **kwargs: Any
+    ) -> None:
         """Initialize a queued user message.
 
         Args:
             content: The message content
+            detect_mode: When `True` (default), a leading mode trigger (`/`,
+                `!`, `!!`) is rendered with its shell/command glyph. Set to
+                `False` for text queued as literal agent input (e.g. via
+                `-m`/`--message`), so a leading slash (like a file path) renders
+                as a plain user message rather than a slash command.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._detect_mode = detect_mode
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
@@ -492,7 +513,7 @@ class QueuedUserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode_match = detect_mode_prefix(content)
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
         if mode_match:
             prefix_text, mode = mode_match
             glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
@@ -3117,22 +3138,64 @@ def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> st
     ]
     if not segments:
         return "Running tools" if tense == "present" else "Ran tools"
+    return _join_segments(segments)
+
+
+def _join_segments(segments: list[str]) -> str:
+    """Join summary segments, lowercasing the lead word of all but the first.
+
+    Args:
+        segments: Pre-phrased segments in display order.
+
+    Returns:
+        The segments joined with ", ", e.g. `["Ran 2 files", "Running 1 agent"]`
+        -> "Ran 2 files, running 1 agent".
+    """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
     return ", ".join([first, *lowered])
+
+
+def summarize_live_tool_group(
+    completed_names: list[str], pending_names: list[str]
+) -> str:
+    """Summarize an in-flight run, mixing past and present tense.
+
+    Completed calls are phrased in the past tense so the work already done in
+    the step stays visible, and the still-running calls are phrased in the
+    present tense, e.g. `["execute", "execute"]` completed plus `["task"]`
+    pending -> "Ran 2 shell commands, running 1 agent".
+
+    Args:
+        completed_names: Raw tool names that have finished successfully, in
+            call order. Failed/rejected calls are evicted before this runs.
+        pending_names: Raw tool names still pending or running, in call order.
+
+    Returns:
+        The combined one-line summary. Empty when neither list has members.
+    """
+    segments: list[str] = []
+    if completed_names:
+        segments.append(summarize_tool_group(completed_names, tense="past"))
+    if pending_names:
+        segments.append(summarize_tool_group(pending_names, tense="present"))
+    if not segments:
+        return ""
+    return _join_segments(segments)
 
 
 class ToolGroupSummary(Static):
     """Collapsed one-line stand-in for an assistant step's tool calls.
 
     Tools are hidden from the moment they start; this single line shows live
-    progress ("Running 1 shell command…") and flips to the past tense
-    ("Ran 1 shell command") once every tool finishes. The live line counts only
-    the tools still in progress, so finished calls drop out of it as they
-    complete; the past-tense line summarizes the tools that succeeded — failed,
-    rejected, and skipped tools are evicted to standalone rows (see
-    `_evict_failed`) so errors stay visible. Clicking the line or pressing
-    Ctrl+O expands the underlying tool rows (and their diffs).
+    progress ("Running 1 shell command…") and flips to the fully past-tense
+    line ("Ran 1 shell command") once every tool finishes. While the step is
+    live, finished calls stay visible in the past tense next to the ones still
+    running in the present tense (e.g. "Ran 2 shell commands, running 1 agent…")
+    so the work already done in the step doesn't disappear. Failed, rejected,
+    and skipped tools are evicted to standalone rows (see `_evict_failed`) so
+    errors stay visible. Clicking the line or pressing Ctrl+O expands the
+    underlying tool rows (and their diffs).
 
     Two modes:
 
@@ -3194,10 +3257,11 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
-        # The tuple of in-progress tool names the cached present line was built
-        # from. The live line counts only in-progress tools, so it must be
-        # rebuilt whenever a member finishes, not just when membership grows.
-        self._present_key: tuple[str, ...] | None = None
+        # The (completed, pending) tool-name tuples the cached live line was
+        # built from. The line mixes finished (past tense) and running (present
+        # tense) members, so it must be rebuilt whenever a member finishes, not
+        # just when membership grows.
+        self._present_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -3403,10 +3467,11 @@ class ToolGroupSummary(Static):
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
             pending = [tool.tool_name for tool in self._tools if tool.is_pending]
-            key = tuple(pending)
+            completed = [tool.tool_name for tool in self._tools if not tool.is_pending]
+            key = (tuple(completed), tuple(pending))
             summary_changed = self._present_text is None or key != self._present_key
             if summary_changed:
-                self._present_text = summarize_tool_group(pending, tense="present")
+                self._present_text = summarize_live_tool_group(completed, pending)
                 self._present_key = key
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]

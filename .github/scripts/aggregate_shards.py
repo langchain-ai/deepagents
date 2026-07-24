@@ -59,6 +59,72 @@ from typing import NamedTuple
 
 PASS_THRESHOLD = 1.0
 
+LANGSMITH_MARKER = "langsmith-experiment.json"
+"""Filename of the marker the harbor job drops so the experiment name survives
+into this (separate) aggregate job, where the harbor env is out of scope."""
+
+
+def analysis_issue(
+    code: str, message: str, *, path: str | None = None
+) -> dict[str, str]:
+    """Build one structured warning from leaf aggregation."""
+    issue = {"stage": "leaf_aggregation", "code": code, "message": message}
+    if path is not None:
+        issue["path"] = path
+    return issue
+
+
+def _markdown_warning(value: object) -> str:
+    """Flatten and escape untrusted text for a Markdown warning bullet."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def read_download_issues(root: Path) -> list[dict[str, str]]:
+    """Read an artifact-download error left by the workflow."""
+    path = root / "artifact-download-error.log"
+    if not path.is_file():
+        return []
+    try:
+        message = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        message = f"Artifact download failed and its error log was unreadable: {exc}"
+    return [
+        analysis_issue(
+            "artifact_download_failed",
+            message or "Artifact download failed after three attempts.",
+            path=path.name,
+        )
+    ]
+
+
+def read_langsmith_experiment(root: Path) -> str | None:
+    """Return the LangSmith experiment name recorded in a shard marker, if any.
+
+    All shards of one leaf share a single experiment, so the first readable
+    marker wins. Missing/unreadable/malformed markers yield None rather than
+    failing aggregation -- usage is best-effort.
+    """
+    for path in sorted(root.rglob(LANGSMITH_MARKER)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            emit_annotation(f"::warning::could not read {path}: {exc}")
+            continue
+        if isinstance(data, dict):
+            experiment = data.get("experiment")
+            if isinstance(experiment, str) and experiment:
+                return experiment
+    return None
+
 
 def analysis_issue(
     code: str, message: str, *, path: str | None = None
@@ -334,6 +400,7 @@ def make_summary(
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    langsmith_experiment: str | None = None,
     issues: list[dict[str, str]] | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
@@ -353,6 +420,7 @@ def make_summary(
         "skipped_files": skipped_files,
         "harbor_result": harbor_result,
         "incomplete": incomplete,
+        "langsmith_experiment": langsmith_experiment,
         "totals": totals,
         f"pass@{rollouts}": pass_at_k,
         f"avg@{rollouts}": avg_at_k,
@@ -523,6 +591,15 @@ def main(argv: list[str] | None = None) -> int:
             "if fewer shards reported results or successful empty-shard markers."
         ),
     )
+    parser.add_argument(
+        "--langsmith-experiment",
+        default=None,
+        help=(
+            "LangSmith experiment (project) name for this leaf, recorded into "
+            "summary.json so the usage collector can join tokens/cost. Falls back "
+            f"to a {LANGSMITH_MARKER} marker found under the shard root."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.rollouts < 1:
@@ -531,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--expected-shards must be >= 1")
 
     out_dir = args.out_dir or args.root
+    langsmith_experiment = args.langsmith_experiment or read_langsmith_experiment(
+        args.root
+    )
     agg = aggregate(args.root)
     issues = read_download_issues(args.root)
     shards_found = len(agg.job_ids) + len(agg.empty_shards)
@@ -574,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            langsmith_experiment=langsmith_experiment,
             issues=issues,
         )
         write_outputs(summary, [], out_dir)
@@ -629,6 +710,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            langsmith_experiment=langsmith_experiment,
             issues=issues,
         )
         write_outputs(summary, [], out_dir)
@@ -685,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        langsmith_experiment=langsmith_experiment,
         issues=issues,
     )
     if incomplete:

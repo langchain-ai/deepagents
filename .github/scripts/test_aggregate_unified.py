@@ -1141,3 +1141,250 @@ def test_combine_supports_heterogeneous_required_categories():
     }
     assert rows[("openai:gpt", "current", "bare")]["missing_categories"] == []
     assert rows[("openai:gpt", "current", "tau3")]["missing_categories"] == []
+
+
+# ---------------------------------------------------------------------------
+# Token usage and cost
+# ---------------------------------------------------------------------------
+
+
+def _leaf_exp(model, config, category, pass_at_k, experiment):
+    leaf = _leaf(model, config, category, pass_at_k)
+    leaf["langsmith_experiment"] = experiment
+    return leaf
+
+
+def _usage_block(
+    *,
+    status,
+    expected,
+    observed,
+    completed,
+    errored,
+    prompt,
+    completion,
+    cost,
+    c_prompt,
+    c_completion,
+    c_cost,
+):
+    return {
+        "status": status,
+        "coverage": {
+            "expected_rollouts": expected,
+            "observed_rollouts": observed,
+            "token_rollouts": observed,
+            "priced_rollouts": observed,
+            "completed_rollouts": completed,
+            "errored_rollouts": errored,
+        },
+        "totals": {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": (None if prompt is None else prompt + completion),
+            "cost_usd": cost,
+        },
+        "completed_totals": {
+            "prompt_tokens": c_prompt,
+            "completion_tokens": c_completion,
+            "total_tokens": (None if c_prompt is None else c_prompt + c_completion),
+            "cost_usd": c_cost,
+        },
+    }
+
+
+def test_read_leaf_exposes_langsmith_experiment(tmp_path: Path):
+    d = tmp_path / "leaf"
+    d.mkdir()
+    summary = _summary("m", 2, 0.5, 0.5, 2, 1)
+    summary["langsmith_experiment"] = "exp-xyz"
+    (d / "summary.json").write_text(json.dumps(summary))
+    assert au.read_leaf(d)["langsmith_experiment"] == "exp-xyz"
+
+
+def test_read_leaf_defaults_missing_experiment_to_none(tmp_path: Path):
+    d = tmp_path / "leaf"
+    d.mkdir()
+    (d / "summary.json").write_text(json.dumps(_summary("m", 2, 0.5, 0.5, 2, 1)))
+    assert au.read_leaf(d)["langsmith_experiment"] is None
+
+
+def test_combine_rolls_usage_up_across_a_rows_experiments():
+    leaves = [
+        _leaf_exp("m", "bare", "autonomous", 0.5, "exp-A"),
+        _leaf_exp("m", "bare", "context", 0.5, "exp-B"),
+    ]
+    experiments = {
+        "exp-A": _usage_block(
+            status="complete",
+            expected=4,
+            observed=4,
+            completed=3,
+            errored=1,
+            prompt=1000,
+            completion=500,
+            cost=0.5,
+            c_prompt=700,
+            c_completion=350,
+            c_cost=0.35,
+        ),
+        "exp-B": _usage_block(
+            status="partial",
+            expected=4,
+            observed=3,
+            completed=3,
+            errored=0,
+            prompt=200,
+            completion=100,
+            cost=0.1,
+            c_prompt=200,
+            c_completion=100,
+            c_cost=0.1,
+        ),
+    }
+    (row,) = au.combine(leaves, experiments=experiments)["rows"]
+    usage = row["usage"]
+    assert usage["experiments"] == ["exp-A", "exp-B"]
+    # Completed-only totals sum across both experiments.
+    assert usage["completed_totals"]["prompt_tokens"] == 900
+    assert usage["completed_totals"]["completion_tokens"] == 450
+    assert usage["completed_totals"]["cost_usd"] == pytest.approx(0.45)
+    # True spend keeps the errored rollout's tokens/cost.
+    assert usage["totals"]["cost_usd"] == pytest.approx(0.6)
+    assert usage["coverage"]["expected_rollouts"] == 8
+    assert usage["coverage"]["completed_rollouts"] == 6
+    assert usage["coverage"]["errored_rollouts"] == 1
+    # Status is the worst across the row's experiments.
+    assert usage["status"] == "partial"
+
+
+def test_combine_without_experiments_omits_usage():
+    leaves = [_leaf("m", "bare", "autonomous", 1.0)]
+    combined = au.combine(leaves)
+    assert combined["usage_available"] is False
+    assert "usage" not in combined["rows"][0]
+
+
+def test_combine_usage_empty_when_leaf_has_no_experiment():
+    leaves = [_leaf("m", "bare", "autonomous", 1.0)]  # no langsmith_experiment
+    (row,) = au.combine(leaves, experiments={})["rows"]
+    assert row["usage"]["status"] == "unavailable"
+    assert row["usage"]["experiments"] == []
+    assert row["usage"]["completed_totals"]["cost_usd"] is None
+
+
+def test_render_usage_markdown_formats_completed_dashes_and_status():
+    leaves = [
+        _leaf_exp("m", "bare", "autonomous", 1.0, "exp-A"),
+        _leaf_exp("m", "dcode", "autonomous", 0.0, "exp-missing"),
+    ]
+    experiments = {
+        "exp-A": _usage_block(
+            status="complete",
+            expected=2,
+            observed=2,
+            completed=2,
+            errored=0,
+            prompt=1500,
+            completion=250,
+            cost=1.25,
+            c_prompt=1500,
+            c_completion=250,
+            c_cost=1.25,
+        ),
+    }
+    combined = au.combine(leaves, experiments=experiments)
+    md = au.render_usage_markdown(combined)
+    assert "## Token usage and cost" not in md  # heading is written by write_outputs
+    assert "| Model / branch / config | Completed |" in md
+    # Present experiment: thousands separator + 6-decimal cost.
+    assert "| 1,500 | 250 | 1.250000 | 1.250000 | complete |" in md
+    assert "2/2 (0 err)" in md
+    # Missing experiment: em dashes and unavailable status.
+    assert "| — | — | — | — | unavailable |" in md
+
+
+def test_write_outputs_appends_usage_table_only_when_available(tmp_path: Path):
+    leaves = [_leaf_exp("m", "bare", "autonomous", 1.0, "exp-A")]
+    experiments = {
+        "exp-A": _usage_block(
+            status="complete",
+            expected=1,
+            observed=1,
+            completed=1,
+            errored=0,
+            prompt=10,
+            completion=5,
+            cost=0.02,
+            c_prompt=10,
+            c_completion=5,
+            c_cost=0.02,
+        ),
+    }
+    step = tmp_path / "step.md"
+    step.touch()
+    combined = au.combine(leaves, experiments=experiments)
+    au.write_outputs(combined, 1, tmp_path / "out", str(step))
+    rendered = step.read_text()
+    assert "## Unified evals — cross-model comparison" in rendered
+    assert "## Token usage and cost" in rendered
+
+    # Without experiments, the usage section must be absent.
+    step2 = tmp_path / "step2.md"
+    step2.touch()
+    combined_no_usage = au.combine(leaves)
+    au.write_outputs(combined_no_usage, 1, tmp_path / "out2", str(step2))
+    assert "## Token usage and cost" not in step2.read_text()
+
+
+def test_load_usage_reads_experiments_map(tmp_path: Path):
+    p = tmp_path / "u.json"
+    p.write_text(json.dumps({"schema_version": 1, "experiments": {"exp-A": {}}}))
+    assert au._load_usage(p) == {"exp-A": {}}
+
+
+def test_load_usage_rejects_bad_schema(tmp_path: Path):
+    p = tmp_path / "u.json"
+    p.write_text(json.dumps({"schema_version": 2, "experiments": {}}))
+    with pytest.raises(SystemExit):
+        au._load_usage(p)
+
+
+def test_main_with_usage_json_writes_usage_table(tmp_path: Path, monkeypatch):
+    root = tmp_path / "_leaves" / "leaf"
+    root.mkdir(parents=True)
+    summary = _summary("m", 2, 0.5, 0.5, 2, 1)
+    summary["langsmith_experiment"] = "exp-A"
+    (root / "summary.json").write_text(json.dumps(summary))
+    usage = {
+        "schema_version": 1,
+        "experiments": {
+            "exp-A": _usage_block(
+                status="complete",
+                expected=4,
+                observed=4,
+                completed=4,
+                errored=0,
+                prompt=100,
+                completion=50,
+                cost=0.3,
+                c_prompt=100,
+                c_completion=50,
+                c_cost=0.3,
+            )
+        },
+    }
+    up = tmp_path / "u.json"
+    up.write_text(json.dumps(usage))
+    step = tmp_path / "step.md"
+    step.touch()
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(step))
+    out = tmp_path / "_combined"
+    rc = au.main(
+        [str(tmp_path / "_leaves"), "--rollouts", "2", "--out-dir", str(out), "--usage-json", str(up)]
+    )
+    assert rc == 0
+    combined = json.loads((out / "unified_summary.json").read_text())
+    assert combined["usage_available"] is True
+    assert combined["rows"][0]["usage"]["completed_totals"]["cost_usd"] == 0.3
+    assert "## Token usage and cost" in step.read_text()

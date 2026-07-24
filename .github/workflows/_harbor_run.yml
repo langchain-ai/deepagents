@@ -89,6 +89,7 @@ on:
         type: boolean
         default: false
       harbor_package_override:
+        description: "Optional Harbor package spec(s) to install over the locked versions. Provide one spec per line; all specs are resolved together. Leave empty to keep the locked Harbor packages."
         type: string
         default: ""
       judge_models:
@@ -286,6 +287,7 @@ jobs:
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
       HARBOR_BRANCH: ${{ inputs.branch }}
+      HARBOR_SOURCE_SHA: ${{ inputs.branch_sha }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
       # aggregated per category downstream.
@@ -379,15 +381,24 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
+        #
+        # The override may list MULTIPLE specs, one per line, installed together
+        # in a single resolution. This lets a run pin both harbor core and the
+        # harbor-langsmith plugin from the same git branch: with both in one
+        # `uv pip install`, the plugin's `harbor` dependency binds to the core
+        # spec given here (a direct git reference) instead of resolving from
+        # PyPI. Specs use the PEP 508 `name @ url` form (which contains spaces),
+        # so we split on newlines — never on whitespace — and pass each as its
+        # own argument (no shell interpolation of the value).
         run: |
-          # One spec per line: a PEP 508 spec ("name @ git+url") contains spaces,
-          # so newline is the only safe delimiter. Collect into an array and pass
-          # as separate args — never re-split or eval'd, preserving injection
-          # safety — so a single install covers e.g. harbor + harbor-langsmith.
           specs=()
           while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+            line="${line%"${line##*[![:space:]]}"}"  # rtrim
             [ -n "$line" ] && specs+=("$line")
           done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          printf 'Installing %d Harbor override spec(s):\n' "${#specs[@]}"
+          printf '  - %s\n' "${specs[@]}"
           uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
@@ -859,9 +870,40 @@ jobs:
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --plugin langsmith \
+            --plugin deepagents_harbor.unified_langsmith_plugin:UnifiedComparisonLangSmithPlugin \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT" \
+            --plugin-kwarg source_branch="$HARBOR_BRANCH" \
+            --plugin-kwarg source_sha="$HARBOR_SOURCE_SHA" \
+            --plugin-kwarg model="$HARBOR_MODEL" \
+            --plugin-kwarg category="$HARBOR_CATEGORY" \
+            --plugin-kwarg agent_config="$HARBOR_AGENT_IMPL" \
+            --plugin-kwarg workflow_run_id="$GITHUB_RUN_ID" \
+            --plugin-kwarg workflow_run_attempt="$GITHUB_RUN_ATTEMPT"
+
+      - name: "🏷️ Record LangSmith experiment marker"
+        if: always()
+        env:
+          HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
+        # The usage collector (the unified `usage` job) reads this marker to learn
+        # which LangSmith project holds this leaf's rollout traces; the harbor env
+        # is out of scope by then. It rides along in the shard artifact upload.
+        run: |
+          if [ -z "${HARBOR_LANGSMITH_EXPERIMENT:-}" ]; then
+            echo "No LangSmith experiment set; skipping marker."
+            exit 0
+          fi
+          mkdir -p harbor-jobs/terminal-bench
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          marker = {"schema_version": 1, "experiment": os.environ["HARBOR_LANGSMITH_EXPERIMENT"]}
+          Path("harbor-jobs/terminal-bench/langsmith-experiment.json").write_text(
+              json.dumps(marker, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job

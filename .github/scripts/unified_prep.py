@@ -530,13 +530,21 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
         tasks_by_cat = _load_tasks_json(tasks_json)
 
-    tasks_by_cat = filter_tasks(
-        tasks_by_cat, os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
-    )
+    include_tasks = os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
+    tasks_by_cat = filter_tasks(tasks_by_cat, include_tasks)
 
-    empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
-    if empty_categories:
-        raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
+    if include_tasks:
+        # An explicit task selection narrows the active categories to those that
+        # actually contain a requested task. Unknown names already errored in
+        # filter_tasks, so a category emptied here simply wasn't targeted by the
+        # selection and is dropped rather than treated as unresolved.
+        categories = [category for category in categories if tasks_by_cat.get(category)]
+        if not categories:
+            raise SystemExit("UNIFIED_INCLUDE_TASKS matched no selected categories.")
+    else:
+        empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
+        if empty_categories:
+            raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
 
     n_models = len(model_specs)
 

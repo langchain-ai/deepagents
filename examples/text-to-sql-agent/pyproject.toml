@@ -20,7 +20,7 @@ dependencies = [
 Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/text-to-sql-agent"
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.ruff.lint.flake8-tidy-imports]

@@ -94,7 +94,7 @@ Then pick the log you need by symptom:
 
 The TUI only surfaces a one-line banner; the actual exception lives in the subprocess's combined stdout/stderr. To get it:
 
-1. **Re-run with debugging on** (see above). On exit, the log is preserved and its path is printed to stderr as `Server log preserved at: ...`. Textual's fullscreen mode can hide that line, but the file is still on disk.
+1. **Re-run with debugging on** (see above). After the app exits and the terminal is restored, the log is preserved and its path is printed to stderr as `Server log preserved at: ...`.
 2. **Open the newest log.** On macOS, `tempfile` resolves to `$TMPDIR` (a path under `/var/folders/.../T/`):
 
    ```bash

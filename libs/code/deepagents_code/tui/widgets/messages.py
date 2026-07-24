@@ -289,6 +289,7 @@ class UserMessage(Static):
         content: str,
         *,
         media_snapshot: MediaTracker | None = None,
+        detect_mode: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a user message.
@@ -296,11 +297,18 @@ class UserMessage(Static):
         Args:
             content: The message content
             media_snapshot: Optional media tracker state captured at submission.
+            detect_mode: When `True` (default), a leading mode trigger (`/`,
+                `!`, `!!`) is rendered with its shell/command glyph, border, and
+                highlight. Set to `False` for text submitted as literal agent
+                input (e.g. via `-m`/`--message`), which never triggers a
+                shell/command mode, so a leading slash (like a file path) must
+                render as a plain user message rather than a slash command.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
         self._media_snapshot = media_snapshot
+        self._detect_mode = detect_mode
 
     @property
     def raw_text(self) -> str:
@@ -350,7 +358,7 @@ class UserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode_match = detect_mode_prefix(content)
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
         if mode_match:
             prefix_text, mode = mode_match
             glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
@@ -375,7 +383,7 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        mode_match = detect_mode_prefix(self._content)
+        mode_match = detect_mode_prefix(self._content) if self._detect_mode else None
         if mode_match:
             _prefix, mode = mode_match
             self.add_class(f"-mode-{mode.replace('_', '-')}")
@@ -418,8 +426,13 @@ class UserMessage(Static):
 
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
-                # /command at start
-                parts.append((token, f"bold {colors.warning}"))
+                # A leading `/command` is only highlighted when mode detection
+                # is on; otherwise it is literal text (e.g. a file path passed
+                # via `-m`) and must render plain so the token is not dropped.
+                if self._detect_mode:
+                    parts.append((token, f"bold {colors.warning}"))
+                else:
+                    parts.append(token)
             elif token.startswith("@"):
                 # @file mention
                 parts.append((token, f"bold {colors.primary}"))
@@ -451,15 +464,23 @@ class QueuedUserMessage(Static):
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self, content: str, *, detect_mode: bool = True, **kwargs: Any
+    ) -> None:
         """Initialize a queued user message.
 
         Args:
             content: The message content
+            detect_mode: When `True` (default), a leading mode trigger (`/`,
+                `!`, `!!`) is rendered with its shell/command glyph. Set to
+                `False` for text queued as literal agent input (e.g. via
+                `-m`/`--message`), so a leading slash (like a file path) renders
+                as a plain user message rather than a slash command.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._detect_mode = detect_mode
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
@@ -492,7 +513,7 @@ class QueuedUserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode_match = detect_mode_prefix(content)
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
         if mode_match:
             prefix_text, mode = mode_match
             glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import singledispatch
 from typing import TYPE_CHECKING
 
+from deepagents_code.hooks.capabilities import (
+    ExitCodePolicy,
+    PlainOutputPolicy,
+    get_event_spec,
+)
 from deepagents_code.hooks.models.domain import (
     HookDecision,
     HookDiagnostic,
     HookEvent,
+    HookInvocation,
     NotificationDecision,
     PermissionEffect,
     PermissionRequestDecision,
@@ -23,6 +30,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStopEvent,
 )
 from deepagents_code.hooks.models.wire import (
+    HookSpecificOutput,
     PermissionAllow,
     PermissionRequestSpecificOutput,
     PostToolUseSpecificOutput,
@@ -32,24 +40,22 @@ from deepagents_code.hooks.models.wire import (
     SubagentStartSpecificOutput,
     SubagentStopSpecificOutput,
 )
+from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from deepagents_code.hooks.models.domain import HookInvocation
     from deepagents_code.hooks.models.wire import HookWireOutput
     from deepagents_code.hooks.runner import HandlerResult
 
 _PERMISSION_RANK = {"none": 0, "allow": 1, "ask": 2, "deny": 3}
+MAX_STOP_CONTINUATIONS = 8
 
-# Exit 2 / decision:"block" cannot veto these lifecycle points in MVP.
-_NON_BLOCKING_EVENTS = frozenset(
-    {
-        HookEvent.SESSION_START,
-        HookEvent.SESSION_END,
-        HookEvent.NOTIFICATION,
-        HookEvent.SUBAGENT_START,
-    }
+_UNSUPPORTED_SESSION_START_FIELDS = (
+    ("initial_user_message", "initialUserMessage"),
+    ("session_title", "sessionTitle"),
+    ("watch_paths", "watchPaths"),
+    ("reload_skills", "reloadSkills"),
 )
 
 
@@ -85,12 +91,23 @@ def reduce_hook_results(
         The normalized decision for the invocation event.
     """
     state = _Reduction(diagnostics=list(diagnostics))
+    plain_output_policy = get_event_spec(invocation.event.event).plain_output_policy
     for result in results:
         state.diagnostics.extend(result.diagnostics)
+        if result.plain_output is not None:
+            if plain_output_policy is PlainOutputPolicy.CONTEXT:
+                state.context.append(result.plain_output)
+            else:
+                state.diagnostics.append(
+                    HookDiagnostic(
+                        code="malformed_json",
+                        severity="warning",
+                        message="Hook output is not valid JSON",
+                        handler_id=result.handler_id,
+                    )
+                )
         if result.output is not None:
             _merge_output(invocation, state, result.handler_id, result.output)
-        if not state.continue_processing:
-            break
     return _decision(invocation, state)
 
 
@@ -100,13 +117,50 @@ def _merge_output(
     handler_id: str,
     output: HookWireOutput,
 ) -> None:
-    state.continue_processing = output.continue_
+    state.continue_processing = state.continue_processing and output.continue_
     if output.stop_reason is not None:
-        state.stop_reason = output.stop_reason
+        if output.continue_:
+            state.diagnostics.append(
+                HookDiagnostic(
+                    code="ignored_stop_reason",
+                    severity="warning",
+                    message="stopReason is ignored while continue is true",
+                    handler_id=handler_id,
+                    field="stopReason",
+                )
+            )
+        elif state.stop_reason is None:
+            state.stop_reason = output.stop_reason
+        else:
+            state.diagnostics.append(
+                HookDiagnostic(
+                    code="additional_stop_reason",
+                    severity="warning",
+                    message="A later stopReason was ignored; the first reason wins",
+                    handler_id=handler_id,
+                    field="stopReason",
+                )
+            )
     if output.system_message is not None and not output.suppress_output:
         state.user_notices.append(output.system_message)
     if output.terminal_sequence is not None:
-        state.terminal_sequences.append(output.terminal_sequence)
+        validated = validate_terminal_sequence(output.terminal_sequence)
+        if validated is None:
+            state.diagnostics.append(
+                HookDiagnostic(
+                    code="invalid_terminal_sequence",
+                    severity="warning",
+                    message=(
+                        "terminalSequence rejected; only OSC 0/1/2/9/99/777 "
+                        "and BEL are allowed"
+                    ),
+                    handler_id=handler_id,
+                    field="terminalSequence",
+                )
+            )
+        else:
+            state.terminal_sequences.append(validated)
+    _diagnose_extra_fields(state, handler_id, output)
     if output.decision == "block":
         _merge_block(invocation, state, handler_id, output.reason)
 
@@ -124,7 +178,27 @@ def _merge_output(
             )
         )
         return
-    _merge_specific(invocation, state, handler_id, specific)
+    _merge_specific(specific, invocation, state, handler_id)
+
+
+def _diagnose_extra_fields(
+    state: _Reduction,
+    handler_id: str,
+    output: HookWireOutput,
+) -> None:
+    extras = getattr(output, "__pydantic_extra__", None)
+    if not extras:
+        return
+    for name in sorted(extras):
+        state.diagnostics.append(
+            HookDiagnostic(
+                code="unsupported_field",
+                severity="warning",
+                message=f"Unsupported hook output field ignored: {name}",
+                handler_id=handler_id,
+                field=name,
+            )
+        )
 
 
 def _merge_block(
@@ -135,115 +209,220 @@ def _merge_block(
 ) -> None:
     message = reason or "Blocked by hook"
     event = invocation.event.event
-    if event in {HookEvent.PERMISSION_REQUEST, HookEvent.PRE_TOOL_USE}:
+    policy = get_event_spec(event).exit_code_policy
+    if policy is ExitCodePolicy.DENY:
         _merge_permission(state, PermissionEffect(behavior="deny", reason=message))
-    elif event is HookEvent.STOP:
-        if (
-            isinstance(invocation.event, StopEvent)
-            and invocation.event.continuation_count
-        ):
-            state.diagnostics.append(_loop_guard_diagnostic())
-        else:
-            state.continue_loop = True
-            state.feedback.append(message)
-    elif event is HookEvent.POST_TOOL_USE:
+        return
+    if policy is ExitCodePolicy.FEEDBACK:
         state.feedback.append(message)
-    elif event is HookEvent.SUBAGENT_STOP:
+        return
+    if policy is ExitCodePolicy.CONTINUE_LOOP:
+        _apply_stop_continuation(invocation, state, message)
+        return
+    if policy is ExitCodePolicy.IGNORE:
+        return
+    if policy is ExitCodePolicy.CONTEXT:
         if (
             isinstance(invocation.event, SubagentStopEvent)
             and invocation.event.continuation_count
         ):
             state.diagnostics.append(_loop_guard_diagnostic())
-        else:
-            state.context.append(message)
-    elif event in _NON_BLOCKING_EVENTS:
-        # Exit 2 / decision:"block" is not a veto for these events; keep going
-        # and surface the attempt so configs that expect Claude blocking see why
-        # dcode ignored it.
+            return
         state.diagnostics.append(
             HookDiagnostic(
                 code="unsupported_block",
                 severity="warning",
-                message=f"Block/exit 2 is not supported for {event.value}: {message}",
+                message=(
+                    "Blocking SubagentStop is not supported yet; "
+                    f"retained as parent context: {message}"
+                ),
                 handler_id=handler_id,
                 field="decision",
             )
         )
-    else:
-        state.stop_reason = message
-        state.continue_processing = False
+        state.context.append(message)
+        return
+    state.diagnostics.append(
+        HookDiagnostic(
+            code="unsupported_block",
+            severity="warning",
+            message=f"Block/exit 2 is not supported for {event.value}: {message}",
+            handler_id=handler_id,
+            field="decision",
+        )
+    )
 
 
-def _merge_specific(
+def _apply_stop_continuation(
     invocation: HookInvocation,
     state: _Reduction,
-    handler_id: str,
-    specific: object,
+    message: str,
 ) -> None:
-    if isinstance(specific, SessionStartSpecificOutput):
-        _append(state.context, specific.additional_context)
-    elif isinstance(specific, PreToolUseSpecificOutput):
-        _append(state.context, specific.additional_context)
-        behavior = specific.permission_decision
-        if specific.updated_input is not None:
+    if not isinstance(invocation.event, StopEvent):
+        return
+    if invocation.event.continuation_count >= MAX_STOP_CONTINUATIONS:
+        state.diagnostics.append(
+            HookDiagnostic(
+                code="continuation_cap",
+                severity="warning",
+                message=(
+                    f"Ignored Stop continuation after {MAX_STOP_CONTINUATIONS} "
+                    "consecutive attempts"
+                ),
+            )
+        )
+        return
+    state.continue_loop = True
+    state.feedback.append(message)
+
+
+@singledispatch
+def _merge_specific(
+    specific: HookSpecificOutput,
+    _invocation: HookInvocation,
+    _state: _Reduction,
+    _handler_id: str,
+) -> None:
+    msg = f"Unsupported hook-specific output: {type(specific).__name__}"
+    raise TypeError(msg)
+
+
+@_merge_specific.register
+def _merge_session_start(
+    specific: SessionStartSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+    for attr, wire_name in _UNSUPPORTED_SESSION_START_FIELDS:
+        value = getattr(specific, attr)
+        if value not in (None, False, [], ""):
+            _diagnose_unsupported_field(state, handler_id, wire_name)
+
+
+@_merge_specific.register
+def _merge_pre_tool_use(
+    specific: PreToolUseSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+    behavior = specific.permission_decision
+    if behavior == "defer":
+        _diagnose_unsupported_field(
+            state,
+            handler_id,
+            "permissionDecision",
+            value="defer",
+        )
+        behavior = None
+    if specific.updated_input is not None:
+        _diagnose_unsupported_updated_input(state, handler_id)
+        if behavior in {"allow", "ask"}:
+            behavior = None
+    if behavior is not None:
+        _merge_permission(
+            state,
+            PermissionEffect(
+                behavior=behavior,
+                reason=specific.permission_decision_reason,
+            ),
+        )
+
+
+@_merge_specific.register
+def _merge_permission_request(
+    specific: PermissionRequestSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    handler_id: str,
+) -> None:
+    decision = specific.decision
+    if decision.behavior == "allow":
+        has_updated_input = (
+            isinstance(decision, PermissionAllow) and decision.updated_input is not None
+        )
+        if has_updated_input:
             _diagnose_unsupported_updated_input(state, handler_id)
-            # Allow/ask coupled to mutation falls back to normal permission flow;
-            # deny remains safe without applying the mutated input.
-            if behavior in {"allow", "ask"}:
-                behavior = None
-        if behavior is not None:
-            normalized = "none" if behavior == "defer" else behavior
-            _merge_permission(
-                state,
-                PermissionEffect(
-                    behavior=normalized,
-                    reason=specific.permission_decision_reason,
-                ),
-            )
-    elif isinstance(specific, PermissionRequestSpecificOutput):
-        decision = specific.decision
-        if decision.behavior == "allow":
-            if (
-                isinstance(decision, PermissionAllow)
-                and decision.updated_input is not None
-            ):
-                _diagnose_unsupported_updated_input(state, handler_id)
-            else:
-                _merge_permission(state, PermissionEffect(behavior="allow"))
-        else:
-            _merge_permission(
-                state,
-                PermissionEffect(
-                    behavior="deny",
-                    reason=decision.message,
-                    interrupt=decision.interrupt,
-                ),
-            )
-    elif isinstance(specific, PostToolUseSpecificOutput):
-        _append(state.context, specific.additional_context)
-    elif isinstance(specific, StopSpecificOutput):
-        if specific.additional_context is not None:
-            if (
-                isinstance(invocation.event, StopEvent)
-                and invocation.event.continuation_count
-            ):
-                state.diagnostics.append(_loop_guard_diagnostic())
-            else:
-                state.continue_loop = True
-                state.feedback.append(specific.additional_context)
-    elif isinstance(specific, SubagentStartSpecificOutput):
-        _append(state.context, specific.additional_context)
-    elif (
-        isinstance(specific, SubagentStopSpecificOutput)
-        and specific.additional_context is not None
-    ):
-        if (
-            isinstance(invocation.event, SubagentStopEvent)
-            and invocation.event.continuation_count
-        ):
-            state.diagnostics.append(_loop_guard_diagnostic())
-        else:
-            state.context.append(specific.additional_context)
+        if isinstance(decision, PermissionAllow) and decision.updated_permissions:
+            _diagnose_unsupported_field(state, handler_id, "updatedPermissions")
+        if not has_updated_input:
+            _merge_permission(state, PermissionEffect(behavior="allow"))
+        return
+    _merge_permission(
+        state,
+        PermissionEffect(
+            behavior="deny",
+            reason=decision.message,
+            interrupt=decision.interrupt,
+        ),
+    )
+
+
+@_merge_specific.register
+def _merge_post_tool_use(
+    specific: PostToolUseSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+    if specific.updated_tool_output is not None:
+        _diagnose_unsupported_field(state, handler_id, "updatedToolOutput")
+    if specific.updated_mcp_tool_output is not None:
+        _diagnose_unsupported_field(state, handler_id, "updatedMCPToolOutput")
+
+
+@_merge_specific.register
+def _merge_stop(
+    specific: StopSpecificOutput,
+    invocation: HookInvocation,
+    state: _Reduction,
+    _handler_id: str,
+) -> None:
+    if specific.additional_context is not None:
+        _apply_stop_continuation(invocation, state, specific.additional_context)
+
+
+@_merge_specific.register
+def _merge_subagent_start(
+    specific: SubagentStartSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    _handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+
+
+@_merge_specific.register
+def _merge_subagent_stop(
+    specific: SubagentStopSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    _handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+
+
+def _diagnose_unsupported_field(
+    state: _Reduction,
+    handler_id: str,
+    field: str,
+    *,
+    value: str | None = None,
+) -> None:
+    subject = f"{field} value {value!r}" if value is not None else field
+    state.diagnostics.append(
+        HookDiagnostic(
+            code="unsupported_field",
+            severity="warning",
+            message=f"{subject} is not supported and was ignored",
+            handler_id=handler_id,
+            field=field,
+        )
+    )
 
 
 def _diagnose_unsupported_updated_input(
@@ -264,7 +443,7 @@ def _diagnose_unsupported_updated_input(
 
 
 def _merge_permission(state: _Reduction, effect: PermissionEffect) -> None:
-    if _PERMISSION_RANK[effect.behavior] >= _PERMISSION_RANK[state.permission.behavior]:
+    if _PERMISSION_RANK[effect.behavior] > _PERMISSION_RANK[state.permission.behavior]:
         state.permission = effect
 
 

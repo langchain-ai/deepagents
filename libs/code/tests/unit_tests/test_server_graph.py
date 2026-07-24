@@ -282,11 +282,13 @@ class TestServerGraph:
             enable_interpreter=False,
             rubric_model=None,
             rubric_max_iterations=None,
+            recursion_limit=None,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
+            rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

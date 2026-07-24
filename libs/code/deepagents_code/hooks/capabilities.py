@@ -52,6 +52,7 @@ class PlainOutputPolicy(StrEnum):
 class ExitCodePolicy(StrEnum):
     """How exit code 2 is interpreted for an event."""
 
+    CONTEXT = "context"
     DENY = "deny"
     FEEDBACK = "feedback"
     CONTINUE_LOOP = "continue_loop"
@@ -196,7 +197,7 @@ _HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
             decision_model=SubagentStopDecision,
             matcher_field="agent_name",
             default_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
-            exit_code_policy=ExitCodePolicy.DIAGNOSE,
+            exit_code_policy=ExitCodePolicy.CONTEXT,
             plain_output_policy=PlainOutputPolicy.IGNORE,
             aggregation_policy=AggregationPolicy.CONTEXT,
             supported_handler_types=frozenset({HandlerType.COMMAND}),

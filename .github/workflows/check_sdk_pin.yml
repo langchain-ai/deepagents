@@ -159,11 +159,11 @@ jobs:
                 '> [!WARNING]',
                 `> **Prerelease SDK pin** — ${pkgLabel} currently pins ${pkgPinLink}, which is a prerelease.`,
                 '>',
-                '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
+                '> A prerelease pin is valid only when it is not older than the workspace SDK, but it still needs an explicit merge acknowledgement.',
                 '>',
-                `> **Tip:** if this pin is part of an intentional cross-package release sequence and the release dependency check fails because the SDK prerelease is not on PyPI yet, add the \`${releaseDepsBypassLabel}\` label to acknowledge and skip that check.`,
+                `> **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and skips the release dependency / freshness checks that commonly fail when the pinned SDK is not on PyPI yet (for example during an intentional cross-package release sequence).`,
               ].join('\n');
-              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; verify this is intentional.`;
+              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; add ${releaseDepsBypassLabel} to acknowledge before merging.`;
             }
 
             if (body === null && existing) {

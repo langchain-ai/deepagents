@@ -52,7 +52,7 @@
   ],
   "pull-request-title-pattern": "release(${component}): ${version}",
   "component-no-space": true,
-  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Release notes preview: keep this section in sync with the package `CHANGELOG.md`. The published GitHub release body is extracted from the merged `CHANGELOG.md` by `release.yml`, not from this PR description._\n",
+  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Release notes preview: keep this section in sync with the package `CHANGELOG.md`. Publish reads the merged CHANGELOG via `release.yml`, not this PR description — keep them aligned anyway so the PR stays an accurate historical record for reviewers and anyone returning later._\n",
   "pull-request-footer": "\n_End release notes preview._\n\n---\n\n> [!NOTE]\n> A **New Contributors** section is appended to the GitHub release notes automatically at publish time (see [Release Pipeline](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pipeline), step 2).",
   "packages": {
     "libs/cli": {

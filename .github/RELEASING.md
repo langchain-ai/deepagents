@@ -63,7 +63,7 @@ Run `@dcode-release-bot draft` to regenerate the draft if the automatic run fail
 
 The merged changelog is the source for the published GitHub release notes.
 
-For an exceptional release that must skip curation, add the `release: dangerously skip curated notes` label.
+To ship without curated notes, add the `release: dangerously skip curated notes` label. That is the only way to skip the curated-notes merge gate — use it only when you intentionally want the generated changelog as-is, without maintainer polish.
 
 #### One-time repository setup
 

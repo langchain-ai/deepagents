@@ -111,7 +111,15 @@ jobs:
                         ? 'Curated release notes are ready for review'
                         : 'Curated release notes need attention',
                     summary: result.status === 'unapplied'
-                      ? 'Review the bot-authored draft, then run `@dcode-release-bot apply`.'
+                      ? [
+                          result.draftCommentUrl
+                            ? `Review the [bot-authored draft](${result.draftCommentUrl}), then run:`
+                            : 'Review the bot-authored draft, then run:',
+                          '',
+                          '```',
+                          '@dcode-release-bot apply',
+                          '```',
+                        ].join('\n')
                       : `Validation result: ${result.status}.`,
                   },
                 });

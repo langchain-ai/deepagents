@@ -6335,6 +6335,14 @@ class TestClearCommand:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="old-thread")
             app._lc_thread_id = "old-thread"
+            app._session_cost_usd = 1.25
+            app._thread_stats.record_request(
+                "gpt-5.5",
+                100,
+                10,
+                provider="openai",
+                cost_usd=1.25,
+            )
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
@@ -6345,6 +6353,9 @@ class TestClearCommand:
 
             assert app._session_state.thread_id == "new-thread"
             assert app._lc_thread_id == "new-thread"
+            assert app._session_cost_usd == pytest.approx(0.0)
+            assert app._thread_restored_cost_usd == pytest.approx(0.0)
+            assert app._thread_stats.request_count == 0
 
             app_msgs = list(app.query(AppMessage))
             assert any(

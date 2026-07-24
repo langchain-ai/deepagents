@@ -2097,13 +2097,22 @@ class TestExecuteTaskTextualUsageStats:
             await asyncio.sleep(0)
 
         turn_stats = SessionStats()
+        cost_updates: list[float] = []
+
+        def record_cost(cost_usd: float) -> None:
+            cost_updates.append(cost_usd)
+
         adapter = TextualUIAdapter(
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
+        adapter._on_cost_update = record_cost
 
-        with patch("deepagents_code.config.settings") as mock_settings:
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
+        ):
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
             await execute_task_textual(
@@ -2115,8 +2124,12 @@ class TestExecuteTaskTextualUsageStats:
                 turn_stats=turn_stats,
             )
 
-        assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
-        assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+        model_stats = turn_stats.per_model["openai", "gpt-5.5"]
+        assert model_stats.input_tokens == 100
+        assert model_stats.output_tokens == 50
+        assert model_stats.cost_usd == pytest.approx(0.42)
+        assert turn_stats.total_cost_usd == pytest.approx(0.42)
+        assert cost_updates == [0.42]
 
 
 class TestExecuteTaskTextualAutoModeClassifier:

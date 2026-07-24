@@ -10,9 +10,29 @@ from rich.console import Console
 from deepagents_code._session_stats import (
     ModelStats,
     SessionStats,
+    format_cost,
     format_token_count,
     print_usage_table,
 )
+
+
+class TestFormatCost:
+    """Tests for compact USD formatting."""
+
+    @pytest.mark.parametrize(
+        ("cost_usd", "expected"),
+        [
+            (0.0, "$0.00"),
+            (-1.0, "$0.00"),
+            (0.0001, "<$0.01"),
+            (0.009, "<$0.01"),
+            (0.01, "$0.01"),
+            (0.42, "$0.42"),
+            (12.5, "$12.50"),
+        ],
+    )
+    def test_format(self, cost_usd: float, expected: str) -> None:
+        assert format_cost(cost_usd) == expected
 
 
 class TestFormatTokenCount:
@@ -61,6 +81,8 @@ class TestModelStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
+        assert stats.cost_usd == pytest.approx(0.0)
+        assert stats.priced_request_count == 0
         assert stats.provider == ""
 
 
@@ -72,6 +94,8 @@ class TestSessionStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
+        assert stats.total_cost_usd == pytest.approx(0.0)
+        assert stats.priced_request_count == 0
         assert stats.wall_time_seconds == pytest.approx(0.0)
         assert stats.per_model == {}
 
@@ -131,6 +155,29 @@ class TestSessionStats:
         assert stats.input_tokens == 100
         assert stats.per_model == {}
 
+    def test_record_request_accumulates_cost(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        stats.record_request("gpt-5.5", 200, 75, cost_usd=0.02)
+        assert stats.total_cost_usd == pytest.approx(0.03)
+        assert stats.priced_request_count == 2
+        assert stats.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.03)
+
+    def test_missing_cost_does_not_inflate_total(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        stats.record_request("unknown", 200, 75, cost_usd=None)
+        assert stats.total_cost_usd == pytest.approx(0.01)
+        assert stats.priced_request_count == 1
+        assert stats.per_model["", "unknown"].priced_request_count == 0
+
+    def test_literal_zero_cost_is_recorded_but_does_not_inflate_total(self) -> None:
+        stats = SessionStats()
+        stats.record_request("free-model", 100, 50, cost_usd=0.0)
+        assert stats.total_cost_usd == pytest.approx(0.0)
+        assert stats.priced_request_count == 1
+        assert stats.per_model["", "free-model"].priced_request_count == 1
+
     def test_merge_combines_totals(self) -> None:
         a = SessionStats(
             request_count=1,
@@ -149,6 +196,18 @@ class TestSessionStats:
         assert a.input_tokens == 300
         assert a.output_tokens == 125
         assert a.wall_time_seconds == pytest.approx(3.5)
+
+    def test_merge_combines_cost(self) -> None:
+        first = SessionStats()
+        first.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        second = SessionStats()
+        second.record_request("gpt-5.5", 200, 75, cost_usd=0.02)
+
+        first.merge(second)
+
+        assert first.total_cost_usd == pytest.approx(0.03)
+        assert first.priced_request_count == 2
+        assert first.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.03)
 
     def test_merge_combines_per_model(self) -> None:
         a = SessionStats()
@@ -208,13 +267,26 @@ class TestPrintUsageTable:
     def test_single_model_shows_name(self) -> None:
         """Single-model session should display the model name."""
         stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("gpt-4", 100, 50, cost_usd=0.42)
         buf = StringIO()
         console = Console(file=buf, force_terminal=True)
         print_usage_table(stats, wall_time=2.0, console=console)
         output = buf.getvalue()
         assert "gpt-4" in output
+        assert "Cost" in output
+        assert "$0.42" in output
         assert "unknown" not in output
+
+    def test_unpriced_model_does_not_render_zero_cost(self) -> None:
+        stats = SessionStats()
+        stats.record_request("self-hosted", 100, 50, cost_usd=None)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.0, console=console)
+        output = buf.getvalue()
+        assert "Cost" in output
+        assert "$0.00" not in output
+        assert "—" in output
 
     def test_shows_provider_name(self) -> None:
         """The table should include the provider for each model."""

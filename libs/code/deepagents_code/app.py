@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import shlex
 import signal
@@ -66,6 +67,7 @@ from deepagents_code._git import (
 from deepagents_code._session_stats import (
     SessionStats,
     SpinnerStatus,
+    format_cost,
     format_token_count,
 )
 
@@ -230,6 +232,21 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _coerce_session_cost_usd(value: object) -> float:
+    """Coerce a persisted cost to a finite non-negative float.
+
+    Returns:
+        The valid persisted cost, or `0.0` for malformed values.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0.0
+    try:
+        cost_usd = float(value)
+    except (OverflowError, ValueError):
+        return 0.0
+    return cost_usd if math.isfinite(cost_usd) and cost_usd >= 0 else 0.0
 
 
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
@@ -1823,6 +1840,9 @@ class _ThreadHistoryPayload:
 
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
+
+    session_cost_usd: float = 0.0
+    """Persisted cumulative `_session_cost_usd` from the checkpoint."""
 
     rubric: str | None = None
     """Legacy persisted rubric or graph rubric input, if any."""
@@ -3516,7 +3536,10 @@ class DeepAgentsApp(App):
 
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
-        """Cumulative usage stats across all turns in this session."""
+        """Cumulative usage stats across all turns in this process."""
+
+        self._thread_stats: SessionStats = SessionStats()
+        """Usage observed since the active thread was loaded or created."""
 
         self._inflight_turn_stats: SessionStats | None = None
         """Stats for the currently executing turn.
@@ -3528,6 +3551,9 @@ class DeepAgentsApp(App):
         self._inflight_turn_start: float = 0.0
         """Monotonic timestamp when the current turn started."""
 
+        self._inflight_thread_id: str | None = None
+        """Thread that owns `_inflight_turn_stats`, for switch-safe merging."""
+
         self._context_tokens: int = 0
         """Local cache of the last total-context token count.
 
@@ -3537,6 +3563,12 @@ class DeepAgentsApp(App):
 
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
+
+        self._session_cost_usd: float = 0.0
+        """Cumulative estimated cost restored and displayed for the active thread."""
+
+        self._thread_restored_cost_usd: float = 0.0
+        """Checkpoint cost without a local per-model breakdown."""
 
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
@@ -4183,6 +4215,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
+        self._ui_adapter._on_cost_update = self._on_cost_update
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -6686,6 +6719,71 @@ class DeepAgentsApp(App):
         """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
             self._status_bar.show_pending_tokens()
+
+    def _seed_session_cost(self, cost_usd: float) -> None:
+        """Replace the active thread's cumulative cost with a restored value.
+
+        Args:
+            cost_usd: Non-negative cumulative estimated cost in US dollars.
+        """
+        self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        if self._status_bar:
+            self._status_bar.set_cost(self._session_cost_usd)
+
+    def _reset_thread_usage(self, cost_usd: float = 0.0) -> None:
+        """Start local usage details for a newly activated thread.
+
+        Args:
+            cost_usd: Cumulative cost restored from that thread's checkpoint.
+        """
+        self._thread_stats = SessionStats()
+        self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._seed_session_cost(self._thread_restored_cost_usd)
+
+    def _on_cost_update(self, cost_usd: float) -> None:
+        """Add one streamed request estimate to the active thread display.
+
+        Args:
+            cost_usd: Estimated request cost in US dollars.
+        """
+        request_cost_usd = _coerce_session_cost_usd(cost_usd)
+        if request_cost_usd > 0:
+            self._seed_session_cost(self._session_cost_usd + request_cost_usd)
+
+    def _format_cost_summary(self) -> str:
+        """Build the running total and per-model breakdown for `/cost`.
+
+        Returns:
+            User-facing estimated cost summary for the active thread.
+        """
+        if self._session_cost_usd <= 0 and not self._thread_stats.priced_request_count:
+            if self._thread_stats.request_count:
+                return "No priceable usage recorded for this thread."
+            return "No estimated cost yet."
+
+        lines = [f"Estimated thread cost: {format_cost(self._session_cost_usd)}"]
+        priced_models = [
+            model
+            for model in self._thread_stats.per_model.values()
+            if model.priced_request_count
+        ]
+        if priced_models:
+            lines.append("By model since this thread was loaded:")
+            for model in priced_models:
+                label = (
+                    f"{model.provider}:{model.model_name}"
+                    if model.provider
+                    else model.model_name
+                )
+                lines.append(f"- {label}: {format_cost(model.cost_usd)}")
+        elif self._session_cost_usd > 0:
+            lines.append("Per-model details are unavailable for restored usage.")
+
+        if priced_models and self._thread_restored_cost_usd > 0:
+            lines.append("Restored usage is included only in the total above.")
+        if self._thread_stats.priced_request_count < self._thread_stats.request_count:
+            lines.append("Requests without known pricing are excluded.")
+        return "\n".join(lines)
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -10293,6 +10391,10 @@ class DeepAgentsApp(App):
         def _as_nonblank_str(value: object) -> str | None:
             return value if isinstance(value, str) and value.strip() else None
 
+        session_cost_usd = _coerce_session_cost_usd(
+            state_values.get("_session_cost_usd")
+        )
+
         raw_pending_kind = state_values.get("_pending_goal_kind")
         pending_kind = coerce_goal_proposal_kind(raw_pending_kind)
         raw_pending_request_id = state_values.get("_pending_goal_request_id")
@@ -10320,6 +10422,7 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
+            session_cost_usd=session_cost_usd,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -12435,6 +12538,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._reset_thread_usage()
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             # Clear status message (e.g., "Interrupted" from previous session)
@@ -12610,6 +12714,8 @@ class DeepAgentsApp(App):
                         f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
                     )
 
+                if self._session_cost_usd > 0:
+                    msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
             else:
                 model_name = settings.model_name
@@ -12622,7 +12728,13 @@ class DeepAgentsApp(App):
                 if model_name:
                     parts.append(model_name)
 
-                await self._mount_message(AppMessage(" · ".join(parts)))
+                msg = " · ".join(parts)
+                if self._session_cost_usd > 0:
+                    msg += f"\n\n{self._format_cost_summary()}"
+                await self._mount_message(AppMessage(msg))
+        elif cmd == "/cost":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(self._format_cost_summary()))
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
@@ -13387,6 +13499,10 @@ class DeepAgentsApp(App):
                 # (the archive now lives in the agent's own backend, not a
                 # client-local directory the server can never read).
                 new_state = await self._get_thread_state_values(self._lc_thread_id)
+            persisted_cost_usd = _coerce_session_cost_usd(
+                new_state.get("_session_cost_usd")
+            )
+            self._seed_session_cost(max(self._session_cost_usd, persisted_cost_usd))
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -14318,6 +14434,7 @@ class DeepAgentsApp(App):
         turn_stats = SessionStats()
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
+        self._inflight_thread_id = self._lc_thread_id
 
         # Arm the subagent fan-out panel for this turn, seeding the session
         # model that labels each row. The panel persists across turns and only
@@ -14510,7 +14627,10 @@ class DeepAgentsApp(App):
             # checking for None prevents double-counting.
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
+                if self._inflight_thread_id == self._lc_thread_id:
+                    self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+                self._inflight_thread_id = None
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the
@@ -15100,12 +15220,15 @@ class DeepAgentsApp(App):
                 model_params=payload.model_params,
             )
 
-            if not payload.messages:
-                return
-
-            # Seed token cache from persisted state
+            # Restore checkpoint metadata even when a thread has no messages.
+            # Cost is cumulative thread state, while context tokens are the latest
+            # model context; neither depends on transcript rendering succeeding.
+            self._reset_thread_usage(payload.session_cost_usd)
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
+
+            if not payload.messages:
+                return
 
             # 5. Cache container ref (single query). Queried before the store
             # load so history can be reconciled against widgets already in the
@@ -16474,13 +16597,17 @@ class DeepAgentsApp(App):
         # call), the worker's finally block will see _inflight_turn_stats is
         # already None and skip the merge.
         inflight = self._inflight_turn_stats
+        inflight_thread_id = self._inflight_thread_id
         if inflight is not None:
             self._inflight_turn_stats = None
+            self._inflight_thread_id = None
             if not inflight.wall_time_seconds:
                 inflight.wall_time_seconds = (
                     time.monotonic() - self._inflight_turn_start
                 )
             self._session_stats.merge(inflight)
+            if inflight_thread_id == self._lc_thread_id:
+                self._thread_stats.merge(inflight)
 
         # Discard queued messages so _cleanup_agent_task won't try to
         # process them after the event loop is torn down, and cancel
@@ -18221,6 +18348,7 @@ class DeepAgentsApp(App):
                 self._context_tokens = 0
                 self._tokens_approximate = False
                 self._update_tokens(0)
+                self._reset_thread_usage()
                 self._update_status("")
 
                 if self._session_state:
@@ -22071,6 +22199,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._reset_thread_usage()
             self._update_status("")
 
             # Switch to the selected thread

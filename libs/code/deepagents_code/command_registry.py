@@ -99,6 +99,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
+        name="/cost",
+        description="Show estimated session cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="price spend usage tokens dollars usd",
+    ),
+    SlashCommand(
         name="/force-clear",
         description="Stop active work, clear the chat, and start a new thread",
         bypass_tier=BypassTier.ALWAYS,

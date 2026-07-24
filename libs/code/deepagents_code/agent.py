@@ -2511,13 +2511,17 @@ def create_cli_agent(
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
-    # request. The CLI reads them back from `state_values` on thread resume.
+    # request. `CostTrackingMiddleware` writes the separate cumulative thread cost.
+    # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and maintains goal-state notices.
+    from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+    agent_middleware.extend(
+        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
+    )
 
     # Add ask_user middleware (must be early so its tool is available)
     trusted_ask_user_tool: BaseTool | None = None

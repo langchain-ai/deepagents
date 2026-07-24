@@ -3658,6 +3658,35 @@ class TestLoadThreadHistory:
 
         assert app._context_tokens == 8500
 
+    async def test_resume_seeds_cost_for_empty_thread_history(self) -> None:
+        """Checkpoint metadata restores before the empty-transcript return."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._session_cost_usd = 9.0
+        app._thread_stats.record_request(
+            "old-model",
+            100,
+            10,
+            cost_usd=9.0,
+        )
+        preloaded = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=8500,
+            model_spec="",
+            session_cost_usd=1.25,
+        )
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=preloaded,
+        )
+
+        assert app._context_tokens == 8500
+        assert app._session_cost_usd == pytest.approx(1.25)
+        assert app._thread_restored_cost_usd == pytest.approx(1.25)
+        assert app._thread_stats.request_count == 0
+
     async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
         """Loading a payload with 0 tokens should not reset an existing cache."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType

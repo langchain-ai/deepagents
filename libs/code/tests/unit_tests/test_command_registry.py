@@ -233,6 +233,21 @@ class TestToolsCommand:
         assert "mcp" in tools_cmd.hidden_keywords.split()
 
 
+class TestCostCommand:
+    """Validate `/cost` registration and discoverability metadata."""
+
+    def test_cost_registered_and_queue_bound(self) -> None:
+        names = {entry.name for entry in get_slash_commands()}
+        assert "/cost" in names
+        assert "/cost" in QUEUE_BOUND
+
+    def test_cost_hidden_keywords_cover_usage_search(self) -> None:
+        cost_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/cost")
+        assert {"price", "spend", "tokens", "usd"} <= set(
+            cost_cmd.hidden_keywords.split()
+        )
+
+
 class TestGoalCommand:
     """Validate the `/goal` entry specifically.
 

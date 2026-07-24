@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    class _CostUpdateCallback(Protocol):
+        """Callback signature for `_on_cost_update`."""
+
+        def __call__(self, cost_usd: float) -> None: ...
+
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext
@@ -463,6 +468,9 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+        self._on_cost_update: _CostUpdateCallback | None = None
+        """Called with each priceable request's estimated USD cost."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -1278,9 +1286,20 @@ async def execute_task_textual(
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
                             from deepagents_code.config import settings
+                            from deepagents_code.cost_tracking import (
+                                estimate_cost,
+                                resolve_message_model,
+                            )
 
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
+                            active_model, active_provider = resolve_message_model(
+                                message,
+                                fallback_model=settings.model_name or "",
+                                fallback_provider=settings.model_provider or "",
+                            )
+                            cost_usd = estimate_cost(
+                                usage, active_model, active_provider
+                            )
+                            recorded = False
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(
@@ -1288,18 +1307,31 @@ async def execute_task_textual(
                                     input_toks,
                                     output_toks,
                                     active_provider,
+                                    cost_usd=cost_usd,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
                                 )
+                                recorded = True
                             elif total_toks:
                                 # Fallback: model gives only total (no split)
                                 turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
+                                    active_model,
+                                    total_toks,
+                                    0,
+                                    active_provider,
+                                    cost_usd=cost_usd,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
+                                recorded = True
+                            if (
+                                recorded
+                                and cost_usd is not None
+                                and adapter._on_cost_update
+                            ):
+                                adapter._on_cost_update(cost_usd)
 
                     # The Auto mode authorization classifier is a nested model
                     # call. Its structured JSON is internal policy machinery,

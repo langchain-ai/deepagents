@@ -79,6 +79,10 @@ class TestStartupTip:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
 
+    def test_cost_command_tip_registered(self) -> None:
+        """The `/cost` command has a discoverability tip."""
+        assert any("/cost" in tip for tip in _TIPS)
+
     def test_workflow_subagent_tip_registered(self) -> None:
         """The workflow trigger phrase keeps an above-baseline weight."""
         tip = "Ask for a workflow to fan work out to subagents in parallel"

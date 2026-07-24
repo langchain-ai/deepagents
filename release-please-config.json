@@ -104,6 +104,7 @@
       "release-type": "python",
       "package-name": "deepagents-code",
       "component": "deepagents-code",
+      "release-as": "0.1.46",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [

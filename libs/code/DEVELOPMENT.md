@@ -71,11 +71,16 @@ Run `make help` to see every available target.
 
 ## LangSmith tracing projects
 
-When `LANGSMITH_API_KEY` is set, `deepagents-code` traces its own agent runs to
-LangSmith. By default those runs land in the `deepagents-code` project, but the
-team routes shared runs to a GA project (`shared-deepagents-code`) that is
-monitored by LangSmith Engine, which raises high-priority Slack alerts on
-suspected issues.
+When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available,
+`deepagents-code` traces its own agent runs to LangSmith. A key alone is not
+enough for environment-supplied keys — set `LANGSMITH_TRACING=true` (or a
+supported alias such as `LANGCHAIN_TRACING_V2`). Keys stored via `/auth` auto-
+enable tracing unless you explicitly opt out (for example
+`DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
+
+By default those runs land in the `deepagents-code` project, but the team routes
+shared runs to a GA project (`shared-deepagents-code`) that is monitored by
+LangSmith Engine, which raises high-priority Slack alerts on suspected issues.
 
 **Do not point local development at the GA project.** Active development
 produces failures, half-finished branches, and experiments that Engine flags as

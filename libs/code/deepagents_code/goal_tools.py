@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from pydantic import Field
 from typing_extensions import override
 
 # Runtime (not TYPE_CHECKING) imports. `GoalRubricChannels` supplies the shared
@@ -421,8 +422,24 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         @tool
         def update_goal(
-            status: Literal["complete", "blocked"],
-            note: str,
+            status: Annotated[
+                Literal["complete", "blocked"],
+                Field(
+                    description=(
+                        "`complete` to attach completion evidence, or `blocked` "
+                        "when you are stuck and need the user."
+                    )
+                ),
+            ],
+            note: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Evidence the criteria are satisfied, or the specific "
+                        "blocker. Required when calling this tool."
+                    )
+                ),
+            ],
             tool_call_id: Annotated[str, InjectedToolCallId],
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
@@ -432,14 +449,6 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             automatically after a satisfied goal-backed grading turn, so `complete`
             is optional and only stages its evidence for that result. Do not create,
             pause, resume, clear, or replace goals — those are user-controlled.
-
-            Args:
-                status: `complete` to attach completion evidence, or `blocked` when
-                    you are stuck and need the user.
-                note: Evidence the criteria are satisfied, or the specific
-                    blocker. Required when calling this tool.
-                tool_call_id: Injected tool call ID for the tool response.
-                state: Injected graph state holding the current goal.
 
             Returns:
                 Command that updates goal status and returns a tool message.

@@ -71,27 +71,13 @@ Run `make help` to see every available target.
 
 ## LangSmith tracing projects
 
-When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available,
-`deepagents-code` traces its own agent runs to LangSmith. A key alone is not
-enough for environment-supplied keys — set `LANGSMITH_TRACING=true` (or a
-supported alias such as `LANGCHAIN_TRACING_V2`). Keys stored via `/auth` auto-
-enable tracing unless you explicitly opt out (for example
-`DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
+When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available, `deepagents-code` traces its own agent runs to LangSmith. A key alone is not enough for environment-supplied keys — set `LANGSMITH_TRACING=true`. Keys stored via `/auth` auto- enable tracing unless you explicitly opt out (for example `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
 
-By default those runs land in the `deepagents-code` project, but the team routes
-shared runs to a GA project (`shared-deepagents-code`) that is monitored by
-LangSmith Engine, which raises high-priority Slack alerts on suspected issues.
+By default those runs land in the `deepagents-code` project, but the team routes shared runs to a GA project (`shared-deepagents-code`) that is monitored by LangSmith Engine, which raises high-priority Slack alerts on suspected issues.
 
-**Do not point local development at the GA project.** Active development
-produces failures, half-finished branches, and experiments that Engine flags as
-issues — noise that buries the alerts that matter for the production project and
-costs the team triage time. Keep dev and prod runs in separate projects so
-Engine alerting on the GA project stays high-signal (this also mirrors LangSmith
-best practice of splitting dev and prod environments into distinct projects).
+**Do not point local development at the GA project.** Active development produces failures, half-finished branches, and experiments that Engine flags as issues — noise that buries the alerts that matter for the production project and costs the team triage time. Keep dev and prod runs in separate projects so Engine alerting on the GA project stays high-signal (this also mirrors LangSmith best practice of splitting dev and prod environments into distinct projects).
 
-Route your local runs to a dev-scoped project via `DEEPAGENTS_CODE_LANGSMITH_PROJECT`
-(this overrides only the agent's own traces, leaving your shell's
-`LANGSMITH_PROJECT` for user code untouched):
+Route your local runs to a dev-scoped project via `DEEPAGENTS_CODE_LANGSMITH_PROJECT` (this overrides only the agent's own traces, leaving your shell's `LANGSMITH_PROJECT` for user code untouched):
 
 ```bash
 # A shared dev bucket, or your own personal project — anything but the GA project
@@ -99,15 +85,9 @@ export DEEPAGENTS_CODE_LANGSMITH_PROJECT=shared-deepagents-code-dev
 uv run deepagents-code
 ```
 
-You can also set it persistently under `[tracing]` in the config file
-(`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and
-`/trace` show the project a run is writing to — confirm it is not the GA project
-before doing noisy work.
+You can also set it persistently under `[tracing]` in the config file (`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and `/trace` show the project a run is writing to — confirm it is not the GA project before doing noisy work.
 
-When onboarding a new tracing project to Engine, capture the nature of that
-project first: a production/GA app warrants high-priority alerts, while a
-staging or active-dev project should use looser thresholds (or stay off Engine)
-so it does not generate false positives.
+When onboarding a new tracing project to Engine, capture the nature of that project first: a production/GA app warrants high-priority alerts, while a staging or active-dev project should use looser thresholds (or stay off Engine) so it does not generate false positives.
 
 ## Debugging
 

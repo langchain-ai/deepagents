@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import collect_langsmith_usage as usage  # noqa: E402
 
@@ -180,86 +182,38 @@ def test_collect_all_marks_experiments_unavailable_without_client() -> None:
     assert result["experiments"]["experiment"]["completed_totals"]["cost_usd"] is None
 
 
-def _write_leaf(root: Path, name: str, summary: dict[str, object]) -> None:
-    leaf = root / name
-    leaf.mkdir(parents=True)
-    (leaf / "summary.json").write_text(json.dumps(summary))
+def _write_experiments(path: Path, mapping: dict[str, object]) -> Path:
+    path.write_text(json.dumps(mapping))
+    return path
 
 
-def test_discover_experiments_reads_leaf_summaries(tmp_path: Path) -> None:
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-a",
-        {
-            "langsmith_experiment": "experiment",
-            "expected_shards": 3,
-            "rollouts_per_task": 2,
-        },
+def test_load_experiments_reads_name_to_expected_map(tmp_path: Path) -> None:
+    f = _write_experiments(tmp_path / "e.json", {"exp-a": 6, "exp-b": 8})
+    assert usage.load_experiments(f) == {"exp-a": 6, "exp-b": 8}
+
+
+def test_load_experiments_nulls_bad_expected_and_skips_empty_names(tmp_path: Path) -> None:
+    f = _write_experiments(
+        tmp_path / "e.json",
+        {"exp-a": None, "exp-b": "nope", "exp-c": -1, "": 5},
     )
-    # A second leaf sharing the same experiment (same expected count) dedupes.
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-b",
-        {
-            "langsmith_experiment": "experiment",
-            "expected_shards": 3,
-            "rollouts_per_task": 2,
-        },
-    )
-
-    assert usage.discover_experiments(tmp_path) == {"experiment": 6}
+    # Non-int / negative expected -> None (best-effort coverage); empty name dropped.
+    assert usage.load_experiments(f) == {"exp-a": None, "exp-b": None, "exp-c": None}
 
 
-def test_discover_experiments_falls_back_to_expected_trials(tmp_path: Path) -> None:
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-c",
-        {
-            "langsmith_experiment": "other",
-            "rollouts_per_task": 2,
-            "totals": {"expected_trials": 8},
-        },
-    )
-
-    assert usage.discover_experiments(tmp_path) == {"other": 8}
-
-
-def test_discover_experiments_skips_leaves_without_experiment(tmp_path: Path) -> None:
-    _write_leaf(tmp_path, "harbor-combined-d", {"rollouts_per_task": 2})
-
-    assert usage.discover_experiments(tmp_path) == {}
-
-
-def test_discover_experiments_rejects_conflicting_counts(tmp_path: Path) -> None:
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-e",
-        {"langsmith_experiment": "dup", "expected_shards": 3, "rollouts_per_task": 2},
-    )
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-f",
-        {"langsmith_experiment": "dup", "expected_shards": 4, "rollouts_per_task": 2},
-    )
-
-    try:
-        usage.discover_experiments(tmp_path)
-    except ValueError as exc:
-        assert "conflicting expected rollout counts" in str(exc)
-    else:  # pragma: no cover - the call must raise
-        raise AssertionError("expected a ValueError for conflicting counts")
+def test_load_experiments_rejects_non_object(tmp_path: Path) -> None:
+    f = _write_experiments(tmp_path / "e.json", [1, 2, 3])
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        usage.load_experiments(f)
 
 
 def test_main_without_key_writes_unavailable(tmp_path: Path, monkeypatch) -> None:
-    _write_leaf(
-        tmp_path,
-        "harbor-combined-g",
-        {"langsmith_experiment": "experiment", "expected_shards": 1, "rollouts_per_task": 1},
-    )
+    exp = _write_experiments(tmp_path / "e.json", {"experiment": 4})
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     out = tmp_path / "usage" / "langsmith_usage.json"
 
-    assert usage.main([str(tmp_path), "--out", str(out)]) == 0
+    assert usage.main(["--experiments-json", str(exp), "--out", str(out)]) == 0
     written = json.loads(out.read_text())
     assert written["schema_version"] == 1
     assert written["experiments"]["experiment"]["status"] == "unavailable"
+    assert written["experiments"]["experiment"]["coverage"]["expected_rollouts"] == 4

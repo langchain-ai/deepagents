@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Collect deterministic token and cost metrics for Unified Eval leaves.
+"""Collect deterministic token and cost metrics for Unified Eval experiments.
 
-Discovers the LangSmith experiment (project) name recorded in each leaf's
-``summary.json`` (written by ``aggregate_shards.py``), queries LangSmith for the
-root Harbor rollout traces, and aggregates per experiment: total input/output
-tokens and total cost (USD). Two totals are reported per experiment -- one over
-every rollout ("true spend") and one restricted to rollouts that reached a
-terminal result (no traced ``error``) -- so a leaf that erred out is comparable
-to a clean one. Token/cost data lives only in LangSmith, so a missing
+Takes the ``{experiment_name: expected_trials}`` map that prep computed up front
+(``--experiments-json``), queries LangSmith for each experiment's root Harbor
+rollout traces, and aggregates per experiment: total input/output tokens and
+total cost (USD). Two totals are reported per experiment -- one over every
+rollout ("true spend") and one restricted to rollouts that reached a terminal
+result (no traced ``error``) -- so a leaf that erred out is comparable to a
+clean one. Token/cost data lives only in LangSmith, so a missing
 ``LANGSMITH_API_KEY`` yields a stable "unavailable" shape rather than an error.
 """
 
@@ -60,60 +60,29 @@ SELECT_FIELDS = [
 RETRY_DELAYS = (5.0, 10.0, 20.0, 30.0)
 
 
-def _load_object(path: Path, label: str) -> dict[str, object]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object: {path}")
-    return cast(dict[str, object], value)
+def load_experiments(path: Path) -> dict[str, int | None]:
+    """Read the ``{experiment_name: expected_trials}`` map produced by prep.
 
-
-def expected_rollouts(summary: dict[str, object]) -> int | None:
-    """Return the authoritative expected trace count for a leaf summary."""
-    expected_shards = summary.get("expected_shards")
-    rollouts = summary.get("rollouts_per_task")
-    if (
-        isinstance(expected_shards, int)
-        and not isinstance(expected_shards, bool)
-        and expected_shards >= 0
-        and isinstance(rollouts, int)
-        and not isinstance(rollouts, bool)
-        and rollouts > 0
-    ):
-        return expected_shards * rollouts
-    totals = summary.get("totals")
-    if isinstance(totals, dict):
-        expected = cast(dict[str, object], totals).get("expected_trials")
-        if (
-            isinstance(expected, int)
-            and not isinstance(expected, bool)
-            and expected >= 0
-        ):
-            return expected
-    return None
-
-
-def discover_experiments(root: Path) -> dict[str, int | None]:
-    """Discover experiment names + expected rollout counts from leaf summaries.
-
-    Walks every ``summary.json`` under ``root`` (the downloaded ``harbor-*``
-    leaf artifacts), reads its ``langsmith_experiment`` name and expected
-    rollout count, dedupes shared experiments, and errors on conflicting
-    expected counts for the same experiment.
+    prep computes the experiment names up front (via ``experiment_name.py``) so
+    the collector never has to scan shard artifacts to learn them. ``expected``
+    is the per-experiment trace count (tasks * rollouts) used to tell "fully
+    ingested" from "still catching up"; ``null`` (or a non-int) means prep could
+    not determine it, so coverage is best-effort. Type-guarded — a malformed
+    entry is dropped rather than aborting the whole collection.
     """
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        msg = f"experiments file must be a JSON object: {path}"
+        raise ValueError(msg)
     experiments: dict[str, int | None] = {}
-    for summary_path in sorted(root.rglob("summary.json")):
-        summary = _load_object(summary_path, "leaf summary")
-        experiment = summary.get("langsmith_experiment")
-        if not isinstance(experiment, str) or not experiment:
+    for name, expected in cast(dict[str, object], raw).items():
+        if not isinstance(name, str) or not name:
             continue
-        expected = expected_rollouts(summary)
-        previous = experiments.get(experiment)
-        if experiment in experiments and previous != expected:
-            raise ValueError(
-                f"conflicting expected rollout counts for {experiment!r}: "
-                f"{previous!r} and {expected!r}"
-            )
-        experiments[experiment] = expected
+        experiments[name] = (
+            expected
+            if isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0
+            else None
+        )
     return experiments
 
 
@@ -378,14 +347,19 @@ def collect_all(
 def main(argv: list[str] | None = None) -> int:
     """CLI for the Unified Eval usage job."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", type=Path)
+    parser.add_argument(
+        "--experiments-json",
+        type=Path,
+        required=True,
+        help="JSON map {experiment_name: expected_trials|null} produced by prep.",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--attempts", type=int, default=5)
     args = parser.parse_args(argv)
     if args.attempts < 1:
         parser.error("--attempts must be >= 1")
 
-    experiments = discover_experiments(args.root)
+    experiments = load_experiments(args.experiments_json)
     client: ClientLike | None = None
     if experiments and os.environ.get("LANGSMITH_API_KEY"):
         from langsmith import Client

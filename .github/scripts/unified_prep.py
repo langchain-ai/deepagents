@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
 import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
+from experiment_name import experiment_name  # noqa: E402  (experiment_name.py in same dir)
 from unified_types import LeafKey  # noqa: E402
 
 MAX_TASKS_PER_MODEL = 40
@@ -590,6 +591,26 @@ def main(argv: list[str] | None = None) -> int:
                     seen_leaves.add(key)
                     expected_keys.append(key)
 
+    # Experiment (LangSmith project) name per leaf, computed here so the usage
+    # collector never has to scan shard artifacts to learn them. The value is the
+    # expected trace count (tasks-in-category * rollouts) it should see once every
+    # rollout has ingested. Same shared helper _harbor_run.yml logs under, so the
+    # queried name matches the logged one. run id/attempt are the workflow run's.
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    experiments: dict[str, int | None] = {}
+    for key in expected_keys:
+        name = experiment_name(
+            model=key.model,
+            branch=key.branch,
+            config=key.config,
+            category=key.category,
+            run_id=run_id,
+            run_attempt=run_attempt,
+        )
+        n_tasks = len(tasks_by_cat.get(key.category, []))
+        experiments[name] = n_tasks * rollouts if n_tasks else None
+
     outputs: dict[str, object] = {
         "models": model_specs,
         "categories": categories,
@@ -601,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         "sources": [
             {"branch": branch, "sha": branch_shas[branch]} for branch in branches
         ],
+        "experiments": experiments,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
     }

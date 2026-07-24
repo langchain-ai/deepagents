@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aggregate_unified as au  # noqa: E402
+import experiment_name as en  # noqa: E402
 
 
 def _summary(
@@ -1148,10 +1149,27 @@ def test_combine_supports_heterogeneous_required_categories():
 # ---------------------------------------------------------------------------
 
 
-def _leaf_exp(model, config, category, pass_at_k, experiment):
-    leaf = _leaf(model, config, category, pass_at_k)
-    leaf["langsmith_experiment"] = experiment
-    return leaf
+_RUN_ID = "42"
+_RUN_ATTEMPT = "1"
+
+
+def _exp(model, config, category, branch="current"):
+    # The experiment name aggregate_unified recomputes for a leaf, via the shared
+    # helper — so the test's usage map is keyed exactly as combine() will look it up.
+    return en.experiment_name(
+        model=model,
+        branch=branch,
+        config=config,
+        category=category,
+        run_id=_RUN_ID,
+        run_attempt=_RUN_ATTEMPT,
+    )
+
+
+def _combine(leaves, experiments):
+    return au.combine(
+        leaves, experiments=experiments, run_id=_RUN_ID, run_attempt=_RUN_ATTEMPT
+    )
 
 
 def _usage_block(
@@ -1193,29 +1211,13 @@ def _usage_block(
     }
 
 
-def test_read_leaf_exposes_langsmith_experiment(tmp_path: Path):
-    d = tmp_path / "leaf"
-    d.mkdir()
-    summary = _summary("m", 2, 0.5, 0.5, 2, 1)
-    summary["langsmith_experiment"] = "exp-xyz"
-    (d / "summary.json").write_text(json.dumps(summary))
-    assert au.read_leaf(d)["langsmith_experiment"] == "exp-xyz"
-
-
-def test_read_leaf_defaults_missing_experiment_to_none(tmp_path: Path):
-    d = tmp_path / "leaf"
-    d.mkdir()
-    (d / "summary.json").write_text(json.dumps(_summary("m", 2, 0.5, 0.5, 2, 1)))
-    assert au.read_leaf(d)["langsmith_experiment"] is None
-
-
 def test_combine_rolls_usage_up_across_a_rows_experiments():
     leaves = [
-        _leaf_exp("m", "bare", "autonomous", 0.5, "exp-A"),
-        _leaf_exp("m", "bare", "context", 0.5, "exp-B"),
+        _leaf("m", "bare", "autonomous", 0.5),
+        _leaf("m", "bare", "context", 0.5),
     ]
     experiments = {
-        "exp-A": _usage_block(
+        _exp("m", "bare", "autonomous"): _usage_block(
             status="complete",
             expected=4,
             observed=4,
@@ -1228,7 +1230,7 @@ def test_combine_rolls_usage_up_across_a_rows_experiments():
             c_completion=350,
             c_cost=0.35,
         ),
-        "exp-B": _usage_block(
+        _exp("m", "bare", "context"): _usage_block(
             status="partial",
             expected=4,
             observed=3,
@@ -1242,9 +1244,11 @@ def test_combine_rolls_usage_up_across_a_rows_experiments():
             c_cost=0.1,
         ),
     }
-    (row,) = au.combine(leaves, experiments=experiments)["rows"]
+    (row,) = _combine(leaves, experiments)["rows"]
     usage = row["usage"]
-    assert usage["experiments"] == ["exp-A", "exp-B"]
+    assert usage["experiments"] == sorted(
+        [_exp("m", "bare", "autonomous"), _exp("m", "bare", "context")]
+    )
     # Completed-only totals sum across both experiments.
     assert usage["completed_totals"]["prompt_tokens"] == 900
     assert usage["completed_totals"]["completion_tokens"] == 450
@@ -1265,21 +1269,22 @@ def test_combine_without_experiments_omits_usage():
     assert "usage" not in combined["rows"][0]
 
 
-def test_combine_usage_empty_when_leaf_has_no_experiment():
-    leaves = [_leaf("m", "bare", "autonomous", 1.0)]  # no langsmith_experiment
-    (row,) = au.combine(leaves, experiments={})["rows"]
+def test_combine_usage_unavailable_when_experiment_not_in_map():
+    # The leaf's computed experiment name isn't in the (empty) usage map.
+    leaves = [_leaf("m", "bare", "autonomous", 1.0)]
+    (row,) = _combine(leaves, {})["rows"]
     assert row["usage"]["status"] == "unavailable"
-    assert row["usage"]["experiments"] == []
+    assert row["usage"]["experiments"] == [_exp("m", "bare", "autonomous")]
     assert row["usage"]["completed_totals"]["cost_usd"] is None
 
 
 def test_render_usage_markdown_formats_completed_dashes_and_status():
     leaves = [
-        _leaf_exp("m", "bare", "autonomous", 1.0, "exp-A"),
-        _leaf_exp("m", "dcode", "autonomous", 0.0, "exp-missing"),
+        _leaf("m", "bare", "autonomous", 1.0),
+        _leaf("m", "dcode", "autonomous", 0.0),
     ]
     experiments = {
-        "exp-A": _usage_block(
+        _exp("m", "bare", "autonomous"): _usage_block(
             status="complete",
             expected=2,
             observed=2,
@@ -1293,7 +1298,7 @@ def test_render_usage_markdown_formats_completed_dashes_and_status():
             c_cost=1.25,
         ),
     }
-    combined = au.combine(leaves, experiments=experiments)
+    combined = _combine(leaves, experiments)
     md = au.render_usage_markdown(combined)
     assert "## Token usage and cost" not in md  # heading is written by write_outputs
     assert "| Model / branch / config | Completed |" in md
@@ -1305,9 +1310,9 @@ def test_render_usage_markdown_formats_completed_dashes_and_status():
 
 
 def test_write_outputs_appends_usage_table_only_when_available(tmp_path: Path):
-    leaves = [_leaf_exp("m", "bare", "autonomous", 1.0, "exp-A")]
+    leaves = [_leaf("m", "bare", "autonomous", 1.0)]
     experiments = {
-        "exp-A": _usage_block(
+        _exp("m", "bare", "autonomous"): _usage_block(
             status="complete",
             expected=1,
             observed=1,
@@ -1323,7 +1328,7 @@ def test_write_outputs_appends_usage_table_only_when_available(tmp_path: Path):
     }
     step = tmp_path / "step.md"
     step.touch()
-    combined = au.combine(leaves, experiments=experiments)
+    combined = _combine(leaves, experiments)
     au.write_outputs(combined, 1, tmp_path / "out", str(step))
     rendered = step.read_text()
     assert "## Unified evals — cross-model comparison" in rendered
@@ -1353,13 +1358,15 @@ def test_load_usage_rejects_bad_schema(tmp_path: Path):
 def test_main_with_usage_json_writes_usage_table(tmp_path: Path, monkeypatch):
     root = tmp_path / "_leaves" / "leaf"
     root.mkdir(parents=True)
+    # _summary defaults: config=bare, category=context; read_leaf defaults branch=current.
     summary = _summary("m", 2, 0.5, 0.5, 2, 1)
-    summary["langsmith_experiment"] = "exp-A"
     (root / "summary.json").write_text(json.dumps(summary))
+    monkeypatch.setenv("GITHUB_RUN_ID", _RUN_ID)
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", _RUN_ATTEMPT)
     usage = {
         "schema_version": 1,
         "experiments": {
-            "exp-A": _usage_block(
+            _exp("m", "bare", "context"): _usage_block(
                 status="complete",
                 expected=4,
                 observed=4,

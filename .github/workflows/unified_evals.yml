@@ -34,7 +34,7 @@ on:
         type: string
         default: "3"
       n_retries:
-        description: "Maximum additional attempts per trial after a Harbor-retryable exception when the recorded reward is below 1.0 or missing. AgentTimeoutError remains excluded."
+        description: "Maximum additional attempts per trial after a Harbor-retryable exception (harbor's standard --max-retries). AgentTimeoutError remains excluded."
         type: string
         default: "0"
       agent_timeout_multiplier:
@@ -85,6 +85,7 @@ jobs:
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
       sources: ${{ steps.p.outputs.sources }}
+      experiments: ${{ steps.p.outputs.experiments }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -265,7 +266,7 @@ jobs:
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
-            echo "| retries per eligible failed trial | \`${IN_N_RETRIES}\` |"
+            echo "| retries per failed trial (--max-retries) | \`${IN_N_RETRIES}\` |"
             echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
@@ -326,15 +327,10 @@ jobs:
     # writes there use the one `evals` LANGSMITH_API_KEY (which must carry both
     # write and runs:read) rather than a stray repo/org key.
     environment: evals
-    # Declaring any permission zeroes the rest, so list both: contents:read for
-    # actions/checkout, actions:read for `gh run download` of the leaf artifacts.
+    # Only checkout needs a token scope; the collector reads LangSmith over its own
+    # API key, not the GitHub API. (Declaring any permission zeroes the rest.)
     permissions:
       contents: read
-      actions: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPO: ${{ github.repository }}
-      RUN_ID: ${{ github.run_id }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -350,44 +346,21 @@ jobs:
         run: |
           mkdir -p "$UV_CACHE_DIR"
 
-      - name: "⬇️ Download leaf summaries"
-        id: download-leaves
-        continue-on-error: true
-        run: |
-          attempt=1
-          while :; do
-            attempt_dir=$(mktemp -d)
-            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir "$attempt_dir" >dl.log 2>&1; then
-              mv "$attempt_dir" _leaves
-              break
-            fi
-            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
-              rm -rf "$attempt_dir"
-              mkdir -p _leaves
-              echo "::warning::No harbor-* artifacts matched; usage analysis has nothing to query."
-              break
-            fi
-            echo "Leaf download attempt ${attempt} failed:"
-            cat dl.log
-            rm -rf "$attempt_dir"
-            if [ "$attempt" -ge 3 ]; then
-              echo "::warning::Leaf download failed after ${attempt} attempts; usage analysis skipped."
-              mkdir -p _leaves
-              break
-            fi
-            attempt=$((attempt + 1))
-            sleep $((attempt * 5))
-          done
-
       - name: "💰 Query rollout usage"
         id: query-usage
         continue-on-error: true
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # prep computed {experiment: expected_trials} up front; no need to scan
+          # shard artifacts to learn which projects to query.
+          EXPERIMENTS_JSON: ${{ needs.prep.outputs.experiments }}
         run: |
-          mkdir -p _leaves _usage
+          mkdir -p _usage
+          # Passed via env (not interpolated into the shell) for injection safety.
+          printf '%s' "$EXPERIMENTS_JSON" > _usage/experiments.json
           uv run --project libs/evals python \
-            .github/scripts/collect_langsmith_usage.py _leaves \
+            .github/scripts/collect_langsmith_usage.py \
+            --experiments-json _usage/experiments.json \
             --out _usage/langsmith_usage.json
 
       - name: "📤 Upload LangSmith usage"

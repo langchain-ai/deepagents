@@ -21,8 +21,12 @@ dependencies = [
     "deepagents>=0.6.12",
     "langchain>=1.3.12,<2.0.0",
     "deepagents-code>=0.1.27",
-    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
-    "harbor[langsmith]>=0.16.1,<0.17.0",
+    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
+    # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
+    # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;
+    # pin its floor explicitly since harbor's extra leaves it unconstrained.
+    "harbor[langsmith]>=0.20.0,<0.21.0",
+    "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
     "langsmith>=0.9.3,<0.10.0",
     # Sandbox runtimes

@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple, cast
 
+from experiment_name import experiment_name
 from unified_types import LeafKey, RowKey
 
 
@@ -186,10 +187,6 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     if source_sha is not None and not isinstance(source_sha, str):
         msg = "source_sha must be a string or null"
         raise _LeafSummaryError(msg)
-    langsmith_experiment = summary.get("langsmith_experiment")
-    if langsmith_experiment is not None and not isinstance(langsmith_experiment, str):
-        msg = "langsmith_experiment must be a string or null"
-        raise _LeafSummaryError(msg)
     if "incomplete" not in summary:
         msg = "incomplete is required"
         raise _LeafSummaryError(msg)
@@ -214,7 +211,6 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "tasks": tasks,
         "passed": passed,
         "incomplete": incomplete,
-        "langsmith_experiment": langsmith_experiment or None,
         "issues": raw_issues,
     }
 
@@ -349,6 +345,8 @@ def combine(
     issues: list[dict[str, object]] | None = None,
     *,
     experiments: dict[str, object] | None = None,
+    run_id: str = "",
+    run_attempt: str = "",
 ) -> dict:
     issues_out = list(issues or [])
     for leaf in leaves:
@@ -474,10 +472,21 @@ def combine(
             ),
         }
         if experiments is not None:
-            row_out["usage"] = _overall_usage(
-                [leaf.get("langsmith_experiment") for leaf in row_leaves],
-                experiments,
-            )
+            # Recompute each leaf's experiment name from the shared helper (same
+            # source of truth prep and _harbor_run.yml use) rather than reading it
+            # from summary.json, then look its usage up in the collector's map.
+            names = [
+                experiment_name(
+                    model=leaf["model"],
+                    branch=leaf["branch"],
+                    config=leaf["config"],
+                    category=leaf["category"],
+                    run_id=run_id,
+                    run_attempt=run_attempt,
+                )
+                for leaf in row_leaves
+            ]
+            row_out["usage"] = _overall_usage(names, experiments)
         rows_out.append(row_out)
     return {
         "rows": rows_out,
@@ -849,6 +858,8 @@ def main(argv: list[str] | None = None) -> int:
         expected_categories,
         issues,
         experiments=experiments,
+        run_id=os.environ.get("GITHUB_RUN_ID", ""),
+        run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
     )
     try:
         write_outputs(

@@ -261,14 +261,16 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
         "agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}" in eval_job
     )
 
-    assert "retry_reward_flag=(--retry-if-reward-below 1.0)" in run_harbor
-    assert '"${retry_reward_flag[@]}"' in run_harbor
+    # Standard harbor retry (--max-retries on retryable exceptions); the fork-only
+    # reward-gated flag is gone so the eval stack runs on stock harbor.
+    assert '--max-retries "$HARBOR_N_RETRIES"' in run_harbor
+    assert "--retry-if-reward-below" not in reusable
     assert "retry_include_exceptions" not in workflow
     assert "retry_exclude_exceptions" not in workflow
     assert "--retry-include" not in reusable
     assert "--retry-exclude" not in reusable
     assert "actual_retries=" in latest_job
-    assert "Configured retries per eligible failed trial" in summary
+    assert "Configured retries per failed trial (--max-retries)" in summary
     assert "Agent timeout multiplier" in summary
     assert "Actual retries" in summary
 
@@ -635,14 +637,6 @@ def test_shard_artifact_name_includes_branch() -> None:
     assert "--branch" in harbor
 
 
-def test_langsmith_experiment_branch_is_hash_disambiguated() -> None:
-    harbor = HARBOR_WORKFLOW.read_text()
-    assert (
-        "experiment_branch=\"${experiment_branch}-$(printf '%s' "
-        '"$HARBOR_BRANCH" | sha256sum | cut -c1-8)"'
-    ) in harbor
-
-
 def test_artifact_name_comment_attributes_agent_safety_to_enum() -> None:
     harbor = HARBOR_WORKFLOW.read_text()
     assert "the upstream enum" in harbor
@@ -860,14 +854,16 @@ def test_evals_ci_filter_includes_unified_workflows() -> None:
 
 
 def test_usage_job_holds_langsmith_key_and_runs_collector() -> None:
-    """The usage job owns the API key and runs the collector over the leaves."""
+    """The usage job owns the API key and queries the experiments prep computed."""
     workflow = UNIFIED_WORKFLOW.read_text()
     usage = _indented_block(workflow, "  usage:")
     assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in usage
     # Must share the `evals` Environment with the trace-writing jobs so the read
     # uses the same key as the writes, not a stray repo/org secret.
     assert "environment: evals" in usage
-    assert "collect_langsmith_usage.py _leaves" in usage
+    # Consumes prep's precomputed {experiment: expected} map — no shard scanning.
+    assert "EXPERIMENTS_JSON: ${{ needs.prep.outputs.experiments }}" in usage
+    assert "--experiments-json _usage/experiments.json" in usage
     assert "--out _usage/langsmith_usage.json" in usage
     assert "name: unified-langsmith-usage" in usage
 
@@ -901,11 +897,22 @@ def test_combine_passes_usage_json_when_present() -> None:
     assert "usage_args=(--usage-json _usage_langsmith_usage.json)" in combine
 
 
-def test_harbor_writes_langsmith_experiment_marker() -> None:
+def test_prep_exposes_experiments_output() -> None:
+    """prep publishes the {experiment: expected} map the usage job consumes."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    prep = _indented_block(workflow, "  prep:")
+    assert "experiments: ${{ steps.p.outputs.experiments }}" in prep
+
+
+def test_harbor_uses_shared_experiment_name_helper() -> None:
+    """The experiment name comes from the shared helper (single source of truth),
+    not an inline shell derivation, so prep/combine compute the identical name."""
     reusable = HARBOR_WORKFLOW.read_text()
-    marker_step = _indented_block(
-        reusable, '      - name: "🏷️ Record LangSmith experiment marker"'
-    )
-    assert "langsmith-experiment.json" in marker_step
-    assert '"schema_version": 1' in marker_step
-    assert "HARBOR_LANGSMITH_EXPERIMENT" in marker_step
+    run_step = reusable.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+    assert (
+        'HARBOR_LANGSMITH_EXPERIMENT="$(python3 '
+        '"$GITHUB_WORKSPACE/.github/scripts/experiment_name.py")"'
+    ) in run_step
+    # The fork-only reward-gated retry flag is gone (standard --max-retries only).
+    assert "--retry-if-reward-below" not in reusable

@@ -101,7 +101,10 @@ ResponseT = TypeVar("ResponseT")
 
 
 class RubricSnapshot(TypedDict):
-    """Read-only rubric view returned by the `get_rubric` tool to the model."""
+    """Read-only rubric view returned by the `get_rubric` tool to the model.
+
+    `active` is always `criteria is not None`; the two never disagree.
+    """
 
     active: bool
     """Whether acceptance criteria are currently available."""
@@ -383,8 +386,9 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             """Read criteria when the latest state notice says a rubric is active.
 
             Use this only when the latest goal/rubric state notice reports an active
-            rubric. Use `get_goal` when a goal is actionable; this tool only returns
-            current criteria and the latest grading status.
+            rubric. Use `get_goal` when a goal is actionable; this tool only reports
+            whether criteria are active, the current criteria, and the latest grading
+            status.
 
             Returns:
                 Rubric snapshot with `active`, `criteria`, and `grading_status` keys.

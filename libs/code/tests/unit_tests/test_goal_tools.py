@@ -52,27 +52,15 @@ def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
     }
 
 
-def test_rubric_snapshot_identifies_goal_rubric() -> None:
-    """A goal-backed rubric should surface the goal criteria."""
-    assert _rubric_snapshot(
-        {
-            "rubric": "- tests pass",
-            "_goal_objective": "ship it",
-            "_goal_rubric": "- tests pass",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- tests pass",
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input() -> None:
+@pytest.mark.parametrize("status", ["active", "blocked"])
+def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input(
+    status: str,
+) -> None:
     """Actionable goal criteria are returned when no public rubric is set."""
     assert _rubric_snapshot(
         {
             "_goal_objective": "ship it",
-            "_goal_status": "active",
+            "_goal_status": status,
             "_goal_rubric": "- goal criteria",
             "_sticky_rubric": "- sticky criteria",
         }

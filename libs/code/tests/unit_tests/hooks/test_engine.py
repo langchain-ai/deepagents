@@ -209,7 +209,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
             {
                 "Notification": [
                     {
-                        "matcher": "permission_.*",
+                        "matcher": "permission_prompt",
                         "hooks": [{"type": "command", "command": "notify"}],
                     }
                 ],

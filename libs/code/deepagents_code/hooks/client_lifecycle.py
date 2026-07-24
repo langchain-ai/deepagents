@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.domain import (
+    CompactTrigger,
     DcodeNotification,
     DcodeNotificationKind,
     HookContext,
@@ -23,6 +24,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionEffect,
     PermissionRequestDecision,
     PermissionRequestEvent,
+    PreCompactDecision,
+    PreCompactEvent,
     SessionEndCause,
     SessionEndDecision,
     SessionEndEvent,
@@ -30,6 +33,8 @@ from deepagents_code.hooks.models.domain import (
     SessionStartDecision,
     SessionStartEvent,
     ToolCallData,
+    UserPromptSubmitDecision,
+    UserPromptSubmitEvent,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +56,69 @@ logger = logging.getLogger(__name__)
 
 class ClientHookStopError(RuntimeError):
     """Raised when a client-owned hook stops lifecycle processing."""
+
+
+class PermissionReviewDecision(TypedDict):
+    """Client approval decision compatible with HITL resume payloads."""
+
+    type: Literal["approve", "reject"]
+    message: NotRequired[str]
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionHookOutcome:
+    """Normalized result shared by TUI and headless permission handling."""
+
+    decision: PermissionReviewDecision | None
+    interrupt: bool = False
+
+
+def permission_hook_outcome(
+    decision: PermissionRequestDecision,
+) -> PermissionHookOutcome:
+    """Translate a hook permission decision into a client review outcome.
+
+    Args:
+        decision: Aggregated permission hook decision.
+
+    Returns:
+        Shared approval, rejection, or unresolved result.
+    """
+    if not decision.continue_processing:
+        return PermissionHookOutcome(
+            {
+                "type": "reject",
+                "message": decision.stop_reason or "Permission stopped by hook",
+            },
+            interrupt=True,
+        )
+    permission = decision.permission
+    if permission.behavior == "allow":
+        return PermissionHookOutcome({"type": "approve"})
+    if permission.behavior == "deny":
+        denied = PermissionReviewDecision(type="reject")
+        if permission.reason:
+            denied["message"] = permission.reason
+        return PermissionHookOutcome(denied, interrupt=permission.interrupt)
+    return PermissionHookOutcome(None)
+
+
+def permission_review_payload(
+    decision: PermissionReviewDecision,
+) -> dict[str, str]:
+    """Copy a typed review decision into a mutable resume payload.
+
+    Args:
+        decision: Structurally validated hook review decision.
+
+    Returns:
+        Mutable HITL resume payload.
+    """
+    payload = {"type": decision["type"]}
+    message = decision.get("message")
+    if message is not None:
+        payload["message"] = message
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +241,72 @@ class ClientHookService:
             msg = f"Expected SessionEndDecision, got {type(decision).__name__}"
             raise TypeError(msg)
         self._session_context.pop(context.thread_id, None)
+        return decision
+
+    async def user_prompt_submit(
+        self,
+        context: ClientHookContext,
+        prompt: str,
+    ) -> UserPromptSubmitDecision:
+        """Invoke `UserPromptSubmit` before a user turn.
+
+        Args:
+            context: Current client turn context.
+            prompt: Original user prompt.
+
+        Returns:
+            Aggregated prompt decision.
+
+        Raises:
+            TypeError: If the runtime returns a mismatched decision type.
+        """
+        if not self.has_handlers(HookEvent.USER_PROMPT_SUBMIT):
+            return UserPromptSubmitDecision(event=HookEvent.USER_PROMPT_SUBMIT)
+        decision = await self._invoke(
+            context,
+            UserPromptSubmitEvent(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                prompt=prompt,
+            ),
+        )
+        if not isinstance(decision, UserPromptSubmitDecision):
+            msg = f"Expected UserPromptSubmitDecision, got {type(decision).__name__}"
+            raise TypeError(msg)
+        return decision
+
+    async def pre_compact(
+        self,
+        context: ClientHookContext,
+        trigger: CompactTrigger,
+        *,
+        custom_instructions: str = "",
+    ) -> PreCompactDecision:
+        """Invoke `PreCompact` through the session hook runtime.
+
+        Args:
+            context: Current client turn context.
+            trigger: Manual or automatic compaction source.
+            custom_instructions: Optional compaction instructions.
+
+        Returns:
+            Aggregated pre-compaction decision.
+
+        Raises:
+            TypeError: If the runtime returns a mismatched decision type.
+        """
+        if not self.has_handlers(HookEvent.PRE_COMPACT):
+            return PreCompactDecision(event=HookEvent.PRE_COMPACT)
+        decision = await self._invoke(
+            context,
+            PreCompactEvent(
+                event=HookEvent.PRE_COMPACT,
+                trigger=trigger,
+                custom_instructions=custom_instructions,
+            ),
+        )
+        if not isinstance(decision, PreCompactDecision):
+            msg = f"Expected PreCompactDecision, got {type(decision).__name__}"
+            raise TypeError(msg)
         return decision
 
     async def permission_request(

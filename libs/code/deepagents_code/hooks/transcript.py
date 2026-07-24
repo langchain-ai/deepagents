@@ -29,9 +29,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
+    BaseMessageChunk,
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    message_chunk_to_message,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -39,9 +41,23 @@ from deepagents_code.config_manifest import _is_secret_env
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+    from typing import Protocol
+
+    class _TranscriptRuntime(Protocol):
+        def append_messages(
+            self,
+            thread_id: str,
+            messages: Sequence[BaseMessage],
+            *,
+            agent_id: str | None = None,
+        ) -> None: ...
+
 
 logger = logging.getLogger(__name__)
+
+SUBAGENT_TRANSCRIPT_ID_METADATA_KEY = "dcode_subagent_id"
+_INTERNAL_STREAM_SOURCES = frozenset({"summarization", "auto_mode_classifier"})
 
 TRANSCRIPT_SCHEMA_VERSION = 1
 DEFAULT_RETENTION_REVISIONS = 20
@@ -120,6 +136,7 @@ class TranscriptHandle:
 @dataclass
 class _TranscriptBuffer:
     records: list[TranscriptRecord] = field(default_factory=list)
+    record_ids: set[str] = field(default_factory=set)
     dirty: bool = False
     revision: str = _EMPTY_REVISION
 
@@ -205,7 +222,13 @@ class TranscriptStore:
                 )
                 if record is None:
                     continue
+                if (
+                    record.message_id is not None
+                    and record.record_id in buffer.record_ids
+                ):
+                    continue
                 buffer.records.append(record)
+                buffer.record_ids.add(record.record_id)
                 buffer.dirty = True
 
     def materialize(
@@ -277,10 +300,82 @@ class TranscriptStore:
             )
             if path.is_file():
                 buffer.records, valid = _read_transcript(path)
+                buffer.record_ids = {record.record_id for record in buffer.records}
                 buffer.revision = _revision_for_records(buffer.records)
                 buffer.dirty = not valid
             self._buffers[key] = buffer
         return buffer
+
+
+@dataclass(slots=True)
+class TranscriptRecorder:
+    """Collect completed stream messages into a Hooks transcript runtime."""
+
+    runtime: _TranscriptRuntime
+    thread_id: str
+    _chunks: dict[tuple[str | None, str], BaseMessageChunk] = field(
+        default_factory=dict
+    )
+
+    def record(
+        self,
+        message: object,
+        metadata: Mapping[str, object] | None,
+        *,
+        main_agent: bool,
+    ) -> None:
+        """Record one streamed message when its transcript identity is stable.
+
+        Args:
+            message: Streamed LangChain message or chunk.
+            metadata: Stream metadata carrying optional subagent identity.
+            main_agent: Whether the message belongs to the root graph.
+        """
+        if (
+            metadata is not None
+            and metadata.get("lc_source") in _INTERNAL_STREAM_SOURCES
+        ):
+            return
+        agent_id = None if main_agent else _stream_agent_id(metadata)
+        if not main_agent and agent_id is None:
+            return
+        if isinstance(message, BaseMessageChunk):
+            key = (agent_id, message.id or type(message).__name__)
+            previous = self._chunks.get(key)
+            combined = message if previous is None else previous + message
+            self._chunks[key] = combined
+            if getattr(message, "chunk_position", None) != "last":
+                return
+            self._chunks.pop(key, None)
+            self._append(message_chunk_to_message(combined), agent_id=agent_id)
+            return
+        if isinstance(message, BaseMessage):
+            self._append(message, agent_id=agent_id)
+
+    def append(self, messages: Sequence[BaseMessage]) -> None:
+        """Append checkpoint or input messages to the root transcript."""
+        append_messages = getattr(self.runtime, "append_messages", None)
+        if callable(append_messages):
+            append_messages(self.thread_id, messages)
+
+    def _append(self, message: BaseMessage, *, agent_id: str | None) -> None:
+        append_messages = getattr(self.runtime, "append_messages", None)
+        if not callable(append_messages):
+            return
+        try:
+            append_messages(self.thread_id, [message], agent_id=agent_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Skipping invalid streamed transcript message",
+                exc_info=True,
+            )
+
+
+def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:
+    if metadata is None:
+        return None
+    value = metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 def _record_from_message(

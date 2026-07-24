@@ -581,15 +581,22 @@ class TestStartupSequence:
             initial_prompt="hello",
         )
         app._session_state = TextualSessionState(thread_id="thread-123")
-        app._run_session_start_hook = AsyncMock(  # ty: ignore[invalid-assignment]
-            return_value=False
-        )
+        hook = AsyncMock(return_value=False)
+        app._run_session_start_hook = hook  # ty: ignore[invalid-assignment]
         submit = AsyncMock()
+        drain = AsyncMock()
         app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
+        app._drain_startup_backlog = drain  # ty: ignore[invalid-assignment]
 
+        await app._run_session_start_sequence()
+        await app._run_session_start_sequence()
         await app._run_session_start_sequence()
 
         submit.assert_not_awaited()
+        drain.assert_not_awaited()
+        hook.assert_awaited_once()
+        assert app._initial_session_started is False
+        assert app._initial_session_start_stopped is True
 
     async def test_reconnect_drains_queue_without_reloading_history(self) -> None:
         """Later `ServerReady` events should drain queued input once connected."""
@@ -640,16 +647,21 @@ class TestStartupSequence:
             assert command == "echo hi"
             order.append("startup")
 
+        async def capture_hook(_cause: object) -> bool:  # noqa: RUF029
+            order.append("hook")
+            return True
+
         async def capture_goal_review() -> None:  # noqa: RUF029
             order.append("goal")
 
         app._load_thread_history = capture_history  # ty: ignore
+        app._run_session_start_hook = capture_hook  # ty: ignore[invalid-assignment]
         app._run_startup_command = capture_startup  # ty: ignore
         app._remount_pending_goal_rubric_review = capture_goal_review  # ty: ignore
 
         await app._run_session_start_sequence()
 
-        assert order == ["history", "startup", "goal"]
+        assert order == ["history", "hook", "startup", "goal"]
         assert app._startup_sequence_running is False
 
     @pytest.mark.parametrize(
@@ -12961,6 +12973,34 @@ class TestMessageTimestampFooters:
             # Excluded-type messages get no footer, even on restore.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
+
+    async def test_resumed_history_populates_hook_transcript(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            runtime = MagicMock()
+            app._session_state.hooks_runtime = runtime
+            payload = _ThreadHistoryPayload(
+                messages=[],
+                context_tokens=0,
+                model_spec="",
+                transcript_messages=(HumanMessage(id="history-1", content="restored"),),
+            )
+
+            await app._load_thread_history(
+                thread_id="t-restored",
+                preloaded_payload=payload,
+            )
+
+        runtime.append_messages.assert_called_once_with(
+            "t-restored",
+            payload.transcript_messages,
+        )
 
     async def test_load_thread_history_skips_duplicate_ids(self) -> None:
         """History reusing an already-mounted widget ID is skipped, not fatal.
@@ -25712,16 +25752,14 @@ class TestLiveApprovalModeWrites:
     async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 
-        app = DeepAgentsApp()
+        app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
-        async def create_stale_session_state(*_args: object) -> TextualSessionState:
-            await asyncio.sleep(0)
+        def change_mode_during_construction(**_kwargs: object) -> None:
             app._approval_mode = ApprovalMode.AUTO
-            return TextualSessionState(approval_mode=ApprovalMode.MANUAL)
 
         with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new=create_stale_session_state,
+            "deepagents_code.hooks.runtime.HooksRuntime.create",
+            side_effect=change_mode_during_construction,
         ):
             await app._init_session_state()
 

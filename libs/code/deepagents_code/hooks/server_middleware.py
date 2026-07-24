@@ -1,8 +1,8 @@
 """Server-owned Hooks v2 lifecycle middleware.
 
-Emits `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop`
-through the LangGraph interrupt channel so the client runtime can execute
-matching handlers and return typed decisions.
+Emits `PreCompact`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`, and
+`SubagentStop` through the LangGraph interrupt channel so the client runtime can
+execute matching handlers and return typed decisions.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, TypeVar, cast
@@ -40,6 +41,7 @@ from deepagents_code.hooks.interrupt import (
 from deepagents_code.hooks.models.domain import (
     AgentIdentity,
     BaseHookDecision,
+    CompactTrigger,
     HookContext,
     HookDecision,
     HookEvent,
@@ -47,6 +49,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionEffect,
     PostToolUseDecision,
     PostToolUseEvent,
+    PreCompactDecision,
+    PreCompactEvent,
     PreToolUseDecision,
     PreToolUseEvent,
     StopDecision,
@@ -61,11 +65,12 @@ from deepagents_code.hooks.models.transport import HookInvocationRequest
 from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
 
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.messages.tool import ToolCall
+    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
@@ -75,6 +80,7 @@ _DEFAULT_DEADLINE = timedelta(seconds=600)
 _STOP_STATE_KEY = "_hooks_stop_continuation_count"
 _PRE_TOOL_STATE_KEY = "_hooks_pre_tool_outcomes"
 _TASK_TOOL_NAME = "task"
+_COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
 
 PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
@@ -100,10 +106,36 @@ class _SessionHookGate(TypedDict):
 
 @dataclass(slots=True)
 class _PreToolOutcome:
-    """PreToolUse gate result for the tool-call wrapper."""
+    """Pre-execution gate result for the tool-call wrapper."""
 
     blocked: ToolMessage | None = None
     context: tuple[str, ...] = field(default_factory=tuple)
+
+
+@contextmanager
+def _subagent_transcript_config(
+    call: ToolCallData,
+    config: RunnableConfig,
+) -> Iterator[None]:
+    if call.name != _TASK_TOOL_NAME:
+        yield
+        return
+
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    from deepagents_code.hooks.transcript import (
+        SUBAGENT_TRANSCRIPT_ID_METADATA_KEY,
+    )
+
+    metadata = config.get("metadata")
+    child_metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+    child_metadata[SUBAGENT_TRANSCRIPT_ID_METADATA_KEY] = call.id
+    child_config: RunnableConfig = {**config, "metadata": child_metadata}
+    token = var_child_runnable_config.set(child_config)
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, ResponseT]):
@@ -147,7 +179,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any]:
-        """Run `PreToolUse` before downstream HITL middleware.
+        """Run pre-execution hooks before downstream HITL middleware.
 
         Returns:
             State update carrying per-tool hook outcomes.
@@ -189,7 +221,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return started_or_blocked
         request = started_or_blocked
         started = time.perf_counter()
-        result = handler(request)
+        with _subagent_transcript_config(call, request.runtime.config):
+            result = handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = _append_message_text(result, pre.context)
         result = self._maybe_post_tool_use(
@@ -222,7 +255,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return started_or_blocked
         request = started_or_blocked
         started = time.perf_counter()
-        result = await handler(request)
+        with _subagent_transcript_config(call, request.runtime.config):
+            result = await handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = _append_message_text(result, pre.context)
         result = self._maybe_post_tool_use(
@@ -294,7 +328,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         runtime: Runtime[ContextT],
     ) -> dict[str, Any]:
         gate = _session_gate(runtime.context)
-        if not _event_enabled(gate, HookEvent.PRE_TOOL_USE):
+        precompact_enabled = _event_enabled(gate, HookEvent.PRE_COMPACT)
+        pretool_enabled = _event_enabled(gate, HookEvent.PRE_TOOL_USE)
+        if not precompact_enabled and not pretool_enabled:
             return {_PRE_TOOL_STATE_KEY: {}}
         message = _last_ai_message(state.get("messages", ()))
         if message is None:
@@ -306,42 +342,67 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 tool_call,
                 mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
             )
-            decision = _invoke_hook(
-                context,
-                PreToolUseEvent(event=HookEvent.PRE_TOOL_USE, call=call),
-                gate=gate,
-                config=None,
-                deadline=self._default_deadline,
-            )
-            decision = _require_decision(decision, PreToolUseDecision)
             behavior: PreToolBehavior = "none"
             reason: str | None = None
-            permission = decision.permission
-            if not decision.continue_processing or permission.behavior == "deny":
-                behavior = "deny"
-                reason = (
-                    permission.reason
-                    or decision.stop_reason
-                    or "Blocked by PreToolUse hook"
+            hook_context: list[str] = []
+            if precompact_enabled and call.name == _COMPACT_TOOL_NAME:
+                trigger = (
+                    CompactTrigger.MANUAL
+                    if call.args.get("force") is True
+                    else CompactTrigger.AUTO
                 )
-            elif permission.behavior == "ask":
-                blocked = _ask_permission_via_hitl(call, permission)
-                if blocked is None:
-                    behavior = "allow"
-                else:
+                compact = _invoke_hook(
+                    context,
+                    PreCompactEvent(event=HookEvent.PRE_COMPACT, trigger=trigger),
+                    gate=gate,
+                    config=None,
+                    deadline=self._default_deadline,
+                    logical_event_id=call.id,
+                )
+                compact = _require_decision(compact, PreCompactDecision)
+                if not compact.continue_processing:
+                    outcomes[call.id] = {
+                        "behavior": "deny",
+                        "reason": compact.stop_reason or "Blocked by PreCompact hook",
+                        "context": hook_context,
+                    }
+                    continue
+            if pretool_enabled:
+                decision = _invoke_hook(
+                    context,
+                    PreToolUseEvent(event=HookEvent.PRE_TOOL_USE, call=call),
+                    gate=gate,
+                    config=None,
+                    deadline=self._default_deadline,
+                )
+                decision = _require_decision(decision, PreToolUseDecision)
+                permission = decision.permission
+                hook_context.extend(decision.context)
+                if not decision.continue_processing or permission.behavior == "deny":
                     behavior = "deny"
-                    blocked_content = blocked.content
                     reason = (
-                        blocked_content
-                        if isinstance(blocked_content, str)
-                        else str(blocked_content)
+                        permission.reason
+                        or decision.stop_reason
+                        or "Blocked by PreToolUse hook"
                     )
-            elif permission.behavior == "allow":
-                behavior = "allow"
+                elif permission.behavior == "ask":
+                    blocked = _ask_permission_via_hitl(call, permission)
+                    if blocked is None:
+                        behavior = "allow"
+                    else:
+                        behavior = "deny"
+                        blocked_content = blocked.content
+                        reason = (
+                            blocked_content
+                            if isinstance(blocked_content, str)
+                            else str(blocked_content)
+                        )
+                elif permission.behavior == "allow":
+                    behavior = "allow"
             outcomes[call.id] = {
                 "behavior": behavior,
                 "reason": reason,
-                "context": list(decision.context),
+                "context": hook_context,
             }
         return {_PRE_TOOL_STATE_KEY: outcomes}
 
@@ -472,7 +533,7 @@ def _event_enabled(gate: _SessionHookGate | None, event: HookEvent) -> bool:
 
 
 def pre_tool_behavior(state: object, tool_call_id: str) -> PreToolBehavior | None:
-    """Return the replayed PreToolUse permission behavior for one call."""
+    """Return the replayed pre-execution hook behavior for one call."""
     outcome = _pre_tool_state(state, tool_call_id)
     if outcome is None:
         return None
@@ -526,6 +587,7 @@ def _invoke_hook(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
         | SubagentStopEvent
@@ -534,6 +596,7 @@ def _invoke_hook(
     gate: _SessionHookGate | None,
     config: Mapping[str, Any] | None,
     deadline: timedelta,
+    logical_event_id: str | None = None,
 ) -> HookDecision:
     if gate is None:
         msg = "hooks_snapshot_id is required to emit server-owned hook events"
@@ -544,6 +607,7 @@ def _invoke_hook(
         snapshot_id=gate["snapshot_id"],
         context=context,
         event=event,
+        logical_event_id=logical_event_id,
     )
     request = HookInvocationRequest(
         protocol_version=1,
@@ -632,17 +696,23 @@ def _invocation_id(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
         | SubagentStopEvent
     ),
+    logical_event_id: str | None = None,
 ) -> UUID:
     identity = {
         "run_id": run_id,
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,
         "event": event.event.value,
-        "logical_event": _logical_event_identity(context, event),
+        "logical_event": _logical_event_identity(
+            context,
+            event,
+            logical_event_id=logical_event_id,
+        ),
     }
     return uuid5(
         _INVOCATION_NAMESPACE,
@@ -655,13 +725,21 @@ def _logical_event_identity(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
         | SubagentStopEvent
     ),
+    *,
+    logical_event_id: str | None = None,
 ) -> str:
     if isinstance(event, PreToolUseEvent | PostToolUseEvent):
         return event.call.id
+    if isinstance(event, PreCompactEvent):
+        if logical_event_id:
+            return logical_event_id
+        msg = "PreCompact requires a stable tool-call identity"
+        raise ValueError(msg)
     if isinstance(event, SubagentStartEvent):
         return event.agent.id
     prompt_id = str(context.prompt_id) if context.prompt_id is not None else ""

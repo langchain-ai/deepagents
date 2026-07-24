@@ -1171,9 +1171,8 @@ class TestMaxRetriesForwarding:
     """`--max-retries` rides the forwarded model_params under an internal key.
 
     The value is carried under `CLI_MAX_RETRIES_KEY` rather than a literal
-    `max_retries` so `create_model` can fold it under the resolved provider's
-    retry-param name; see `TestRetriesConfig` in `test_config.py` for the
-    folding/precedence behavior at the `create_model` layer.
+    `max_retries` so `create_model` can use it for dcode's middleware budget
+    while disabling provider-owned retries independently.
     """
 
     def _run_model_params(self, argv: list[str]) -> dict[str, object] | None:
@@ -1214,7 +1213,8 @@ class TestMaxRetriesForwarding:
 
         The flag value is stashed under the internal key, leaving any explicit
         `--model-params` entries (including a literal `max_retries`) untouched in
-        the forwarded dict. Precedence is resolved later, in `create_model`.
+        the forwarded dict. `create_model` later uses the internal value for
+        dcode's budget and forces the provider's retry parameter to zero.
         """
         from deepagents_code.config import CLI_MAX_RETRIES_KEY
 

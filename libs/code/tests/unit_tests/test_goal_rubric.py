@@ -74,6 +74,7 @@ from deepagents_code.goal_rubric import (
     create_goal_criteria_fallback_agent,
 )
 from deepagents_code.goal_tools import GoalToolState
+from deepagents_code.model_retry import CodeModelRetryMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -328,6 +329,28 @@ class TestGoalContextFallbackMiddleware:
         assert result == "response"
         request.override.assert_called_once_with(messages=[goal], tools=[])
         assert handler.await_args_list == [call(request), call(fallback)]
+
+    def test_transient_failure_is_left_to_retry_middleware(self) -> None:
+        middleware = _GoalContextFallbackMiddleware()
+        request = MagicMock()
+        handler = MagicMock(side_effect=ConnectionError("dropped"))
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            middleware.wrap_model_call(request, handler)
+
+        handler.assert_called_once_with(request)
+        request.override.assert_not_called()
+
+    async def test_async_transient_failure_is_left_to_retry_middleware(self) -> None:
+        middleware = _GoalContextFallbackMiddleware()
+        request = MagicMock()
+        handler = AsyncMock(side_effect=ConnectionError("dropped"))
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            await middleware.awrap_model_call(request, handler)
+
+        handler.assert_awaited_once_with(request)
+        request.override.assert_not_called()
 
 
 class TestCriteriaContextBudgetMiddleware:
@@ -1254,6 +1277,48 @@ class TestCreateGoalCriteriaAgent:
             isinstance(item, _CriteriaContextBudgetMiddleware)
             for item in kwargs["middleware"]
         )
+        assert any(
+            isinstance(item, CodeModelRetryMiddleware) for item in kwargs["middleware"]
+        )
+
+    def test_string_model_uses_dcode_model_configuration(self) -> None:
+        resolved = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=resolved),
+            ) as create_model,
+            patch("langchain.agents.create_agent", return_value=graph) as create_agent,
+        ):
+            create_goal_criteria_agent(
+                model="openai:gpt-5.5",
+                repository_backend=None,
+                context_tools=[],
+            )
+
+        create_model.assert_called_once_with("openai:gpt-5.5")
+        assert create_agent.call_args.kwargs["model"] is resolved
+
+    def test_public_caller_retry_fallback_is_applied(self) -> None:
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+        with patch("langchain.agents.create_agent", return_value=graph) as create_agent:
+            create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=None,
+                context_tools=[],
+                retry_fallback=0,
+            )
+
+        retry = next(
+            item
+            for item in create_agent.call_args.kwargs["middleware"]
+            if isinstance(item, CodeModelRetryMiddleware)
+        )
+        assert retry.max_retries == 0
 
     def test_parent_allowlist_restricts_repository_tools(self) -> None:
         """Nested criteria generation cannot bypass the parent fs allowlist."""
@@ -2106,6 +2171,19 @@ class TestGoalCriteriaFallback:
         assert update["_pending_goal_rubric"] == "- salvaged criteria"
         fallback.invoke.assert_called_once()
 
+    def test_transient_failure_does_not_start_a_second_agent(self) -> None:
+        criteria = MagicMock()
+        criteria.invoke.side_effect = ConnectionError("dropped")
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            middleware.before_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+
+        fallback.invoke.assert_not_called()
+
     def test_hitl_interrupt_is_never_swallowed_by_the_fallback(self) -> None:
         criteria = MagicMock()
         criteria.invoke.side_effect = GraphInterrupt(())
@@ -2144,6 +2222,19 @@ class TestGoalCriteriaFallback:
         assert update["_pending_goal_rubric"] == "- async goal-only"
         fallback.ainvoke.assert_awaited_once()
 
+    async def test_async_transient_failure_does_not_start_a_second_agent(self) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(side_effect=ConnectionError("dropped"))
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            await middleware.abefore_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+
+        fallback.ainvoke.assert_not_awaited()
+
     async def test_async_hitl_interrupt_is_never_swallowed(self) -> None:
         criteria = MagicMock()
         criteria.ainvoke = AsyncMock(side_effect=GraphInterrupt(()))
@@ -2162,6 +2253,39 @@ class TestGoalCriteriaFallback:
         )
 
         assert agent is not None
+
+    def test_fallback_agent_uses_model_retries(self) -> None:
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+        with patch("langchain.agents.create_agent", return_value=graph) as create:
+            create_goal_criteria_fallback_agent(
+                model=MagicMock(),
+                retry_fallback=0,
+            )
+
+        retry = next(
+            item
+            for item in create.call_args.kwargs["middleware"]
+            if isinstance(item, CodeModelRetryMiddleware)
+        )
+        assert retry.max_retries == 0
+
+    def test_fallback_string_model_uses_dcode_model_configuration(self) -> None:
+        resolved = MagicMock()
+        graph = MagicMock()
+        graph.with_config.return_value = graph
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=resolved),
+            ) as create_model,
+            patch("langchain.agents.create_agent", return_value=graph) as create_agent,
+        ):
+            create_goal_criteria_fallback_agent(model="openai:gpt-5.5")
+
+        create_model.assert_called_once_with("openai:gpt-5.5")
+        assert create_agent.call_args.kwargs["model"] is resolved
 
 
 class TestPreflightBackendErrors:

@@ -350,7 +350,18 @@ def _build_overrides(
     # Param merge
     model_params = ctx.model_params
     if model_params:
-        overrides["model_settings"] = {**request.model_settings, **model_params}
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        provider_settings = {
+            key: value
+            for key, value in model_params.items()
+            if key != CLI_MAX_RETRIES_KEY
+        }
+        if provider_settings:
+            overrides["model_settings"] = {
+                **request.model_settings,
+                **provider_settings,
+            }
 
     # Inject the provider's prompt-cache routing hint from the active thread.
     # Only one provider path applies per call; both share the fetch/guard/log
@@ -440,6 +451,75 @@ def _build_overrides(
     return request.override(**overrides)
 
 
+def _model_creation_kwargs(
+    ctx: CLIContextSchema,
+    current_model: BaseChatModel,
+) -> dict[str, dict[str, Any]]:
+    """Build constructor kwargs needed for a runtime model switch.
+
+    Invocation settings remain on `ModelRequest.model_settings`; only the
+    internal CLI retry override must also reach `create_model` so the switched
+    model carries the same authoritative retry budget as the startup model.
+
+    Args:
+        ctx: Runtime context carrying model and profile overrides.
+        current_model: Active model whose current-process CLI override wins over
+            restored checkpoint metadata.
+
+    Returns:
+        Keyword arguments for `create_model`.
+    """
+    from deepagents_code.config import (
+        CLI_MAX_RETRIES_KEY,
+        get_model_retry_override,
+    )
+
+    kwargs: dict[str, dict[str, Any]] = {}
+    retry_override = get_model_retry_override(current_model)
+    if retry_override is None:
+        raw_override = ctx.model_params.get(CLI_MAX_RETRIES_KEY)
+        if (
+            isinstance(raw_override, int)
+            and not isinstance(raw_override, bool)
+            and raw_override >= 0
+        ):
+            retry_override = raw_override
+    if retry_override is not None:
+        kwargs["extra_kwargs"] = {CLI_MAX_RETRIES_KEY: retry_override}
+    if ctx.profile_overrides:
+        kwargs["profile_overrides"] = ctx.profile_overrides
+    return kwargs
+
+
+def _persisted_model_params(
+    ctx: CLIContextSchema,
+    model: BaseChatModel,
+    *,
+    include_context_params: bool = True,
+) -> dict[str, Any] | None:
+    """Return checkpoint params with the model's effective CLI override.
+
+    Args:
+        ctx: Runtime context carrying user and checkpoint params.
+        model: Model that handled the completed request.
+        include_context_params: Whether params targeting the requested model
+            completed successfully and may be persisted.
+
+    Returns:
+        Params to persist, or `None` when no params or override are active.
+    """
+    from deepagents_code.config import (
+        CLI_MAX_RETRIES_KEY,
+        get_model_retry_override,
+    )
+
+    params = dict(ctx.model_params) if include_context_params else {}
+    retry_override = get_model_retry_override(model)
+    if retry_override is not None:
+        params[CLI_MAX_RETRIES_KEY] = retry_override
+    return params or None
+
+
 def _apply_overrides(
     request: ModelRequest, *, openai_prompt_cache_key: bool
 ) -> _ResolvedModelRequest:
@@ -471,11 +551,7 @@ def _apply_overrides(
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, request.model)
         try:
             model_result = create_model(model, **model_kwargs)
         except ModelConfigError:
@@ -487,13 +563,18 @@ def _apply_overrides(
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
+                _persisted_model_params(
+                    ctx,
+                    request.model,
+                    include_context_params=False,
+                ),
                 model_params_known=True,
             )
 
     updated = _build_overrides(
         request, ctx, model_result, openai_prompt_cache_key=openai_prompt_cache_key
     )
-    params = dict(ctx.model_params) if ctx.model_params else None
+    params = _persisted_model_params(ctx, updated.model)
     return _ResolvedModelRequest(
         updated,
         _model_spec_from_result(model_result, updated.model),
@@ -527,11 +608,7 @@ async def _apply_overrides_async(
         from deepagents_code.model_config import ModelConfigError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, request.model)
         try:
             model_result = await asyncio.to_thread(
                 create_model,
@@ -547,13 +624,18 @@ async def _apply_overrides_async(
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
+                _persisted_model_params(
+                    ctx,
+                    request.model,
+                    include_context_params=False,
+                ),
                 model_params_known=True,
             )
 
     updated = _build_overrides(
         request, ctx, model_result, openai_prompt_cache_key=openai_prompt_cache_key
     )
-    params = dict(ctx.model_params) if ctx.model_params else None
+    params = _persisted_model_params(ctx, updated.model)
     return _ResolvedModelRequest(
         updated,
         _model_spec_from_result(model_result, updated.model),

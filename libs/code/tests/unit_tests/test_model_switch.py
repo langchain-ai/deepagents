@@ -15,7 +15,7 @@ from deepagents_code.app import (
     _format_model_params,
 )
 from deepagents_code.client.remote_client import RemoteAgent
-from deepagents_code.config import settings
+from deepagents_code.config import CLI_MAX_RETRIES_KEY, settings
 from deepagents_code.model_config import (
     ModelSpec,
     ProviderAuthSource,
@@ -148,6 +148,13 @@ class TestFormatModelParams:
         params = {"temperature": 0.2, "num_ctx": 16384}
         assert _format_model_params(params) == (
             ' with model params {"num_ctx": 16384, "temperature": 0.2}'
+        )
+
+    def test_internal_retry_carrier_is_hidden(self) -> None:
+        assert _format_model_params({CLI_MAX_RETRIES_KEY: 3}) == ""
+        assert (
+            _format_model_params({CLI_MAX_RETRIES_KEY: 3, "temperature": 0.2})
+            == ' with model params {"temperature": 0.2}'
         )
 
     def test_string_values_are_json_escaped(self) -> None:
@@ -393,6 +400,25 @@ class TestModelSwitchNoOp:
         assert app._model_override == "anthropic:claude-opus-4-5"
         assert app._model_params_override is None
 
+    async def test_same_model_preserves_only_internal_retry_override(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+        app._model_params_override = {
+            CLI_MAX_RETRIES_KEY: 3,
+            "num_ctx": 16384,
+        }
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert app._model_params_override == {CLI_MAX_RETRIES_KEY: 3}
+
     async def test_switch_restores_persisted_effort_for_model(self) -> None:
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
@@ -436,6 +462,61 @@ class TestModelSwitchNoOp:
 
         # Explicit --model-params effort wins over the saved preference.
         assert app._model_params_override == {"reasoning_effort": "low"}
+
+    async def test_current_retry_override_wins_over_resumed_value(
+        self, mock_create_model: Mock
+    ) -> None:
+        app = DeepAgentsApp(model_kwargs={"extra_kwargs": {CLI_MAX_RETRIES_KEY: 5}})
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={CLI_MAX_RETRIES_KEY: 3, "temperature": 0.2},
+                persist=False,
+                from_resume=True,
+            )
+
+        assert app._model_params_override == {
+            CLI_MAX_RETRIES_KEY: 5,
+            "temperature": 0.2,
+        }
+        assert mock_create_model.call_args.kwargs["extra_kwargs"] == {
+            CLI_MAX_RETRIES_KEY: 5,
+            "temperature": 0.2,
+        }
+
+    async def test_resumed_retry_override_does_not_leak_between_threads(
+        self, mock_create_model: Mock
+    ) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        app._model_params_override = {CLI_MAX_RETRIES_KEY: 5}
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={CLI_MAX_RETRIES_KEY: 3},
+                persist=False,
+                from_resume=True,
+            )
+
+        assert app._model_params_override == {CLI_MAX_RETRIES_KEY: 3}
+        assert mock_create_model.call_args.kwargs["extra_kwargs"] == {
+            CLI_MAX_RETRIES_KEY: 3
+        }
 
 
 class TestModelSwitchErrorHandling:

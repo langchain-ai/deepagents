@@ -320,6 +320,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             async_subagents=async_subagents,
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
+            model_retries=result.model_retries,
         )
         return agent
 

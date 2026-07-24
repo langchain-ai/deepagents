@@ -818,7 +818,10 @@ def _process_stream_chunk(
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
-        _process_rubric_event(cast("dict[str, Any]", data), state, console)
+        if data.get("type") == "model_retry":
+            console.print(f"[dim]{escape_markup(str(data.get('message', '')))}[/dim]")
+        else:
+            _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),

@@ -1042,6 +1042,14 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
+                        if is_main_agent and adapter._set_spinner is not None:
+                            retry_status = str(data.get("message", "Reconnecting"))
+                            # LoadingWidget accepts text beyond the built-in statuses.
+                            await adapter._set_spinner(
+                                cast("SpinnerStatus", retry_status)
+                            )
+                        continue
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None

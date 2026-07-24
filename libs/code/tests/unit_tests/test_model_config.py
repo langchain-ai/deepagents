@@ -16,8 +16,6 @@ from deepagents_code import model_config
 from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     DEFAULT_STARTUP_MODE,
-    IMPLICIT_AUTH_PROVIDERS,
-    NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
@@ -103,27 +101,6 @@ def _clear_model_caches() -> Iterator[None]:
     clear_caches()
     yield
     clear_caches()
-
-
-class TestRetryParamByProvider:
-    """Tests for retry-parameter registry drift."""
-
-    def test_all_retry_providers_are_known(self) -> None:
-        """Every retry-enabled provider is a known provider."""
-        known_providers = (
-            set(PROVIDER_API_KEY_ENV)
-            | set(IMPLICIT_AUTH_PROVIDERS)
-            | set(NO_AUTH_REQUIRED_PROVIDERS)
-            | {"bedrock"}
-        )
-        assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
-
-    def test_contains_expected_retry_params(self) -> None:
-        """Major retry-enabled providers use `max_retries`."""
-        assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
 class TestModelSpec:
@@ -1574,6 +1551,34 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
         assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
+
+
+class TestRetryParamByProvider:
+    """Tests for retry-parameter registry drift.
+
+    `RETRY_PARAM_BY_PROVIDER` is a disable-list: each entry forces a provider's
+    own SDK retry loop to zero so it cannot multiply the middleware's budget. A
+    typo'd or unknown provider name would silently leave SDK retries active, so
+    every entry must name an actually-known provider.
+    """
+
+    def test_all_retry_providers_are_known(self) -> None:
+        """Every retry-registered provider is a known provider."""
+        known_providers = (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.IMPLICIT_AUTH_PROVIDERS)
+            | set(model_config.NO_AUTH_REQUIRED_PROVIDERS)
+            | {"bedrock", model_config.CODEX_PROVIDER}
+        )
+        unknown = set(model_config.RETRY_PARAM_BY_PROVIDER) - known_providers
+        assert not unknown, f"unknown providers in RETRY_PARAM_BY_PROVIDER: {unknown}"
+
+    def test_contains_expected_retry_params(self) -> None:
+        """Major retry-registered providers use `max_retries`."""
+        assert model_config.RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
+        assert model_config.RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert model_config.RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
+        assert model_config.RETRY_PARAM_BY_PROVIDER["openai_codex"] == "max_retries"
 
 
 class TestProviderBaseUrlEnv:

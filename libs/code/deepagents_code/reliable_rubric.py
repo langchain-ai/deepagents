@@ -1,8 +1,9 @@
-"""Rubric middleware retries for transient grader transport failures."""
+"""Rubric middleware with dcode retry policies for the nested grader."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any, NotRequired, cast
 
 import httpx
@@ -100,6 +101,42 @@ def _without_internal_control_messages(state: RubricState) -> RubricState:
     return cast("RubricState", updated)
 
 
+def _model_params_mapping(context: object | None) -> Mapping[str, Any] | None:
+    """Return a context's model-params mapping when present."""
+    if context is None:
+        return None
+    if isinstance(context, Mapping):
+        params = context.get("model_params")
+    else:
+        params = getattr(context, "model_params", None)
+    if isinstance(params, Mapping):
+        return cast("Mapping[str, Any]", params)
+    return None
+
+
+def _with_model_params(
+    context: object | None,
+    params: Mapping[str, Any],
+) -> object:
+    """Return a context carrying `params` without mutating the original object.
+
+    Prefers the caller's context type when it exposes replaceable `model_params`:
+    mappings are shallow-copied, while dataclass-like / pydantic-style objects are
+    rebuilt through their constructor. Falls back to a plain mapping when no
+    context is provided.
+    """
+    if context is None:
+        return {"model_params": dict(params)}
+    if isinstance(context, Mapping):
+        updated = dict(context)
+        updated["model_params"] = dict(params)
+        return updated
+    try:
+        return type(context)(model_params=dict(params))
+    except TypeError:
+        return {"model_params": dict(params)}
+
+
 class RubricGraderState(AgentState[GraderResponse]):
     """Nested-grader state used to scope verification-tool budgets."""
 
@@ -107,15 +144,17 @@ class RubricGraderState(AgentState[GraderResponse]):
 
 
 class ReliableRubricMiddleware(RubricMiddleware):
-    """Run a context-aware nested grader and retry transient transport failures.
+    """Run a context-aware nested grader with dcode retry policies.
 
     The nested grader receives Deep Agents Code's verification middleware and
     runtime context without requiring those application-specific capabilities in
-    the SDK's `RubricMiddleware`. A transport retry re-invokes only the grader,
-    never the task agent, so grader tools must be read-only or idempotent.
+    the SDK's `RubricMiddleware`. Model-node retries are applied exclusively to
+    the nested grader agent. A separate whole-grader transport retry re-invokes
+    only the grader on mid-response transport failures so grader tools must stay
+    read-only or idempotent.
     """
 
-    def __init__(  # noqa: D107
+    def __init__(
         self,
         *,
         model: str | BaseChatModel,
@@ -125,7 +164,42 @@ class ReliableRubricMiddleware(RubricMiddleware):
         grader_context_schema: type[Any] | None = None,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
+        model_retry_override: int | None = None,
+        model_retry_fallback: int | None = None,
     ) -> None:
+        """Initialize rubric grading with nested middleware and retry budgets.
+
+        Args:
+            model: Model or model identifier used by the grader.
+            system_prompt: Custom grading instructions.
+            tools: Read-only tools available to the grader.
+            grader_middleware: Extra middleware installed on the nested grader
+                (budgets, HITL, etc.).
+            grader_context_schema: Context schema for the nested grader agent.
+            max_iterations: Maximum rubric iterations.
+            on_evaluation: Optional callback for completed evaluations.
+            model_retry_override: Explicit `--max-retries` value inherited from
+                the current process, or `None` to use request/checkpoint metadata.
+            model_retry_fallback: Caller-provided budget for models without
+                attached metadata.
+
+        Raises:
+            TypeError: If a retry value is not an integer.
+            ValueError: If a retry value is negative.
+        """
+        retry_values = {
+            "model_retry_override": model_retry_override,
+            "model_retry_fallback": model_retry_fallback,
+        }
+        for name, value in retry_values.items():
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
+                msg = f"`{name}` must be an int or None"
+                raise TypeError(msg)
+            if value is not None and value < 0:
+                msg = f"`{name}` must be non-negative"
+                raise ValueError(msg)
         super().__init__(
             model=model,
             system_prompt=system_prompt,
@@ -135,6 +209,8 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
+        self._model_retry_override = model_retry_override
+        self._model_retry_fallback = model_retry_fallback
 
     @hook_config(can_jump_to=["model"])
     def after_agent(
@@ -224,27 +300,109 @@ class ReliableRubricMiddleware(RubricMiddleware):
         )
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
+        """Create the grader with model-node retries and nested middleware.
+
+        Returns:
+            The cached or newly constructed grader agent.
+        """
         if self._grader is not None:
             return self._grader
 
-        from deepagents._models import (  # noqa: PLC2701
-            resolve_model,
-        )
         from langchain.agents import create_agent
 
-        resolved_model = resolve_model(self._model)
-        self._resolved_model = resolved_model
+        from deepagents_code.config import (
+            CLI_MAX_RETRIES_KEY,
+            DEFAULT_MODEL_RETRIES,
+            create_model,
+            set_model_retry_metadata,
+        )
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        retry_fallback = (
+            self._model_retry_override
+            if self._model_retry_override is not None
+            else self._model_retry_fallback
+            if self._model_retry_fallback is not None
+            else DEFAULT_MODEL_RETRIES
+        )
+        if isinstance(self._model, str):
+            retry_kwargs = (
+                {CLI_MAX_RETRIES_KEY: self._model_retry_override}
+                if self._model_retry_override is not None
+                else None
+            )
+            grader_model = create_model(
+                self._model,
+                extra_kwargs=retry_kwargs,
+            ).model
+            if (
+                self._model_retry_override is not None
+                or self._model_retry_fallback is not None
+            ):
+                set_model_retry_metadata(
+                    grader_model,
+                    retries=retry_fallback,
+                    cli_override=self._model_retry_override,
+                )
+        else:
+            grader_model = self._model
+
+        self._resolved_model = grader_model
+        middleware: list[AgentMiddleware[Any, Any]] = [
+            CodeModelRetryMiddleware(max_retries=retry_fallback),
+            *self._grader_middleware,
+        ]
         self._grader = create_agent(
-            model=resolved_model,
+            model=grader_model,
             system_prompt=self._system_prompt,
             tools=self._tools,
-            middleware=self._grader_middleware,
+            middleware=middleware,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
             state_schema=RubricGraderState,
             context_schema=self._grader_context_schema,
         )
         return self._grader
+
+    def _grader_context(
+        self,
+        state: RubricState,
+        context: object | None,
+    ) -> object | None:
+        """Merge request-local retry metadata into the nested grader context.
+
+        Prefer the parent runtime context (including approval mode and any
+        existing `model_params`) and only rewrite it when this middleware owns an
+        explicit override or the checkpoint/state carrier must supply one.
+
+        Returns:
+            Context passed to the nested grader, or `None` when no context is
+            available and no retry override needs to be constructed.
+        """
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY, is_valid_retry_count
+
+        retry_override = self._model_retry_override
+        if retry_override is None:
+            existing = _model_params_mapping(context)
+            if existing is not None:
+                raw = existing.get(CLI_MAX_RETRIES_KEY)
+                if is_valid_retry_count(raw):
+                    return context
+            model_params = cast("dict[str, Any]", state).get("_model_params")
+            if isinstance(model_params, Mapping):
+                raw = model_params.get(CLI_MAX_RETRIES_KEY)
+                if is_valid_retry_count(raw):
+                    retry_override = raw
+
+        if retry_override is None:
+            return context
+
+        existing_params = _model_params_mapping(context)
+        base_params: MutableMapping[str, Any] = (
+            dict(existing_params) if existing_params is not None else {}
+        )
+        base_params[CLI_MAX_RETRIES_KEY] = retry_override
+        return _with_model_params(context, base_params)
 
     def _grader_input(
         self,
@@ -277,7 +435,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         result = grader.invoke(
             self._grader_input(state, iteration),
             config=self._grader_invocation_config(metadata),
-            context=context,
+            context=self._grader_context(state, context),
         )
         self._record_grader_trace_metadata(
             self._grader_trace_metadata(
@@ -299,7 +457,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         result = await grader.ainvoke(
             self._grader_input(state, iteration),
             config=self._grader_invocation_config(metadata),
-            context=context,
+            context=self._grader_context(state, context),
         )
         self._record_grader_trace_metadata(
             self._grader_trace_metadata(

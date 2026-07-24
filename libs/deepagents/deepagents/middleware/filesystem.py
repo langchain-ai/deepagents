@@ -1752,15 +1752,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Empty files get a uniform warning regardless of encoding/type, so
             # check before routing to avoid a degenerate empty content block for
-            # binary reads.
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return ToolMessage(
-                    content=empty_msg,
-                    name="read_file",
-                    tool_call_id=tool_call_id,
-                    status="success",
-                )
+            # binary reads (#3664). Pagination metadata is only set when the
+            # backend sliced a window out of a file that has content — genuinely
+            # empty (and whitespace-only) files short-circuit before slicing and
+            # leave it unset. So a window is never "the file is empty", and a
+            # blank window renders as blank numbered lines instead (#4955).
+            if read_result.start_line is None:
+                empty_msg = check_empty_content(content)
+                if empty_msg:
+                    return ToolMessage(
+                        content=empty_msg,
+                        name="read_file",
+                        tool_call_id=tool_call_id,
+                        status="success",
+                    )
 
             # Video reads must be sliced into a sampled frame window before the
             # generic base64 branch runs; otherwise raw video bytes would reach

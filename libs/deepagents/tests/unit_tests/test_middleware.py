@@ -2440,6 +2440,21 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == EMPTY_CONTENT_WARNING
 
+    def test_read_file_blank_window_of_non_empty_file_renders_lines(self):
+        """A whitespace-only window of a file with content renders numbered blank lines (#4955)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = _runtime("blank-window-read")
+
+        backend.write("/f.txt", "line1\n\n\n\n\nline6\n")
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/f.txt", "offset": 1, "limit": 4, "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content != EMPTY_CONTENT_WARNING
+        assert [line.strip() for line in result.content.splitlines()[:4]] == ["2", "3", "4", "5"]
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         backend, _ = _make_backend()
